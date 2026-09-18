@@ -7,14 +7,14 @@ def parse_card_date(c: dict):
     try:
         iso = c.get("date_iso") or ""
         if iso:
-            return datetime.strptime(iso, "%Y-%m-%d")
+            return datetime.strptime(iso[:10], "%Y-%m-%d")
     except Exception:
         pass
-    return datetime(2099, 1, 1)  # в конец если нет даты
+    return datetime(2099, 1, 1)
 
 
 def day_label(dt) -> str:
-    """Сегодня / Завтра / Послезавтра / Пт 20.09 / Через N дней."""
+    """Сегодня / Завтра / Послезавтра / Пт 20.09 / Прошлое."""
     from datetime import datetime, timedelta
     if not dt:
         return "—"
@@ -28,6 +28,6 @@ def day_label(dt) -> str:
     if diff == 2:
         return "📅 ПОСЛЕЗАВТРА"
     if diff < 0:
-        return f"📅 ПРОШЛОЕ ({diff}д)"
+        return f"📅 ПРОШЛОЕ ({abs(diff)}д назад)"
     weekdays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     return f"📅 {weekdays[dt.weekday()]} {dt.strftime('%d.%m')}"
