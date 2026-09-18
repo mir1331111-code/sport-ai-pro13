@@ -1,6 +1,6 @@
-"""ui/tabs/scanner.py — Сканер + whitelist + LLM."""
+"""ui/tabs/scanner.py — Сканер + фильтр лиг + LLM."""
 from __future__ import annotations
-import time, re
+import time
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -28,18 +28,6 @@ LLM_TOP_N = 8
 
 def _is_top_league(div_code: str) -> bool:
     return bool(div_code) and div_code in TOP_LIGAS
-
-
-def _norm(name: str) -> str:
-    """Точно та же нормализация, что в engine._norm."""
-    if not name:
-        return ""
-    s = str(name).lower().strip()
-    for suf in [" fc", " cf", " afc", " sc", " ac", " united", " utd",
-                " city", " town", " rovers", " county"]:
-        s = s.replace(suf, "")
-    s = re.sub(r"[^a-z0-9]", "", s)
-    return s
 
 
 def _safe_filter(rows):
@@ -173,6 +161,7 @@ def render(min_prob, kelly_frac, matrix_n):
             st.caption(f"✅ Показано **{shown}** · скрыто **{hidden}**")
         return
 
+    # ==================== ЗАПУСК СКАНА ====================
     st.session_state["_scan_in_progress"] = True
     try:
         loader_ph = st.empty()
@@ -201,30 +190,25 @@ def render(min_prob, kelly_frac, matrix_n):
         tsdb_rows = _safe_filter(tsdb_rows_raw)
         logs.append(f"📡 TheSportsDB (дней {days}): {len(tsdb_rows)} матчей")
 
+        # === ЗАГРУЖАЕМ ENGINE ===
         update_loader("🧠 Загрузка модели...", 0.15, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
-        known = engine.known_teams() if hasattr(engine, "known_teams") else set()
-        logs.append(f"📚 Известных команд: {len(known)}")
 
-        # === ФИЛЬТР: ЛИГА + WHITELIST (с нормализацией) ===
+        # === ФИЛЬТР: ТОЛЬКО ПО ЛИГЕ ===
+        # Whitelist команд отключён — он был слишком строгим (0 матчей).
+        # От мусора защищает строгий _TSDB_LEAGUE_MAP в sources.py.
         filtered = []
         skipped_lg = 0
-        skipped_team = 0
         for r in tsdb_rows:
             div_code = r.get("Div") or ""
             if not _is_top_league(div_code):
                 skipped_lg += 1
                 continue
-            h_team = (r.get("HomeTeam") or "").strip()
-            a_team = (r.get("AwayTeam") or "").strip()
-            if _norm(h_team) not in known or _norm(a_team) not in known:
-                skipped_team += 1
-                continue
             filtered.append(r)
-        logs.append(f"✅ После фильтров: {len(filtered)} матчей")
+        logs.append(f"✅ После фильтра лиг: {len(filtered)} матчей")
         logs.append(f"🗑️ Отфильтровано по лиге: {skipped_lg}")
-        logs.append(f"🗑️ Отфильтровано по команде: {skipped_team}")
 
+        # Уникализация
         seen = set()
         src_rows = []
         for r in filtered:
@@ -237,6 +221,7 @@ def render(min_prob, kelly_frac, matrix_n):
             src_rows.append(r)
         logs.append(f"🔗 Уникальных: {len(src_rows)}")
 
+        # === АНАЛИЗ МАТЧЕЙ ===
         update_loader("🧠 Анализ матчей...", 0.85, logs)
         cards = []
         matches_with_best = 0
@@ -393,6 +378,7 @@ def render(min_prob, kelly_frac, matrix_n):
             })
             existing.add(bk)
 
+        # === СОХРАНЕНИЕ ===
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
@@ -411,7 +397,9 @@ def render(min_prob, kelly_frac, matrix_n):
             db.log_bank(D2["bank"], event="scan")
             db.invalidate_caches()
 
-        update_loader(f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM", 1.0, logs)
+        update_loader(
+            f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM",
+            1.0, logs)
         time.sleep(1.2)
         loader_ph.empty()
         log_ph.empty()
