@@ -1,4 +1,4 @@
-"""ui/tabs/scanner.py — вкладка Сканер + фильтр лиг."""
+"""ui/tabs/scanner.py — Сканер + whitelist команд."""
 from __future__ import annotations
 import time
 from datetime import datetime, timedelta
@@ -16,27 +16,14 @@ from betting.kelly import kelly, market_type
 from ui.cards import render_verdict_card, translate_team
 
 
-# ==================== ФИЛЬТР ЛИГ ====================
-# Только те лиги, для которых есть история в football-data.co.uk
-# и модель реально обучена. Аргентина/MLS/Азия отсеиваются автоматически.
 TOP_LIGAS = {
-    "E0", "E1",   # АПЛ, Чемпионшип
-    "SP1", "SP2", # Ла Лига, Сегунда
-    "I1", "I2",   # Серия A, B
-    "D1", "D2",   # Бундеслига, 2.Бундеслига
-    "F1", "F2",   # Лига 1, 2
-    "N1",         # Эредивизи
-    "B1",         # Про-лига Бельгия
-    "P1",         # Примейра
-    "T1",         # Суперлига Турция
-    "G1",         # Греция
-    "R1",         # РПЛ
-    "C1", "EL", "EC",  # Еврокубки
+    "E0", "E1", "SP1", "SP2", "I1", "I2", "D1", "D2",
+    "F1", "F2", "N1", "B1", "P1", "T1", "G1", "R1",
+    "C1", "EL", "EC",
 }
 
 
 def _is_top_league(div_code: str) -> bool:
-    """True если лига распознана и модель на ней обучена."""
     return bool(div_code) and div_code in TOP_LIGAS
 
 
@@ -199,17 +186,30 @@ def render(min_prob, kelly_frac, matrix_n):
         tsdb_rows = _safe_filter(tsdb_rows_raw)
         logs.append(f"📡 TheSportsDB (дней {days}): {len(tsdb_rows)} матчей")
 
-        # === ФИЛЬТР ЛИГ ===
+        # === ЗАГРУЖАЕМ ENGINE ЗАРАНЕЕ (нужен для whitelist команд) ===
+        update_loader("🧠 Загрузка модели...", 0.15, logs)
+        engine = _load_engine(matrix_n, logs, update_loader)
+        known = engine.known_teams() if hasattr(engine, "known_teams") else set()
+        logs.append(f"📚 Известных команд в модели: {len(known)}")
+
+        # === ФИЛЬТР: ЛИГА + WHITELIST КОМАНД ===
         filtered = []
-        skipped = 0
+        skipped_lg = 0
+        skipped_team = 0
         for r in tsdb_rows:
             div_code = r.get("Div") or ""
             if not _is_top_league(div_code):
-                skipped += 1
+                skipped_lg += 1
+                continue
+            h_team = (r.get("HomeTeam") or "").strip()
+            a_team = (r.get("AwayTeam") or "").strip()
+            if h_team not in known or a_team not in known:
+                skipped_team += 1
                 continue
             filtered.append(r)
-        logs.append(f"✅ Топ-лиги: {len(filtered)} матчей")
-        logs.append(f"🗑️ Отфильтровано: {skipped} мусорных")
+        logs.append(f"✅ После фильтров: {len(filtered)} матчей")
+        logs.append(f"🗑️ Отфильтровано по лиге: {skipped_lg}")
+        logs.append(f"🗑️ Отфильтровано по команде: {skipped_team}")
 
         # Уникализация
         seen = set()
@@ -223,9 +223,6 @@ def render(min_prob, kelly_frac, matrix_n):
             seen.add(k)
             src_rows.append(r)
         logs.append(f"🔗 Уникальных: {len(src_rows)}")
-
-        # === ENGINE ===
-        engine = _load_engine(matrix_n, logs, update_loader)
 
         # === АНАЛИЗ МАТЧЕЙ ===
         update_loader("🧠 Анализ матчей...", 0.85, logs)
