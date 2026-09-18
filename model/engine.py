@@ -1,4 +1,4 @@
-"""model/engine.py — Poisson + Dixon-Coles + Elo."""
+"""model/engine.py — Poisson + Dixon-Coles + Elo + whitelist команд."""
 from __future__ import annotations
 import math
 from collections import defaultdict
@@ -37,6 +37,13 @@ class Engine:
         self.last_match_date: dict = {}
         self.trained_n = 0
 
+    # ---------- WHITELIST КОМАНД ----------
+    def known_teams(self) -> set:
+        """Возвращает set команд, которые модель знает из истории.
+        Используется для отсеивания мусорных матчей из TheSportsDB."""
+        return set(self.st.keys())
+
+    # ---------- MATH ----------
     @staticmethod
     def _logit(p: float) -> float:
         p = min(max(p, 1e-6), 1 - 1e-6)
