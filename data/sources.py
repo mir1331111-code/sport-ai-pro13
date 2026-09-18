@@ -1,4 +1,4 @@
-"""data/sources.py — football-data.org + football-data.co.uk + Odds API."""
+"""data/sources.py — football-data.org + MSK timezone + v3 cache keys."""
 from __future__ import annotations
 import csv, io, re
 from collections import defaultdict
@@ -21,7 +21,7 @@ from storage import usage
 
 
 # ============ ЧАСОВОЙ ПОЯС ============
-MSK_OFFSET_HOURS = 3   # Москва = UTC+3. Меняй на своё (Калининград=2, Екатеринбург=5...)
+MSK_OFFSET_HOURS = 3  # Москва = UTC+3. Меняй на своё (Калининград=2, Екатеринбург=5...)
 
 
 def _msk_date(utc_iso: str) -> str:
@@ -164,7 +164,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
             break
 
         div_code = FDORG_TO_DIV.get(comp, "G")
-        ck = f"fdorg_{comp}_{d_from}_{d_to}"
+        ck = f"fdorg_v3_{comp}_{d_from}_{d_to}"   # ← v3: игнорирует старый кэш
 
         cached = cache_get(ck, 1800)
         if cached is not None:
@@ -221,7 +221,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
 def fdorg_match_result(match_id, token: str) -> Optional[dict]:
     if not match_id or not token:
         return None
-    ck = f"fdorg_result_{match_id}"
+    ck = f"fdorg_result_v3_{match_id}"
     cached = cache_get(ck, 86400)
     if cached is not None:
         return cached or None
@@ -318,7 +318,7 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         return None
 
 
-# ============ LOGOS (fallback, football-data.org уже даёт crest) ============
+# ============ LOGOS ============
 def team_logo_url(team_name: str) -> Optional[str]:
     return None
 
