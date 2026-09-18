@@ -1,8 +1,7 @@
 """model/engine.py — Poisson + Dixon-Coles + Elo + whitelist команд."""
 from __future__ import annotations
-import math
+import math, re
 from collections import defaultdict
-from typing import Optional
 
 from model.calibration import PlattCalibrator
 
@@ -17,6 +16,20 @@ def _new_lp():
 
 def is_cup(div: str) -> bool:
     return div in ("C1", "EL", "EC")
+
+
+def _norm(name: str) -> str:
+    """Нормализация имени команды: убираем FC, United, City и т.п."""
+    if not name:
+        return ""
+    s = str(name).lower().strip()
+    # Убираем суффиксы
+    for suf in [" fc", " cf", " afc", " sc", " ac", " united", " utd",
+                " city", " town", " rovers", " county"]:
+        s = s.replace(suf, "")
+    # Только буквы и цифры
+    s = re.sub(r"[^a-z0-9]", "", s)
+    return s
 
 
 class Engine:
@@ -37,13 +50,15 @@ class Engine:
         self.last_match_date: dict = {}
         self.trained_n = 0
 
-    # ---------- WHITELIST КОМАНД ----------
     def known_teams(self) -> set:
-        """Возвращает set команд, которые модель знает из истории.
-        Используется для отсеивания мусорных матчей из TheSportsDB."""
-        return set(self.st.keys())
+        """Нормализованный set команд из истории."""
+        out = set()
+        for t in self.st.keys():
+            n = _norm(t)
+            if n:
+                out.add(n)
+        return out
 
-    # ---------- MATH ----------
     @staticmethod
     def _logit(p: float) -> float:
         p = min(max(p, 1e-6), 1 - 1e-6)
