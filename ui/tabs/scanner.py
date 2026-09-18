@@ -1,15 +1,15 @@
-"""ui/tabs/scanner.py — Сканер + фильтр лиг + LLM."""
+"""ui/tabs/scanner.py — Сканер на football-data.org."""
 from __future__ import annotations
 import time
 from datetime import datetime, timedelta
 
 import streamlit as st
 
-from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB
+from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS
 from storage import usage
 from storage import sqlite_store as db
-from data.sources import (load_seasonal, season_str, tsdb_today_matches,
-                          tsdb_past_league, odds_api_fixture, parse_date)
+from data.sources import (load_seasonal, season_str,
+                          fdorg_matches, odds_api_fixture, parse_date)
 from model.engine import Engine
 from betting.verdict import build_verdict, refine_with_real_odds
 from betting.kelly import kelly, market_type
@@ -17,17 +17,7 @@ from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
 
 
-TOP_LIGAS = {
-    "E0", "E1", "SP1", "SP2", "I1", "I2", "D1", "D2",
-    "F1", "F2", "N1", "B1", "P1", "T1", "G1", "R1",
-    "C1", "EL", "EC",
-}
-
 LLM_TOP_N = 8
-
-
-def _is_top_league(div_code: str) -> bool:
-    return bool(div_code) and div_code in TOP_LIGAS
 
 
 def _safe_filter(rows):
@@ -37,9 +27,7 @@ def _safe_filter(rows):
     for r in rows:
         if not isinstance(r, dict):
             continue
-        h = r.get("HomeTeam")
-        a = r.get("AwayTeam")
-        if not h or not a:
+        if not r.get("HomeTeam") or not r.get("AwayTeam"):
             continue
         out.append(r)
     return out
@@ -60,10 +48,6 @@ def _train_engine(matrix_n, logs, update_loader):
             pct, logs)
         dp[dv] = load_seasonal(dv, season_str(prev_year))
         dc[dv] = load_seasonal(dv, season_str(cur_year))
-        if len(dp[dv]) < 20:
-            dp[dv] = dp[dv] + tsdb_past_league(DIV_TO_TSDB.get(dv, ""), limit=60)
-        if len(dc[dv]) < 20:
-            dc[dv] = dc[dv] + tsdb_past_league(DIV_TO_TSDB.get(dv, ""), limit=60)
         logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(dp[dv])+len(dc[dv])}")
     total = sum(len(dp.get(dv, [])) + len(dc.get(dv, [])) for dv in train_divs)
     processed = 0
@@ -161,7 +145,6 @@ def render(min_prob, kelly_frac, matrix_n):
             st.caption(f"✅ Показано **{shown}** · скрыто **{hidden}**")
         return
 
-    # ==================== ЗАПУСК СКАНА ====================
     st.session_state["_scan_in_progress"] = True
     try:
         loader_ph = st.empty()
@@ -179,55 +162,34 @@ def render(min_prob, kelly_frac, matrix_n):
                     "<div style='color:#8b93a7;font-size:.8rem;"
                     "background:rgba(10,14,24,.6);padding:10px;"
                     "border-radius:10px;max-height:180px;overflow-y:auto'>"
-                    + "<br>".join(logs[-10:]) + "</div>",
+                    + "<br>".join(logs[-12:]) + "</div>",
                     unsafe_allow_html=True)
 
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
-        update_loader("📡 Сбор матчей...", 0.05, logs)
 
-        tsdb_rows_raw = tsdb_today_matches(days)
-        tsdb_rows = _safe_filter(tsdb_rows_raw)
-        logs.append(f"📡 TheSportsDB (дней {days}): {len(tsdb_rows)} матчей")
+        token = D.get("meta", {}).get("fdorg_token", "").strip()
+        if not token:
+            st.error("⚠️ Введи **football-data.org token** в сайдбаре "
+                     "(регистрация: football-data.org/client/register)")
+            return
 
-        # === ЗАГРУЖАЕМ ENGINE ===
-        update_loader("🧠 Загрузка модели...", 0.15, logs)
+        logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов осталось")
+
+        update_loader("📡 Сбор матчей из football-data.org...", 0.05, logs)
+        rows_raw = fdorg_matches(days, token, logs)
+        rows = _safe_filter(rows_raw)
+        logs.append(f"📡 Всего матчей: {len(rows)}")
+
+        update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
 
-        # === ФИЛЬТР: ТОЛЬКО ПО ЛИГЕ ===
-        # Whitelist команд отключён — он был слишком строгим (0 матчей).
-        # От мусора защищает строгий _TSDB_LEAGUE_MAP в sources.py.
-        filtered = []
-        skipped_lg = 0
-        for r in tsdb_rows:
-            div_code = r.get("Div") or ""
-            if not _is_top_league(div_code):
-                skipped_lg += 1
-                continue
-            filtered.append(r)
-        logs.append(f"✅ После фильтра лиг: {len(filtered)} матчей")
-        logs.append(f"🗑️ Отфильтровано по лиге: {skipped_lg}")
-
-        # Уникализация
-        seen = set()
-        src_rows = []
-        for r in filtered:
-            h = r.get("HomeTeam")
-            a = r.get("AwayTeam")
-            k = (h, a, r.get("Date"))
-            if k in seen:
-                continue
-            seen.add(k)
-            src_rows.append(r)
-        logs.append(f"🔗 Уникальных: {len(src_rows)}")
-
-        # === АНАЛИЗ МАТЧЕЙ ===
-        update_loader("🧠 Анализ матчей...", 0.85, logs)
+        update_loader("🧠 Анализ матчей...", 0.80, logs)
         cards = []
         matches_with_best = 0
         odds_key = D.get("meta", {}).get("odds_api_key", "")
 
-        for r in src_rows:
+        for r in rows:
             d = parse_date(r.get("Date", ""))
             if not d or not (today <= d <= today + timedelta(days=days)):
                 continue
@@ -246,7 +208,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 continue
             fh = engine.form_str(h_en)
             fa = engine.form_str(a_en)
-            verdict, rows, _ = build_verdict(
+            verdict, rows_, _ = build_verdict(
                 P, min_prob, D["bank"], kelly_frac,
                 h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
 
@@ -261,7 +223,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     real_odds = odds_api_fixture(sport_key, h_en, a_en, odds_key)
                 if real_odds:
                     verdict, best = refine_with_real_odds(
-                        verdict, rows, real_odds, D["bank"], kelly_frac)
+                        verdict, rows_, real_odds, D["bank"], kelly_frac)
                     odds_source = "market"
                 if best is None:
                     est_odd = verdict.get("fair_odd")
@@ -304,12 +266,10 @@ def render(min_prob, kelly_frac, matrix_n):
 
         logs.append(f"🎯 Найдено с P≥{min_prob*100:.0f}%: {matches_with_best}")
 
-        # === LLM-АНАЛИТИК (Groq/Gemini/...) ===
         llm_key = D.get("meta", {}).get("llm_api_key", "")
         llm_prov = D.get("meta", {}).get("llm_provider",
                                           "Groq (бесплатно, быстро)")
         llm_model = D.get("meta", {}).get("llm_model", "")
-
         action_cards = [c for c in cards if c.get("best") is not None]
         action_cards.sort(key=lambda c: -(c.get("verdict", {}).get("prob") or 0))
         llm_done = 0
@@ -317,7 +277,6 @@ def render(min_prob, kelly_frac, matrix_n):
         if llm_key and usage.llm_remaining() > 0:
             for i_, card in enumerate(action_cards[:LLM_TOP_N]):
                 if usage.llm_remaining() <= 0:
-                    logs.append("🤖 LLM: лимит")
                     break
                 update_loader(
                     f"🤖 ИИ-анализ [{i_+1}/{min(LLM_TOP_N, len(action_cards))}]",
@@ -341,11 +300,10 @@ def render(min_prob, kelly_frac, matrix_n):
                 if opinion:
                     card["llm_opinion"] = opinion
                     llm_done += 1
-            logs.append(f"🤖 LLM: {llm_done} мнений от {llm_prov}")
+            logs.append(f"🤖 LLM: {llm_done} мнений")
         elif not llm_key:
             logs.append("🤖 LLM: ключ не задан")
 
-        # === СОЗДАНИЕ СТАВОК ===
         new_bets = []
         existing = {
             f"{b['match']}|{b['pick']}"
@@ -378,7 +336,6 @@ def render(min_prob, kelly_frac, matrix_n):
             })
             existing.add(bk)
 
-        # === СОХРАНЕНИЕ ===
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
@@ -387,7 +344,7 @@ def render(min_prob, kelly_frac, matrix_n):
         D2["bank"] = max(0.0, D["bank"] - total_stake)
         D2["funnel"] = {
             "trained": getattr(engine, "trained_n", 0),
-            "src": len(src_rows), "found": matches_with_best,
+            "src": len(rows), "found": matches_with_best,
             "added": len(new_bets), "frozen": total_stake, "llm": llm_done,
         }
         st.session_state.data = D2
