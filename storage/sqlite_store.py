@@ -127,16 +127,32 @@ def fetch_bets(status: Optional[str] = None, limit: int = 100000) -> list:
 
 @_cache(ttl=30, show_spinner=False)
 def clv_summary() -> dict:
-    with _db() as c:
-        row = c.execute("""
-            SELECT COUNT(*) n, AVG(clv) avg_clv,
-                   AVG(CASE WHEN clv > 0 THEN 1.0 ELSE 0.0 END) pos
-            FROM bets WHERE clv IS NOT NULL
-        """).fetchone()
-    if not row or not row["n"]:
+    """Возвращает {'n': int, 'avg_clv': float, 'positive_share': float}.
+    Безопасен для любой row_factory — использует индексный доступ."""
+    try:
+        with _db() as c:
+            row = c.execute("""
+                SELECT COUNT(*) AS n,
+                       AVG(clv) AS avg_clv,
+                       AVG(CASE WHEN clv > 0 THEN 1.0 ELSE 0.0 END) AS pos
+                FROM bets WHERE clv IS NOT NULL
+            """).fetchone()
+    except Exception:
         return {"n": 0, "avg_clv": 0.0, "positive_share": 0.0}
-    return {"n": row["n"], "avg_clv": row["avg_clv"] or 0.0,
-            "positive_share": row["pos"] or 0.0}
+    if not row:
+        return {"n": 0, "avg_clv": 0.0, "positive_share": 0.0}
+    try:
+        n_raw = row[0]
+        avg_raw = row[1]
+        pos_raw = row[2]
+    except Exception:
+        return {"n": 0, "avg_clv": 0.0, "positive_share": 0.0}
+    n = int(n_raw) if n_raw is not None else 0
+    if n <= 0:
+        return {"n": 0, "avg_clv": 0.0, "positive_share": 0.0}
+    avg_clv = float(avg_raw) if avg_raw is not None else 0.0
+    pos = float(pos_raw) if pos_raw is not None else 0.0
+    return {"n": n, "avg_clv": avg_clv, "positive_share": pos}
 
 
 @_cache(ttl=30, show_spinner=False)
@@ -175,6 +191,9 @@ def get_meta(key: str, default: Optional[str] = None) -> Optional[str]:
 
 
 def invalidate_caches() -> None:
-    fetch_bets.clear()
-    clv_summary.clear()
-    bank_history.clear()
+    try:
+        fetch_bets.clear()
+        clv_summary.clear()
+        bank_history.clear()
+    except Exception:
+        pass
