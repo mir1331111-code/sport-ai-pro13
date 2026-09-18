@@ -1,4 +1,4 @@
-"""data/sources.py — внешние источники (football-data, TSDB, Odds API, logos)."""
+"""data/sources.py — внешние источники + строгий маппинг лиг."""
 from __future__ import annotations
 import csv, io, re
 from collections import defaultdict
@@ -67,7 +67,7 @@ def season_str(year: int) -> str:
     return f"{year % 100:02d}{(year + 1) % 100:02d}"
 
 
-# ---------- football-data.co.uk ----------
+# ============ FOOTBALL-DATA.CO.UK ============
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
     cached = cache_get(ck, CACHE_TTL["seasonal"])
@@ -94,36 +94,79 @@ def load_seasonal(div: str, season: str) -> list:
         return []
 
 
-# ---------- TheSportsDB ----------
+# ============ СТРОГИЙ МАППИНГ ЛИГ ============
+# Только ТОЧНЫЕ названия. USL Championship / Scottish Championship
+# больше не матчатся на английский EFL Championship.
 _TSDB_LEAGUE_MAP = {
-    "premier league": "E0", "epl": "E0",
-    "championship": "E1",
-    "la liga": "SP1", "laliga": "SP1",
-    "segunda": "SP2",
-    "bundesliga": "D1", "2. bundesliga": "D2",
-    "serie a": "I1", "serie b": "I2",
-    "ligue 1": "F1", "ligue 2": "F2",
+    # Англия
+    "english premier league": "E0",
+    "premier league": "E0",
+    "efl championship": "E1",
+    "english championship": "E1",
+    # Испания
+    "spanish la liga": "SP1",
+    "la liga": "SP1",
+    "laliga": "SP1",
+    "spanish segunda": "SP2",
+    "segunda division": "SP2",
+    # Италия
+    "italian serie a": "I1",
+    "serie a": "I1",
+    "italian serie b": "I2",
+    "serie b": "I2",
+    # Германия
+    "german bundesliga": "D1",
+    "bundesliga": "D1",
+    "2. bundesliga": "D2",
+    "german 2. bundesliga": "D2",
+    # Франция
+    "french ligue 1": "F1",
+    "ligue 1": "F1",
+    "french ligue 2": "F2",
+    "ligue 2": "F2",
+    # Нидерланды
+    "dutch eredivisie": "N1",
     "eredivisie": "N1",
-    "pro league": "B1", "first division": "B1",
-    "primeira": "P1",
-    "super lig": "T1", "super league": "T1",
+    # Бельгия
+    "belgian pro league": "B1",
+    "belgian first division a": "B1",
+    # Португалия
+    "portuguese primeira liga": "P1",
+    "primeira liga": "P1",
+    # Турция
+    "turkish super lig": "T1",
+    "turkish super league": "T1",
+    # Греция
+    "greek super league": "G1",
     "super league greece": "G1",
-    "russian premier": "R1",
+    "super league 1": "G1",
+    # Россия
+    "russian premier league": "R1",
+    "russian football premier league": "R1",
+    # Еврокубки
+    "uefa champions league": "C1",
     "champions league": "C1",
+    "uefa europa league": "EL",
     "europa league": "EL",
+    "uefa europa conference league": "EC",
+    "conference league": "EC",
 }
 
 
 def _match_tsdb_league(name: str) -> Optional[str]:
+    """Строгий маппинг: ищем ТОЧНОЕ совпадение подстроки.
+    Возвращает None, если лига не из белого списка."""
     if not name:
         return None
-    ln = name.lower()
-    for key, code in _TSDB_LEAGUE_MAP.items():
+    ln = name.lower().strip()
+    # Сначала длинные ключи (более специфичные)
+    for key in sorted(_TSDB_LEAGUE_MAP.keys(), key=len, reverse=True):
         if key in ln:
-            return code
+            return _TSDB_LEAGUE_MAP[key]
     return None
 
 
+# ============ THESPORTSDB ============
 def tsdb_today_matches(days: int = 7) -> list:
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     out = []
@@ -231,7 +274,7 @@ def tsdb_match_result(fixture_id: str) -> Optional[dict]:
         return None
 
 
-# ---------- The Odds API ----------
+# ============ THE ODDS API ============
 def _norm_name(s: str) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
 
@@ -308,7 +351,7 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         return None
 
 
-# ---------- Team / League logos (TheSportsDB free) ----------
+# ============ TEAM / LEAGUE LOGOS ============
 def team_logo_url(team_name: str) -> Optional[str]:
     if not team_name:
         return None
