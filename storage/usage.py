@@ -1,9 +1,10 @@
-"""storage/usage.py — счётчики дневных лимитов (локально в JSON)."""
+"""storage/usage.py — счётчики дневных лимитов."""
 from __future__ import annotations
 import json, os
 from datetime import datetime
 
-from config import LOCAL_FILE, AUTO_SETTLE_LIMIT, LLM_DAILY_LIMIT, ODDS_LIMIT_DAILY
+from config import (LOCAL_FILE, AUTO_SETTLE_LIMIT, LLM_DAILY_LIMIT,
+                    ODDS_LIMIT_DAILY, FOOTBALL_DATA_ORG_DAILY_LIMIT)
 
 
 def _today() -> str:
@@ -61,6 +62,7 @@ def reset(name: str) -> dict:
     return d
 
 
+# ---------- settle ----------
 def settle_remaining() -> int:
     return remaining("settle_usage", AUTO_SETTLE_LIMIT)
 
@@ -73,6 +75,7 @@ def settle_reset() -> dict:
     return reset("settle_usage")
 
 
+# ---------- llm ----------
 def llm_remaining() -> int:
     return remaining("llm_usage", LLM_DAILY_LIMIT)
 
@@ -85,6 +88,7 @@ def llm_reset() -> dict:
     return reset("llm_usage")
 
 
+# ---------- odds ----------
 def odds_remaining() -> int:
     return remaining("odds_usage", ODDS_LIMIT_DAILY)
 
@@ -97,6 +101,20 @@ def odds_reset() -> dict:
     return reset("odds_usage")
 
 
+# ---------- football-data.org ----------
+def fdorg_remaining() -> int:
+    return remaining("fdorg_usage", FOOTBALL_DATA_ORG_DAILY_LIMIT)
+
+
+def fdorg_increment(n: int = 1) -> dict:
+    return increment("fdorg_usage", n)
+
+
+def fdorg_reset() -> dict:
+    return reset("fdorg_usage")
+
+
+# ---------- data ----------
 def get_local_data() -> dict:
     return (_load_all().get("data") or {})
 
