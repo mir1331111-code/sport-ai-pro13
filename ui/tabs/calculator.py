@@ -43,52 +43,6 @@ def render(matrix_n):
     with cb:
         st.text_input("Гости", "Away FC")
         aa = st.slider("Атака гостей", -2.0, 2.0, 0.0, 0.05)
-cat > ui/tabs/calculator.py <<'EOF'
-"""ui/tabs/calculator.py — калькулятор PRO."""
-from __future__ import annotations
-import math
-import streamlit as st
-
-
-def _poisson_matrix(lam_h, lam_a, n):
-    def p(l, k):
-        return math.exp(-l) * l ** k / math.factorial(k)
-    M = [[p(lam_h, i) * p(lam_a, j) for j in range(n)] for i in range(n)]
-    tot = sum(map(sum, M)) or 1.0
-    p1 = sum(M[i][j] for i in range(n) for j in range(n) if i > j) / tot
-    px = sum(M[i][i] for i in range(n)) / tot
-    p2 = max(0.0, 1 - p1 - px)
-    over = 1 - sum(M[i][j] for i in range(n) for j in range(n)
-                   if i + j <= 2) / tot
-    btts = sum(M[i][j] for i in range(1, n) for j in range(1, n)) / tot
-    return {"p1": p1, "px": px, "p2": p2, "over": over, "btts": btts,
-            "lam_h": lam_h, "lam_a": lam_a}
-
-
-def _manual_poisson(ha, hd, hf, he, aa, ad, af, ae, n):
-    LG_H, LG_A = 1.45, 1.20
-    lam_h = (LG_H * (1 + ha * 0.25) * max(0.3, 1 - ad * 0.20)
-             * (1 + hf * 0.10) * (1 + (he - 1500) / 1000 * 0.15) + 0.25)
-    lam_a = (LG_A * (1 + aa * 0.25) * max(0.3, 1 - hd * 0.20)
-             * (1 + af * 0.10) * (1 + (ae - 1500) / 1000 * 0.15))
-    lam_h = max(0.2, min(4.5, lam_h))
-    lam_a = max(0.2, min(4.5, lam_a))
-    return _poisson_matrix(lam_h, lam_a, int(n))
-
-
-def render(matrix_n):
-    D = st.session_state.data
-    st.header("Калькулятор PRO")
-    ca, cb = st.columns(2)
-    with ca:
-        st.text_input("Хозяева", "Home FC")
-        ha = st.slider("Атака хозяев", -2.0, 2.0, 0.25, 0.05)
-        hd = st.slider("Защита хозяев", -2.0, 2.0, 0.0, 0.05)
-        hf = st.slider("Форма хозяев", -1.0, 1.0, 0.1, 0.05)
-        he = st.number_input("Elo хозяев", 1000, 2200, 1500, 10)
-    with cb:
-        st.text_input("Гости", "Away FC")
-        aa = st.slider("Атака гостей", -2.0, 2.0, 0.0, 0.05)
         ad = st.slider("Защита гостей", -2.0, 2.0, 0.15, 0.05)
         af = st.slider("Форма гостей", -1.0, 1.0, -0.05, 0.05)
         ae = st.number_input("Elo гостей", 1000, 2200, 1500, 10)
