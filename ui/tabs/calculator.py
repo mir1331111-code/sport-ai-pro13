@@ -42,7 +42,7 @@ def render(matrix_n):
         he = st.number_input("Elo хозяев", 1000, 2200, 1500, 10)
     with cb:
         st.text_input("Гости", "Away FC")
-        aa = st.slider("Атака гостей", -2.0, 2.0, 0.
+        aa = st.slider("Атака гостей", -2.0, 2.0, 0.0, 0.05)
 cat > ui/tabs/calculator.py <<'EOF'
 """ui/tabs/calculator.py — калькулятор PRO."""
 from __future__ import annotations
