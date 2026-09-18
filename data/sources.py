@@ -407,3 +407,132 @@ def league_logo_url(div_code: str) -> Optional[str]:
         return badge
     except Exception:
         return None
+
+
+# ============ FOOTBALL-DATA.ORG ============
+from config import FOOTBALL_DATA_ORG_HOST, DIV_TO_FDORG, FDORG_TO_DIV
+
+
+def _fdorg_get(endpoint: str, params: dict, token: str):
+    """GET к football-data.org v4."""
+    if not token:
+        return None
+    if usage.fdorg_remaining() <= 0:
+        return None
+    url = f"https://{FOOTBALL_DATA_ORG_HOST}/v4/{endpoint}"
+    headers = {"X-Auth-Token": token}
+    try:
+        r = _sess.get(url, headers=headers, params=params,
+                      timeout=15, proxies=NO_PROXY)
+        usage.fdorg_increment(1)
+        if r.status_code == 429:
+            import time
+            time.sleep(60)
+            return None
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+
+def fdorg_matches(days: int, token: str, logs=None):
+    """Собирает матчи из топ-лиг football-data.org на N дней вперёд."""
+    if not token:
+        return []
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    d_from = today.strftime("%Y-%m-%d")
+    d_to = (today + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    out = []
+    competitions = list(DIV_TO_FDORG.values())
+
+    for comp in competitions:
+        if usage.fdorg_remaining() <= 0:
+            if logs:
+                logs.append("football-data.org: soft-лимит исчерпан")
+            break
+
+        div_code = FDORG_TO_DIV.get(comp, "G")
+        ck = f"fdorg_{comp}_{d_from}_{d_to}"
+
+        cached = cache_get(ck, 1800)
+        if cached is not None:
+            if isinstance(cached, list):
+                out += cached
+                if logs:
+                    logs.append(f"OK {comp}: {len(cached)} (cached)")
+            continue
+
+        data = _fdorg_get("matches",
+                          {"dateFrom": d_from, "dateTo": d_to,
+                           "competitions": comp},
+                          token)
+
+        if not data or not data.get("matches"):
+            if logs:
+                logs.append(f"-- {comp}: 0 matches")
+            cache_put(ck, [])
+            continue
+
+        rows = []
+        for m in data["matches"]:
+            try:
+                home = (m.get("homeTeam") or {}).get("name")
+                away = (m.get("awayTeam") or {}).get("name")
+                if not home or not away:
+                    continue
+                utc_date = m.get("utcDate") or ""
+                date_str = utc_date[:10]
+                time_str = utc_date[11:16]
+                rows.append({
+                    "Div": div_code,
+                    "League": (m.get("competition") or {}).get("name") or comp,
+                    "competition": comp,
+                    "Date": date_str,
+                    "Time": time_str,
+                    "HomeTeam": home,
+                    "AwayTeam": away,
+                    "fixture_id": m.get("id"),
+                    "home_badge": (m.get("homeTeam") or {}).get("crest") or "",
+                    "away_badge": (m.get("awayTeam") or {}).get("crest") or "",
+                    "league_badge": (m.get("competition") or {}).get("emblem") or "",
+                    "status": m.get("status", ""),
+                })
+            except Exception:
+                continue
+
+        out += rows
+        cache_put(ck, rows)
+        if logs:
+            logs.append(f"OK {comp}: {len(rows)}")
+
+    return out
+
+
+def fdorg_match_result(match_id, token):
+    """Финальный результат матча для авто-сеттла."""
+    if not match_id or not token:
+        return None
+    ck = f"fdorg_result_{match_id}"
+    cached = cache_get(ck, 86400)
+    if cached is not None:
+        return cached or None
+    data = _fdorg_get(f"matches/{match_id}", {}, token)
+    if not data or not data.get("match"):
+        cache_put(ck, None)
+        return None
+    m = data["match"]
+    if m.get("status") != "FINISHED":
+        cache_put(ck, None)
+        return None
+    score = m.get("score") or {}
+    full = score.get("fullTime") or {}
+    hg = full.get("home")
+    ag = full.get("away")
+    if hg is None or ag is None:
+        cache_put(ck, None)
+        return None
+    res = {"home": int(hg), "away": int(ag), "status": "FT"}
+    cache_put(ck, res)
+    return res
