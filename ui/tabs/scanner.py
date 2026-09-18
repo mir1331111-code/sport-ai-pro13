@@ -1,6 +1,6 @@
-"""ui/tabs/scanner.py — Сканер + whitelist команд."""
+"""ui/tabs/scanner.py — Сканер + whitelist + LLM."""
 from __future__ import annotations
-import time
+import time, re
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -13,6 +13,7 @@ from data.sources import (load_seasonal, season_str, tsdb_today_matches,
 from model.engine import Engine
 from betting.verdict import build_verdict, refine_with_real_odds
 from betting.kelly import kelly, market_type
+from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
 
 
@@ -22,9 +23,23 @@ TOP_LIGAS = {
     "C1", "EL", "EC",
 }
 
+LLM_TOP_N = 8
+
 
 def _is_top_league(div_code: str) -> bool:
     return bool(div_code) and div_code in TOP_LIGAS
+
+
+def _norm(name: str) -> str:
+    """Точно та же нормализация, что в engine._norm."""
+    if not name:
+        return ""
+    s = str(name).lower().strip()
+    for suf in [" fc", " cf", " afc", " sc", " ac", " united", " utd",
+                " city", " town", " rovers", " county"]:
+        s = s.replace(suf, "")
+    s = re.sub(r"[^a-z0-9]", "", s)
+    return s
 
 
 def _safe_filter(rows):
@@ -126,7 +141,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 f"📡 Источников {fn.get('src', 0)} · "
                 f"🎯 Найдено {fn.get('found', 0)} · "
                 f"➕ В портфель {fn.get('added', 0)} · "
-                f"💰 Заморожено {fn.get('frozen', 0):.0f}"
+                f"💰 Заморожено {fn.get('frozen', 0):.0f} · "
+                f"🤖 LLM: {fn.get('llm', 0)}"
             )
         with st.expander("🔌 Диагностика"):
             for line in D.get("report", []):
@@ -157,7 +173,6 @@ def render(min_prob, kelly_frac, matrix_n):
             st.caption(f"✅ Показано **{shown}** · скрыто **{hidden}**")
         return
 
-    # ==================== ЗАПУСК СКАНА ====================
     st.session_state["_scan_in_progress"] = True
     try:
         loader_ph = st.empty()
@@ -186,13 +201,12 @@ def render(min_prob, kelly_frac, matrix_n):
         tsdb_rows = _safe_filter(tsdb_rows_raw)
         logs.append(f"📡 TheSportsDB (дней {days}): {len(tsdb_rows)} матчей")
 
-        # === ЗАГРУЖАЕМ ENGINE ЗАРАНЕЕ (нужен для whitelist команд) ===
         update_loader("🧠 Загрузка модели...", 0.15, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
         known = engine.known_teams() if hasattr(engine, "known_teams") else set()
-        logs.append(f"📚 Известных команд в модели: {len(known)}")
+        logs.append(f"📚 Известных команд: {len(known)}")
 
-        # === ФИЛЬТР: ЛИГА + WHITELIST КОМАНД ===
+        # === ФИЛЬТР: ЛИГА + WHITELIST (с нормализацией) ===
         filtered = []
         skipped_lg = 0
         skipped_team = 0
@@ -203,7 +217,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 continue
             h_team = (r.get("HomeTeam") or "").strip()
             a_team = (r.get("AwayTeam") or "").strip()
-            if h_team not in known or a_team not in known:
+            if _norm(h_team) not in known or _norm(a_team) not in known:
                 skipped_team += 1
                 continue
             filtered.append(r)
@@ -211,7 +225,6 @@ def render(min_prob, kelly_frac, matrix_n):
         logs.append(f"🗑️ Отфильтровано по лиге: {skipped_lg}")
         logs.append(f"🗑️ Отфильтровано по команде: {skipped_team}")
 
-        # Уникализация
         seen = set()
         src_rows = []
         for r in filtered:
@@ -224,7 +237,6 @@ def render(min_prob, kelly_frac, matrix_n):
             src_rows.append(r)
         logs.append(f"🔗 Уникальных: {len(src_rows)}")
 
-        # === АНАЛИЗ МАТЧЕЙ ===
         update_loader("🧠 Анализ матчей...", 0.85, logs)
         cards = []
         matches_with_best = 0
@@ -307,6 +319,47 @@ def render(min_prob, kelly_frac, matrix_n):
 
         logs.append(f"🎯 Найдено с P≥{min_prob*100:.0f}%: {matches_with_best}")
 
+        # === LLM-АНАЛИТИК (Groq/Gemini/...) ===
+        llm_key = D.get("meta", {}).get("llm_api_key", "")
+        llm_prov = D.get("meta", {}).get("llm_provider",
+                                          "Groq (бесплатно, быстро)")
+        llm_model = D.get("meta", {}).get("llm_model", "")
+
+        action_cards = [c for c in cards if c.get("best") is not None]
+        action_cards.sort(key=lambda c: -(c.get("verdict", {}).get("prob") or 0))
+        llm_done = 0
+
+        if llm_key and usage.llm_remaining() > 0:
+            for i_, card in enumerate(action_cards[:LLM_TOP_N]):
+                if usage.llm_remaining() <= 0:
+                    logs.append("🤖 LLM: лимит")
+                    break
+                update_loader(
+                    f"🤖 ИИ-анализ [{i_+1}/{min(LLM_TOP_N, len(action_cards))}]",
+                    0.90 + 0.08 * (i_+1) / LLM_TOP_N, logs)
+                v_ = card.get("verdict", {})
+                ctx = {
+                    "api_key": llm_key, "provider": llm_prov, "model": llm_model,
+                    "home": card.get("match_ru", "").split(" — ")[0],
+                    "away": card.get("match_ru", "").split(" — ")[-1],
+                    "league": card.get("league", ""),
+                    "date": card.get("date", ""),
+                    "lam_h": card.get("lam_h", 0), "lam_a": card.get("lam_a", 0),
+                    "p1": card.get("p1", 0), "px": card.get("px", 0),
+                    "p2": card.get("p2", 0), "over": card.get("over", 0),
+                    "btts": card.get("btts", 0),
+                    "fh": card.get("fh", "—"), "fa": card.get("fa", "—"),
+                    "pick": v_.get("label", ""), "prob": v_.get("prob", 0),
+                    "confidence": v_.get("confidence", ""), "ev": v_.get("ev", 0),
+                }
+                opinion = analyze_match(ctx)
+                if opinion:
+                    card["llm_opinion"] = opinion
+                    llm_done += 1
+            logs.append(f"🤖 LLM: {llm_done} мнений от {llm_prov}")
+        elif not llm_key:
+            logs.append("🤖 LLM: ключ не задан")
+
         # === СОЗДАНИЕ СТАВОК ===
         new_bets = []
         existing = {
@@ -340,7 +393,6 @@ def render(min_prob, kelly_frac, matrix_n):
             })
             existing.add(bk)
 
-        # === СОХРАНЕНИЕ ===
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
@@ -350,7 +402,7 @@ def render(min_prob, kelly_frac, matrix_n):
         D2["funnel"] = {
             "trained": getattr(engine, "trained_n", 0),
             "src": len(src_rows), "found": matches_with_best,
-            "added": len(new_bets), "frozen": total_stake, "llm": 0,
+            "added": len(new_bets), "frozen": total_stake, "llm": llm_done,
         }
         st.session_state.data = D2
         usage.set_local_data(D2)
@@ -359,7 +411,7 @@ def render(min_prob, kelly_frac, matrix_n):
             db.log_bank(D2["bank"], event="scan")
             db.invalidate_caches()
 
-        update_loader(f"✅ Готово! +{len(new_bets)} ставок", 1.0, logs)
+        update_loader(f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM", 1.0, logs)
         time.sleep(1.2)
         loader_ph.empty()
         log_ph.empty()
