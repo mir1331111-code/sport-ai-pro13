@@ -1,4 +1,4 @@
-"""data/sources.py — внешние источники (football-data, TSDB, Odds API)."""
+"""data/sources.py — внешние источники (football-data, TSDB, Odds API, logos)."""
 from __future__ import annotations
 import csv, io, re
 from collections import defaultdict
@@ -67,6 +67,7 @@ def season_str(year: int) -> str:
     return f"{year % 100:02d}{(year + 1) % 100:02d}"
 
 
+# ---------- football-data.co.uk ----------
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
     cached = cache_get(ck, CACHE_TTL["seasonal"])
@@ -93,6 +94,7 @@ def load_seasonal(div: str, season: str) -> list:
         return []
 
 
+# ---------- TheSportsDB ----------
 _TSDB_LEAGUE_MAP = {
     "premier league": "E0", "epl": "E0",
     "championship": "E1",
@@ -157,6 +159,9 @@ def tsdb_today_matches(days: int = 7) -> list:
                     "Time": (e.get("strTime") or "")[:5],
                     "HomeTeam": h, "AwayTeam": a,
                     "fixture_id": e.get("idEvent"),
+                    "home_badge": e.get("strHomeTeamBadge"),
+                    "away_badge": e.get("strAwayTeamBadge"),
+                    "league_badge": e.get("strLeagueBadge"),
                 })
             out += rows
             cache_put(ck, rows)
@@ -226,6 +231,7 @@ def tsdb_match_result(fixture_id: str) -> Optional[dict]:
         return None
 
 
+# ---------- The Odds API ----------
 def _norm_name(s: str) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
 
@@ -298,5 +304,76 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
             out = {}
         cache_put(ck, out or None)
         return out or None
+    except Exception:
+        return None
+
+
+# ---------- Team / League logos (TheSportsDB free) ----------
+def team_logo_url(team_name: str) -> Optional[str]:
+    if not team_name:
+        return None
+    ck = f"team_logo_{_norm_name(team_name)}"
+    cached = cache_get(ck, 86400 * 30)
+    if cached is not None:
+        return cached or None
+    try:
+        r = _sess.get(
+            "https://www.thesportsdb.com/api/v1/json/3/searchteams.php",
+            params={"t": team_name}, timeout=10, proxies=NO_PROXY)
+        if r.status_code != 200:
+            cache_put(ck, None)
+            return None
+        teams = (r.json() or {}).get("teams") or []
+        if not teams:
+            cache_put(ck, None)
+            return None
+        badge = None
+        tn = _norm_name(team_name)
+        for t in teams:
+            if _norm_name(t.get("strTeam", "")) == tn:
+                badge = t.get("strTeamBadge") or t.get("strBadge")
+                break
+        if not badge and teams:
+            badge = teams[0].get("strTeamBadge") or teams[0].get("strBadge")
+        cache_put(ck, badge)
+        return badge
+    except Exception:
+        return None
+
+
+_LEAGUE_TSDB_IDS = {
+    "E0": "4328", "E1": "4329", "D1": "4331", "D2": "4332",
+    "I1": "4332", "I2": "4333", "SP1": "4335", "SP2": "4336",
+    "F1": "4334", "F2": "4335", "N1": "4337", "B1": "4338",
+    "P1": "4344", "T1": "4339", "G1": "4356", "R1": "4357",
+    "C1": "4480", "EL": "4481",
+}
+
+
+def league_logo_url(div_code: str) -> Optional[str]:
+    if not div_code:
+        return None
+    ck = f"league_logo_{div_code}"
+    cached = cache_get(ck, 86400 * 30)
+    if cached is not None:
+        return cached or None
+    tsdb_id = _LEAGUE_TSDB_IDS.get(div_code)
+    if not tsdb_id:
+        cache_put(ck, None)
+        return None
+    try:
+        r = _sess.get(
+            "https://www.thesportsdb.com/api/v1/json/3/lookupleague.php",
+            params={"id": tsdb_id}, timeout=10, proxies=NO_PROXY)
+        if r.status_code != 200:
+            cache_put(ck, None)
+            return None
+        leagues = (r.json() or {}).get("leagues") or []
+        if not leagues:
+            cache_put(ck, None)
+            return None
+        badge = leagues[0].get("strBadge") or leagues[0].get("strLogo")
+        cache_put(ck, badge)
+        return badge
     except Exception:
         return None
