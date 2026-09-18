@@ -1,4 +1,4 @@
-"""data/sources.py — внешние источники + строгий маппинг лиг."""
+"""data/sources.py — внешние источники (football-data, TSDB, Odds API, logos)."""
 from __future__ import annotations
 import csv, io, re
 from collections import defaultdict
@@ -67,7 +67,6 @@ def season_str(year: int) -> str:
     return f"{year % 100:02d}{(year + 1) % 100:02d}"
 
 
-# ============ FOOTBALL-DATA.CO.UK ============
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
     cached = cache_get(ck, CACHE_TTL["seasonal"])
@@ -94,9 +93,7 @@ def load_seasonal(div: str, season: str) -> list:
         return []
 
 
-# ============ СТРОГИЙ МАППИНГ ЛИГ ============
-# Только ТОЧНЫЕ названия. USL Championship / Scottish Championship
-# больше не матчатся на английский EFL Championship.
+# ============ СТРОГИЙ МАППИНГ ЛИГ (АНГЛИЙСКИЕ КЛЮЧИ!) ============
 _TSDB_LEAGUE_MAP = {
     # Англия
     "english premier league": "E0",
@@ -154,19 +151,15 @@ _TSDB_LEAGUE_MAP = {
 
 
 def _match_tsdb_league(name: str) -> Optional[str]:
-    """Строгий маппинг: ищем ТОЧНОЕ совпадение подстроки.
-    Возвращает None, если лига не из белого списка."""
     if not name:
         return None
     ln = name.lower().strip()
-    # Сначала длинные ключи (более специфичные)
     for key in sorted(_TSDB_LEAGUE_MAP.keys(), key=len, reverse=True):
         if key in ln:
             return _TSDB_LEAGUE_MAP[key]
     return None
 
 
-# ============ THESPORTSDB ============
 def tsdb_today_matches(days: int = 7) -> list:
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     out = []
@@ -274,7 +267,6 @@ def tsdb_match_result(fixture_id: str) -> Optional[dict]:
         return None
 
 
-# ============ THE ODDS API ============
 def _norm_name(s: str) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
 
@@ -351,7 +343,6 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         return None
 
 
-# ============ TEAM / LEAGUE LOGOS ============
 def team_logo_url(team_name: str) -> Optional[str]:
     if not team_name:
         return None
