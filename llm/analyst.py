@@ -1,4 +1,4 @@
-"""llm/analyst.py — LLM-аналитик с логированием ошибок."""
+"""llm/analyst.py — LLM-аналитик с логированием и fallback-парсингом."""
 from __future__ import annotations
 import hashlib, json, re, sys
 from typing import Optional
@@ -12,7 +12,10 @@ from storage import usage
 
 def _log(msg: str):
     """Логирует в stdout — видно в Streamlit Cloud → Manage app → Logs."""
-    print(f"[LLM] {msg}", file=sys.stdout, flush=True)
+    try:
+        print(f"[LLM] {msg}", file=sys.stdout, flush=True)
+    except Exception:
+        pass
 
 
 def _session() -> requests.Session:
@@ -41,7 +44,7 @@ LLM_SYSTEM_PROMPT = """Ты — эксперт-аналитик футбола. 
 
 
 def _parse_llm_response(content: str) -> Optional[str]:
-    """Парсит ответ LLM: JSON или plain text — fallback."""
+    """Парсит ответ LLM. Три уровня fallback."""
     if not content:
         return None
     content = content.strip()
@@ -58,7 +61,12 @@ def _parse_llm_response(content: str) -> Optional[str]:
             if opinion:
                 agree = parsed.get("agree")
                 risks = parsed.get("risks")
-                tag = "✅ Согласен" if agree else ("🤔 Спорно" if agree is False else "ℹ️")
+                if agree is True:
+                    tag = "✅ Согласен"
+                elif agree is False:
+                    tag = "🤔 Спорно"
+                else:
+                    tag = "ℹ️"
                 result = f"{tag}. {opinion}"
                 if risks:
                     result += f" · Риски: {risks}"
@@ -76,7 +84,12 @@ def _parse_llm_response(content: str) -> Optional[str]:
                 if opinion:
                     agree = parsed.get("agree")
                     risks = parsed.get("risks")
-                    tag = "✅ Согласен" if agree else ("🤔 Спорно" if agree is False else "ℹ️")
+                    if agree is True:
+                        tag = "✅ Согласен"
+                    elif agree is False:
+                        tag = "🤔 Спорно"
+                    else:
+                        tag = "ℹ️"
                     result = f"{tag}. {opinion}"
                     if risks:
                         result += f" · Риски: {risks}"
@@ -92,6 +105,7 @@ def _parse_llm_response(content: str) -> Optional[str]:
 
 
 def analyze_match(ctx: dict) -> Optional[str]:
+    """Анализирует матч через LLM. Возвращает строку или None."""
     api_key = ctx.get("api_key")
     if not api_key:
         _log("ERROR: api_key пустой")
@@ -104,13 +118,13 @@ def analyze_match(ctx: dict) -> Optional[str]:
     model = ctx.get("model") or cfg["model"]
     base = cfg["base"]
 
-    # Кэш по хэшу контекста
+    # Кэш
     ctx_hash = hashlib.md5(
         json.dumps(ctx, sort_keys=True, default=str).encode()).hexdigest()
-    ck = f"llm_v3_{ctx_hash}"    # v3 — новый ключ, старый кэш игнорируется
+    ck = f"llm_v3_{ctx_hash}"
     cached = cache_get(ck, CACHE_TTL["llm"])
     if cached is not None:
-        _log(f"CACHE HIT: {ctx_hash[:8]}")
+        _log(f"CACHE HIT: {ctx_hash[:8]} → {str(cached)[:50]}")
         return cached or None
 
     if usage.llm_remaining() <= 0:
@@ -147,7 +161,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
         "max_tokens": 300,
     }
 
-    _log(f"REQUEST: provider={provider}, model={model}, url={url}")
+    _log(f"REQUEST: provider={provider}, model={model}")
 
     try:
         r = _sess.post(url, headers=headers, json=body,
@@ -164,7 +178,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
         data = r.json()
         choices = data.get("choices") or []
         if not choices:
-            _log(f"ERROR: нет choices в ответе: {str(data)[:300]}")
+            _log(f"ERROR: нет choices: {str(data)[:300]}")
             cache_put(ck, None)
             return None
 
@@ -190,8 +204,8 @@ def analyze_match(ctx: dict) -> Optional[str]:
         _log("ERROR: timeout 30s")
         return None
     except requests.exceptions.ConnectionError as e:
-        _log(f"ERROR: connection failed: {e}")
+        _log(f"ERROR: connection failed: {str(e)[:200]}")
         return None
     except Exception as e:
-        _log(f"ERROR: {type(e).__name__}: {e}")
+        _log(f"ERROR: {type(e).__name__}: {str(e)[:200]}")
         return None
