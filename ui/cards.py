@@ -7,6 +7,8 @@ from config import STADIUM_WALLS, TEAM_TRANSLATIONS, DIV_NAMES
 
 esc = _html.escape
 
+
+# ============ ХЕЛПЕРЫ ДЛЯ СОРТИРОВКИ ============
 def parse_card_date(c: dict) -> datetime:
     try:
         iso = (c.get("date_iso") or "")[:10]
@@ -15,6 +17,7 @@ def parse_card_date(c: dict) -> datetime:
     except Exception:
         pass
     return datetime(2099, 1, 1)
+
 
 def day_label(dt) -> str:
     if not dt:
@@ -33,6 +36,8 @@ def day_label(dt) -> str:
     weekdays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     return f"📅 {weekdays[dt.weekday()]} {dt.strftime('%d.%m')}"
 
+
+# ============ ПЕРЕВОДЫ ============
 def translate_team(name: str) -> str:
     if not name:
         return name
@@ -49,6 +54,7 @@ def translate_team(name: str) -> str:
             return rus
     return name
 
+
 def translate_match(match_str: str) -> str:
     if not match_str or " vs " not in match_str:
         return match_str or "—"
@@ -57,17 +63,14 @@ def translate_match(match_str: str) -> str:
         return f"{translate_team(parts[0])} — {translate_team(parts[1])}"
     return match_str
 
+
 def stadium_bg(div: str) -> str:
     return STADIUM_WALLS.get(div or "", STADIUM_WALLS["DEFAULT"])
 
+
+# ============ ЛОГОТИПЫ ============
 def _team_badge_html(team_en: str, team_ru: str, badge_from_card: str = "") -> str:
     url = badge_from_card or ""
-    if not url:
-        try:
-            from data.sources import team_logo_url
-            url = team_logo_url(team_en) or ""
-        except Exception:
-            url = ""
     letter = esc((team_ru or "?")[:1].upper())
     if url:
         return (
@@ -78,18 +81,15 @@ def _team_badge_html(team_en: str, team_ru: str, badge_from_card: str = "") -> s
         )
     return '<div class="team-badge-fallback">' + letter + '</div>'
 
+
 def _league_badge_html(div: str, fallback_name: str, badge_from_card: str = "") -> str:
     url = badge_from_card or ""
-    if not url:
-        try:
-            from data.sources import league_logo_url
-            url = league_logo_url(div) or ""
-        except Exception:
-            url = ""
     icon = '<img src="' + esc(url) + '" alt=""/>' if url else ""
     name = DIV_NAMES.get(div) or fallback_name or "—"
     return '<span class="league-badge">' + icon + esc(name) + '</span>'
 
+
+# ============ ГЛАВНЫЙ РЕНДЕР ============
 def render_verdict_card(c: dict, thr: float) -> str:
     v = c.get("verdict") or {}
     if not v:
@@ -154,6 +154,16 @@ def render_verdict_card(c: dict, thr: float) -> str:
                 'border-radius:10px;border:1px solid rgba(251,191,36,.25);">'
                 '⚠️ Реального кэфа нет — paper-режим.</div>')
 
+    # ============ БЛОК КОНТЕКСТА ============
+    context_html = ""
+    ctx = c.get("context")
+    if ctx:
+        try:
+            from context_football import render_context_html
+            context_html = render_context_html(ctx)
+        except Exception:
+            context_html = ""
+
     llm_opinion = c.get("llm_opinion") or ""
     llm_html = ""
     if llm_opinion:
@@ -167,26 +177,10 @@ def render_verdict_card(c: dict, thr: float) -> str:
             '<div style="color:#e9d5ff;font-size:.88rem;line-height:1.55;">'
             + esc(llm_opinion) + '</div></div>')
 
-    # [CONTEXT ENGINE]
-    context_html = ""
-    try:
-        from context_football import render_context_flags
-        ctx = c.get("context", {})
-        if ctx and ctx.get("flags"):
-            context_html = (
-                '<div style="padding:16px 24px;background:rgba(34,211,238,.04);'
-                'border-top:1px solid rgba(34,211,238,.15);">'
-                '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
-                'font-weight:700;margin-bottom:10px;letter-spacing:1.4px;">'
-                '🔍 Контекст матча (угловые · карточки · судья · форма)</div>'
-                + render_context_flags(ctx["flags"]) + '</div>')
-    except ImportError:
-        pass
-
     odd_display = str(round(odd, 2)) if has_real else "—"
     prob_display = str(round(prob * 100))
 
-    html = (
+    return (
         '<div class="vcard" style="background:' + bg + ';">'
         '<div style="padding:20px 24px;">'
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'
@@ -230,7 +224,6 @@ def render_verdict_card(c: dict, thr: float) -> str:
         'font-size:.86rem;line-height:1.65;">' + reasons_html + '</ul>'
         '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
         'font-weight:700;margin-bottom:8px;letter-spacing:1.4px;">Альтернативы</div>'
-        + alt_html + llm_html +
-        '</div>' + context_html + '</div>'
+        + alt_html + context_html + llm_html +
+        '</div></div>'
     )
-    return html
