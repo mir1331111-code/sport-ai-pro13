@@ -73,14 +73,6 @@ DIV_NAMES = {
     "EC": "🏆 Лига Конференций",
 }
 
-DIV_TO_TSDB = {
-    "E0": "4328", "E1": "4386", "D1": "4331", "D2": "4389",
-    "I1": "4332", "I2": "4388", "SP1": "4335", "SP2": "4340",
-    "F1": "4334", "F2": "4387", "N1": "4337", "B1": "4355",
-    "P1": "4344", "T1": "4339", "G1": "4356", "R1": "4357",
-    "C1": "4480", "EL": "4481",
-}
-
 DIV_TO_ODDS = {
     "E0": "soccer_epl", "E1": "soccer_efl_champ",
     "D1": "soccer_germany_bundesliga", "D2": "soccer_germany_bundesliga2",
@@ -152,14 +144,8 @@ FOOTBALL_DATA_ORG_HOST = "api.football-data.org"
 FOOTBALL_DATA_ORG_DAILY_LIMIT = 100
 
 DIV_TO_FDORG = {
-    "E0": "PL",     # Premier League
-    "E1": "ELC",    # Championship
-    "SP1": "PD",    # La Liga
-    "I1": "SA",     # Serie A
-    "D1": "BL1",    # Bundesliga
-    "F1": "FL1",    # Ligue 1
-    "N1": "DED",    # Eredivisie
-    "P1": "PPL",    # Primeira Liga
-    "C1": "CL",     # Champions League
+    "E0": "PL", "E1": "ELC", "SP1": "PD",
+    "I1": "SA", "D1": "BL1", "F1": "FL1",
+    "N1": "DED", "P1": "PPL", "C1": "CL",
 }
 FDORG_TO_DIV = {v: k for k, v in DIV_TO_FDORG.items()}
