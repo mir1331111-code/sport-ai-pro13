@@ -19,9 +19,6 @@ def _parse_date(s):
         except: continue
     return None
 
-# ============================================================
-# 1. ЗАГРУЗКА АРХИВОВ С УГЛОВЫМИ И КАРТОЧКАМИ
-# ============================================================
 def load_seasonal_with_stats(div: str, season: str) -> list:
     ck = f"fd_ctx_{div}_{season}"
     cached = cache_get(ck, CACHE_TTL.get("seasonal", 86400 * 3))
@@ -41,9 +38,6 @@ def load_seasonal_with_stats(div: str, season: str) -> list:
     except Exception:
         return []
 
-# ============================================================
-# 2. УГЛОВЫЕ
-# ============================================================
 def analyze_corners(rows: list, team_name: str, last_n: int = 10) -> dict | None:
     team_matches = []
     for r in rows:
@@ -75,9 +69,6 @@ def analyze_corners(rows: list, team_name: str, last_n: int = 10) -> dict | None
             "avg_total": avg_total, "league_avg": league_avg,
             "sample": len(recent), "flags": flags}
 
-# ============================================================
-# 3. КАРТОЧКИ
-# ============================================================
 def analyze_cards(rows: list, team_name: str, last_n: int = 10) -> dict | None:
     team_matches = []
     for r in rows:
@@ -107,9 +98,6 @@ def analyze_cards(rows: list, team_name: str, last_n: int = 10) -> dict | None:
     return {"team": team_name, "avg_yellow": avg_yellow, "avg_red": avg_red,
             "league_avg_yellow": league_avg, "sample": len(recent), "flags": flags}
 
-# ============================================================
-# 4. СУДЬИ
-# ============================================================
 def analyze_referee(rows: list, referee_name: str | None = None) -> dict | None:
     ref_stats: dict = defaultdict(lambda: {"matches": 0, "yellows": 0, "reds": 0})
     for r in rows:
@@ -150,9 +138,6 @@ def analyze_referee(rows: list, referee_name: str | None = None) -> dict | None:
     sorted_refs = sorted(result.items(), key=lambda x: x[1]["avg_yellows"], reverse=True)
     return {"top_strict": sorted_refs[:5], "all": result, "league_avg": league_avg}
 
-# ============================================================
-# 5. ФОРМА
-# ============================================================
 def analyze_form(rows: list, team_name: str, last_n: int = 5) -> dict | None:
     team_matches = []
     for r in rows:
@@ -199,11 +184,7 @@ def analyze_form(rows: list, team_name: str, last_n: int = 5) -> dict | None:
             "wins": wins, "draws": draws, "losses": losses, "goals_for": gf,
             "streak": streak, "streak_count": sc, "flags": flags}
 
-# ============================================================
-# 6. КОМБО-СИГНАЛЫ (главный «изюм»)
-# ============================================================
 def detect_combo_signals(context: dict, home: str, away: str) -> list:
-    """Комбинированные сигналы — то, что букмекер системно недооценивает."""
     flags = []
     hc = context.get("home_corners")
     ac = context.get("away_corners")
@@ -234,9 +215,6 @@ def detect_combo_signals(context: dict, home: str, away: str) -> list:
                           "message": f"💎 {away} в огне ({af['recent_form']}), {home} в кризисе ({hf['recent_form']})"})
     return flags
 
-# ============================================================
-# 7. ГЛАВНАЯ ФУНКЦИЯ
-# ============================================================
 def analyze_match_context(home_team: str, away_team: str, div: str,
                           season: str, referee_name: str | None = None) -> dict:
     rows = load_seasonal_with_stats(div, season)
@@ -274,9 +252,6 @@ def analyze_match_context(home_team: str, away_team: str, div: str,
             "has_high_severity": any(f["severity"] == "high" for f in all_flags),
             "total_flags": len(all_flags)}
 
-# ============================================================
-# 8. РЕНДЕРИНГ
-# ============================================================
 def render_context_flags(flags: list) -> str:
     if not flags:
         return "<div style='color:#64748b;font-size:.85rem;'>🔍 Нет контекстных сигналов</div>"
