@@ -1,6 +1,7 @@
 """App.py — NEURO BET PRO v13. Точка входа Streamlit."""
 from __future__ import annotations
 import os
+import json
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -98,7 +99,8 @@ def _auto_settle(D):
             b2["status"] = "won"
             D2["bank"] = D2.get("bank", 10000.0) + b2["stake"] * b2["odds"]
             stats_d["won"] = stats_d.get("won", 0) + 1
-            stats_d["profit"] = stats_d.get("profit", 0) + b2["stake"] * (b2["odds"] - 1)
+            stats_d["profit"] = (stats_d.get("profit", 0)
+                                 + b2["stake"] * (b2["odds"] - 1))
         elif outcome == "lost":
             b2["status"] = "lost"
             stats_d["lost"] = stats_d.get("lost", 0) + 1
@@ -158,7 +160,7 @@ st.markdown(f"""
 </div></div>""", unsafe_allow_html=True)
 
 
-# ==================== SIDEBAR (МИНИМАЛИЗМ) ====================
+# ==================== SIDEBAR ====================
 with st.sidebar:
     st.markdown(
         "<div style='font-size:1.1rem;font-weight:800;color:#e6eaf2;"
@@ -175,7 +177,7 @@ with st.sidebar:
         D["meta"]["fdorg_token"] = fdorg_token
         usage.set_local_data(D)
 
-    # 2. The Odds API key (опционально)
+    # 2. The Odds API key
     odds_key = st.text_input(
         "The Odds API key (опционально)",
         value=D.get("meta", {}).get("odds_api_key", ""),
@@ -196,7 +198,7 @@ with st.sidebar:
                             index=prov_keys.index(cur) if cur in prov_keys else 0)
     llm_key = st.text_input(
         "LLM key",
-        value=D.get("meta", {}).get("llm_api_key", ""),
+        value=D["meta"].get("llm_api_key", ""),
         type="password",
         help=LLM_PROVIDERS[llm_prov]["key_url"])
     if (llm_prov != D["meta"].get("llm_provider")
@@ -222,11 +224,54 @@ with st.sidebar:
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
                 "margin:18px 0;'>", unsafe_allow_html=True)
 
+    # ==================== BACKUP / RESTORE ====================
+    st.markdown(
+        "<div style='font-size:.75rem;color:#8b93a7;"
+        "margin-bottom:8px;'>💾 Резервная копия</div>",
+        unsafe_allow_html=True)
+
+    _backup_json = json.dumps(D, ensure_ascii=False, indent=2, default=str)
+    st.download_button(
+        "📥 Скачать данные",
+        _backup_json,
+        file_name=f"neuro_data_{datetime.now():%Y%m%d_%H%M}.json",
+        mime="application/json",
+        use_container_width=True,
+        help="Сохрани перед выключением ПК")
+
+    _uploaded = st.file_uploader(
+        "📤 Загрузить данные",
+        type=["json"],
+        key="restore_upload",
+        label_visibility="collapsed")
+    if _uploaded is not None:
+        try:
+            _restored = json.loads(_uploaded.read().decode("utf-8"))
+            if isinstance(_restored, dict) and "data" in _restored:
+                st.session_state.data = _restored["data"]
+                usage.set_local_data(_restored["data"])
+                st.success("✅ Данные восстановлены!")
+                st.rerun()
+            elif isinstance(_restored, dict):
+                st.session_state.data = _restored
+                usage.set_local_data(_restored)
+                st.success("✅ Данные восстановлены!")
+                st.rerun()
+            else:
+                st.error("❌ Неверный формат файла")
+        except Exception as e:
+            st.error(f"❌ Ошибка: {e}")
+
+    # Разделитель
+    st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
+                "margin:18px 0;'>", unsafe_allow_html=True)
+
     # Кнопки
     if st.button("♻️ Сбросить счётчики", use_container_width=True):
         usage.settle_reset()
         usage.llm_reset()
         usage.odds_reset()
+        usage.fdorg_reset()
         st.toast("Счётчики сброшены")
         st.rerun()
 
