@@ -62,7 +62,6 @@ def reset(name: str) -> dict:
     return d
 
 
-# ---------- settle ----------
 def settle_remaining() -> int:
     return remaining("settle_usage", AUTO_SETTLE_LIMIT)
 
@@ -75,7 +74,6 @@ def settle_reset() -> dict:
     return reset("settle_usage")
 
 
-# ---------- llm ----------
 def llm_remaining() -> int:
     return remaining("llm_usage", LLM_DAILY_LIMIT)
 
@@ -88,7 +86,6 @@ def llm_reset() -> dict:
     return reset("llm_usage")
 
 
-# ---------- odds ----------
 def odds_remaining() -> int:
     return remaining("odds_usage", ODDS_LIMIT_DAILY)
 
@@ -101,7 +98,6 @@ def odds_reset() -> dict:
     return reset("odds_usage")
 
 
-# ---------- football-data.org ----------
 def fdorg_remaining() -> int:
     return remaining("fdorg_usage", FOOTBALL_DATA_ORG_DAILY_LIMIT)
 
@@ -114,7 +110,6 @@ def fdorg_reset() -> dict:
     return reset("fdorg_usage")
 
 
-# ---------- data ----------
 def get_local_data() -> dict:
     return (_load_all().get("data") or {})
 
