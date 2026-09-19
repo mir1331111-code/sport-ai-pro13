@@ -1,12 +1,32 @@
-"""context_football.py — угловые, карточки, судьи, форма, КОМБО-сигналы."""
+"""context_football.py — автономная версия без внешних зависимостей."""
 from __future__ import annotations
-import csv, io, re, time, hashlib, os, pickle, gzip
+import csv, io, re, os, hashlib, gzip, pickle, time
 import requests
 from collections import defaultdict
 from datetime import datetime
 
-from security import cache_get, cache_put
-from config import CACHE_TTL
+CACHE_DIR = "neuro_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+def _cache_path(key: str) -> str:
+    return os.path.join(CACHE_DIR, f"{hashlib.md5(key.encode()).hexdigest()}.bin")
+
+def _cache_get(key: str, max_age: int):
+    try:
+        p = _cache_path(key)
+        if not os.path.exists(p): return None
+        if time.time() - os.path.getmtime(p) > max_age: return None
+        with open(p, "rb") as f: raw = f.read()
+        try: return pickle.loads(gzip.decompress(raw))
+        except: return pickle.loads(raw)
+    except: return None
+
+def _cache_put(key: str, value):
+    try:
+        p = _cache_path(key); tmp = p + ".tmp"
+        with open(tmp, "wb") as f: f.write(gzip.compress(pickle.dumps(value)))
+        os.replace(tmp, p)
+    except: pass
 
 def _safe_float(v):
     try: return float(v)
@@ -21,36 +41,30 @@ def _parse_date(s):
 
 def load_seasonal_with_stats(div: str, season: str) -> list:
     ck = f"fd_ctx_{div}_{season}"
-    cached = cache_get(ck, CACHE_TTL.get("seasonal", 86400 * 3))
+    cached = _cache_get(ck, 86400 * 3)
     if cached is not None:
         return cached if isinstance(cached, list) else []
     url = f"https://www.football-data.co.uk/mmz4281/{season}/{div}.csv"
     try:
-        r = requests.get(url, timeout=25,
-                         headers={"User-Agent": "Mozilla/5.0 NeuroBet"})
-        if r.status_code != 200 or not r.content:
-            return []
+        r = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0 NeuroBet"})
+        if r.status_code != 200 or not r.content: return []
         text = r.content.decode("utf-8", errors="ignore").lstrip("\ufeff")
         out = [row for row in csv.DictReader(io.StringIO(text))
                if isinstance(row, dict) and row.get("HomeTeam") and row.get("AwayTeam")]
-        cache_put(ck, out)
+        _cache_put(ck, out)
         return out
-    except Exception:
-        return []
+    except: return []
 
-def analyze_corners(rows: list, team_name: str, last_n: int = 10) -> dict | None:
+def analyze_corners(rows: list, team_name: str, last_n: int = 10):
     team_matches = []
     for r in rows:
         if r.get("HomeTeam") == team_name:
             hc = _safe_float(r.get("HC")); ac = _safe_float(r.get("AC"))
-            if hc is not None:
-                team_matches.append({"for": hc, "against": ac})
+            if hc is not None: team_matches.append({"for": hc, "against": ac})
         elif r.get("AwayTeam") == team_name:
             hc = _safe_float(r.get("HC")); ac = _safe_float(r.get("AC"))
-            if ac is not None:
-                team_matches.append({"for": ac, "against": hc})
-    if len(team_matches) < 5:
-        return None
+            if ac is not None: team_matches.append({"for": ac, "against": hc})
+    if len(team_matches) < 5: return None
     recent = team_matches[-last_n:]
     avg_for = sum(m["for"] for m in recent) / len(recent)
     avg_against = sum(m["against"] for m in recent) / len(recent)
@@ -65,23 +79,19 @@ def analyze_corners(rows: list, team_name: str, last_n: int = 10) -> dict | None
     elif avg_total < league_avg * 0.75:
         flags.append({"type": "corners_low", "severity": "low",
                       "message": f"🚩 {team_name}: мало угловых ({avg_total:.1f} vs {league_avg:.1f})"})
-    return {"team": team_name, "avg_for": avg_for, "avg_against": avg_against,
-            "avg_total": avg_total, "league_avg": league_avg,
+    return {"team": team_name, "avg_total": avg_total, "league_avg": league_avg,
             "sample": len(recent), "flags": flags}
 
-def analyze_cards(rows: list, team_name: str, last_n: int = 10) -> dict | None:
+def analyze_cards(rows: list, team_name: str, last_n: int = 10):
     team_matches = []
     for r in rows:
         if r.get("HomeTeam") == team_name:
             hy = _safe_float(r.get("HY")); hr = _safe_float(r.get("HR"))
-            if hy is not None:
-                team_matches.append({"yellow": hy, "red": hr or 0})
+            if hy is not None: team_matches.append({"yellow": hy, "red": hr or 0})
         elif r.get("AwayTeam") == team_name:
             ay = _safe_float(r.get("AY")); ar = _safe_float(r.get("AR"))
-            if ay is not None:
-                team_matches.append({"yellow": ay, "red": ar or 0})
-    if len(team_matches) < 5:
-        return None
+            if ay is not None: team_matches.append({"yellow": ay, "red": ar or 0})
+    if len(team_matches) < 5: return None
     recent = team_matches[-last_n:]
     avg_yellow = sum(m["yellow"] for m in recent) / len(recent)
     avg_red = sum(m["red"] for m in recent) / len(recent)
@@ -98,39 +108,31 @@ def analyze_cards(rows: list, team_name: str, last_n: int = 10) -> dict | None:
     return {"team": team_name, "avg_yellow": avg_yellow, "avg_red": avg_red,
             "league_avg_yellow": league_avg, "sample": len(recent), "flags": flags}
 
-def analyze_referee(rows: list, referee_name: str | None = None) -> dict | None:
+def analyze_referee(rows: list, referee_name: str | None = None):
     ref_stats: dict = defaultdict(lambda: {"matches": 0, "yellows": 0, "reds": 0})
     for r in rows:
         ref = r.get("Referee") or ""
-        if not ref or ref == "Unknown":
-            continue
+        if not ref: continue
         hy = _safe_float(r.get("HY")) or 0; ay = _safe_float(r.get("AY")) or 0
         hr = _safe_float(r.get("HR")) or 0; ar = _safe_float(r.get("AR")) or 0
         ref_stats[ref]["matches"] += 1
         ref_stats[ref]["yellows"] += hy + ay
         ref_stats[ref]["reds"] += hr + ar
-    if not ref_stats:
-        return None
+    if not ref_stats: return None
     result = {}
     for ref, s in ref_stats.items():
-        if s["matches"] < 5:
-            continue
+        if s["matches"] < 5: continue
         result[ref] = {"matches": s["matches"],
                        "avg_yellows": s["yellows"] / s["matches"],
                        "avg_reds": s["reds"] / s["matches"]}
-    if not result:
-        return None
+    if not result: return None
     all_y = [r["avg_yellows"] for r in result.values()]
     league_avg = sum(all_y) / len(all_y) if all_y else 4.0
     if referee_name and referee_name in result:
-        rd = result[referee_name]
-        flags = []
+        rd = result[referee_name]; flags = []
         if rd["avg_yellows"] > league_avg * 1.3:
             flags.append({"type": "referee_strict", "severity": "high",
                           "message": f"👨‍⚖️ {referee_name}: {rd['avg_yellows']:.1f} жёлтых/матч (лига: {league_avg:.1f}) — СТРОГИЙ → ТБ карточек"})
-        elif rd["avg_yellows"] < league_avg * 0.7:
-            flags.append({"type": "referee_lenient", "severity": "low",
-                          "message": f"👨⚖️ {referee_name}: {rd['avg_yellows']:.1f} жёлтых — мягкий судья"})
         if rd["avg_reds"] > 0.2:
             flags.append({"type": "referee_reds", "severity": "high",
                           "message": f"🟥 {referee_name}: {rd['avg_reds']:.2f} красных/матч — часто удаляет"})
@@ -138,22 +140,20 @@ def analyze_referee(rows: list, referee_name: str | None = None) -> dict | None:
     sorted_refs = sorted(result.items(), key=lambda x: x[1]["avg_yellows"], reverse=True)
     return {"top_strict": sorted_refs[:5], "all": result, "league_avg": league_avg}
 
-def analyze_form(rows: list, team_name: str, last_n: int = 5) -> dict | None:
+def analyze_form(rows: list, team_name: str, last_n: int = 5):
     team_matches = []
     for r in rows:
-        date = r.get("Date", "")
         if r.get("HomeTeam") == team_name:
             hg = _safe_float(r.get("FTHG")); ag = _safe_float(r.get("FTAG"))
             if hg is not None:
                 res = "W" if hg > ag else ("D" if hg == ag else "L")
-                team_matches.append({"date": date, "result": res, "gf": hg, "ga": ag})
+                team_matches.append({"date": r.get("Date",""), "result": res, "gf": hg, "ga": ag})
         elif r.get("AwayTeam") == team_name:
             hg = _safe_float(r.get("FTHG")); ag = _safe_float(r.get("FTAG"))
             if ag is not None:
                 res = "W" if ag > hg else ("D" if ag == hg else "L")
-                team_matches.append({"date": date, "result": res, "gf": ag, "ga": hg})
-    if len(team_matches) < 3:
-        return None
+                team_matches.append({"date": r.get("Date",""), "result": res, "gf": ag, "ga": hg})
+    if len(team_matches) < 3: return None
     team_matches.sort(key=lambda x: _parse_date(x["date"]) or datetime.min)
     recent = team_matches[-last_n:]
     wins = sum(1 for m in recent if m["result"] == "W")
@@ -186,8 +186,7 @@ def analyze_form(rows: list, team_name: str, last_n: int = 5) -> dict | None:
 
 def detect_combo_signals(context: dict, home: str, away: str) -> list:
     flags = []
-    hc = context.get("home_corners")
-    ac = context.get("away_corners")
+    hc = context.get("home_corners"); ac = context.get("away_corners")
     if hc and ac:
         combined = hc["avg_total"] + ac["avg_total"]
         league = (hc["league_avg"] + ac["league_avg"]) / 2
@@ -197,15 +196,13 @@ def detect_combo_signals(context: dict, home: str, away: str) -> list:
     ref = context.get("referee", {})
     ref_flags = ref.get("flags", []) if isinstance(ref, dict) else []
     is_strict = any(f["type"] == "referee_strict" for f in ref_flags)
-    h_cards = context.get("home_cards")
-    a_cards = context.get("away_cards")
+    h_cards = context.get("home_cards"); a_cards = context.get("away_cards")
     if is_strict and h_cards and a_cards:
         if (h_cards["avg_yellow"] > h_cards["league_avg_yellow"] and
                 a_cards["avg_yellow"] > a_cards["league_avg_yellow"]):
             flags.append({"type": "combo_cards", "severity": "high",
                           "message": "💎 КОМБО: строгий судья + обе команды грубые → ТБ карточек"})
-    hf = context.get("home_form")
-    af = context.get("away_form")
+    hf = context.get("home_form"); af = context.get("away_form")
     if hf and af:
         if hf["wins"] >= 4 and af["losses"] >= 3:
             flags.append({"type": "combo_form", "severity": "medium",
@@ -220,35 +217,25 @@ def analyze_match_context(home_team: str, away_team: str, div: str,
     rows = load_seasonal_with_stats(div, season)
     if not rows:
         return {"error": "Нет данных архива", "flags": []}
-    all_flags: list = []
-    context: dict = {}
-    for fn, key in [(analyze_corners, "corners"), (analyze_cards, "cards"),
-                    (analyze_form, "form")]:
-        h_res = fn(rows, home_team)
-        a_res = fn(rows, away_team)
-        if h_res:
-            context[f"home_{key}"] = h_res
-            all_flags.extend(h_res["flags"])
-        if a_res:
-            context[f"away_{key}"] = a_res
-            all_flags.extend(a_res["flags"])
+    all_flags: list = []; context: dict = {}
+    for fn, key in [(analyze_corners, "corners"), (analyze_cards, "cards"), (analyze_form, "form")]:
+        h_res = fn(rows, home_team); a_res = fn(rows, away_team)
+        if h_res: context[f"home_{key}"] = h_res; all_flags.extend(h_res["flags"])
+        if a_res: context[f"away_{key}"] = a_res; all_flags.extend(a_res["flags"])
     if referee_name:
         ref_res = analyze_referee(rows, referee_name)
         if ref_res and "flags" in ref_res:
-            context["referee"] = ref_res
-            all_flags.extend(ref_res["flags"])
+            context["referee"] = ref_res; all_flags.extend(ref_res["flags"])
     else:
         ref_all = analyze_referee(rows)
-        if ref_all:
-            context["referee_league"] = ref_all
+        if ref_all: context["referee_league"] = ref_all
     combo = detect_combo_signals(context, home_team, away_team)
     all_flags.extend(combo)
     severity = (sum(1 for f in all_flags if f["severity"] == "high") * 3 +
                 sum(1 for f in all_flags if f["severity"] == "medium") * 2 +
                 sum(1 for f in all_flags if f["severity"] == "low"))
     return {"home": home_team, "away": away_team, "div": div, "season": season,
-            "flags": all_flags, "context": context,
-            "severity_score": severity,
+            "flags": all_flags, "context": context, "severity_score": severity,
             "has_high_severity": any(f["severity"] == "high" for f in all_flags),
             "total_flags": len(all_flags)}
 
@@ -268,16 +255,3 @@ def render_context_flags(flags: list) -> str:
                  f'<div style="color:{color};font-size:.85rem;font-weight:600;'
                  f'line-height:1.4;">{f["message"]}</div></div>')
     return html
-
-def render_context_summary(ctx: dict) -> str:
-    if not ctx or ctx.get("error"):
-        return ""
-    flags = ctx.get("flags", [])
-    if not flags:
-        return ""
-    high = sum(1 for f in flags if f["severity"] == "high")
-    med = sum(1 for f in flags if f["severity"] == "medium")
-    parts = []
-    if high: parts.append(f"🔴{high}")
-    if med: parts.append(f"🟡{med}")
-    return " · ".join(parts)
