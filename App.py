@@ -1,6 +1,13 @@
-from context_football import analyze_match_context, render_context_flags
 """App.py — NEURO BET PRO v13. Точка входа Streamlit."""
 from __future__ import annotations
+
+# [CONTEXT ENGINE] Контекстный анализ: угловые, карточки, судьи, форма
+try:
+    from context_football import analyze_match_context, render_context_flags
+    HAS_CONTEXT = True
+except ImportError:
+    HAS_CONTEXT = False
+
 import os
 import json
 from datetime import datetime, timedelta
@@ -23,9 +30,7 @@ from betting.settlement import determine_outcome
 from ui import theme
 from ui.tabs import scanner, portfolio, stats, calculator, backtest
 
-
 ERR: list = []
-
 
 def log_err(tag: str, e: Exception) -> None:
     line = (f"[{datetime.now():%Y-%m-%d %H:%M:%S}][{tag}] "
@@ -33,7 +38,6 @@ def log_err(tag: str, e: Exception) -> None:
     ERR.append(line)
     if len(ERR) > 100:
         ERR.pop(0)
-
 
 # ==================== BOOT ====================
 db.db_init()
@@ -52,7 +56,6 @@ D.setdefault("meta", {})
 if "initial_bank" not in D["meta"]:
     D["meta"]["initial_bank"] = float(D.get("bank", 10000.0))
     usage.set_local_data(D)
-
 
 # ==================== AUTO-SETTLE ====================
 def _auto_settle(D):
@@ -110,7 +113,6 @@ def _auto_settle(D):
         D2["stats"] = stats_d
         changed += 1
 
-    # Void через 48ч
     for idx, b in enumerate(bets):
         if b.get("status") != "pending":
             continue
@@ -129,7 +131,6 @@ def _auto_settle(D):
     D2["bets"] = bets
     return D2, changed
 
-
 _now = datetime.now().timestamp()
 _last = st.session_state.get("_last_auto_settle_ts", 0)
 if _now - _last > 21600:
@@ -146,11 +147,10 @@ if _now - _last > 21600:
 pending_count = sum(1 for b in D["bets"]
                     if isinstance(b, dict) and b.get("status") == "pending")
 
-
 # ==================== HERO ====================
 st.markdown(f"""
 <div class="hero"><h1>NEURO BET PRO</h1>
-<p>v{APP_VERSION} · 100% FREE · ИИ-аналитик · SQLite · CLV</p>
+<p>v{APP_VERSION} · 100% FREE · ИИ-аналитик · SQLite · CLV · 🔍 Контекст</p>
 <div class="kpis">
  <div class="kpi"><div class="t">Банкролл</div>
   <div class="v y">{D['bank']:.0f} у.е.</div></div>
@@ -160,7 +160,6 @@ st.markdown(f"""
   <div class="v {'r' if ERR else 'g'}">{len(ERR)}</div></div>
 </div></div>""", unsafe_allow_html=True)
 
-
 # ==================== SIDEBAR ====================
 with st.sidebar:
     st.markdown(
@@ -168,7 +167,6 @@ with st.sidebar:
         "margin-bottom:12px;'>🔑 API ключи</div>",
         unsafe_allow_html=True)
 
-    # 1. football-data.org token
     fdorg_token = st.text_input(
         "football-data.org token",
         value=D.get("meta", {}).get("fdorg_token", ""),
@@ -178,7 +176,6 @@ with st.sidebar:
         D["meta"]["fdorg_token"] = fdorg_token
         usage.set_local_data(D)
 
-    # 2. The Odds API key
     odds_key = st.text_input(
         "The Odds API key (опционально)",
         value=D.get("meta", {}).get("odds_api_key", ""),
@@ -188,7 +185,6 @@ with st.sidebar:
         D["meta"]["odds_api_key"] = odds_key
         usage.set_local_data(D)
 
-    # 3. Groq LLM key
     st.markdown(
         "<div style='font-size:.72rem;color:#8b93a7;margin-top:14px;"
         "margin-bottom:6px;'>🤖 LLM-аналитик</div>",
@@ -208,11 +204,9 @@ with st.sidebar:
         D["meta"]["llm_api_key"] = llm_key
         usage.set_local_data(D)
 
-    # Разделитель
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
                 "margin:18px 0;'>", unsafe_allow_html=True)
 
-    # Настройки сканера
     st.markdown(
         "<div style='font-size:.72rem;color:#8b93a7;"
         "margin-bottom:8px;'>🎯 Параметры скана</div>",
@@ -221,11 +215,9 @@ with st.sidebar:
     kelly_frac = st.slider("Kelly доля", 0.05, 0.40, 0.25, 0.05)
     matrix_n = st.slider("Матрица голов", 6, 15, 12, 1)
 
-    # Разделитель
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
                 "margin:18px 0;'>", unsafe_allow_html=True)
 
-    # ==================== BACKUP / RESTORE ====================
     st.markdown(
         "<div style='font-size:.75rem;color:#8b93a7;"
         "margin-bottom:8px;'>💾 Резервная копия</div>",
@@ -263,11 +255,9 @@ with st.sidebar:
         except Exception as e:
             st.error(f"❌ Ошибка: {e}")
 
-    # Разделитель
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
                 "margin:18px 0;'>", unsafe_allow_html=True)
 
-    # Кнопки
     if st.button("♻️ Сбросить счётчики", use_container_width=True):
         usage.settle_reset()
         usage.llm_reset()
@@ -299,7 +289,6 @@ with st.sidebar:
         if cc2.button("Нет", key="confirm_no"):
             st.session_state.confirm_clear = False
             st.rerun()
-
 
 # ==================== TABS ====================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
