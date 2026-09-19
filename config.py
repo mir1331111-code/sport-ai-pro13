@@ -33,9 +33,9 @@ LLM_PROVIDERS = {
         "model": "llama-3.3-70b-versatile",
         "key_url": "https://console.groq.com/keys",
     },
-        "Gemini (Google, бесплатно)": {
+            "Gemini (Google, бесплатно)": {
         "base": "https://generativelanguage.googleapis.com/v1beta",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-2.5-flash",
         "key_url": "https://aistudio.google.com/apikey",
     },
     "Grok (x.ai)": {
