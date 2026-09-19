@@ -1,3 +1,10 @@
+# [CONTEXT ENGINE]
+try:
+    from context_football import analyze_match_context, render_context_flags
+    HAS_CONTEXT = True
+except ImportError:
+    HAS_CONTEXT = False
+
 """ui/tabs/scanner.py — Сканер на football-data.org."""
 from __future__ import annotations
 import time
