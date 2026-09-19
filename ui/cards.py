@@ -1,4 +1,4 @@
-"""ui/cards.py — карточки с логотипами + хелперы сортировки."""
+"""ui/cards.py — карточки с логотипами + контекст + хелперы сортировки."""
 from __future__ import annotations
 import html as _html
 from datetime import datetime
@@ -7,10 +7,7 @@ from config import STADIUM_WALLS, TEAM_TRANSLATIONS, DIV_NAMES
 
 esc = _html.escape
 
-
-# ============ ХЕЛПЕРЫ ДЛЯ СОРТИРОВКИ ============
 def parse_card_date(c: dict) -> datetime:
-    """Возвращает datetime карточки для сортировки."""
     try:
         iso = (c.get("date_iso") or "")[:10]
         if iso:
@@ -19,9 +16,7 @@ def parse_card_date(c: dict) -> datetime:
         pass
     return datetime(2099, 1, 1)
 
-
 def day_label(dt) -> str:
-    """Сегодня / Завтра / Послезавтра / Пт 20.09 / Прошлое."""
     if not dt:
         return "—"
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -38,8 +33,6 @@ def day_label(dt) -> str:
     weekdays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     return f"📅 {weekdays[dt.weekday()]} {dt.strftime('%d.%m')}"
 
-
-# ============ ПЕРЕВОДЫ ============
 def translate_team(name: str) -> str:
     if not name:
         return name
@@ -56,7 +49,6 @@ def translate_team(name: str) -> str:
             return rus
     return name
 
-
 def translate_match(match_str: str) -> str:
     if not match_str or " vs " not in match_str:
         return match_str or "—"
@@ -65,12 +57,9 @@ def translate_match(match_str: str) -> str:
         return f"{translate_team(parts[0])} — {translate_team(parts[1])}"
     return match_str
 
-
 def stadium_bg(div: str) -> str:
     return STADIUM_WALLS.get(div or "", STADIUM_WALLS["DEFAULT"])
 
-
-# ============ ЛОГОТИПЫ ============
 def _team_badge_html(team_en: str, team_ru: str, badge_from_card: str = "") -> str:
     url = badge_from_card or ""
     if not url:
@@ -89,7 +78,6 @@ def _team_badge_html(team_en: str, team_ru: str, badge_from_card: str = "") -> s
         )
     return '<div class="team-badge-fallback">' + letter + '</div>'
 
-
 def _league_badge_html(div: str, fallback_name: str, badge_from_card: str = "") -> str:
     url = badge_from_card or ""
     if not url:
@@ -102,8 +90,6 @@ def _league_badge_html(div: str, fallback_name: str, badge_from_card: str = "") 
     name = DIV_NAMES.get(div) or fallback_name or "—"
     return '<span class="league-badge">' + icon + esc(name) + '</span>'
 
-
-# ============ ГЛАВНЫЙ РЕНДЕР ============
 def render_verdict_card(c: dict, thr: float) -> str:
     v = c.get("verdict") or {}
     if not v:
@@ -181,6 +167,22 @@ def render_verdict_card(c: dict, thr: float) -> str:
             '<div style="color:#e9d5ff;font-size:.88rem;line-height:1.55;">'
             + esc(llm_opinion) + '</div></div>')
 
+    # [CONTEXT ENGINE]
+    context_html = ""
+    try:
+        from context_football import render_context_flags
+        ctx = c.get("context", {})
+        if ctx and ctx.get("flags"):
+            context_html = (
+                '<div style="padding:16px 24px;background:rgba(34,211,238,.04);'
+                'border-top:1px solid rgba(34,211,238,.15);">'
+                '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
+                'font-weight:700;margin-bottom:10px;letter-spacing:1.4px;">'
+                '🔍 Контекст матча (угловые · карточки · судья · форма)</div>'
+                + render_context_flags(ctx["flags"]) + '</div>')
+    except ImportError:
+        pass
+
     odd_display = str(round(odd, 2)) if has_real else "—"
     prob_display = str(round(prob * 100))
 
@@ -229,6 +231,6 @@ def render_verdict_card(c: dict, thr: float) -> str:
         '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
         'font-weight:700;margin-bottom:8px;letter-spacing:1.4px;">Альтернативы</div>'
         + alt_html + llm_html +
-        '</div></div>'
+        '</div>' + context_html + '</div>'
     )
     return html
