@@ -1,4 +1,4 @@
-"""ui/tabs/scanner.py — Сканер на football-data.org + Context Engine."""
+"""ui/tabs/scanner.py — Сканер с контекстом."""
 from __future__ import annotations
 import time
 from datetime import datetime, timedelta
@@ -14,16 +14,12 @@ from model.engine import Engine
 from betting.verdict import build_verdict, refine_with_real_odds
 from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
-from ui.cards import render_verdict_card, translate_team
+from ui.cards import (render_verdict_card, translate_team,
+                      parse_card_date, day_label)
 
-# [CONTEXT ENGINE]
-try:
-    from context_football import analyze_match_context, render_context_flags
-    HAS_CONTEXT = True
-except ImportError:
-    HAS_CONTEXT = False
 
 LLM_TOP_N = 8
+
 
 def _safe_filter(rows):
     if not isinstance(rows, list):
@@ -36,6 +32,7 @@ def _safe_filter(rows):
             continue
         out.append(r)
     return out
+
 
 def _train_engine(matrix_n, logs, update_loader):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -78,6 +75,7 @@ def _train_engine(matrix_n, logs, update_loader):
     logs.append(f"Обучено: {trained}")
     return engine
 
+
 def _load_engine(matrix_n, logs, update_loader):
     import pickle, gzip, os
     from config import DISK_CACHE_DIR
@@ -99,6 +97,7 @@ def _load_engine(matrix_n, logs, update_loader):
     except Exception:
         pass
     return engine
+
 
 def render(min_prob, kelly_frac, matrix_n):
     D = st.session_state.data
@@ -122,31 +121,76 @@ def render(min_prob, kelly_frac, matrix_n):
             for line in D.get("report", []):
                 st.text(line)
 
-        all_cards = D.get("cards", [])
-        cards_view = sorted(
-            [c for c in all_cards if isinstance(c, dict)],
-            key=lambda c: (c.get("verdict", {}).get("prob") or 0),
-            reverse=True)
-        shown = 0
-        hidden = 0
-        for c in cards_view:
-            v = c.get("verdict") or {}
-            if not v.get("is_action", False):
-                hidden += 1
-                continue
-            st.markdown(render_verdict_card(c, min_prob),
-                        unsafe_allow_html=True)
-            shown += 1
-        if shown == 0 and hidden == 0:
+        all_cards = [c for c in D.get("cards", []) if isinstance(c, dict)]
+        if not all_cards:
             st.info("Нажми ⚡ СКАН.")
-        elif shown == 0 and hidden > 0:
-            st.warning(
-                f"⚠️ Ни один матч не прошёл порог **{min_prob*100:.0f}%**. "
-                f"Скрыто **{hidden}**.")
-        elif hidden > 0:
-            st.caption(f"✅ Показано **{shown}** · скрыто **{hidden}**")
+            return
+
+        c1, c2, c3 = st.columns([2, 2, 2])
+        sort_mode = c1.selectbox(
+            "Сортировка",
+            ["По дате (ближайшие сначала)",
+             "По вероятности (высокие сначала)",
+             "По EV (высокие сначала)"],
+            key="scanner_sort")
+        show_hidden = c2.checkbox("Показывать слабые", False,
+                                   key="scanner_show_hidden")
+        group_by_day = c3.checkbox("Группировать по дням", True,
+                                    key="scanner_group_by_day")
+
+        if show_hidden:
+            cards_view = all_cards
+        else:
+            cards_view = [c for c in all_cards
+                          if (c.get("verdict") or {}).get("is_action")]
+
+        if sort_mode.startswith("По дате"):
+            cards_view.sort(key=lambda c: parse_card_date(c))
+        elif sort_mode.startswith("По вероятности"):
+            cards_view.sort(
+                key=lambda c: -(c.get("verdict", {}).get("prob") or 0))
+        elif sort_mode.startswith("По EV"):
+            cards_view.sort(
+                key=lambda c: -(c.get("verdict", {}).get("ev") or 0))
+
+        if not cards_view:
+            st.warning("Ничего не найдено.")
+            return
+
+        if group_by_day:
+            grouped = {}
+            for c in cards_view:
+                dt = parse_card_date(c)
+                label = day_label(dt)
+                grouped.setdefault(label, []).append(c)
+
+            sorted_groups = sorted(
+                grouped.items(),
+                key=lambda kv: parse_card_date(kv[1][0]))
+
+            for label, items in sorted_groups:
+                st.markdown(
+                    "<div style='margin-top:20px;margin-bottom:12px;"
+                    "padding:8px 16px;background:rgba(34,211,238,.08);"
+                    "border-left:3px solid #22d3ee;border-radius:8px;"
+                    "color:#a5f3fc;font-weight:800;font-size:1.05rem;"
+                    "letter-spacing:1px;'>" + label + " · "
+                    "<span style='color:#8b93a7;font-weight:500;'>"
+                    + str(len(items)) + " матч.</span></div>",
+                    unsafe_allow_html=True)
+                for c in items:
+                    st.markdown(render_verdict_card(c, min_prob),
+                                unsafe_allow_html=True)
+        else:
+            for c in cards_view:
+                st.markdown(render_verdict_card(c, min_prob),
+                            unsafe_allow_html=True)
+
+        st.caption("✅ Показано " + str(len(cards_view)) + " из "
+                   + str(len(all_cards)))
         return
 
+    # ==================== СКАН ====================
     st.session_state["_scan_in_progress"] = True
     try:
         loader_ph = st.empty()
@@ -172,16 +216,15 @@ def render(min_prob, kelly_frac, matrix_n):
 
         token = D.get("meta", {}).get("fdorg_token", "").strip()
         if not token:
-            st.error("⚠️ Введи **football-data.org token** в сайдбаре "
-                     "(регистрация: football-data.org/client/register)")
+            st.error("⚠️ Введи **football-data.org token** в сайдбаре.")
             return
 
-        logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов осталось")
+        logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
 
-        update_loader("📡 Сбор матчей из football-data.org...", 0.05, logs)
+        update_loader("📡 Сбор матчей...", 0.05, logs)
         rows_raw = fdorg_matches(days, token, logs)
         rows = _safe_filter(rows_raw)
-        logs.append(f"📡 Всего матчей: {len(rows)}")
+        logs.append(f"📡 Всего: {len(rows)} матчей")
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
@@ -243,6 +286,20 @@ def render(min_prob, kelly_frac, matrix_n):
                                 verdict["pick"], est_odd, ev_, prob_, stake_)
                         odds_source = "estimated"
 
+            # ============ КОНТЕКСТНЫЙ АНАЛИЗ ============
+            context = {}
+            try:
+                from context_football import analyze_match_context
+                context = analyze_match_context(
+                    engine,
+                    home_en=h_en, away_en=a_en,
+                    home_ru=h_ru, away_ru=a_ru,
+                    match_date=d,
+                    referee=r.get("referee", "") or ""
+                )
+            except Exception:
+                context = {}
+
             if best:
                 matches_with_best += 1
 
@@ -257,6 +314,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "games": P["games"], "fh": fh, "fa": fa,
                 "fixture_id": r.get("fixture_id"),
                 "date_iso": d.strftime("%Y-%m-%d"),
+                "time": r.get("Time") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
@@ -264,6 +322,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
+                "context": context,
             })
 
         logs.append(f"🎯 Найдено с P≥{min_prob*100:.0f}%: {matches_with_best}")
@@ -284,7 +343,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     f"🤖 ИИ-анализ [{i_+1}/{min(LLM_TOP_N, len(action_cards))}]",
                     0.90 + 0.08 * (i_+1) / LLM_TOP_N, logs)
                 v_ = card.get("verdict", {})
-                ctx = {
+                ctx_llm = {
                     "api_key": llm_key, "provider": llm_prov, "model": llm_model,
                     "home": card.get("match_ru", "").split(" — ")[0],
                     "away": card.get("match_ru", "").split(" — ")[-1],
@@ -298,33 +357,11 @@ def render(min_prob, kelly_frac, matrix_n):
                     "pick": v_.get("label", ""), "prob": v_.get("prob", 0),
                     "confidence": v_.get("confidence", ""), "ev": v_.get("ev", 0),
                 }
-                opinion = analyze_match(ctx)
+                opinion = analyze_match(ctx_llm)
                 if opinion:
                     card["llm_opinion"] = opinion
                     llm_done += 1
             logs.append(f"🤖 LLM: {llm_done} мнений")
-        elif not llm_key:
-            logs.append("🤖 LLM: ключ не задан")
-
-        # [CONTEXT ENGINE] Контекстный анализ для матчей с прогнозом
-        if HAS_CONTEXT:
-            update_loader("🔍 Контекстный анализ...", 0.95, logs)
-            cur_y = today.year if today.month >= 7 else today.year - 1
-            s_ctx = season_str(cur_y)
-            ctx_count = 0
-            for c in cards:
-                if not c.get("verdict", {}).get("is_action"):
-                    continue
-                try:
-                    parts_m = c["match"].split(" vs ")
-                    if len(parts_m) == 2:
-                        ctx = analyze_match_context(
-                            parts_m[0], parts_m[1], c.get("div", ""), s_ctx)
-                        c["context"] = ctx
-                        ctx_count += 1
-                except Exception:
-                    pass
-            logs.append(f"🔍 Контекст: {ctx_count} матчей проанализировано")
 
         new_bets = []
         existing = {
@@ -353,6 +390,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "mode": "paper" if c.get("odds_source") == "estimated" else "real",
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
+                "match_time": c.get("time", ""),
                 "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "fixture_id": c.get("fixture_id"), "score": None, "ev": ev,
             })
@@ -377,7 +415,7 @@ def render(min_prob, kelly_frac, matrix_n):
             db.invalidate_caches()
 
         update_loader(
-            f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM · 🔍 {sum(1 for c in cards if c.get('context'))} контекст",
+            f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM",
             1.0, logs)
         time.sleep(1.2)
         loader_ph.empty()
