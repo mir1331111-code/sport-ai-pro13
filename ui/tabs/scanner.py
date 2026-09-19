@@ -1,11 +1,4 @@
-# [CONTEXT ENGINE]
-try:
-    from context_football import analyze_match_context, render_context_flags
-    HAS_CONTEXT = True
-except ImportError:
-    HAS_CONTEXT = False
-
-"""ui/tabs/scanner.py — Сканер на football-data.org."""
+"""ui/tabs/scanner.py — Сканер на football-data.org + Context Engine."""
 from __future__ import annotations
 import time
 from datetime import datetime, timedelta
@@ -23,9 +16,14 @@ from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
 
+# [CONTEXT ENGINE]
+try:
+    from context_football import analyze_match_context, render_context_flags
+    HAS_CONTEXT = True
+except ImportError:
+    HAS_CONTEXT = False
 
 LLM_TOP_N = 8
-
 
 def _safe_filter(rows):
     if not isinstance(rows, list):
@@ -38,7 +36,6 @@ def _safe_filter(rows):
             continue
         out.append(r)
     return out
-
 
 def _train_engine(matrix_n, logs, update_loader):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -81,7 +78,6 @@ def _train_engine(matrix_n, logs, update_loader):
     logs.append(f"Обучено: {trained}")
     return engine
 
-
 def _load_engine(matrix_n, logs, update_loader):
     import pickle, gzip, os
     from config import DISK_CACHE_DIR
@@ -103,7 +99,6 @@ def _load_engine(matrix_n, logs, update_loader):
     except Exception:
         pass
     return engine
-
 
 def render(min_prob, kelly_frac, matrix_n):
     D = st.session_state.data
@@ -311,6 +306,26 @@ def render(min_prob, kelly_frac, matrix_n):
         elif not llm_key:
             logs.append("🤖 LLM: ключ не задан")
 
+        # [CONTEXT ENGINE] Контекстный анализ для матчей с прогнозом
+        if HAS_CONTEXT:
+            update_loader("🔍 Контекстный анализ...", 0.95, logs)
+            cur_y = today.year if today.month >= 7 else today.year - 1
+            s_ctx = season_str(cur_y)
+            ctx_count = 0
+            for c in cards:
+                if not c.get("verdict", {}).get("is_action"):
+                    continue
+                try:
+                    parts_m = c["match"].split(" vs ")
+                    if len(parts_m) == 2:
+                        ctx = analyze_match_context(
+                            parts_m[0], parts_m[1], c.get("div", ""), s_ctx)
+                        c["context"] = ctx
+                        ctx_count += 1
+                except Exception:
+                    pass
+            logs.append(f"🔍 Контекст: {ctx_count} матчей проанализировано")
+
         new_bets = []
         existing = {
             f"{b['match']}|{b['pick']}"
@@ -362,7 +377,7 @@ def render(min_prob, kelly_frac, matrix_n):
             db.invalidate_caches()
 
         update_loader(
-            f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM",
+            f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM · 🔍 {sum(1 for c in cards if c.get('context'))} контекст",
             1.0, logs)
         time.sleep(1.2)
         loader_ph.empty()
