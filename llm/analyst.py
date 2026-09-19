@@ -1,4 +1,4 @@
-"""llm/analyst.py — LLM-аналитик с логированием и fallback-парсингом."""
+"""llm/analyst.py — LLM-аналитик с логированием, max_tokens=500."""
 from __future__ import annotations
 import hashlib, json, re, sys
 from typing import Optional
@@ -11,7 +11,6 @@ from storage import usage
 
 
 def _log(msg: str):
-    """Логирует в stdout — видно в Streamlit Cloud → Manage app → Logs."""
     try:
         print(f"[LLM] {msg}", file=sys.stdout, flush=True)
     except Exception:
@@ -49,7 +48,7 @@ def _parse_llm_response(content: str) -> Optional[str]:
         return None
     content = content.strip()
 
-    # Убираем markdown-обёртку ```json ... ```
+    # Убираем markdown-обёртку
     if content.startswith("```"):
         content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content).strip()
 
@@ -74,38 +73,38 @@ def _parse_llm_response(content: str) -> Optional[str]:
     except Exception:
         pass
 
-    # Попытка 2: JSON внутри текста
-    m = re.search(r"\{[^{}]*\"opinion\"[^{}]*\}", content)
+    # Попытка 2: обрезанный JSON — извлекаем opinion регуляркой
+    m = re.search(r'"opinion"\s*:\s*"([^"]{10,400})', content)
     if m:
-        try:
-            parsed = json.loads(m.group(0))
-            if "opinion" in parsed:
-                opinion = str(parsed["opinion"]).strip()
-                if opinion:
-                    agree = parsed.get("agree")
-                    risks = parsed.get("risks")
-                    if agree is True:
-                        tag = "✅ Согласен"
-                    elif agree is False:
-                        tag = "🤔 Спорно"
-                    else:
-                        tag = "ℹ️"
-                    result = f"{tag}. {opinion}"
-                    if risks:
-                        result += f" · Риски: {risks}"
-                    return result
-        except Exception:
-            pass
+        opinion = m.group(1).strip()
+        if opinion:
+            agree = None
+            m_agree = re.search(r'"agree"\s*:\s*(true|false)', content)
+            if m_agree:
+                agree = m_agree.group(1) == "true"
+            risks = ""
+            m_risks = re.search(r'"risks"\s*:\s*"([^"]{0,200})', content)
+            if m_risks:
+                risks = m_risks.group(1).strip()
+            if agree is True:
+                tag = "✅ Согласен"
+            elif agree is False:
+                tag = "🤔 Спорно"
+            else:
+                tag = "ℹ️"
+            result = f"{tag}. {opinion}"
+            if risks:
+                result += f" · Риски: {risks}"
+            return result
 
-    # Попытка 3: plain text — возвращаем как есть (обрезаем до 300)
-    if len(content) > 10:
-        return content[:300]
+    # Попытка 3: чистый текст — возвращаем как есть
+    if len(content) > 20:
+        return content[:400]
 
     return None
 
 
 def analyze_match(ctx: dict) -> Optional[str]:
-    """Анализирует матч через LLM. Возвращает строку или None."""
     api_key = ctx.get("api_key")
     if not api_key:
         _log("ERROR: api_key пустой")
@@ -118,13 +117,12 @@ def analyze_match(ctx: dict) -> Optional[str]:
     model = ctx.get("model") or cfg["model"]
     base = cfg["base"]
 
-    # Кэш
     ctx_hash = hashlib.md5(
         json.dumps(ctx, sort_keys=True, default=str).encode()).hexdigest()
-    ck = f"llm_v3_{ctx_hash}"
+    ck = f"llm_v4_{ctx_hash}"
     cached = cache_get(ck, CACHE_TTL["llm"])
     if cached is not None:
-        _log(f"CACHE HIT: {ctx_hash[:8]} → {str(cached)[:50]}")
+        _log(f"CACHE HIT: {ctx_hash[:8]}")
         return cached or None
 
     if usage.llm_remaining() <= 0:
@@ -158,7 +156,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
             {"role": "user", "content": user_msg},
         ],
         "temperature": 0.3,
-        "max_tokens": 300,
+        "max_tokens": 500,
     }
 
     _log(f"REQUEST: provider={provider}, model={model}")
@@ -167,7 +165,6 @@ def analyze_match(ctx: dict) -> Optional[str]:
         r = _sess.post(url, headers=headers, json=body,
                        timeout=30, proxies=NO_PROXY)
         usage.llm_increment(1)
-
         _log(f"RESPONSE: HTTP {r.status_code}, len={len(r.text)}")
 
         if r.status_code != 200:
@@ -188,7 +185,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
             cache_put(ck, None)
             return None
 
-        _log(f"CONTENT: {content[:200]}")
+        _log(f"CONTENT: {content[:300]}")
 
         result = _parse_llm_response(content)
         if result:
@@ -196,7 +193,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
             cache_put(ck, result)
             return result
         else:
-            _log(f"ERROR: не удалось распарсить: {content[:200]}")
+            _log(f"ERROR: не распарсили: {content[:300]}")
             cache_put(ck, None)
             return None
 
