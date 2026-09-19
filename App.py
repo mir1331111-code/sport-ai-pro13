@@ -1,3 +1,4 @@
+from context_football import analyze_match_context, render_context_flags
 """App.py — NEURO BET PRO v13. Точка входа Streamlit."""
 from __future__ import annotations
 import os
