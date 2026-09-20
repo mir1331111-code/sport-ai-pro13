@@ -1,4 +1,4 @@
-"""data/sources.py — football-data.org + история + Odds API."""
+"""data/sources.py — football-data.org + MSK timezone + v3 cache keys."""
 from __future__ import annotations
 import csv, io, re
 from collections import defaultdict
@@ -19,10 +19,7 @@ from config import (CACHE_TTL, FOOTBALL_DATA_ORG_HOST,
 from security import cache_get, cache_put
 from storage import usage
 
-
-# ============ ЧАСОВОЙ ПОЯС ============
 MSK_OFFSET_HOURS = 3
-
 
 def _msk_date(utc_iso: str) -> str:
     try:
@@ -32,7 +29,6 @@ def _msk_date(utc_iso: str) -> str:
     except Exception:
         return utc_iso[:10] if utc_iso else ""
 
-
 def _msk_time(utc_iso: str) -> str:
     try:
         dt = datetime.strptime(utc_iso[:19], "%Y-%m-%dT%H:%M:%S")
@@ -41,8 +37,6 @@ def _msk_time(utc_iso: str) -> str:
     except Exception:
         return utc_iso[11:16] if len(utc_iso) >= 16 else ""
 
-
-# ============ SESSION ============
 def _session() -> requests.Session:
     s = requests.Session()
     if _HAS_RETRY:
@@ -58,17 +52,14 @@ def _session() -> requests.Session:
     s.proxies = {"http": None, "https": None}
     return s
 
-
 _sess = _session()
 NO_PROXY = {"http": None, "https": None, "all": None}
-
 
 def _f(v):
     try:
         return float(v)
     except Exception:
         return None
-
 
 def parse_date(s) -> Optional[datetime]:
     if s is None:
@@ -86,14 +77,11 @@ def parse_date(s) -> Optional[datetime]:
             continue
     return None
 
-
 def season_str(year: int) -> str:
     return f"{year % 100:02d}{(year + 1) % 100:02d}"
 
-
 def _norm_name(s: str) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
-
 
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
@@ -120,7 +108,6 @@ def load_seasonal(div: str, season: str) -> list:
     except Exception:
         return []
 
-
 def _fdorg_get(endpoint: str, params: dict, token: str) -> Optional[dict]:
     if not token:
         return None
@@ -142,22 +129,21 @@ def _fdorg_get(endpoint: str, params: dict, token: str) -> Optional[dict]:
     except Exception:
         return None
 
-
 def fdorg_matches(days: int, token: str, logs=None) -> list:
     if not token:
         return []
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     d_from = today.strftime("%Y-%m-%d")
     d_to = (today + timedelta(days=days)).strftime("%Y-%m-%d")
-
     out = []
-    for comp in list(DIV_TO_FDORG.values()):
+    competitions = list(DIV_TO_FDORG.values())
+    for comp in competitions:
         if usage.fdorg_remaining() <= 0:
             if logs:
                 logs.append("fdorg: soft-лимит исчерпан")
             break
         div_code = FDORG_TO_DIV.get(comp, "G")
-        ck = f"fdorg_v5_{comp}_{d_from}_{d_to}"
+        ck = f"fdorg_v3_{comp}_{d_from}_{d_to}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -167,8 +153,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
             continue
         data = _fdorg_get("matches",
                           {"dateFrom": d_from, "dateTo": d_to,
-                           "competitions": comp},
-                          token)
+                           "competitions": comp}, token)
         if not data or not data.get("matches"):
             if logs:
                 logs.append(f"-- {comp}: 0")
@@ -188,14 +173,12 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                     "competition": comp,
                     "Date": _msk_date(utc_date),
                     "Time": _msk_time(utc_date),
-                    "HomeTeam": home,
-                    "AwayTeam": away,
+                    "HomeTeam": home, "AwayTeam": away,
                     "fixture_id": m.get("id"),
                     "home_badge": (m.get("homeTeam") or {}).get("crest") or "",
                     "away_badge": (m.get("awayTeam") or {}).get("crest") or "",
                     "league_badge": (m.get("competition") or {}).get("emblem") or "",
                     "status": m.get("status", ""),
-                    "referee": (m.get("referees") or [{}])[0].get("name", "") if m.get("referees") else "",
                 })
             except Exception:
                 continue
@@ -207,26 +190,27 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
 
 
 def fdorg_match_result(match_id, token: str) -> Optional[dict]:
+    """Получает результат матча. НЕ кэширует незавершённые матчи."""
     if not match_id or not token:
         return None
-    ck = f"fdorg_result_v5_{match_id}"
+    ck = f"fdorg_result_v3_{match_id}"
     cached = cache_get(ck, 86400)
-    if cached is not None:
-        return cached or None
+    # Возвращаем из кэша ТОЛЬКО если там реальный результат (не None/пустой)
+    if cached is not None and isinstance(cached, dict) and "home" in cached:
+        return cached
     data = _fdorg_get(f"matches/{match_id}", {}, token)
     if not data or not data.get("match"):
-        cache_put(ck, None)
+        # НЕ кэшируем — попробуем позже
         return None
     m = data["match"]
     if m.get("status") != "FINISHED":
-        cache_put(ck, None)
+        # Матч ещё не закончился — НЕ кэшируем
         return None
     score = m.get("score") or {}
     full = score.get("fullTime") or {}
     hg = full.get("home")
     ag = full.get("away")
     if hg is None or ag is None:
-        cache_put(ck, None)
         return None
     res = {"home": int(hg), "away": int(ag), "status": "FT"}
     cache_put(ck, res)
@@ -259,11 +243,9 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
             eh = _norm_name(ev.get("home_team", ""))
             ea = _norm_name(ev.get("away_team", ""))
             if eh == hn and ea == an:
-                target = ev
-                break
+                target = ev; break
             if (eh in hn or hn in eh) and (ea in an or an in ea):
-                target = ev
-                break
+                target = ev; break
         if not target:
             return None
         acc = defaultdict(list)
@@ -276,24 +258,17 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
                     if odd is None or odd <= 1.0:
                         continue
                     if name == "h2h":
-                        if on == target.get("home_team"):
-                            acc["П1"].append(odd)
-                        elif on == target.get("away_team"):
-                            acc["П2"].append(odd)
-                        elif on == "Draw":
-                            acc["X"].append(odd)
+                        if on == target.get("home_team"): acc["П1"].append(odd)
+                        elif on == target.get("away_team"): acc["П2"].append(odd)
+                        elif on == "Draw": acc["X"].append(odd)
                     elif name == "totals":
                         pt = _f(out.get("point"))
                         if pt is not None and abs(pt - 2.5) < 0.01:
-                            if on == "Over":
-                                acc["ТБ 2.5"].append(odd)
-                            elif on == "Under":
-                                acc["ТМ 2.5"].append(odd)
+                            if on == "Over": acc["ТБ 2.5"].append(odd)
+                            elif on == "Under": acc["ТМ 2.5"].append(odd)
                     elif name == "btts":
-                        if on == "Yes":
-                            acc["BTTS да"].append(odd)
-                        elif on == "No":
-                            acc["BTTS нет"].append(odd)
+                        if on == "Yes": acc["BTTS да"].append(odd)
+                        elif on == "No": acc["BTTS нет"].append(odd)
         out = {k: sum(v) / len(v) for k, v in acc.items() if v}
         if not (("П1" in out and "X" in out and "П2" in out) or
                 ("ТБ 2.5" in out and "ТМ 2.5" in out) or
@@ -304,10 +279,8 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
     except Exception:
         return None
 
-
 def team_logo_url(team_name: str) -> Optional[str]:
     return None
-
 
 def league_logo_url(div_code: str) -> Optional[str]:
     return None
