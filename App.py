@@ -1,18 +1,19 @@
-"""App.py — NEURO BET PRO v13. Точка входа Streamlit."""
+"""App.py — NEURO BET PRO v13.1. Точка входа Streamlit."""
 from __future__ import annotations
 
-# [CONTEXT ENGINE] Контекстный анализ: угловые, карточки, судьи, форма
 try:
     from context_football import analyze_match_context, render_context_flags
     HAS_CONTEXT = True
-except ImportError:
+except Exception:
     HAS_CONTEXT = False
 
 import os
 import json
+import re
 from datetime import datetime, timedelta
 
 import streamlit as st
+import requests as _requests
 
 for _k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
            "ALL_PROXY", "all_proxy", "FTP_PROXY", "ftp_proxy"]:
@@ -57,83 +58,112 @@ if "initial_bank" not in D["meta"]:
     D["meta"]["initial_bank"] = float(D.get("bank", 10000.0))
     usage.set_local_data(D)
 
+
 # ==================== AUTO-SETTLE ====================
+def _tsdb_find_result(home: str, away: str, date_iso: str) -> dict | None:
+    """TheSportsDB fallback: поиск результата по командам + дате."""
+    if not home or not away or not date_iso:
+        return None
+    try:
+        r = _requests.get(
+            "https://www.thesportsdb.com/api/v1/json/3/eventsday.php",
+            params={"d": date_iso, "s": "Soccer"}, timeout=10)
+        if r.status_code != 200:
+            return None
+        events = (r.json() or {}).get("events") or []
+        hn = re.sub(r"[^a-z0-9]", "", home.lower())
+        an = re.sub(r"[^a-z0-9]", "", away.lower())
+        for ev in events:
+            eh = re.sub(r"[^a-z0-9]", "", (ev.get("strHomeTeam") or "").lower())
+            ea = re.sub(r"[^a-z0-9]", "", (ev.get("strAwayTeam") or "").lower())
+            if (eh == hn and ea == an) or \
+               ((eh in hn or hn in eh) and (ea in an or an in ea)):
+                hg = ev.get("intHomeScore")
+                ag = ev.get("intAwayScore")
+                st_status = ev.get("strStatus", "")
+                if hg is not None and ag is not None and \
+                   st_status in ("Match Finished", "FT", "AET", "PEN", "Result Pending"):
+                    return {"home": int(hg), "away": int(ag)}
+    except Exception:
+        pass
+    return None
+
+
 def _auto_settle(D):
-    if usage.settle_remaining() <= 0:
-        return D, 0
     token = D.get("meta", {}).get("fdorg_token", "").strip()
     if not token:
         return D, 0
-    D2 = dict(D)
-    bets = list(D2["bets"])
+    D2 = json.loads(json.dumps(D))
+    bets = D2["bets"]
     changed = 0
     now = datetime.now()
 
     for idx, b in enumerate(bets):
-        if b.get("status") != "pending":
+        if not isinstance(b, dict) or b.get("status") != "pending":
             continue
-        if usage.settle_remaining() <= 0:
-            break
         fid = b.get("fixture_id")
         if not fid:
             continue
         bd = parse_date(b.get("date_iso") or b.get("date") or "")
         if bd and bd > now:
             continue
+
+        # Источник 1: football-data.org
         res = fdorg_match_result(fid, token)
-        usage.settle_increment(1)
+
+        # Источник 2: TheSportsDB (бесплатно, без ключа)
+        if not res and bd:
+            parts = (b.get("match") or "").split(" vs ")
+            if len(parts) == 2:
+                res = _tsdb_find_result(parts[0], parts[1], bd.strftime("%Y-%m-%d"))
+
         if not res:
             continue
+
         outcome, _reason = determine_outcome(
             b.get("market"), b.get("pick"), res["home"], res["away"])
         if outcome is None:
             continue
-        b2 = dict(b)
-        b2["score"] = f"{res['home']}:{res['away']}"
-        stats_d = dict(D2.get("stats", {}))
+
+        b["score"] = f"{res['home']}:{res['away']}"
         if outcome == "push":
-            b2["status"] = "push"
-            D2["bank"] = D2.get("bank", 10000.0) + b2["stake"]
-            stats_d["push"] = stats_d.get("push", 0) + 1
+            b["status"] = "push"
+            D2["bank"] = D2.get("bank", 10000.0) + b["stake"]
+            D2["stats"]["push"] = D2["stats"].get("push", 0) + 1
         elif outcome == "void":
-            b2["status"] = "void"
-            D2["bank"] = D2.get("bank", 10000.0) + b2["stake"]
-            stats_d["void"] = stats_d.get("void", 0) + 1
+            b["status"] = "void"
+            D2["bank"] = D2.get("bank", 10000.0) + b["stake"]
+            D2["stats"]["void"] = D2["stats"].get("void", 0) + 1
         elif outcome == "won":
-            b2["status"] = "won"
-            D2["bank"] = D2.get("bank", 10000.0) + b2["stake"] * b2["odds"]
-            stats_d["won"] = stats_d.get("won", 0) + 1
-            stats_d["profit"] = (stats_d.get("profit", 0)
-                                 + b2["stake"] * (b2["odds"] - 1))
+            b["status"] = "won"
+            D2["bank"] = D2.get("bank", 10000.0) + b["stake"] * b["odds"]
+            D2["stats"]["won"] = D2["stats"].get("won", 0) + 1
+            D2["stats"]["profit"] = (D2["stats"].get("profit", 0)
+                                     + b["stake"] * (b["odds"] - 1))
         elif outcome == "lost":
-            b2["status"] = "lost"
-            stats_d["lost"] = stats_d.get("lost", 0) + 1
-            stats_d["profit"] = stats_d.get("profit", 0) - b2["stake"]
-        bets[idx] = b2
-        D2["stats"] = stats_d
+            b["status"] = "lost"
+            D2["stats"]["lost"] = D2["stats"].get("lost", 0) + 1
+            D2["stats"]["profit"] = D2["stats"].get("profit", 0) - b["stake"]
         changed += 1
 
+    # Void через 48ч
     for idx, b in enumerate(bets):
-        if b.get("status") != "pending":
+        if not isinstance(b, dict) or b.get("status") != "pending":
             continue
         bd = parse_date(b.get("date_iso") or b.get("date") or "")
         if bd and now - bd > timedelta(hours=48):
-            b2 = dict(b)
-            b2["status"] = "void"
-            b2["score"] = "void (no result)"
-            D2["bank"] = D2.get("bank", 10000.0) + b2["stake"]
-            stats_d = dict(D2.get("stats", {}))
-            stats_d["void"] = stats_d.get("void", 0) + 1
-            D2["stats"] = stats_d
-            bets[idx] = b2
+            b["status"] = "void"
+            b["score"] = "void (no result)"
+            D2["bank"] = D2.get("bank", 10000.0) + b["stake"]
+            D2["stats"]["void"] = D2["stats"].get("void", 0) + 1
             changed += 1
 
-    D2["bets"] = bets
     return D2, changed
+
 
 _now = datetime.now().timestamp()
 _last = st.session_state.get("_last_auto_settle_ts", 0)
-if _now - _last > 21600:
+if _now - _last > 3600:
     D2, n = _auto_settle(D)
     if n > 0:
         st.session_state.data = D2
@@ -141,7 +171,7 @@ if _now - _last > 21600:
         db.log_bank(D2.get("bank", 10000.0), event="auto_settle")
         db.invalidate_caches()
         D = D2
-        st.toast(f"Авто-закрыто {n} ставок")
+        st.toast(f"✅ Авто-закрыто {n} ставок")
     st.session_state["_last_auto_settle_ts"] = _now
 
 pending_count = sum(1 for b in D["bets"]
