@@ -1,19 +1,10 @@
-"""App.py — NEURO BET PRO v13.1. Точка входа Streamlit."""
+"""App.py — NEURO BET PRO v13. Точка входа Streamlit."""
 from __future__ import annotations
-
-try:
-    from context_football import analyze_match_context, render_context_flags
-    HAS_CONTEXT = True
-except Exception:
-    HAS_CONTEXT = False
-
 import os
 import json
-import re
 from datetime import datetime, timedelta
 
 import streamlit as st
-import requests as _requests
 
 for _k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
            "ALL_PROXY", "all_proxy", "FTP_PROXY", "ftp_proxy"]:
@@ -31,7 +22,9 @@ from betting.settlement import determine_outcome
 from ui import theme
 from ui.tabs import scanner, portfolio, stats, calculator, backtest
 
+
 ERR: list = []
+
 
 def log_err(tag: str, e: Exception) -> None:
     line = (f"[{datetime.now():%Y-%m-%d %H:%M:%S}][{tag}] "
@@ -40,6 +33,16 @@ def log_err(tag: str, e: Exception) -> None:
     if len(ERR) > 100:
         ERR.pop(0)
 
+
+def _print_log(msg: str):
+    try:
+        import sys
+        print(f"[APP] {msg}", file=sys.stdout, flush=True)
+    except Exception:
+        pass
+
+
+# ==================== BOOT ====================
 db.db_init()
 theme.inject()
 
@@ -58,101 +61,129 @@ if "initial_bank" not in D["meta"]:
     usage.set_local_data(D)
 
 
-def _tsdb_find_result(home, away, date_iso):
-    if not home or not away or not date_iso:
-        return None
-    try:
-        r = _requests.get(
-            "https://www.thesportsdb.com/api/v1/json/3/eventsday.php",
-            params={"d": date_iso, "s": "Soccer"}, timeout=10)
-        if r.status_code != 200:
-            return None
-        events = (r.json() or {}).get("events") or []
-        hn = re.sub(r"[^a-z0-9]", "", home.lower())
-        an = re.sub(r"[^a-z0-9]", "", away.lower())
-        for ev in events:
-            eh = re.sub(r"[^a-z0-9]", "", (ev.get("strHomeTeam") or "").lower())
-            ea = re.sub(r"[^a-z0-9]", "", (ev.get("strAwayTeam") or "").lower())
-            if (eh == hn and ea == an) or \
-               ((eh in hn or hn in eh) and (ea in an or an in ea)):
-                hg = ev.get("intHomeScore")
-                ag = ev.get("intAwayScore")
-                st_status = ev.get("strStatus", "")
-                if hg is not None and ag is not None and \
-                   st_status in ("Match Finished", "FT", "AET", "PEN", "Result Pending"):
-                    return {"home": int(hg), "away": int(ag)}
-    except Exception:
-        pass
-    return None
-
-
+# ==================== AUTO-SETTLE ====================
 def _auto_settle(D):
-    token = D.get("meta", {}).get("fdorg_token", "").strip()
-    if not token:
-        return D, 0
-    D2 = json.loads(json.dumps(D))
-    bets = D2["bets"]
+    """Закрывает pending-ставки: football-data.org → Sofascore fallback."""
+    D2 = dict(D)
+    bets = list(D2["bets"])
     changed = 0
     now = datetime.now()
 
-    for idx, b in enumerate(bets):
-        if not isinstance(b, dict) or b.get("status") != "pending":
-            continue
-        fid = b.get("fixture_id")
-        if not fid:
-            continue
-        bd = parse_date(b.get("date_iso") or b.get("date") or "")
-        if bd and bd > now:
-            continue
-        res = fdorg_match_result(fid, token)
-        if not res and bd:
-            parts = (b.get("match") or "").split(" vs ")
-            if len(parts) == 2:
-                res = _tsdb_find_result(parts[0], parts[1], bd.strftime("%Y-%m-%d"))
-        if not res:
-            continue
-        outcome, _reason = determine_outcome(
-            b.get("market"), b.get("pick"), res["home"], res["away"])
-        if outcome is None:
-            continue
-        b["score"] = f"{res['home']}:{res['away']}"
-        if outcome == "push":
-            b["status"] = "push"
-            D2["bank"] = D2.get("bank", 10000.0) + b["stake"]
-            D2["stats"]["push"] = D2["stats"].get("push", 0) + 1
-        elif outcome == "void":
-            b["status"] = "void"
-            D2["bank"] = D2.get("bank", 10000.0) + b["stake"]
-            D2["stats"]["void"] = D2["stats"].get("void", 0) + 1
-        elif outcome == "won":
-            b["status"] = "won"
-            D2["bank"] = D2.get("bank", 10000.0) + b["stake"] * b["odds"]
-            D2["stats"]["won"] = D2["stats"].get("won", 0) + 1
-            D2["stats"]["profit"] = (D2["stats"].get("profit", 0)
-                                     + b["stake"] * (b["odds"] - 1))
-        elif outcome == "lost":
-            b["status"] = "lost"
-            D2["stats"]["lost"] = D2["stats"].get("lost", 0) + 1
-            D2["stats"]["profit"] = D2["stats"].get("profit", 0) - b["stake"]
-        changed += 1
+    token = D.get("meta", {}).get("fdorg_token", "").strip()
+
+    _print_log(f"START: {len(bets)} bets, "
+               f"remaining={usage.settle_remaining()}, "
+               f"token={'есть' if token else 'НЕТ'}")
 
     for idx, b in enumerate(bets):
-        if not isinstance(b, dict) or b.get("status") != "pending":
+        if b.get("status") != "pending":
+            continue
+        if usage.settle_remaining() <= 0:
+            _print_log("LIMIT: settle_remaining=0")
+            break
+
+        bd = parse_date(b.get("date_iso") or b.get("date") or "")
+        if bd and bd > now:
+            # Матч ещё не состоялся
+            continue
+
+        res = None
+        source = None
+
+        # 1) football-data.org по fixture_id
+        fid = b.get("fixture_id")
+        if fid and token:
+            try:
+                res = fdorg_match_result(fid, token)
+                if res:
+                    source = "fdorg"
+            except Exception as e:
+                _print_log(f"fdorg error: {e}")
+
+        # 2) Sofascore fallback по названиям
+        if not res:
+            try:
+                from data.scores import find_match_score
+                m = b.get("match") or ""
+                if " vs " in m:
+                    parts = m.split(" vs ")
+                    h_team = parts[0].strip()
+                    a_team = parts[1].strip()
+                    d_iso = b.get("date_iso") or ""
+                    if h_team and a_team and d_iso:
+                        res = find_match_score(h_team, a_team, d_iso)
+                        if res:
+                            source = "sofascore"
+            except Exception as e:
+                _print_log(f"sofascore error: {e}")
+
+        usage.settle_increment(1)
+
+        _print_log(f"{b.get('match_ru','?')} | "
+                   f"fid={fid} | source={source} | res={res}")
+
+        if not res:
+            continue
+
+        outcome, reason = determine_outcome(
+            b.get("market"), b.get("pick"), res["home"], res["away"])
+        if outcome is None:
+            _print_log(f"unknown outcome: {reason}")
+            continue
+
+        b2 = dict(b)
+        b2["score"] = f"{res['home']}:{res['away']}"
+        b2["settled_at"] = datetime.now().isoformat()
+        stats_d = dict(D2.get("stats", {}))
+
+        if outcome == "push":
+            b2["status"] = "push"
+            D2["bank"] = D2.get("bank", 10000.0) + b2["stake"]
+            stats_d["push"] = stats_d.get("push", 0) + 1
+        elif outcome == "void":
+            b2["status"] = "void"
+            D2["bank"] = D2.get("bank", 10000.0) + b2["stake"]
+            stats_d["void"] = stats_d.get("void", 0) + 1
+        elif outcome == "won":
+            b2["status"] = "won"
+            D2["bank"] = D2.get("bank", 10000.0) + b2["stake"] * b2["odds"]
+            stats_d["won"] = stats_d.get("won", 0) + 1
+            stats_d["profit"] = (stats_d.get("profit", 0)
+                                 + b2["stake"] * (b2["odds"] - 1))
+        elif outcome == "lost":
+            b2["status"] = "lost"
+            stats_d["lost"] = stats_d.get("lost", 0) + 1
+            stats_d["profit"] = stats_d.get("profit", 0) - b2["stake"]
+
+        bets[idx] = b2
+        D2["stats"] = stats_d
+        changed += 1
+
+    # Auto-void через 48ч
+    for idx, b in enumerate(bets):
+        if b.get("status") != "pending":
             continue
         bd = parse_date(b.get("date_iso") or b.get("date") or "")
         if bd and now - bd > timedelta(hours=48):
-            b["status"] = "void"
-            b["score"] = "void (no result)"
-            D2["bank"] = D2.get("bank", 10000.0) + b["stake"]
-            D2["stats"]["void"] = D2["stats"].get("void", 0) + 1
+            b2 = dict(b)
+            b2["status"] = "void"
+            b2["score"] = "void (no result)"
+            b2["settled_at"] = datetime.now().isoformat()
+            D2["bank"] = D2.get("bank", 10000.0) + b2["stake"]
+            stats_d = dict(D2.get("stats", {}))
+            stats_d["void"] = stats_d.get("void", 0) + 1
+            D2["stats"] = stats_d
+            bets[idx] = b2
             changed += 1
 
+    D2["bets"] = bets
+    _print_log(f"DONE: {changed} closed")
     return D2, changed
 
 
 _now = datetime.now().timestamp()
 _last = st.session_state.get("_last_auto_settle_ts", 0)
-if _now - _last > 3600:
+if _now - _last > 21600:      # 6 часов
     D2, n = _auto_settle(D)
     if n > 0:
         st.session_state.data = D2
@@ -160,15 +191,17 @@ if _now - _last > 3600:
         db.log_bank(D2.get("bank", 10000.0), event="auto_settle")
         db.invalidate_caches()
         D = D2
-        st.toast(f"✅ Авто-закрыто {n} ставок")
+        st.toast(f"🔄 Авто-закрыто {n} ставок", icon="✅")
     st.session_state["_last_auto_settle_ts"] = _now
 
 pending_count = sum(1 for b in D["bets"]
                     if isinstance(b, dict) and b.get("status") == "pending")
 
+
+# ==================== HERO ====================
 st.markdown(f"""
 <div class="hero"><h1>NEURO BET PRO</h1>
-<p>v{APP_VERSION} · 100% FREE · ИИ-аналитик · SQLite · CLV · 🔍 Контекст</p>
+<p>v{APP_VERSION} · 100% FREE · ИИ-аналитик · SQLite · CLV · 🧠 Контекст</p>
 <div class="kpis">
  <div class="kpi"><div class="t">Банкролл</div>
   <div class="v y">{D['bank']:.0f} у.е.</div></div>
@@ -178,6 +211,8 @@ st.markdown(f"""
   <div class="v {'r' if ERR else 'g'}">{len(ERR)}</div></div>
 </div></div>""", unsafe_allow_html=True)
 
+
+# ==================== SIDEBAR ====================
 with st.sidebar:
     st.markdown(
         "<div style='font-size:1.1rem;font-weight:800;color:#e6eaf2;"
@@ -235,61 +270,102 @@ with st.sidebar:
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
                 "margin:18px 0;'>", unsafe_allow_html=True)
 
+    # Резервная копия
     st.markdown(
         "<div style='font-size:.75rem;color:#8b93a7;"
         "margin-bottom:8px;'>💾 Резервная копия</div>",
         unsafe_allow_html=True)
-
     _backup_json = json.dumps(D, ensure_ascii=False, indent=2, default=str)
     st.download_button(
-        "📥 Скачать данные", _backup_json,
+        "📥 Скачать данные",
+        _backup_json,
         file_name=f"neuro_data_{datetime.now():%Y%m%d_%H%M}.json",
-        mime="application/json", use_container_width=True)
+        mime="application/json",
+        use_container_width=True)
 
     _uploaded = st.file_uploader(
-        "📤 Загрузить данные", type=["json"],
-        key="restore_upload", label_visibility="collapsed")
+        "📤 Загрузить данные",
+        type=["json"],
+        key="restore_upload",
+        label_visibility="collapsed")
     if _uploaded is not None:
         try:
             _restored = json.loads(_uploaded.read().decode("utf-8"))
             if isinstance(_restored, dict) and "data" in _restored:
                 st.session_state.data = _restored["data"]
                 usage.set_local_data(_restored["data"])
-                st.success("✅ Данные восстановлены!"); st.rerun()
+                st.success("✅ Данные восстановлены!")
+                st.rerun()
             elif isinstance(_restored, dict):
                 st.session_state.data = _restored
                 usage.set_local_data(_restored)
-                st.success("✅ Данные восстановлены!"); st.rerun()
+                st.success("✅ Данные восстановлены!")
+                st.rerun()
             else:
-                st.error("❌ Неверный формат файла")
+                st.error("❌ Неверный формат")
         except Exception as e:
             st.error(f"❌ Ошибка: {e}")
 
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
                 "margin:18px 0;'>", unsafe_allow_html=True)
 
+    # Счётчики и очистка
+    if st.button("🔄 Очистить карточки", use_container_width=True,
+                 help="Сбросить карточки, но сохранить портфель"):
+        D["cards"] = []
+        D["funnel"] = None
+        D["report"] = []
+        usage.set_local_data(D)
+        st.toast("Карточки очищены — жми СКАН")
+        st.rerun()
+
     if st.button("♻️ Сбросить счётчики", use_container_width=True):
-        usage.settle_reset(); usage.llm_reset()
-        usage.odds_reset(); usage.fdorg_reset()
-        st.toast("Счётчики сброшены"); st.rerun()
+        usage.settle_reset()
+        usage.llm_reset()
+        usage.odds_reset()
+        usage.fdorg_reset()
+        st.toast("Счётчики сброшены")
+        st.rerun()
+
+    if st.button("🔃 Проверить результаты", use_container_width=True,
+                 help="Форсировать авто-сеттл прямо сейчас"):
+        D2, n = _auto_settle(D)
+        if n > 0:
+            st.session_state.data = D2
+            usage.set_local_data(D2)
+            db.log_bank(D2.get("bank", 10000.0), event="manual_check")
+            db.invalidate_caches()
+            st.success(f"✅ Закрыто {n} ставок")
+        else:
+            st.info("Нет сыгранных матчей")
+        st.rerun()
 
     if "confirm_clear" not in st.session_state:
         st.session_state.confirm_clear = False
     if not st.session_state.confirm_clear:
         if st.button("🗑️ Очистить портфель", use_container_width=True):
-            st.session_state.confirm_clear = True; st.rerun()
+            st.session_state.confirm_clear = True
+            st.rerun()
     else:
         st.warning("Удалить ВСЕ ставки?")
         cc1, cc2 = st.columns(2)
         if cc1.button("Да", key="confirm_yes"):
-            D["bets"] = []; D["cards"] = []; D["bank"] = 10000.0
-            D["stats"] = {"won": 0, "lost": 0, "profit": 0, "push": 0, "void": 0}
+            D["bets"] = []
+            D["cards"] = []
+            D["bank"] = 10000.0
+            D["stats"] = {"won": 0, "lost": 0, "profit": 0,
+                          "push": 0, "void": 0}
             D["meta"]["initial_bank"] = 10000.0
-            usage.set_local_data(D); db.invalidate_caches()
-            st.session_state.confirm_clear = False; st.rerun()
+            usage.set_local_data(D)
+            db.invalidate_caches()
+            st.session_state.confirm_clear = False
+            st.rerun()
         if cc2.button("Нет", key="confirm_no"):
-            st.session_state.confirm_clear = False; st.rerun()
+            st.session_state.confirm_clear = False
+            st.rerun()
 
+
+# ==================== TABS ====================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["🏟 Сканер", "💼 Портфель", "📈 Статистика",
      "🧮 Калькулятор", "🧪 Бэктест"])
