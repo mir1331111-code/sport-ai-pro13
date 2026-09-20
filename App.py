@@ -1,7 +1,6 @@
-"""App.py — NEURO BET PRO v13. Точка входа Streamlit."""
+"""App.py — NEURO BET PRO v13."""
 from __future__ import annotations
-import os
-import json
+import os, json
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -24,14 +23,6 @@ from ui.tabs import scanner, portfolio, stats, calculator, backtest
 
 
 ERR: list = []
-
-
-def log_err(tag: str, e: Exception) -> None:
-    line = (f"[{datetime.now():%Y-%m-%d %H:%M:%S}][{tag}] "
-            f"{type(e).__name__}: {str(e)[:200]}")
-    ERR.append(line)
-    if len(ERR) > 100:
-        ERR.pop(0)
 
 
 def _print_log(msg: str):
@@ -63,28 +54,24 @@ if "initial_bank" not in D["meta"]:
 
 # ==================== AUTO-SETTLE ====================
 def _auto_settle(D):
-    """Закрывает pending-ставки: football-data.org → Sofascore fallback."""
+    """Закрывает pending: fdorg → Sofascore → TheSportsDB → OpenLigaDB."""
     D2 = dict(D)
     bets = list(D2["bets"])
     changed = 0
     now = datetime.now()
-
     token = D.get("meta", {}).get("fdorg_token", "").strip()
 
-    _print_log(f"START: {len(bets)} bets, "
-               f"remaining={usage.settle_remaining()}, "
-               f"token={'есть' if token else 'НЕТ'}")
+    _print_log(f"START: {len(bets)} bets | remaining={usage.settle_remaining()}")
 
     for idx, b in enumerate(bets):
         if b.get("status") != "pending":
             continue
         if usage.settle_remaining() <= 0:
-            _print_log("LIMIT: settle_remaining=0")
+            _print_log("LIMIT reached")
             break
 
         bd = parse_date(b.get("date_iso") or b.get("date") or "")
         if bd and bd > now:
-            # Матч ещё не состоялся
             continue
 
         res = None
@@ -100,27 +87,26 @@ def _auto_settle(D):
             except Exception as e:
                 _print_log(f"fdorg error: {e}")
 
-        # 2) Sofascore fallback по названиям
+        # 2-4) Sofascore / TheSportsDB / OpenLigaDB по названиям
         if not res:
-            try:
-                from data.scores import find_match_score
-                m = b.get("match") or ""
-                if " vs " in m:
-                    parts = m.split(" vs ")
-                    h_team = parts[0].strip()
-                    a_team = parts[1].strip()
-                    d_iso = b.get("date_iso") or ""
-                    if h_team and a_team and d_iso:
+            m = b.get("match") or ""
+            if " vs " in m:
+                parts = m.split(" vs ")
+                h_team = parts[0].strip()
+                a_team = parts[1].strip()
+                d_iso = b.get("date_iso") or ""
+                if h_team and a_team and d_iso:
+                    try:
+                        from data.scores import find_match_score
                         res = find_match_score(h_team, a_team, d_iso)
                         if res:
-                            source = "sofascore"
-            except Exception as e:
-                _print_log(f"sofascore error: {e}")
+                            source = res.get("source", "auto")
+                    except Exception as e:
+                        _print_log(f"find_match_score error: {e}")
 
         usage.settle_increment(1)
 
-        _print_log(f"{b.get('match_ru','?')} | "
-                   f"fid={fid} | source={source} | res={res}")
+        _print_log(f"{b.get('match_ru','?')} | src={source} | res={res}")
 
         if not res:
             continue
@@ -181,9 +167,10 @@ def _auto_settle(D):
     return D2, changed
 
 
+# Авто-сеттл при заходе (раз в 30 минут)
 _now = datetime.now().timestamp()
 _last = st.session_state.get("_last_auto_settle_ts", 0)
-if _now - _last > 21600:      # 6 часов
+if _now - _last > 1800:
     D2, n = _auto_settle(D)
     if n > 0:
         st.session_state.data = D2
@@ -222,17 +209,15 @@ with st.sidebar:
     fdorg_token = st.text_input(
         "football-data.org token",
         value=D.get("meta", {}).get("fdorg_token", ""),
-        type="password",
-        help="Регистрация: football-data.org/client/register")
+        type="password")
     if fdorg_token != D["meta"].get("fdorg_token", ""):
         D["meta"]["fdorg_token"] = fdorg_token
         usage.set_local_data(D)
 
     odds_key = st.text_input(
-        "The Odds API key (опционально)",
+        "The Odds API key (опц.)",
         value=D.get("meta", {}).get("odds_api_key", ""),
-        type="password",
-        help="the-odds-api.com → Dashboard → API Key")
+        type="password")
     if odds_key != D["meta"].get("odds_api_key", ""):
         D["meta"]["odds_api_key"] = odds_key
         usage.set_local_data(D)
@@ -248,75 +233,47 @@ with st.sidebar:
     llm_key = st.text_input(
         "LLM key",
         value=D["meta"].get("llm_api_key", ""),
-        type="password",
-        help=LLM_PROVIDERS[llm_prov]["key_url"])
+        type="password")
     if (llm_prov != D["meta"].get("llm_provider")
             or llm_key != D["meta"].get("llm_api_key", "")):
         D["meta"]["llm_provider"] = llm_prov
         D["meta"]["llm_api_key"] = llm_key
         usage.set_local_data(D)
 
-    st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
-                "margin:18px 0;'>", unsafe_allow_html=True)
+    st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
+                unsafe_allow_html=True)
 
     st.markdown(
-        "<div style='font-size:.72rem;color:#8b93a7;"
-        "margin-bottom:8px;'>🎯 Параметры скана</div>",
+        "<div style='font-size:.72rem;color:#8b93a7;margin-bottom:6px;'>"
+        "🎯 Параметры</div>",
         unsafe_allow_html=True)
-    min_prob = st.slider("Мин. вероятность %", 50, 85, 55, 1) / 100
-    kelly_frac = st.slider("Kelly доля", 0.05, 0.40, 0.25, 0.05)
-    matrix_n = st.slider("Матрица голов", 6, 15, 12, 1)
+    min_prob = st.slider("Мин. P %", 50, 85, 55, 1) / 100
+    kelly_frac = st.slider("Kelly", 0.05, 0.40, 0.25, 0.05)
+    matrix_n = st.slider("Матрица", 6, 15, 12, 1)
 
-    st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
-                "margin:18px 0;'>", unsafe_allow_html=True)
+    st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
+                unsafe_allow_html=True)
 
-    # Резервная копия
-    st.markdown(
-        "<div style='font-size:.75rem;color:#8b93a7;"
-        "margin-bottom:8px;'>💾 Резервная копия</div>",
-        unsafe_allow_html=True)
-    _backup_json = json.dumps(D, ensure_ascii=False, indent=2, default=str)
-    st.download_button(
-        "📥 Скачать данные",
-        _backup_json,
-        file_name=f"neuro_data_{datetime.now():%Y%m%d_%H%M}.json",
-        mime="application/json",
-        use_container_width=True)
+    # ===== ДЕЙСТВИЯ =====
+    if st.button("🔃 Проверить результаты", use_container_width=True,
+                 help="Форсировать авто-сеттл прямо сейчас"):
+        D2, n = _auto_settle(D)
+        st.session_state.data = D2
+        usage.set_local_data(D2)
+        db.log_bank(D2.get("bank", 10000.0), event="manual_check")
+        db.invalidate_caches()
+        if n > 0:
+            st.success(f"✅ Закрыто {n} ставок")
+        else:
+            st.info("Нет сыгранных матчей для закрытия")
+        st.rerun()
 
-    _uploaded = st.file_uploader(
-        "📤 Загрузить данные",
-        type=["json"],
-        key="restore_upload",
-        label_visibility="collapsed")
-    if _uploaded is not None:
-        try:
-            _restored = json.loads(_uploaded.read().decode("utf-8"))
-            if isinstance(_restored, dict) and "data" in _restored:
-                st.session_state.data = _restored["data"]
-                usage.set_local_data(_restored["data"])
-                st.success("✅ Данные восстановлены!")
-                st.rerun()
-            elif isinstance(_restored, dict):
-                st.session_state.data = _restored
-                usage.set_local_data(_restored)
-                st.success("✅ Данные восстановлены!")
-                st.rerun()
-            else:
-                st.error("❌ Неверный формат")
-        except Exception as e:
-            st.error(f"❌ Ошибка: {e}")
-
-    st.markdown("<hr style='border-color:rgba(255,255,255,.08);"
-                "margin:18px 0;'>", unsafe_allow_html=True)
-
-    # Счётчики и очистка
-    if st.button("🔄 Очистить карточки", use_container_width=True,
-                 help="Сбросить карточки, но сохранить портфель"):
+    if st.button("🔄 Очистить карточки", use_container_width=True):
         D["cards"] = []
         D["funnel"] = None
         D["report"] = []
         usage.set_local_data(D)
-        st.toast("Карточки очищены — жми СКАН")
+        st.toast("Карточки очищены")
         st.rerun()
 
     if st.button("♻️ Сбросить счётчики", use_container_width=True):
@@ -327,19 +284,39 @@ with st.sidebar:
         st.toast("Счётчики сброшены")
         st.rerun()
 
-    if st.button("🔃 Проверить результаты", use_container_width=True,
-                 help="Форсировать авто-сеттл прямо сейчас"):
-        D2, n = _auto_settle(D)
-        if n > 0:
-            st.session_state.data = D2
-            usage.set_local_data(D2)
-            db.log_bank(D2.get("bank", 10000.0), event="manual_check")
-            db.invalidate_caches()
-            st.success(f"✅ Закрыто {n} ставок")
-        else:
-            st.info("Нет сыгранных матчей")
-        st.rerun()
+    # Резервная копия
+    st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
+                unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:.72rem;color:#8b93a7;margin-bottom:6px;'>"
+        "💾 Бэкап</div>",
+        unsafe_allow_html=True)
+    _backup = json.dumps(D, ensure_ascii=False, indent=2, default=str)
+    st.download_button("📥 Скачать", _backup,
+                       file_name=f"neuro_data_{datetime.now():%Y%m%d_%H%M}.json",
+                       mime="application/json",
+                       use_container_width=True)
 
+    _up = st.file_uploader("📤 Загрузить", type=["json"],
+                           key="restore_upload",
+                           label_visibility="collapsed")
+    if _up is not None:
+        try:
+            _r = json.loads(_up.read().decode("utf-8"))
+            if isinstance(_r, dict) and "data" in _r:
+                st.session_state.data = _r["data"]
+                usage.set_local_data(_r["data"])
+                st.success("✅ Восстановлено!")
+                st.rerun()
+            elif isinstance(_r, dict):
+                st.session_state.data = _r
+                usage.set_local_data(_r)
+                st.success("✅ Восстановлено!")
+                st.rerun()
+        except Exception as e:
+            st.error(f"❌ {e}")
+
+    # Очистка портфеля
     if "confirm_clear" not in st.session_state:
         st.session_state.confirm_clear = False
     if not st.session_state.confirm_clear:
@@ -353,8 +330,7 @@ with st.sidebar:
             D["bets"] = []
             D["cards"] = []
             D["bank"] = 10000.0
-            D["stats"] = {"won": 0, "lost": 0, "profit": 0,
-                          "push": 0, "void": 0}
+            D["stats"] = {"won": 0, "lost": 0, "profit": 0, "push": 0, "void": 0}
             D["meta"]["initial_bank"] = 10000.0
             usage.set_local_data(D)
             db.invalidate_caches()
