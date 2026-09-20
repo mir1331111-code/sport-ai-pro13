@@ -1,4 +1,4 @@
-"""data/scores.py — автосчёты: football-data.org + fotmob + OpenLigaDB."""
+"""data/scores.py — автосчёты: football-data.org по лигам + OpenLigaDB."""
 from __future__ import annotations
 import re
 from datetime import datetime, timedelta
@@ -7,10 +7,13 @@ from typing import Optional
 import requests
 
 from security import cache_get, cache_put
-from storage import usage
 
 
 NO_PROXY = {"http": None, "https": None, "all": None}
+
+# Все ID лиг football-data.org (free tier)
+FDORG_COMPETITIONS = ["PL", "ELC", "PD", "SA", "BL1", "FL1",
+                     "DED", "PPL", "CL"]
 
 
 def _log(msg: str):
@@ -27,7 +30,7 @@ def _session() -> requests.Session:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
+        "Accept": "application/json",
     })
     s.trust_env = False
     s.proxies = {"http": None, "https": None}
@@ -41,98 +44,36 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
 
 
-# ============ ИСТОЧНИК 1: FOTMOB (все лиги) ============
-def _fotmob_day(date_iso: str) -> list:
-    """FotMob — все лиги, не блокируется Cloudflare."""
-    ck = f"fotmob_{date_iso}"
-    cached = cache_get(ck, 3600)
-    if cached is not None:
-        return cached if isinstance(cached, list) else []
-    date_compact = date_iso.replace("-", "")
-    url = f"https://www.fotmob.com/api/matches?date={date_compact}"
-    try:
-        r = _sess.get(url, timeout=15, proxies=NO_PROXY,
-                      headers={"Referer": "https://www.fotmob.com/"})
-        if r.status_code != 200:
-            _log(f"fotmob HTTP {r.status_code} {date_iso}")
-            cache_put(ck, [])
-            return []
-        data = r.json() or {}
-        leagues = data.get("leagues") or []
-        out = []
-        for lg in leagues:
-            for m in (lg.get("matches") or []):
-                try:
-                    h = (m.get("home") or {}).get("name") or ""
-                    a = (m.get("away") or {}).get("name") or ""
-                    if not h or not a:
-                        continue
-                    status = (m.get("status") or {}).get("finished")
-                    hs = (m.get("home") or {}).get("score")
-                    ags = (m.get("away") or {}).get("score")
-                    if not status or hs is None or ags is None:
-                        continue
-                    out.append({"home": h, "away": a,
-                                "hs": hs, "as": ags})
-                except Exception:
-                    continue
-        _log(f"fotmob {date_iso}: {len(out)} events")
-        cache_put(ck, out)
-        return out
-    except Exception as e:
-        _log(f"fotmob error {date_iso}: {type(e).__name__}")
-        return []
-
-
-def _find_fotmob(home: str, away: str, date_iso: str) -> Optional[dict]:
-    hn, an = _norm(home), _norm(away)
-    if not hn or not an:
-        return None
-    for off in (0, -1, 1):
-        try:
-            d = datetime.strptime(date_iso[:10], "%Y-%m-%d") + timedelta(days=off)
-            d_str = d.strftime("%Y-%m-%d")
-        except Exception:
-            continue
-        for e in _fotmob_day(d_str):
-            eh, ea = _norm(e["home"]), _norm(e["away"])
-            if not ((hn in eh or eh in hn) and (an in ea or ea in an)):
-                continue
-            hs, ags = e["hs"], e["as"]
-            if hs is None or ags is None:
-                continue
-            try:
-                return {"home": int(hs), "away": int(ags),
-                        "status": "FT", "source": "fotmob"}
-            except Exception:
-                continue
-    return None
-
-
-# ============ ИСТОЧНИК 2: FOOTBALL-DATA.ORG (по дате) ============
-def _fdorg_day(date_iso: str) -> list:
-    """football-data.org — все матчи на дату."""
-    token = ""
+def _get_token() -> str:
+    """Берём token из session_state."""
     try:
         import streamlit as st
-        token = st.session_state.get("data", {}).get("meta", {}).get(
-            "fdorg_token", "")
+        return st.session_state.get("data", {}).get("meta", {}).get(
+            "fdorg_token", "").strip()
     except Exception:
-        pass
+        return ""
+
+
+# ============ FOOTBALL-DATA.ORG ПО ЛИГАМ ============
+def _fdorg_league_matches(comp: str, date_iso: str) -> list:
+    """Матчи конкретной лиги на дату."""
+    token = _get_token()
     if not token:
         return []
-    ck = f"fdorg_day_{date_iso}"
+    ck = f"fdorg_lg_{comp}_{date_iso}"
     cached = cache_get(ck, 3600)
     if cached is not None:
         return cached if isinstance(cached, list) else []
+
+    url = f"https://api.football-data.org/v4/competitions/{comp}/matches"
     try:
         r = _sess.get(
-            "https://api.football-data.org/v4/matches",
+            url,
             headers={"X-Auth-Token": token},
             params={"dateFrom": date_iso, "dateTo": date_iso},
             timeout=15, proxies=NO_PROXY)
         if r.status_code != 200:
-            _log(f"fdorg HTTP {r.status_code} {date_iso}")
+            _log(f"fdorg {comp} {date_iso}: HTTP {r.status_code}")
             cache_put(ck, [])
             return []
         matches = (r.json() or {}).get("matches") or []
@@ -154,11 +95,11 @@ def _fdorg_day(date_iso: str) -> list:
                 out.append({"home": h, "away": a, "hs": hs, "as": ags})
             except Exception:
                 continue
-        _log(f"fdorg {date_iso}: {len(out)} events")
+        _log(f"fdorg {comp} {date_iso}: {len(out)} events")
         cache_put(ck, out)
         return out
     except Exception as e:
-        _log(f"fdorg error {date_iso}: {type(e).__name__}")
+        _log(f"fdorg {comp} error: {type(e).__name__}")
         return []
 
 
@@ -166,25 +107,27 @@ def _find_fdorg(home: str, away: str, date_iso: str) -> Optional[dict]:
     hn, an = _norm(home), _norm(away)
     if not hn or not an:
         return None
+    # Пробуем за 3 дня вокруг
     for off in (0, -1, 1):
         try:
             d = datetime.strptime(date_iso[:10], "%Y-%m-%d") + timedelta(days=off)
             d_str = d.strftime("%Y-%m-%d")
         except Exception:
             continue
-        for e in _fdorg_day(d_str):
-            eh, ea = _norm(e["home"]), _norm(e["away"])
-            if not ((hn in eh or eh in hn) and (an in ea or ea in an)):
-                continue
-            try:
-                return {"home": int(e["hs"]), "away": int(e["as"]),
-                        "status": "FT", "source": "fdorg"}
-            except Exception:
-                continue
+        for comp in FDORG_COMPETITIONS:
+            for e in _fdorg_league_matches(comp, d_str):
+                eh, ea = _norm(e["home"]), _norm(e["away"])
+                if not ((hn in eh or eh in hn) and (an in ea or ea in an)):
+                    continue
+                try:
+                    return {"home": int(e["hs"]), "away": int(e["as"]),
+                            "status": "FT", "source": f"fdorg_{comp}"}
+                except Exception:
+                    continue
     return None
 
 
-# ============ ИСТОЧНИК 3: OPENLIGADB (Бундеслига) ============
+# ============ OPENLIGADB (Бундеслига) ============
 def _olb_day(date_iso: str) -> list:
     ck = f"olb_day_{date_iso}"
     cached = cache_get(ck, 3600)
@@ -228,42 +171,39 @@ def _olb_day(date_iso: str) -> list:
 
 def _find_olb(home: str, away: str, date_iso: str) -> Optional[dict]:
     hn, an = _norm(home), _norm(away)
-    for e in _olb_day(date_iso):
-        eh, ea = _norm(e["home"]), _norm(e["away"])
-        if (hn in eh or eh in hn) and (an in ea or ea in an):
-            try:
-                return {"home": int(e["hs"]), "away": int(e["as"]),
-                        "status": "FT", "source": "openligadb"}
-            except Exception:
-                continue
+    for off in (0, -1, 1):
+        try:
+            d = datetime.strptime(date_iso[:10], "%Y-%m-%d") + timedelta(days=off)
+            d_str = d.strftime("%Y-%m-%d")
+        except Exception:
+            continue
+        for e in _olb_day(d_str):
+            eh, ea = _norm(e["home"]), _norm(e["away"])
+            if (hn in eh or eh in hn) and (an in ea or ea in an):
+                try:
+                    return {"home": int(e["hs"]), "away": int(e["as"]),
+                            "status": "FT", "source": "openligadb"}
+                except Exception:
+                    continue
     return None
 
 
 # ============ ПУБЛИЧНАЯ ФУНКЦИЯ ============
 def find_match_score(home: str, away: str, date_iso: str) -> Optional[dict]:
-    """Ищет результат: fotmob → fdorg → openligadb."""
+    """Ищет результат: football-data.org по лигам → OpenLigaDB."""
     if not home or not away or not date_iso:
         return None
 
-    # 1. FotMob — все лиги
-    try:
-        r = _find_fotmob(home, away, date_iso)
-        if r:
-            _log(f"FOUND fotmob: {home} vs {away} = {r['home']}:{r['away']}")
-            return r
-    except Exception as e:
-        _log(f"fotmob fail: {e}")
-
-    # 2. football-data.org — топ-лиги
+    # 1. football-data.org по всем лигам
     try:
         r = _find_fdorg(home, away, date_iso)
         if r:
-            _log(f"FOUND fdorg: {home} vs {away} = {r['home']}:{r['away']}")
+            _log(f"FOUND {r['source']}: {home} vs {away} = {r['home']}:{r['away']}")
             return r
     except Exception as e:
         _log(f"fdorg fail: {e}")
 
-    # 3. OpenLigaDB — Бундеслига
+    # 2. OpenLigaDB для Бундеслиги
     try:
         r = _find_olb(home, away, date_iso)
         if r:
