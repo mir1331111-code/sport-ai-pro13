@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "13.0.0"
+APP_VERSION = "13.1.0"
 DATA_VERSION = 17
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -11,8 +11,8 @@ LOCAL_FILE = os.path.join(_APP_DIR, "neuro_local.json")
 DISK_CACHE_DIR = os.path.join(_APP_DIR, "neuro_cache")
 os.makedirs(DISK_CACHE_DIR, exist_ok=True)
 
-AUTO_SETTLE_LIMIT = 20
-AUTO_SETTLE_THROTTLE_SEC = 21600
+AUTO_SETTLE_LIMIT = 999
+AUTO_SETTLE_THROTTLE_SEC = 3600
 LLM_DAILY_LIMIT = 20
 LLM_TOP_N = 8
 ODDS_LIMIT_DAILY = 25
@@ -28,12 +28,12 @@ CACHE_TTL = {
 }
 
 LLM_PROVIDERS = {
-            "Groq (бесплатно, быстро)": {
+    "Groq (бесплатно, быстро)": {
         "base": "https://api.groq.com/openai/v1",
         "model": "openai/gpt-oss-120b",
         "key_url": "https://console.groq.com/keys",
     },
-            "Gemini (Google, бесплатно)": {
+    "Gemini (Google, бесплатно)": {
         "base": "https://generativelanguage.googleapis.com/v1beta",
         "model": "gemini-2.5-flash",
         "key_url": "https://aistudio.google.com/apikey",
@@ -43,9 +43,9 @@ LLM_PROVIDERS = {
         "model": "grok-beta",
         "key_url": "https://console.x.ai",
     },
-    "OpenRouter (Llama 3.3)": {
+    "OpenRouter (бесплатно)": {
         "base": "https://openrouter.ai/api/v1",
-        "model": "meta-llama/llama-3.3-70b-instruct:free",
+        "model": "meta-llama/llama-3.1-8b-instruct:free",
         "key_url": "https://openrouter.ai/keys",
     },
     "OpenAI (gpt-4o-mini)": {
@@ -61,16 +61,24 @@ LLM_PROVIDERS = {
 }
 
 DIV_NAMES = {
-    "E0": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 АПЛ", "E1": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Чемпионшип",
-    "D1": "🇩🇪 Бундеслига", "D2": "🇩🇪 2.Бундеслига",
-    "I1": "🇮🇹 Серия A", "I2": "🇮🇹 Серия B",
+    "E0": "🏴󠁢󠁮󠁿 АПЛ", "E1": "🏴󠁢󠁮󠁿 Чемпионшип",
+    "D1": "🇩🇪 Бундеслига", "D2": "🇩 2.Бундеслига",
+    "I1": "🇮 Серия A", "I2": "🇮🇹 Серия B",
     "SP1": "🇪🇸 Ла Лига", "SP2": "🇪🇸 Сегунда",
     "F1": "🇫🇷 Лига 1", "F2": "🇫🇷 Лига 2",
     "N1": "🇳🇱 Эредивизи", "B1": "🇧🇪 Про-лига",
-    "P1": "🇵🇹 Примейра", "T1": "🇹🇷 Суперлига",
+    "P1": "🇵🇹 Примейра", "T1": "🇹 Суперлига",
     "G1": "🇬🇷 Греция", "R1": "🇷🇺 РПЛ",
     "C1": "🏆 Лига Чемпионов", "EL": "🏆 Лига Европы",
     "EC": "🏆 Лига Конференций",
+}
+
+DIV_TO_TSDB = {
+    "E0": "4328", "E1": "4386", "D1": "4331", "D2": "4389",
+    "I1": "4332", "I2": "4388", "SP1": "4335", "SP2": "4340",
+    "F1": "4334", "F2": "4387", "N1": "4337", "B1": "4355",
+    "P1": "4344", "T1": "4339", "G1": "4356", "R1": "4357",
+    "C1": "4480", "EL": "4481",
 }
 
 DIV_TO_ODDS = {
@@ -138,14 +146,11 @@ TEAM_TRANSLATIONS = {
     "Ajax": "Аякс", "PSV": "ПСВ", "Feyenoord": "Фейеноорд",
 }
 
-
-# ============ FOOTBALL-DATA.ORG ============
 FOOTBALL_DATA_ORG_HOST = "api.football-data.org"
 FOOTBALL_DATA_ORG_DAILY_LIMIT = 100
 
 DIV_TO_FDORG = {
-    "E0": "PL", "E1": "ELC", "SP1": "PD",
-    "I1": "SA", "D1": "BL1", "F1": "FL1",
-    "N1": "DED", "P1": "PPL", "C1": "CL",
+    "E0": "PL", "E1": "ELC", "SP1": "PD", "I1": "SA",
+    "D1": "BL1", "F1": "FL1", "N1": "DED", "P1": "PPL", "C1": "CL",
 }
 FDORG_TO_DIV = {v: k for k, v in DIV_TO_FDORG.items()}
