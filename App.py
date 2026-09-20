@@ -40,7 +40,6 @@ def log_err(tag: str, e: Exception) -> None:
     if len(ERR) > 100:
         ERR.pop(0)
 
-# ==================== BOOT ====================
 db.db_init()
 theme.inject()
 
@@ -59,9 +58,7 @@ if "initial_bank" not in D["meta"]:
     usage.set_local_data(D)
 
 
-# ==================== AUTO-SETTLE ====================
-def _tsdb_find_result(home: str, away: str, date_iso: str) -> dict | None:
-    """TheSportsDB fallback: поиск результата по командам + дате."""
+def _tsdb_find_result(home, away, date_iso):
     if not home or not away or not date_iso:
         return None
     try:
@@ -107,24 +104,17 @@ def _auto_settle(D):
         bd = parse_date(b.get("date_iso") or b.get("date") or "")
         if bd and bd > now:
             continue
-
-        # Источник 1: football-data.org
         res = fdorg_match_result(fid, token)
-
-        # Источник 2: TheSportsDB (бесплатно, без ключа)
         if not res and bd:
             parts = (b.get("match") or "").split(" vs ")
             if len(parts) == 2:
                 res = _tsdb_find_result(parts[0], parts[1], bd.strftime("%Y-%m-%d"))
-
         if not res:
             continue
-
         outcome, _reason = determine_outcome(
             b.get("market"), b.get("pick"), res["home"], res["away"])
         if outcome is None:
             continue
-
         b["score"] = f"{res['home']}:{res['away']}"
         if outcome == "push":
             b["status"] = "push"
@@ -146,7 +136,6 @@ def _auto_settle(D):
             D2["stats"]["profit"] = D2["stats"].get("profit", 0) - b["stake"]
         changed += 1
 
-    # Void через 48ч
     for idx, b in enumerate(bets):
         if not isinstance(b, dict) or b.get("status") != "pending":
             continue
@@ -177,7 +166,6 @@ if _now - _last > 3600:
 pending_count = sum(1 for b in D["bets"]
                     if isinstance(b, dict) and b.get("status") == "pending")
 
-# ==================== HERO ====================
 st.markdown(f"""
 <div class="hero"><h1>NEURO BET PRO</h1>
 <p>v{APP_VERSION} · 100% FREE · ИИ-аналитик · SQLite · CLV · 🔍 Контекст</p>
@@ -190,7 +178,6 @@ st.markdown(f"""
   <div class="v {'r' if ERR else 'g'}">{len(ERR)}</div></div>
 </div></div>""", unsafe_allow_html=True)
 
-# ==================== SIDEBAR ====================
 with st.sidebar:
     st.markdown(
         "<div style='font-size:1.1rem;font-weight:800;color:#e6eaf2;"
@@ -255,31 +242,24 @@ with st.sidebar:
 
     _backup_json = json.dumps(D, ensure_ascii=False, indent=2, default=str)
     st.download_button(
-        "📥 Скачать данные",
-        _backup_json,
+        "📥 Скачать данные", _backup_json,
         file_name=f"neuro_data_{datetime.now():%Y%m%d_%H%M}.json",
-        mime="application/json",
-        use_container_width=True,
-        help="Сохрани перед выключением ПК")
+        mime="application/json", use_container_width=True)
 
     _uploaded = st.file_uploader(
-        "📤 Загрузить данные",
-        type=["json"],
-        key="restore_upload",
-        label_visibility="collapsed")
+        "📤 Загрузить данные", type=["json"],
+        key="restore_upload", label_visibility="collapsed")
     if _uploaded is not None:
         try:
             _restored = json.loads(_uploaded.read().decode("utf-8"))
             if isinstance(_restored, dict) and "data" in _restored:
                 st.session_state.data = _restored["data"]
                 usage.set_local_data(_restored["data"])
-                st.success("✅ Данные восстановлены!")
-                st.rerun()
+                st.success("✅ Данные восстановлены!"); st.rerun()
             elif isinstance(_restored, dict):
                 st.session_state.data = _restored
                 usage.set_local_data(_restored)
-                st.success("✅ Данные восстановлены!")
-                st.rerun()
+                st.success("✅ Данные восстановлены!"); st.rerun()
             else:
                 st.error("❌ Неверный формат файла")
         except Exception as e:
@@ -289,38 +269,27 @@ with st.sidebar:
                 "margin:18px 0;'>", unsafe_allow_html=True)
 
     if st.button("♻️ Сбросить счётчики", use_container_width=True):
-        usage.settle_reset()
-        usage.llm_reset()
-        usage.odds_reset()
-        usage.fdorg_reset()
-        st.toast("Счётчики сброшены")
-        st.rerun()
+        usage.settle_reset(); usage.llm_reset()
+        usage.odds_reset(); usage.fdorg_reset()
+        st.toast("Счётчики сброшены"); st.rerun()
 
     if "confirm_clear" not in st.session_state:
         st.session_state.confirm_clear = False
     if not st.session_state.confirm_clear:
         if st.button("🗑️ Очистить портфель", use_container_width=True):
-            st.session_state.confirm_clear = True
-            st.rerun()
+            st.session_state.confirm_clear = True; st.rerun()
     else:
         st.warning("Удалить ВСЕ ставки?")
         cc1, cc2 = st.columns(2)
         if cc1.button("Да", key="confirm_yes"):
-            D["bets"] = []
-            D["cards"] = []
-            D["bank"] = 10000.0
-            D["stats"] = {"won": 0, "lost": 0, "profit": 0,
-                          "push": 0, "void": 0}
+            D["bets"] = []; D["cards"] = []; D["bank"] = 10000.0
+            D["stats"] = {"won": 0, "lost": 0, "profit": 0, "push": 0, "void": 0}
             D["meta"]["initial_bank"] = 10000.0
-            usage.set_local_data(D)
-            db.invalidate_caches()
-            st.session_state.confirm_clear = False
-            st.rerun()
+            usage.set_local_data(D); db.invalidate_caches()
+            st.session_state.confirm_clear = False; st.rerun()
         if cc2.button("Нет", key="confirm_no"):
-            st.session_state.confirm_clear = False
-            st.rerun()
+            st.session_state.confirm_clear = False; st.rerun()
 
-# ==================== TABS ====================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["🏟 Сканер", "💼 Портфель", "📈 Статистика",
      "🧮 Калькулятор", "🧪 Бэктест"])
