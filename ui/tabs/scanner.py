@@ -1,4 +1,4 @@
-"""ui/tabs/scanner.py — Сканер + Context Engine + LLM + женские лиги."""
+"""ui/tabs/scanner.py — Сканер + TheSportsDB + Context + LLM + женские лиги."""
 from __future__ import annotations
 import time
 from datetime import datetime, timedelta
@@ -9,7 +9,7 @@ from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
-                          fdorg_matches, women_matches,
+                          fdorg_matches, tsdb_matches,
                           odds_api_fixture, parse_date)
 from model.engine import Engine
 from betting.verdict import build_verdict, refine_with_real_odds
@@ -99,16 +99,15 @@ def render(min_prob, kelly_frac, matrix_n):
     if not scan:
         fn = D.get("funnel")
         if fn:
-            ctx_n = fn.get('ctx', 0)
             st.success(
                 f"🧠 Обучено {fn.get('trained', 0)} · "
-                f"📡 Источников {fn.get('src', 0)} · "
+                f"📡 Матчей {fn.get('src', 0)} · "
                 f"🎯 Найдено {fn.get('found', 0)} · "
                 f"➕ В портфель {fn.get('added', 0)} · "
                 f"💰 Заморожено {fn.get('frozen', 0):.0f} · "
                 f"🤖 LLM: {fn.get('llm', 0)} · "
-                f"🔍 Контекст: {ctx_n} · "
-                f"👩 Женские: {fn.get('women', 0)}"
+                f"🔍 Контекст: {fn.get('ctx', 0)} · "
+                f"👩 Женских: {fn.get('women', 0)}"
             )
         if HAS_CONTEXT:
             st.caption("🟢 Context Engine: подключён")
@@ -150,35 +149,44 @@ def render(min_prob, kelly_frac, matrix_n):
                     "<div style='color:#8b93a7;font-size:.8rem;"
                     "background:rgba(10,14,24,.6);padding:10px;"
                     "border-radius:10px;max-height:180px;overflow-y:auto'>"
-                    + "<br>".join(logs[-12:]) + "</div>", unsafe_allow_html=True)
+                    + "<br>".join(logs[-15:]) + "</div>", unsafe_allow_html=True)
 
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
 
+        # ===== 1. THESPORTSDB — ОСНОВНОЙ ИСТОЧНИК (бесплатно, без ключа) =====
+        update_loader("📡 TheSportsDB: сбор матчей (все лиги)...", 0.05, logs)
+        tsdb_rows = tsdb_matches(days, logs)
+        logs.append(f"📡 TheSportsDB: {len(tsdb_rows)} матчей")
+
+        # ===== 2. FOOTBALL-DATA.ORG — ДОПОЛНИТЕЛЬНЫЙ (если есть токен) =====
         token = D.get("meta", {}).get("fdorg_token", "").strip()
-        if not token:
-            st.error("⚠️ Введи **football-data.org token** в сайдбаре."); return
+        fdorg_rows = []
+        if token:
+            update_loader("📡 football-data.org: дополнение...", 0.10, logs)
+            fdorg_rows = fdorg_matches(days, token, logs)
+            logs.append(f"📡 football-data.org: {len(fdorg_rows)} матчей")
+        else:
+            logs.append("📡 football-data.org: токен не задан (только TheSportsDB)")
 
-        logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
-
-        # ===== 1. СБОР МАТЧЕЙ (мужские + женские) =====
-        update_loader("📡 Сбор матчей...", 0.05, logs)
-        rows_raw = fdorg_matches(days, token, logs)
-
-        # Женские лиги
-        update_loader("👩 Сбор женских лиг...", 0.10, logs)
-        w_rows = women_matches(days)
-        rows_raw = rows_raw + w_rows
-        logs.append(f"👩 Женские лиги: {len(w_rows)} матчей")
+        # Объединяем, убираем дубликаты по fixture_id
+        seen_ids = set()
+        rows_raw = []
+        for r in tsdb_rows + fdorg_rows:
+            fid = str(r.get("fixture_id", ""))
+            if fid and fid in seen_ids: continue
+            if fid: seen_ids.add(fid)
+            rows_raw.append(r)
 
         rows = _safe_filter(rows_raw)
-        logs.append(f"📡 Всего: {len(rows)} матчей")
+        w_count_total = sum(1 for r in rows if r.get("women"))
+        logs.append(f"📡 Итого: {len(rows)} матчей ({w_count_total} женских)")
 
-        # ===== 2. ОБУЧЕНИЕ МОДЕЛИ =====
+        # ===== 3. ОБУЧЕНИЕ МОДЕЛИ =====
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
 
-        # ===== 3. АНАЛИЗ МАТЧЕЙ =====
+        # ===== 4. АНАЛИЗ МАТЧЕЙ =====
         update_loader("🧠 Анализ матчей...", 0.50, logs)
         cards = []; matches_with_best = 0
         odds_key = D.get("meta", {}).get("odds_api_key", "")
@@ -244,7 +252,7 @@ def render(min_prob, kelly_frac, matrix_n):
 
         logs.append(f"🎯 Найдено с P≥{min_prob*100:.0f}%: {matches_with_best}")
 
-        # ===== 4. LLM =====
+        # ===== 5. LLM =====
         llm_key = D.get("meta", {}).get("llm_api_key", "")
         llm_prov = D.get("meta", {}).get("llm_provider", "Groq (бесплатно, быстро)")
         llm_model = D.get("meta", {}).get("llm_model", "")
@@ -278,7 +286,7 @@ def render(min_prob, kelly_frac, matrix_n):
         elif not llm_key:
             logs.append("🤖 LLM: ключ не задан")
 
-        # ===== 5. CONTEXT ENGINE =====
+        # ===== 6. CONTEXT ENGINE =====
         ctx_count = 0
         if HAS_CONTEXT:
             update_loader("🔍 Контекстный анализ...", 0.85, logs)
@@ -295,12 +303,12 @@ def render(min_prob, kelly_frac, matrix_n):
                 except Exception: pass
             logs.append(f"🔍 Контекст: {ctx_count} матчей")
 
-        # ===== 6. СТАВКИ =====
+        # ===== 7. СТАВКИ =====
         update_loader("💼 Формирование портфеля...", 0.95, logs)
         new_bets = []
         existing = {f"{b['match']}|{b['pick']}" for b in D["bets"]
                     if isinstance(b, dict) and b.get("status") == "pending"}
-        women_count = 0
+        women_bet_count = 0
         for c in cards:
             b = c.get("best")
             if not b: continue
@@ -309,7 +317,7 @@ def render(min_prob, kelly_frac, matrix_n):
             if stake <= 0: continue
             bk = f"{c['match']}|{pick}"
             if bk in existing: continue
-            if c.get("women"): women_count += 1
+            if c.get("women"): women_bet_count += 1
             new_bets.append({
                 "match": c["match"], "match_ru": c["match_ru"],
                 "div": c["div"], "league": c["league"],
@@ -325,7 +333,7 @@ def render(min_prob, kelly_frac, matrix_n):
             })
             existing.add(bk)
 
-        # ===== 7. СОХРАНЕНИЕ =====
+        # ===== 8. СОХРАНЕНИЕ =====
         D2 = dict(D); D2["cards"] = cards; D2["report"] = logs
         D2["bets"] = D["bets"] + new_bets
         total_stake = sum(b["stake"] for b in new_bets)
@@ -334,7 +342,7 @@ def render(min_prob, kelly_frac, matrix_n):
             "trained": getattr(engine, "trained_n", 0),
             "src": len(rows), "found": matches_with_best,
             "added": len(new_bets), "frozen": total_stake,
-            "llm": llm_done, "ctx": ctx_count, "women": women_count,
+            "llm": llm_done, "ctx": ctx_count, "women": women_bet_count,
         }
         st.session_state.data = D2; usage.set_local_data(D2)
         if db.SQLITE_BOOT_OK:
@@ -342,7 +350,7 @@ def render(min_prob, kelly_frac, matrix_n):
             db.log_bank(D2["bank"], event="scan"); db.invalidate_caches()
 
         update_loader(
-            f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM · 🔍 {ctx_count} контекст · 👩 {women_count} женских",
+            f"✅ Готово! +{len(new_bets)} ставок · 📡 {len(rows)} матчей · 🤖 {llm_done} LLM · 👩 {women_bet_count} женских",
             1.0, logs)
         time.sleep(1.5); loader_ph.empty(); log_ph.empty()
     finally:
