@@ -1,4 +1,4 @@
-"""data/sources.py — football-data.org + TheSportsDB + женские лиги."""
+"""data/sources.py — TheSportsDB + football-data.org + женские лиги."""
 from __future__ import annotations
 import csv, io, re
 from collections import defaultdict
@@ -15,7 +15,8 @@ except Exception:
     _HAS_RETRY = False
 
 from config import (CACHE_TTL, FOOTBALL_DATA_ORG_HOST,
-                    DIV_TO_FDORG, FDORG_TO_DIV, WOMEN_LEAGUE_IDS)
+                    DIV_TO_FDORG, FDORG_TO_DIV, DIV_TO_TSDB,
+                    WOMEN_LEAGUE_IDS)
 from security import cache_get, cache_put
 from storage import usage
 
@@ -77,7 +78,7 @@ def _norm_name(s: str) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
 
 
-# ============ FOOTBALL-DATA.CO.UK ============
+# ============ FOOTBALL-DATA.CO.UK (история для обучения) ============
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
     cached = cache_get(ck, CACHE_TTL["seasonal"])
@@ -95,7 +96,70 @@ def load_seasonal(div: str, season: str) -> list:
     except Exception: return []
 
 
-# ============ FOOTBALL-DATA.ORG ============
+# ============ THESPORTSDB — ОСНОВНОЙ ИСТОЧНИК МАТЧЕЙ (бесплатно) ============
+def tsdb_matches(days: int = 7, logs=None) -> list:
+    """Все матчи из TheSportsDB: мужские топ-лиги + новые лиги + женские."""
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    all_tsdb_ids = {}
+    all_tsdb_ids.update(DIV_TO_TSDB)
+    all_tsdb_ids.update(WOMEN_LEAGUE_IDS)
+    reverse_map = {}
+    for div_code, tsdb_id in DIV_TO_TSDB.items():
+        reverse_map[str(tsdb_id)] = (div_code, None)
+    for tsdb_id, (div_code, league_name) in WOMEN_LEAGUE_IDS.items():
+        reverse_map[str(tsdb_id)] = (div_code, league_name)
+
+    out = []
+    for off in range(days):
+        d = today + timedelta(days=off)
+        dstr = d.strftime("%Y-%m-%d")
+        ck = f"tsdb_all_{dstr}"
+        cached = cache_get(ck, 1800)
+        if cached is not None:
+            if isinstance(cached, list): out += cached
+            if logs and off == 0: logs.append(f"TSDB {dstr}: {len(cached) if isinstance(cached,list) else 0} (cached)")
+            continue
+        try:
+            r = _sess.get(
+                "https://www.thesportsdb.com/api/v1/json/3/eventsday.php",
+                params={"d": dstr, "s": "Soccer"}, timeout=15, proxies=NO_PROXY)
+            if r.status_code != 200:
+                if logs: logs.append(f"TSDB {dstr}: HTTP {r.status_code}")
+                continue
+            events = (r.json() or {}).get("events") or []
+            rows = []
+            for e in events:
+                league_id = str(e.get("idLeague") or "")
+                if league_id not in reverse_map:
+                    continue
+                div_code, w_league_name = reverse_map[league_id]
+                h = e.get("strHomeTeam"); a = e.get("strAwayTeam")
+                if not h or not a: continue
+                is_women = w_league_name is not None
+                rows.append({
+                    "Div": div_code,
+                    "League": w_league_name or e.get("strLeague") or div_code,
+                    "Date": (e.get("dateEvent") or "")[:10],
+                    "Time": (e.get("strTime") or "")[:5],
+                    "HomeTeam": h, "AwayTeam": a,
+                    "fixture_id": e.get("idEvent"),
+                    "home_badge": (e.get("strHomeTeamBadge") or ""),
+                    "away_badge": (e.get("strAwayTeamBadge") or ""),
+                    "league_badge": "",
+                    "status": e.get("strStatus", ""),
+                    "women": is_women,
+                })
+            out += rows
+            cache_put(ck, rows)
+            if logs and off == 0:
+                w_count = sum(1 for r in rows if r.get("women"))
+                logs.append(f"TSDB {dstr}: {len(rows)} матчей ({w_count} женских)")
+        except Exception as ex:
+            if logs: logs.append(f"TSDB {dstr}: ошибка {str(ex)[:60]}")
+    return out
+
+
+# ============ FOOTBALL-DATA.ORG (дополнительный источник) ============
 def _fdorg_get(endpoint: str, params: dict, token: str) -> Optional[dict]:
     if not token: return None
     if usage.fdorg_remaining() <= 0: return None
@@ -144,57 +208,11 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                     "home_badge": (m.get("homeTeam") or {}).get("crest") or "",
                     "away_badge": (m.get("awayTeam") or {}).get("crest") or "",
                     "league_badge": (m.get("competition") or {}).get("emblem") or "",
-                    "status": m.get("status", ""),
+                    "status": m.get("status", ""), "women": False,
                 })
             except Exception: continue
         out += rows; cache_put(ck, rows)
         if logs: logs.append(f"OK {comp}: {len(rows)}")
-    return out
-
-
-# ============ ЖЕНСКИЕ ЛИГИ (TheSportsDB, бесплатно) ============
-def women_matches(days: int = 7) -> list:
-    """Матчи женских лиг через TheSportsDB (бесплатно, без ключа)."""
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    out = []
-    for off in range(days):
-        d = today + timedelta(days=off)
-        dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_women_{dstr}"
-        cached = cache_get(ck, 1800)
-        if cached is not None:
-            if isinstance(cached, list): out += cached
-            continue
-        try:
-            r = _sess.get(
-                "https://www.thesportsdb.com/api/v1/json/3/eventsday.php",
-                params={"d": dstr, "s": "Soccer"}, timeout=15, proxies=NO_PROXY)
-            if r.status_code != 200: continue
-            events = (r.json() or {}).get("events") or []
-            rows = []
-            for e in events:
-                league_id = str(e.get("idLeague") or "")
-                if league_id not in WOMEN_LEAGUE_IDS:
-                    continue
-                div_code, league_name = WOMEN_LEAGUE_IDS[league_id]
-                h = e.get("strHomeTeam"); a = e.get("strAwayTeam")
-                if not h or not a: continue
-                rows.append({
-                    "Div": div_code, "League": league_name,
-                    "Date": (e.get("dateEvent") or "")[:10],
-                    "Time": (e.get("strTime") or "")[:5],
-                    "HomeTeam": h, "AwayTeam": a,
-                    "fixture_id": e.get("idEvent"),
-                    "home_badge": (e.get("strHomeTeamBadge") or ""),
-                    "away_badge": (e.get("strAwayTeamBadge") or ""),
-                    "league_badge": "",
-                    "status": e.get("strStatus", ""),
-                    "women": True,
-                })
-            out += rows
-            cache_put(ck, rows)
-        except Exception:
-            pass
     return out
 
 
