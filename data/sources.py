@@ -1,4 +1,4 @@
-"""data/sources.py — football-data.org + MSK timezone + исправленный кэш."""
+"""data/sources.py — football-data.org + TheSportsDB + женские лиги."""
 from __future__ import annotations
 import csv, io, re
 from collections import defaultdict
@@ -15,7 +15,7 @@ except Exception:
     _HAS_RETRY = False
 
 from config import (CACHE_TTL, FOOTBALL_DATA_ORG_HOST,
-                    DIV_TO_FDORG, FDORG_TO_DIV)
+                    DIV_TO_FDORG, FDORG_TO_DIV, WOMEN_LEAGUE_IDS)
 from security import cache_get, cache_put
 from storage import usage
 
@@ -76,6 +76,8 @@ def season_str(year: int) -> str:
 def _norm_name(s: str) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
 
+
+# ============ FOOTBALL-DATA.CO.UK ============
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
     cached = cache_get(ck, CACHE_TTL["seasonal"])
@@ -92,6 +94,8 @@ def load_seasonal(div: str, season: str) -> list:
         cache_put(ck, out); return out
     except Exception: return []
 
+
+# ============ FOOTBALL-DATA.ORG ============
 def _fdorg_get(endpoint: str, params: dict, token: str) -> Optional[dict]:
     if not token: return None
     if usage.fdorg_remaining() <= 0: return None
@@ -148,8 +152,54 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
     return out
 
 
+# ============ ЖЕНСКИЕ ЛИГИ (TheSportsDB, бесплатно) ============
+def women_matches(days: int = 7) -> list:
+    """Матчи женских лиг через TheSportsDB (бесплатно, без ключа)."""
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    out = []
+    for off in range(days):
+        d = today + timedelta(days=off)
+        dstr = d.strftime("%Y-%m-%d")
+        ck = f"tsdb_women_{dstr}"
+        cached = cache_get(ck, 1800)
+        if cached is not None:
+            if isinstance(cached, list): out += cached
+            continue
+        try:
+            r = _sess.get(
+                "https://www.thesportsdb.com/api/v1/json/3/eventsday.php",
+                params={"d": dstr, "s": "Soccer"}, timeout=15, proxies=NO_PROXY)
+            if r.status_code != 200: continue
+            events = (r.json() or {}).get("events") or []
+            rows = []
+            for e in events:
+                league_id = str(e.get("idLeague") or "")
+                if league_id not in WOMEN_LEAGUE_IDS:
+                    continue
+                div_code, league_name = WOMEN_LEAGUE_IDS[league_id]
+                h = e.get("strHomeTeam"); a = e.get("strAwayTeam")
+                if not h or not a: continue
+                rows.append({
+                    "Div": div_code, "League": league_name,
+                    "Date": (e.get("dateEvent") or "")[:10],
+                    "Time": (e.get("strTime") or "")[:5],
+                    "HomeTeam": h, "AwayTeam": a,
+                    "fixture_id": e.get("idEvent"),
+                    "home_badge": (e.get("strHomeTeamBadge") or ""),
+                    "away_badge": (e.get("strAwayTeamBadge") or ""),
+                    "league_badge": "",
+                    "status": e.get("strStatus", ""),
+                    "women": True,
+                })
+            out += rows
+            cache_put(ck, rows)
+        except Exception:
+            pass
+    return out
+
+
+# ============ РЕЗУЛЬТАТЫ ============
 def fdorg_match_result(match_id, token: str) -> Optional[dict]:
-    """НЕ кэширует незавершённые матчи — повторяет запрос при следующем вызове."""
     if not match_id or not token: return None
     ck = f"fdorg_result_v3_{match_id}"
     cached = cache_get(ck, 86400)
@@ -168,6 +218,7 @@ def fdorg_match_result(match_id, token: str) -> Optional[dict]:
     return res
 
 
+# ============ THE ODDS API ============
 def odds_api_fixture(sport_key: str, home: str, away: str, api_key: str) -> Optional[dict]:
     if not api_key or not sport_key: return None
     ck = f"odds_{sport_key}_{_norm_name(home)}_{_norm_name(away)}"
