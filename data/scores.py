@@ -12,21 +12,14 @@ from security import cache_get, cache_put
 
 NO_PROXY = {"http": None, "https": None, "all": None}
 
-# ВСЕ бесплатные лиги football-data.org
 FDORG_COMPETITIONS = [
-    "PL",    # Англия — Премьер-лига
-    "ELC",   # Англия — Чемпионшип
-    "PD",    # Испания — Ла Лига
-    "SD",    # Испания — Сегунда
-    "SA",    # Италия — Серия A
-    "SB",    # Италия — Серия B
-    "BL1",   # Германия — Бундеслига
-    "BL2",   # Германия — 2. Бундеслига
-    "FL1",   # Франция — Лига 1
-    "FL2",   # Франция — Лига 2
-    "DED",   # Нидерланды — Эредивизи
-    "PPL",   # Португалия — Примейра
-    "CL",    # Лига Чемпионов
+    "PL", "ELC",
+    "PD", "SD",
+    "SA", "SB",
+    "BL1", "BL2",
+    "FL1", "FL2",
+    "DED", "PPL",
+    "CL",
 ]
 
 
@@ -67,12 +60,10 @@ def _get_token() -> str:
         return ""
 
 
-# ============ RATE LIMIT THROTTLE ============
 _LAST_FDORG_CALL = [0.0]
 
 
 def _fdorg_rate_limit():
-    """10 req/min → 6.5 сек между запросами."""
     now = _time.time()
     delta = now - _LAST_FDORG_CALL[0]
     if delta < 6.5:
@@ -80,13 +71,12 @@ def _fdorg_rate_limit():
     _LAST_FDORG_CALL[0] = _time.time()
 
 
-# ============ FOOTBALL-DATA.ORG ПО ЛИГАМ ============
 def _fdorg_league_matches(comp: str, date_iso: str) -> list:
     token = _get_token()
     if not token:
         return []
     ck = f"fdorg_lg_v3_{comp}_{date_iso}"
-    cached = cache_get(ck, 7200)   # 2 часа
+    cached = cache_get(ck, 7200)
     if cached is not None:
         return cached if isinstance(cached, list) else []
 
@@ -142,7 +132,6 @@ def _find_fdorg(home: str, away: str, date_iso: str) -> Optional[dict]:
     hn, an = _norm(home), _norm(away)
     if not hn or not an:
         return None
-    # Сначала текущая дата, потом ±1 день
     for off in (0, -1, 1):
         try:
             d = datetime.strptime(date_iso[:10], "%Y-%m-%d") + timedelta(days=off)
@@ -162,7 +151,6 @@ def _find_fdorg(home: str, away: str, date_iso: str) -> Optional[dict]:
     return None
 
 
-# ============ OPENLIGADB (bl1 + bl2 + bl3) ============
 def _olb_day(date_iso: str) -> list:
     ck = f"olb_day_v3_{date_iso}"
     cached = cache_get(ck, 3600)
@@ -228,9 +216,7 @@ def _find_olb(home: str, away: str, date_iso: str) -> Optional[dict]:
     return None
 
 
-# ============ ПУБЛИЧНАЯ ФУНКЦИЯ ============
 def find_match_score(home: str, away: str, date_iso: str) -> Optional[dict]:
-    """Ищет результат: football-data.org (13 лиг) → OpenLigaDB (bl1+bl2+bl3)."""
     if not home or not away or not date_iso:
         return None
 
