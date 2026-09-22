@@ -1,6 +1,7 @@
-"""data/scores.py — автосчёты: football-data.org по лигам + OpenLigaDB."""
+"""data/scores.py — автосчёты: football-data.org (13 лиг) + OpenLigaDB."""
 from __future__ import annotations
 import re
+import time as _time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -11,9 +12,22 @@ from security import cache_get, cache_put
 
 NO_PROXY = {"http": None, "https": None, "all": None}
 
-# Все ID лиг football-data.org (free tier)
-FDORG_COMPETITIONS = ["PL", "ELC", "PD", "SA", "BL1", "FL1",
-                     "DED", "PPL", "CL"]
+# ВСЕ бесплатные лиги football-data.org
+FDORG_COMPETITIONS = [
+    "PL",    # Англия — Премьер-лига
+    "ELC",   # Англия — Чемпионшип
+    "PD",    # Испания — Ла Лига
+    "SD",    # Испания — Сегунда
+    "SA",    # Италия — Серия A
+    "SB",    # Италия — Серия B
+    "BL1",   # Германия — Бундеслига
+    "BL2",   # Германия — 2. Бундеслига
+    "FL1",   # Франция — Лига 1
+    "FL2",   # Франция — Лига 2
+    "DED",   # Нидерланды — Эредивизи
+    "PPL",   # Португалия — Примейра
+    "CL",    # Лига Чемпионов
+]
 
 
 def _log(msg: str):
@@ -45,7 +59,6 @@ def _norm(s: str) -> str:
 
 
 def _get_token() -> str:
-    """Берём token из session_state."""
     try:
         import streamlit as st
         return st.session_state.get("data", {}).get("meta", {}).get(
@@ -54,16 +67,30 @@ def _get_token() -> str:
         return ""
 
 
+# ============ RATE LIMIT THROTTLE ============
+_LAST_FDORG_CALL = [0.0]
+
+
+def _fdorg_rate_limit():
+    """10 req/min → 6.5 сек между запросами."""
+    now = _time.time()
+    delta = now - _LAST_FDORG_CALL[0]
+    if delta < 6.5:
+        _time.sleep(6.5 - delta)
+    _LAST_FDORG_CALL[0] = _time.time()
+
+
 # ============ FOOTBALL-DATA.ORG ПО ЛИГАМ ============
 def _fdorg_league_matches(comp: str, date_iso: str) -> list:
-    """Матчи конкретной лиги на дату."""
     token = _get_token()
     if not token:
         return []
-    ck = f"fdorg_lg_{comp}_{date_iso}"
-    cached = cache_get(ck, 3600)
+    ck = f"fdorg_lg_v3_{comp}_{date_iso}"
+    cached = cache_get(ck, 7200)   # 2 часа
     if cached is not None:
         return cached if isinstance(cached, list) else []
+
+    _fdorg_rate_limit()
 
     url = f"https://api.football-data.org/v4/competitions/{comp}/matches"
     try:
@@ -72,6 +99,14 @@ def _fdorg_league_matches(comp: str, date_iso: str) -> list:
             headers={"X-Auth-Token": token},
             params={"dateFrom": date_iso, "dateTo": date_iso},
             timeout=15, proxies=NO_PROXY)
+        if r.status_code == 429:
+            _log(f"fdorg {comp} {date_iso}: 429 — пауза 60с")
+            _time.sleep(60)
+            r = _sess.get(
+                url,
+                headers={"X-Auth-Token": token},
+                params={"dateFrom": date_iso, "dateTo": date_iso},
+                timeout=15, proxies=NO_PROXY)
         if r.status_code != 200:
             _log(f"fdorg {comp} {date_iso}: HTTP {r.status_code}")
             cache_put(ck, [])
@@ -107,7 +142,7 @@ def _find_fdorg(home: str, away: str, date_iso: str) -> Optional[dict]:
     hn, an = _norm(home), _norm(away)
     if not hn or not an:
         return None
-    # Пробуем за 3 дня вокруг
+    # Сначала текущая дата, потом ±1 день
     for off in (0, -1, 1):
         try:
             d = datetime.strptime(date_iso[:10], "%Y-%m-%d") + timedelta(days=off)
@@ -127,46 +162,51 @@ def _find_fdorg(home: str, away: str, date_iso: str) -> Optional[dict]:
     return None
 
 
-# ============ OPENLIGADB (Бундеслига) ============
+# ============ OPENLIGADB (bl1 + bl2 + bl3) ============
 def _olb_day(date_iso: str) -> list:
-    ck = f"olb_day_{date_iso}"
+    ck = f"olb_day_v3_{date_iso}"
     cached = cache_get(ck, 3600)
     if cached is not None:
         return cached if isinstance(cached, list) else []
-    try:
-        r = _sess.get("https://api.openligadb.de/getmatchdata/bl1/2026",
-                      timeout=15, proxies=NO_PROXY)
-        if r.status_code != 200:
-            cache_put(ck, [])
-            return []
-        matches = r.json() or []
-        out = []
-        for m in matches:
-            try:
-                dt_str = m.get("matchDateTime") or ""
-                if not dt_str.startswith(date_iso[:10]):
-                    continue
-                h = (m.get("team1") or {}).get("teamName") or ""
-                a = (m.get("team2") or {}).get("teamName") or ""
-                if not h or not a:
-                    continue
-                finished = m.get("matchIsFinished")
-                results = m.get("matchResults") or []
-                hs, ags = None, None
-                for res in results:
-                    if res.get("resultTypeID") == 2:
-                        hs = res.get("pointsTeam1")
-                        ags = res.get("pointsTeam2")
-                        break
-                if not finished or hs is None or ags is None:
-                    continue
-                out.append({"home": h, "away": a, "hs": hs, "as": ags})
-            except Exception:
+
+    out = []
+    for league in ("bl1", "bl2", "bl3"):
+        try:
+            r = _sess.get(
+                f"https://api.openligadb.de/getmatchdata/{league}/2026",
+                timeout=15, proxies=NO_PROXY)
+            if r.status_code != 200:
                 continue
-        cache_put(ck, out)
-        return out
-    except Exception:
-        return []
+            matches = r.json() or []
+            for m in matches:
+                try:
+                    dt_str = m.get("matchDateTime") or ""
+                    if not dt_str.startswith(date_iso[:10]):
+                        continue
+                    h = (m.get("team1") or {}).get("teamName") or ""
+                    a = (m.get("team2") or {}).get("teamName") or ""
+                    if not h or not a:
+                        continue
+                    finished = m.get("matchIsFinished")
+                    results = m.get("matchResults") or []
+                    hs, ags = None, None
+                    for res in results:
+                        if res.get("resultTypeID") == 2:
+                            hs = res.get("pointsTeam1")
+                            ags = res.get("pointsTeam2")
+                            break
+                    if not finished or hs is None or ags is None:
+                        continue
+                    out.append({"home": h, "away": a,
+                                "hs": hs, "as": ags, "league": league})
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    _log(f"olb {date_iso}: {len(out)} events (bl1+bl2+bl3)")
+    cache_put(ck, out)
+    return out
 
 
 def _find_olb(home: str, away: str, date_iso: str) -> Optional[dict]:
@@ -190,11 +230,10 @@ def _find_olb(home: str, away: str, date_iso: str) -> Optional[dict]:
 
 # ============ ПУБЛИЧНАЯ ФУНКЦИЯ ============
 def find_match_score(home: str, away: str, date_iso: str) -> Optional[dict]:
-    """Ищет результат: football-data.org по лигам → OpenLigaDB."""
+    """Ищет результат: football-data.org (13 лиг) → OpenLigaDB (bl1+bl2+bl3)."""
     if not home or not away or not date_iso:
         return None
 
-    # 1. football-data.org по всем лигам
     try:
         r = _find_fdorg(home, away, date_iso)
         if r:
@@ -203,7 +242,6 @@ def find_match_score(home: str, away: str, date_iso: str) -> Optional[dict]:
     except Exception as e:
         _log(f"fdorg fail: {e}")
 
-    # 2. OpenLigaDB для Бундеслиги
     try:
         r = _find_olb(home, away, date_iso)
         if r:
