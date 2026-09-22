@@ -155,7 +155,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                 logs.append("fdorg: soft-лимит исчерпан")
             break
         div_code = FDORG_TO_DIV.get(comp, "G")
-        ck = f"fdorg_v6_{comp}_{d_from}_{d_to}"
+        ck = f"fdorg_v7_{comp}_{d_from}_{d_to}"    # ← v7 — новый кэш
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -208,7 +208,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
 def fdorg_match_result(match_id, token: str) -> Optional[dict]:
     if not match_id or not token:
         return None
-    ck = f"fdorg_result_v6_{match_id}"
+    ck = f"fdorg_result_v7_{match_id}"
     cached = cache_get(ck, 86400)
     if cached is not None:
         return cached or None
