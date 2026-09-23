@@ -1,8 +1,8 @@
-"""config.py — все константы приложения v13.2."""
+"""config.py — все константы приложения v13.3."""
 from __future__ import annotations
 import os
 
-APP_VERSION = "13.2.0"
+APP_VERSION = "13.3.0"
 DATA_VERSION = 17
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -60,49 +60,100 @@ LLM_PROVIDERS = {
     },
 }
 
-DIV_NAMES = {
-    "E0": "🏴󠁿 АПЛ", "E1": "🏴󠁮 Чемпионшип",
-    "D1": "🇩🇪 Бундеслига", "D2": "🇩🇪 2.Бундеслига",
-    "I1": "🇮 Серия A", "I2": "🇮🇹 Серия B",
-    "SP1": "🇪 Ла Лига", "SP2": "🇪🇸 Сегунда",
-    "F1": "🇫🇷 Лига 1", "F2": "🇫🇷 Лига 2",
-    "N1": "🇳🇱 Эредивизи", "B1": "🇧🇪 Про-лига",
-    "P1": "🇵🇹 Примейра", "T1": "🇹🇷 Суперлига",
-    "G1": "🇬 Греция", "R1": "🇷 РПЛ",
-    "C1": "🏆 Лига Чемпионов", "EL": "🏆 Лига Европы",
-    "EC": "🏆 Лига Конференций",
-    "SC1": "🏴 Шотландия", "MLS1": "🇺 MLS",
-    "BR1": "🇧🇷 Бразилия", "AR1": "🇦 Аргентина",
-    "AT1": "🇦 Австрия", "CH1": "🇨🇭 Швейцария",
-    "NO1": "🇳🇴 Норвегия", "SE1": "🇸🇪 Швеция",
-    "DK1": "🇩 Дания", "PL1": "🇵🇱 Польша",
-    "JP1": "🇵 Япония", "KR1": "🇰🇷 Корея",
-    "MX1": "🇲🇽 Мексика", "CO1": "🇨 Колумбия",
-    "W_E0": "🏴󠁢 WSL (Ж)", "W_SP1": "🇪🇸 Liga F (Ж)",
-    "W_F1": "🇫🇷 D1 Féminine (Ж)", "W_D1": "🇩🇪 Frauen-BL (Ж)",
-    "W_I1": "🇮 Serie A Fem (Ж)", "W_C1": "🏆 UWCL (Ж)",
-}
-
+# ============ МУЖСКИЕ КЛУБНЫЕ ЛИГИ (TheSportsDB ID) ============
 DIV_TO_TSDB = {
-    "E0": "4328", "E1": "4329", "D1": "4331", "D2": "4389",
-    "I1": "4332", "I2": "4388", "SP1": "4335", "SP2": "4340",
-    "F1": "4334", "F2": "4387", "N1": "4337", "B1": "4338",
-    "P1": "4344", "T1": "4339", "G1": "4336", "R1": "4357",
-    "C1": "4480", "EL": "4481",
-    "SC1": "4330", "MLS1": "4346", "BR1": "4351",
-    "AR1": "4354", "AT1": "4358", "CH1": "4359",
-    "NO1": "4360", "SE1": "4361", "DK1": "4362",
-    "PL1": "4363", "JP1": "4365", "KR1": "4366",
-    "MX1": "4367", "CO1": "4368",
+    # Топ-лиги Европы
+    "E0": "4328",   # English Premier League
+    "E1": "4329",   # English Championship
+    "D1": "4331",   # German Bundesliga
+    "D2": "4389",   # German Bundesliga 2
+    "I1": "4332",   # Italian Serie A
+    "I2": "4388",   # Italian Serie B
+    "SP1": "4335",  # Spanish La Liga
+    "SP2": "4340",  # Spanish Segunda
+    "F1": "4334",   # French Ligue 1
+    "F2": "4387",   # French Ligue 2
+    "N1": "4337",   # Dutch Eredivisie
+    "B1": "4338",   # Belgian Pro League
+    "P1": "4344",   # Portuguese Primeira Liga
+    "T1": "4339",   # Turkish Super Lig
+    "G1": "4336",   # Greek Super League
+    "R1": "4357",   # Russian Premier League
+    # Первые лиги мира
+    "SC1": "4330",  # Scottish Premiership
+    "MLS1": "4346", # MLS USA
+    "BR1": "4351",  # Brazil Serie A
+    "AR1": "4354",  # Argentina Primera
+    "AT1": "4358",  # Austrian Bundesliga
+    "CH1": "4359",  # Swiss Super League
+    "NO1": "4360",  # Norway Eliteserien
+    "SE1": "4361",  # Sweden Allsvenskan
+    "DK1": "4362",  # Denmark Superligaen
+    "PL1": "4363",  # Poland Ekstraklasa
+    "JP1": "4365",  # Japan J1 League
+    "KR1": "4366",  # Korea K League 1
+    "MX1": "4367",  # Mexico Liga MX
+    "CO1": "4368",  # Colombia Primera A
+    # Европейские кубки
+    "C1": "4480",   # UEFA Champions League
+    "EL": "4481",   # UEFA Europa League
+    "EC": "4482",   # UEFA Conference League
 }
 
+# ============ ЖЕНСКИЕ ЛИГИ ============
 WOMEN_LEAGUE_IDS = {
     "4424": ("W_E0", "WSL"),
-    "4482": ("W_SP1", "Liga F"),
-    "4483": ("W_F1", "D1 Féminine"),
-    "4484": ("W_D1", "Frauen-BL"),
-    "4485": ("W_I1", "Serie A Fem"),
-    "4486": ("W_C1", "UWCL"),
+    "4483": ("W_SP1", "Liga F"),
+    "4484": ("W_F1", "D1 Féminine"),
+    "4485": ("W_D1", "Frauen-BL"),
+    "4486": ("W_I1", "Serie A Fem"),
+    "4487": ("W_C1", "UWCL"),
+}
+
+# ============ МАТЧИ СБОРНЫХ ============
+NATIONAL_TEAM_LEAGUES = {
+    "4502": ("NT_UNL", "🏆 Лига Наций УЕФА"),
+    "4498": ("NT_WCE", "⚽ Отбор ЧМ Европа"),
+    "4501": ("NT_WCC", "⚽ Отбор ЧМ Юж. Америка"),
+    "4499": ("NT_WCA", "⚽ Отбор ЧМ Азия"),
+    "4500": ("NT_WCF", "⚽ Отбор ЧМ Африка"),
+    "4503": ("NT_WCN", "⚽ Отбор ЧМ Сев. Америка"),
+    "4497": ("NT_EQ", "🇪🇺 Отбор Евро"),
+    "4504": ("NT_CA", "🏆 Копа Америка"),
+    "4505": ("NT_ACN", "🏆 Кубок Африки"),
+    "4506": ("NT_ASC", "🏆 Кубок Азии"),
+    "4507": ("NT_FR", "🤝 Товарищеские"),
+    "4508": ("NT_EURO", "🏆 Чемпионат Европы"),
+    "4509": ("NT_WC", "🏆 Чемпионат Мира"),
+}
+
+DIV_NAMES = {
+    "E0": "🏴 АПЛ", "E1": "🏴󠁧󠁮󠁿 Чемпионшип",
+    "D1": "🇩 Бундеслига", "D2": "🇩🇪 2.Бундеслига",
+    "I1": "🇮 Серия A", "I2": "🇮 Серия B",
+    "SP1": "🇪 Ла Лига", "SP2": "🇪🇸 Сегунда",
+    "F1": "🇫🇷 Лига 1", "F2": "🇫🇷 Лига 2",
+    "N1": "🇳 Эредивизи", "B1": "🇧 Про-лига",
+    "P1": "🇵 Примейра", "T1": "🇹 Суперлига",
+    "G1": "🇬 Греция", "R1": "🇷 РПЛ",
+    "SC1": "🏴 Шотландия", "MLS1": "🇺 MLS",
+    "BR1": "🇧 Бразилия", "AR1": "🇦 Аргентина",
+    "AT1": "🇦 Австрия", "CH1": "🇨 Швейцария",
+    "NO1": "🇳 Норвегия", "SE1": "🇸 Швеция",
+    "DK1": "🇩 Дания", "PL1": "🇵 Польша",
+    "JP1": "🇯 Япония", "KR1": "🇰 Корея",
+    "MX1": "🇲 Мексика", "CO1": "🇨 Колумбия",
+    "C1": "🏆 ЛЧ", "EL": "🏆 ЛЕ", "EC": "🏆 ЛК",
+    "W_E0": "🏴 WSL (Ж)", "W_SP1": "🇪 Liga F (Ж)",
+    "W_F1": "🇫🇷 D1 Féminine (Ж)", "W_D1": "🇩 Frauen-BL (Ж)",
+    "W_I1": "🇮🇹 Serie A Fem (Ж)", "W_C1": "🏆 UWCL (Ж)",
+    "NT_UNL": "🏆 Лига Наций", "NT_WCE": "⚽ Отбор ЧМ ЕС",
+    "NT_WCC": "⚽ Отбор ЧМ ЮА", "NT_WCA": "⚽ Отбор ЧМ АЗ",
+    "NT_WCF": "⚽ Отбор ЧМ АФ", "NT_WCN": "⚽ Отбор ЧМ СА",
+    "NT_EQ": "🇪 Отбор Евро", "NT_CA": "🏆 Копа Америка",
+    "NT_ACN": "🏆 Кубок Африки", "NT_ASC": "🏆 Кубок Азии",
+    "NT_FR": "🤝 Товарищеские", "NT_EURO": "🏆 Евро",
+    "NT_WC": "🏆 ЧМ",
 }
 
 DIV_TO_ODDS = {
@@ -134,11 +185,8 @@ STADIUM_WALLS = {
     "T1": "linear-gradient(135deg, rgba(220,38,38,.55), rgba(202,138,4,.45))",
     "G1": "linear-gradient(135deg, rgba(59,130,246,.55), rgba(15,23,42,.95))",
     "R1": "linear-gradient(135deg, rgba(220,38,38,.55), rgba(30,58,138,.55))",
-    "C1": "linear-gradient(135deg, rgba(139,92,246,.55), rgba(15,23,42,.95))",
-    "EL": "linear-gradient(135deg, rgba(249,115,22,.55), rgba(15,23,42,.95))",
-    "EC": "linear-gradient(135deg, rgba(34,197,94,.55), rgba(15,23,42,.95))",
     "SC1": "linear-gradient(135deg, rgba(0,102,204,.55), rgba(15,23,42,.95))",
-    "MLS1": "linear-gradient(135deg, rgba(255,255,255,.15), rgba(15,23,42,.95))",
+    "MLS1": "linear-gradient(135deg, rgba(200,200,220,.15), rgba(15,23,42,.95))",
     "BR1": "linear-gradient(135deg, rgba(0,156,59,.55), rgba(15,23,42,.95))",
     "AR1": "linear-gradient(135deg, rgba(116,172,223,.55), rgba(15,23,42,.95))",
     "AT1": "linear-gradient(135deg, rgba(237,41,57,.55), rgba(15,23,42,.95))",
@@ -151,12 +199,28 @@ STADIUM_WALLS = {
     "KR1": "linear-gradient(135deg, rgba(0,51,153,.55), rgba(15,23,42,.95))",
     "MX1": "linear-gradient(135deg, rgba(0,104,71,.55), rgba(15,23,42,.95))",
     "CO1": "linear-gradient(135deg, rgba(252,209,22,.55), rgba(15,23,42,.95))",
+    "C1": "linear-gradient(135deg, rgba(139,92,246,.55), rgba(15,23,42,.95))",
+    "EL": "linear-gradient(135deg, rgba(249,115,22,.55), rgba(15,23,42,.95))",
+    "EC": "linear-gradient(135deg, rgba(34,197,94,.55), rgba(15,23,42,.95))",
     "W_E0": "linear-gradient(135deg, rgba(236,72,153,.55), rgba(15,23,42,.95))",
     "W_SP1": "linear-gradient(135deg, rgba(244,114,182,.55), rgba(15,23,42,.95))",
     "W_F1": "linear-gradient(135deg, rgba(217,70,239,.55), rgba(15,23,42,.95))",
     "W_D1": "linear-gradient(135deg, rgba(232,121,249,.55), rgba(15,23,42,.95))",
     "W_I1": "linear-gradient(135deg, rgba(192,132,252,.55), rgba(15,23,42,.95))",
     "W_C1": "linear-gradient(135deg, rgba(168,85,247,.55), rgba(15,23,42,.95))",
+    "NT_UNL": "linear-gradient(135deg, rgba(251,191,36,.55), rgba(15,23,42,.95))",
+    "NT_WCE": "linear-gradient(135deg, rgba(59,130,246,.55), rgba(15,23,42,.95))",
+    "NT_WCC": "linear-gradient(135deg, rgba(34,197,94,.55), rgba(15,23,42,.95))",
+    "NT_WCA": "linear-gradient(135deg, rgba(249,115,22,.55), rgba(15,23,42,.95))",
+    "NT_WCF": "linear-gradient(135deg, rgba(220,38,38,.55), rgba(15,23,42,.95))",
+    "NT_WCN": "linear-gradient(135deg, rgba(168,85,247,.55), rgba(15,23,42,.95))",
+    "NT_EQ": "linear-gradient(135deg, rgba(14,165,233,.55), rgba(15,23,42,.95))",
+    "NT_CA": "linear-gradient(135deg, rgba(236,72,153,.55), rgba(15,23,42,.95))",
+    "NT_ACN": "linear-gradient(135deg, rgba(234,179,8,.55), rgba(15,23,42,.95))",
+    "NT_ASC": "linear-gradient(135deg, rgba(20,184,166,.55), rgba(15,23,42,.95))",
+    "NT_FR": "linear-gradient(135deg, rgba(148,163,184,.45), rgba(15,23,42,.95))",
+    "NT_EURO": "linear-gradient(135deg, rgba(245,158,11,.55), rgba(15,23,42,.95))",
+    "NT_WC": "linear-gradient(135deg, rgba(220,38,38,.55), rgba(59,130,246,.45))",
     "DEFAULT": "linear-gradient(135deg, rgba(71,85,105,.55), rgba(15,23,42,.95))",
 }
 
@@ -166,45 +230,39 @@ TEAM_TRANSLATIONS = {
     "Liverpool": "Ливерпуль", "Arsenal": "Арсенал", "Chelsea": "Челси",
     "Tottenham": "Тоттенхэм", "Newcastle": "Ньюкасл", "Aston Villa": "Астон Вилла",
     "Brighton": "Брайтон", "West Ham": "Вест Хэм", "Everton": "Эвертон",
-    "Fulham": "Фулхэм", "Crystal Palace": "Кристал Пэлас", "Brentford": "Брентфорд",
-    "Nottingham Forest": "Ноттингем Форест", "Wolverhampton": "Вулверхэмптон",
-    "Wolves": "Вулверхэмптон", "Bournemouth": "Борнмут", "Leicester": "Лестер",
-    "Southampton": "Саутгемптон", "Ipswich": "Ипсвич", "Leeds": "Лидс",
-    "Burnley": "Бёрнли", "Watford": "Уотфорд", "Norwich": "Норвич",
     "Real Madrid": "Реал Мадрид", "Barcelona": "Барселона",
     "Atletico Madrid": "Атлетико Мадрид", "Sevilla": "Севилья",
-    "Real Betis": "Бетис", "Real Sociedad": "Реал Сосьедад",
-    "Athletic Bilbao": "Атлетик Бильбао", "Valencia": "Валенсия",
-    "Villarreal": "Вильярреал", "Girona": "Жирона",
-    "Inter": "Интер", "Inter Milan": "Интер", "AC Milan": "Милан",
-    "Juventus": "Ювентус", "Napoli": "Наполи", "Roma": "Рома",
-    "Lazio": "Лацио", "Atalanta": "Аталанта", "Fiorentina": "Фиорентина",
+    "Inter": "Интер", "AC Milan": "Милан", "Juventus": "Ювентус",
+    "Napoli": "Наполи", "Roma": "Рома", "Lazio": "Лацио", "Atalanta": "Аталанта",
     "Bayern Munich": "Бавария", "Borussia Dortmund": "Боруссия Дортмунд",
     "RB Leipzig": "РБ Лейпциг", "Bayer Leverkusen": "Байер Леверкузен",
     "PSG": "ПСЖ", "Paris Saint-Germain": "ПСЖ", "Marseille": "Марсель",
     "Lyon": "Лион", "Monaco": "Монако", "Lille": "Лилль",
     "Zenit": "Зенит", "Spartak Moscow": "Спартак", "CSKA Moscow": "ЦСКА",
-    "Lokomotiv Moscow": "Локомотив", "Dynamo Moscow": "Динамо",
-    "Krasnodar": "Краснодар", "Rostov": "Ростов",
     "FC Porto": "Порту", "Benfica": "Бенфика", "Sporting CP": "Спортинг",
     "Ajax": "Аякс", "PSV": "ПСВ", "Feyenoord": "Фейеноорд",
     "Celtic": "Селтик", "Rangers": "Рейнджерс",
-    "Flamengo": "Фламенго", "Palmeiras": "Палмейрас", "São Paulo": "Сан-Паулу",
+    "Flamengo": "Фламенго", "Palmeiras": "Палмейрас",
     "Boca Juniors": "Бока Хуниорс", "River Plate": "Ривер Плейт",
-    "Galatasaray": "Галатасарай", "Fenerbahçe": "Фенербахче", "Beşiktaş": "Бешикташ",
-    "Red Bull Salzburg": "Ред Булл Зальцбург",
-    "Young Boys": "Янг Бойз", "Basel": "Базель",
-    "Rosenborg": "Русенборг", "Molde": "Мольде",
-    "Malmö FF": "Мальмё", "AIK": "АИК",
-    "FC Copenhagen": "Копенгаген", "Brøndby": "Брондбю",
-    "Legia Warsaw": "Легия", "Lech Poznań": "Лех Познань",
-    "Urawa Red Diamonds": "Урава Ред Даймондс",
-    "Jeonbuk Hyundai": "Чонбук Хёндэ",
-    "Club América": "Клуб Америка", "Guadalajara": "Гвадалахара",
-    "Atlético Nacional": "Атлетико Насьональ",
-    "Arsenal WFC": "Арсенал (Ж)", "Chelsea FC Women": "Челси (Ж)",
-    "FC Barcelona Femení": "Барселона (Ж)",
-    "Olympique Lyonnais Féminin": "Лион (Ж)",
+    "Galatasaray": "Галатасарай", "Fenerbahçe": "Фенербахче",
+    # Сборные
+    "England": "Англия", "France": "Франция", "Germany": "Германия",
+    "Spain": "Испания", "Italy": "Италия", "Portugal": "Португалия",
+    "Brazil": "Бразилия", "Argentina": "Аргентина", "Uruguay": "Уругвай",
+    "Colombia": "Колумбия", "Chile": "Чили", "Mexico": "Мексика",
+    "USA": "США", "Canada": "Канада", "Japan": "Япония",
+    "South Korea": "Южная Корея", "Australia": "Австралия",
+    "Morocco": "Марокко", "Senegal": "Сенегал", "Egypt": "Египет",
+    "Nigeria": "Нигерия", "Cameroon": "Камерун",
+    "Saudi Arabia": "Саудовская Аравия", "Iran": "Иран",
+    "Russia": "Россия", "Ukraine": "Украина", "Poland": "Польша",
+    "Czech Republic": "Чехия", "Sweden": "Швеция", "Norway": "Норвегия",
+    "Denmark": "Дания", "Finland": "Финляндия", "Iceland": "Исландия",
+    "Netherlands": "Голландия", "Belgium": "Бельгия", "Switzerland": "Швейцария",
+    "Austria": "Австрия", "Croatia": "Хорватия", "Serbia": "Сербия",
+    "Turkey": "Турция", "Greece": "Греция", "Romania": "Румыния",
+    "Hungary": "Венгрия", "Wales": "Уэльс", "Scotland": "Шотландия",
+    "Ireland": "Ирландия",
 }
 
 FOOTBALL_DATA_ORG_HOST = "api.football-data.org"
