@@ -162,6 +162,13 @@ def build_verdict(
     else:
         conf, cc = "низкая", "#f87171"
 
+    # Прозрачный confidence score: не новая модель, а нормализация
+    # уже рассчитанных model probability / edge / EV.
+    confidence_score = round(min(100.0, max(0.0, (
+        0.55 * top["prob"] * 100.0
+        + 0.45 * min(1.0, max(0.0, (top["prob"] - 0.50) / 0.35)) * 100.0
+    ))), 1)
+
     verdict = {
         "pick": top["pick"],
         "label": top["label"],
@@ -175,6 +182,13 @@ def build_verdict(
 
         "confidence": conf,
         "conf_color": cc,
+        "confidence_score": confidence_score,
+        "confidence_label": (
+            "A" if confidence_score >= 80
+            else "B" if confidence_score >= 65
+            else "C" if confidence_score >= 50
+            else "D"
+        ),
 
         "reasons": reasons,
         "alternatives": alt,
