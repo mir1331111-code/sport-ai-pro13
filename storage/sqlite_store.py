@@ -1,6 +1,16 @@
-"""storage/sqlite_store.py — SQLite с кэшем и batch-операциями."""
+"""storage/sqlite_store.py — SQLite с кэшем и batch-операциями (v2).
+
+Что изменено:
+  * insert_bets_batch — одна транзакция (раньше при сбое посередине вставлялась часть строк);
+  * update_bet / insert_bets_batch сами сбрасывают кэши;
+  * clv_breakdown группирует по COALESCE-значению (раньше NULL и '' давали две строки «—»);
+  * ошибки log_bank пишутся в лог.
+"""
 from __future__ import annotations
-import sqlite3, threading
+
+import logging
+import sqlite3
+import threading
 from contextlib import contextmanager
 from typing import Iterable, Optional
 
@@ -10,11 +20,13 @@ try:
 except Exception:
     def _cache(**_kw):
         def deco(fn):
+            fn.clear = lambda: None
             return fn
         return deco
 
 from config import DB_FILE
 
+log = logging.getLogger("sqlite_store")
 _LOCK = threading.RLock()
 SQLITE_BOOT_OK = False
 SQLITE_BOOT_ERROR = ""
@@ -71,6 +83,14 @@ def db_init() -> bool:
         return False
 
 
+def invalidate_caches() -> None:
+    for fn in ("fetch_bets", "clv_summary", "clv_breakdown", "bank_history"):
+        try:
+            globals()[fn].clear()
+        except Exception:
+            pass
+
+
 def insert_bets_batch(bets: Iterable) -> int:
     rows = []
     for b in bets:
@@ -89,13 +109,20 @@ def insert_bets_batch(bets: Iterable) -> int:
     if not rows:
         return 0
     with _db() as c:
-        c.executemany("""
-            INSERT INTO bets (match, match_ru, div, league, market, pick,
-                              odds, closing_odds, stake, prob, status, score,
-                              strat, odds_source, mode, fixture_id,
-                              date, date_iso, date_time, ev, clv, settled_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, rows)
+        try:
+            c.execute("BEGIN")
+            c.executemany("""
+                INSERT INTO bets (match, match_ru, div, league, market, pick,
+                                  odds, closing_odds, stake, prob, status, score,
+                                  strat, odds_source, mode, fixture_id,
+                                  date, date_iso, date_time, ev, clv, settled_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, rows)
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+    invalidate_caches()
     return len(rows)
 
 
@@ -109,6 +136,7 @@ def update_bet(bet_id: int, **fields) -> None:
     with _db() as c:
         c.execute(f"UPDATE bets SET {set_sql} WHERE id=?",
                   (*safe.values(), bet_id))
+    invalidate_caches()
 
 
 @_cache(ttl=30, show_spinner=False)
@@ -127,37 +155,28 @@ def fetch_bets(status: Optional[str] = None, limit: int = 100000) -> list:
 
 @_cache(ttl=30, show_spinner=False)
 def clv_summary() -> dict:
-    """CLV-сводка. Безопасна для любой row_factory и пустой таблицы."""
+    """CLV-сводка. Безопасна для пустой таблицы."""
     empty = {"n": 0, "avg_clv": 0.0, "positive_share": 0.0}
     try:
         with _db() as c:
-            r1 = c.execute(
-                "SELECT COUNT(*) FROM bets WHERE clv IS NOT NULL"
-            ).fetchone()
-            n = int(r1[0]) if r1 and r1[0] is not None else 0
-            if n <= 0:
-                return empty
-            r2 = c.execute(
-                "SELECT AVG(clv) FROM bets WHERE clv IS NOT NULL"
-            ).fetchone()
-            avg_val = float(r2[0]) if r2 and r2[0] is not None else 0.0
-            r3 = c.execute(
-                "SELECT SUM(CASE WHEN clv > 0 THEN 1 ELSE 0 END) "
-                "FROM bets WHERE clv IS NOT NULL"
-            ).fetchone()
-            pos_count = int(r3[0]) if r3 and r3[0] is not None else 0
-            pos_share = pos_count / n if n else 0.0
-            return {"n": n, "avg_clv": avg_val, "positive_share": pos_share}
-    except Exception:
+            n, avg_v, pos = c.execute(
+                "SELECT COUNT(*), AVG(clv), "
+                "SUM(CASE WHEN clv > 0 THEN 1 ELSE 0 END) "
+                "FROM bets WHERE clv IS NOT NULL").fetchone()
+        n = int(n or 0)
+        if n <= 0:
+            return empty
+        return {"n": n, "avg_clv": float(avg_v or 0.0),
+                "positive_share": int(pos or 0) / n}
+    except Exception as e:
+        log.warning("clv_summary: %s", e)
         return empty
 
 
 @_cache(ttl=30, show_spinner=False)
 def clv_breakdown(group_by: str = "market") -> list:
     """CLV-разбивка по рынку или лиге."""
-    if group_by not in ("market", "league"):
-        group_by = "market"
-    column = "market" if group_by == "market" else "league"
+    column = "league" if group_by == "league" else "market"
     try:
         with _db() as c:
             rows = c.execute(
@@ -168,23 +187,16 @@ def clv_breakdown(group_by: str = "market") -> list:
                        SUM(CASE WHEN clv > 0 THEN 1 ELSE 0 END) AS positive_n
                 FROM bets
                 WHERE clv IS NOT NULL
-                GROUP BY {column}
+                GROUP BY grp
                 ORDER BY avg_clv DESC
                 """
             ).fetchall()
-        return [
-            {
-                "group": str(row[0] or "—"),
-                "n": int(row[1] or 0),
-                "avg_clv": float(row[2] or 0.0),
-                "positive_share": (
-                    float(row[3] or 0) / int(row[1])
-                    if row[1] else 0.0
-                ),
-            }
-            for row in rows
-        ]
-    except Exception:
+        return [{"group": str(r[0] or "—"), "n": int(r[1] or 0),
+                 "avg_clv": float(r[2] or 0.0),
+                 "positive_share": float(r[3] or 0) / int(r[1]) if r[1] else 0.0}
+                for r in rows]
+    except Exception as e:
+        log.warning("clv_breakdown: %s", e)
         return []
 
 
@@ -206,8 +218,8 @@ def log_bank(bank: float, event: str = "",
             c.execute(
                 "INSERT INTO bank_history(bank,event,bet_id,pnl) VALUES(?,?,?,?)",
                 (float(bank), event, bet_id, pnl))
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("log_bank: %s", e)
 
 
 def set_meta(key: str, value: str) -> None:
@@ -221,12 +233,3 @@ def get_meta(key: str, default: Optional[str] = None) -> Optional[str]:
         r = c.execute("SELECT value FROM meta WHERE key=?",
                       (str(key),)).fetchone()
         return r[0] if r else default
-
-
-def invalidate_caches() -> None:
-    try:
-        fetch_bets.clear()
-        clv_summary.clear()
-        bank_history.clear()
-    except Exception:
-        pass
