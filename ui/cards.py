@@ -153,7 +153,12 @@ def render_verdict_card(c: dict, thr: float) -> str:
     reasons_html = "".join("<li>" + esc(r) + "</li>" for r in reasons)
 
     warn = ""
-    if is_action and not has_real:
+    if is_action and has_real and not is_bet:
+        warn = ('<div style="color:#fde68a;font-size:.78rem;margin-top:10px;'
+                'padding:8px 12px;background:rgba(251,191,36,.08);'
+                'border-radius:10px;border:1px solid rgba(251,191,36,.25);">'
+                '⚠️ Рынок найден, но value не прошёл фильтр EV / Edge — ставка не добавлена.</div>')
+    elif is_action and not has_real:
         warn = ('<div style="color:#fde68a;font-size:.78rem;margin-top:10px;'
                 'padding:8px 12px;background:rgba(251,191,36,.08);'
                 'border-radius:10px;border:1px solid rgba(251,191,36,.25);">'
