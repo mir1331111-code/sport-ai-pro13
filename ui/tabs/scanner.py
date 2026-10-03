@@ -234,16 +234,18 @@ def render(min_prob, kelly_frac, matrix_n):
         fn = D.get("funnel")
 
         if fn:
-            st.success(
-                f"🧠 Обучено {fn.get('trained', 0)} · "
-                f"📡 Матчей {fn.get('src', 0)} · "
-                f"🎯 Найдено {fn.get('found', 0)} · "
-                f"➕ В портфель {fn.get('added', 0)} · "
-                f"💰 Заморожено {fn.get('frozen', 0):.0f} · "
-                f"🤖 LLM: {fn.get('llm', 0)} · "
-                f"🔍 Контекст: {fn.get('ctx', 0)} · "
-                f"👩 Женских: {fn.get('women', 0)} · "
-                f"🌍 Сборных: {fn.get('national', 0)}"
+            st.markdown("#### Последний скан · воронка сигналов")
+            f1, f2, f3, f4 = st.columns(4)
+            f1.metric("Модель", fn.get("model_candidates", 0))
+            f2.metric("Рынок проверен", fn.get("market_checked", 0))
+            f3.metric("Value прошло", fn.get("found", 0))
+            f4.metric("В портфель", fn.get("added", 0))
+            st.caption(
+                f"📡 {fn.get('src', 0)} матчей · "
+                f"⚠️ отфильтровано {fn.get('value_rejected', 0)} · "
+                f"💰 заморожено {fn.get('frozen', 0):.0f} · "
+                f"🤖 LLM {fn.get('llm', 0)} · "
+                f"🔍 контекст {fn.get('ctx', 0)}"
             )
 
         if HAS_CONTEXT:
@@ -476,6 +478,9 @@ def render(min_prob, kelly_frac, matrix_n):
 
         cards = []
         matches_with_best = 0
+        model_candidates = 0
+        market_checked = 0
+        value_rejected = 0
 
         odds_key = (
             D.get("meta", {})
@@ -563,6 +568,7 @@ def render(min_prob, kelly_frac, matrix_n):
             odds_source = "unavailable"
 
             if verdict.get("is_action"):
+                model_candidates += 1
                 sport_key = DIV_TO_ODDS.get(lg)
 
                 real_odds = None
@@ -588,6 +594,7 @@ def render(min_prob, kelly_frac, matrix_n):
                         real_odds = None
 
                 if real_odds:
+                    market_checked += 1
                     try:
                         verdict, best = refine_with_real_odds(
                             verdict,
@@ -611,15 +618,25 @@ def render(min_prob, kelly_frac, matrix_n):
                 # ----------------------------------------------------
 
                 if best is None:
-                    verdict["real_odds"] = False
-                    verdict["odd"] = None
-                    verdict["ev"] = None
-                    verdict["edge"] = None
-                    verdict["stake"] = 0.0
-                    verdict["is_bet"] = False
-                    verdict["is_action"] = False
-
-                    odds_source = "unavailable"
+                    # Если рынок был найден, но EV/Edge не прошли —
+                    # сохраняем модельный кандидат в Сканере, чтобы
+                    # пользователь видел причину отказа от ставки.
+                    if verdict.get("real_odds", False):
+                        value_rejected += 1
+                        verdict["is_bet"] = False
+                        verdict["stake"] = 0.0
+                        odds_source = "market"
+                    else:
+                        # Нет реального рынка — не показываем
+                        # модельную оценку как betting signal.
+                        verdict["real_odds"] = False
+                        verdict["odd"] = None
+                        verdict["ev"] = None
+                        verdict["edge"] = None
+                        verdict["stake"] = 0.0
+                        verdict["is_bet"] = False
+                        verdict["is_action"] = False
+                        odds_source = "unavailable"
 
             else:
                 verdict["real_odds"] = False
@@ -700,9 +717,10 @@ def render(min_prob, kelly_frac, matrix_n):
             )
 
         logs.append(
-            f"🎯 Найдено с P≥"
-            f"{min_prob * 100:.0f}%: "
-            f"{matches_with_best}"
+            f"🎯 Воронка: модель {model_candidates} · "
+            f"рынок проверен {market_checked} · "
+            f"value прошёл {matches_with_best} · "
+            f"отфильтровано {value_rejected}"
         )
 
         # ============================================================
@@ -1086,6 +1104,9 @@ def render(min_prob, kelly_frac, matrix_n):
         )
 
         D2["funnel"] = {
+            "model_candidates": model_candidates,
+            "market_checked": market_checked,
+            "value_rejected": value_rejected,
             "trained": getattr(
                 engine,
                 "trained_n",
