@@ -18,6 +18,129 @@ def _sharpe(returns: list, periods_per_year: int = 252) -> float:
     return (mu / sigma) * (periods_per_year ** 0.5)
 
 
+def _closed_bets(D):
+    return [
+        b for b in D.get("bets", [])
+        if isinstance(b, dict)
+        and b.get("status") in ("won", "lost")
+    ]
+
+
+def _bet_pnl(b):
+    stake = float(b.get("stake") or 0)
+    odds = float(b.get("odds") or 1)
+    if b.get("status") == "won":
+        return stake * (odds - 1)
+    if b.get("status") == "lost":
+        return -stake
+    return 0.0
+
+
+def _render_model(D):
+    bets = _closed_bets(D)
+    calibration = []
+    for b in bets:
+        try:
+            p = float(b.get("prob"))
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= p <= 1:
+            continue
+        calibration.append((p, 1.0 if b.get("status") == "won" else 0.0))
+
+    if not calibration:
+        st.info("Недостаточно закрытых ставок с вероятностью модели для Calibration.")
+        return
+
+    import pandas as pd
+
+    rows = []
+    for lo in [i / 20 for i in range(20)]:
+        hi = lo + 0.05
+        bucket = [
+            (p, y) for p, y in calibration
+            if (lo <= p < hi) or (hi >= 1.0 and lo <= p <= 1.0)
+        ]
+        if not bucket:
+            continue
+        n = len(bucket)
+        avg_p = sum(p for p, _ in bucket) / n
+        actual = sum(y for _, y in bucket) / n
+        rows.append({
+            "Диапазон P": f"{lo*100:.0f}–{hi*100:.0f}%",
+            "N": n,
+            "Model P": avg_p,
+            "Факт": actual,
+            "Ошибка": actual - avg_p,
+        })
+
+    brier = sum((p - y) ** 2 for p, y in calibration) / len(calibration)
+    abs_cal_error = (
+        sum(abs(r["Ошибка"]) * r["N"] for r in rows)
+        / len(calibration)
+        if rows else 0.0
+    )
+
+    st.subheader("🎯 Calibration модели")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Brier Score", f"{brier:.3f}")
+    c2.metric("Средняя ошибка", f"{abs_cal_error*100:.1f} п.п.")
+    c3.metric("Ставок в выборке", len(calibration))
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        chart = df.set_index("Диапазон P")[["Model P", "Факт"]] * 100
+        st.line_chart(chart, height=280)
+        st.dataframe(
+            df.assign(
+                **{
+                    "Model P": df["Model P"].map(lambda x: f"{x*100:.1f}%"),
+                    "Факт": df["Факт"].map(lambda x: f"{x*100:.1f}%"),
+                    "Ошибка": df["Ошибка"].map(lambda x: f"{x*100:+.1f} п.п."),
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(
+            "Идеальная калибровка: Model P и Факт близки. "
+            "Brier Score ниже — лучше; сравнивать его корректно на одинаковой выборке."
+        )
+
+    ordered = sorted(
+        bets,
+        key=lambda b: (
+            b.get("settled_at")
+            or b.get("date_time")
+            or b.get("date_iso")
+            or ""
+        ),
+    )
+    initial = float(D.get("meta", {}).get("initial_bank", 10000.0) or 10000.0)
+    equity = initial
+    peak = initial
+    max_dd = 0.0
+    curve = [{"Шаг": 0, "Банк": equity, "Drawdown": 0.0}]
+    for i, b in enumerate(ordered, 1):
+        equity += _bet_pnl(b)
+        peak = max(peak, equity)
+        dd = ((peak - equity) / peak) if peak > 0 else 0.0
+        max_dd = max(max_dd, dd)
+        curve.append({"Шаг": i, "Банк": equity, "Drawdown": dd * 100})
+
+    st.subheader("📈 Equity Curve")
+    ec = pd.DataFrame(curve).set_index("Шаг")
+    st.line_chart(ec[["Банк"]], height=280)
+    st.caption(
+        f"Старт: {initial:.0f} · текущая расчётная equity: {equity:.0f} · "
+        f"Max Drawdown: -{max_dd*100:.1f}% · закрытых ставок: {len(ordered)}"
+    )
+
+    dd_positive = ec[["Drawdown"]]
+    st.subheader("📉 Drawdown")
+    st.line_chart(dd_positive, height=220)
+
+
 def _render_overview(D):
     bets = [b for b in D.get("bets", []) if isinstance(b, dict)]
     if not bets:
@@ -175,15 +298,17 @@ def _render_by_market(D):
 def render():
     D = st.session_state.data
     st.header("📈 Статистика")
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["📊 Обзор", "🏆 По лигам", "📅 По дням", "🎯 По рынкам"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📊 Обзор", "🧪 Модель", "🏆 По лигам", "📅 По дням", "🎯 По рынкам"])
     with tab1:
         _render_overview(D)
     with tab2:
-        _render_by_league(D)
+        _render_model(D)
     with tab3:
-        _render_by_day(D)
+        _render_by_league(D)
     with tab4:
+        _render_by_day(D)
+    with tab5:
         _render_by_market(D)
 
     if db.SQLITE_BOOT_OK:
