@@ -1,11 +1,16 @@
-"""data/sources.py — TheSportsDB + football-data.org + Odds API + logos (v3).
+"""data/sources.py — TheSportsDB + football-data.org + Odds API + logos (v4).
 
 Совместим с App.py v13:
   * parse_date, fdorg_match_result    — для авто-сеттла
   * fdorg_matches, tsdb_matches       — для сканера
   * load_seasonal, season_str         — для обучения модели
   * odds_api_fixture                  — для реальных кэфов
-  * team_logo_url, league_logo_url    — заглушки (логотипы из карточек)
+
+Что изменено в v4:
+  * USL Championship (США) больше не мапится на English Championship (E1).
+    Раньше "championship" в названии лиги = E1 — это ломало USL-матчи.
+  * Добавлены USA-лиги: USL Championship, USL League One, MLS.
+  * Дополнительно распознаются шотландский, австралийский, японский чемпионаты.
 """
 from __future__ import annotations
 import csv, io, re
@@ -104,7 +109,7 @@ def _f(v):
         return None
 
 
-# ============ FOOTBALL-DATA.CO.UK (история для модели) ============
+# ============ FOOTBALL-DATA.CO.UK ============
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
     cached = cache_get(ck, CACHE_TTL["seasonal"])
@@ -131,28 +136,28 @@ def load_seasonal(div: str, season: str) -> list:
         return []
 
 
-# ============ THESPORTSDB (матчи для сканера) ============
+# ============ THESPORTSDB ============
 def _tsdb_league_meta(league_name: str):
-    """Определяет (div, kind, women, national) по названию лиги TheSportsDB.
+    """Определяет (div, kind, women, national) по названию лиги.
 
-    ВАЖНО: U21/U19/U23 проверяются РАНЬШЕ, чем "championship".
+    Порядок проверки:
+      1) Сборные / U-возрасты   → NT_*
+      2) Женские                → W_*
+      3) НЕ-английские чемпионшипы (USL, SPL, A-League, J-League...) → CLUB_*
+      4) Клубные лиги из mapping
     """
     if not league_name:
         return ("G", "club", False, False)
     ln = league_name.lower()
 
+    # --- 1. СБОРНЫЕ / U-ВОЗРАСТЫ (приоритет над всем)
     national = any(n in ln for n in (
         "u21", "u19", "u23", "u20", "u18", "u17",
         "national", "international", "world cup", "euro",
         "nations league", "friendly", "fifa", "uefa nations",
         "copa america", "africa cup", "afc asian",
     ))
-    women = any(w in ln for w in (
-        "women", "womens", "ladies", "female", "женск"
-    ))
-
-    if national or women:
-        kind = "national" if national else "women"
+    if national:
         if "u21" in ln:
             div = "NT_U21"
         elif "u19" in ln:
@@ -169,40 +174,95 @@ def _tsdb_league_meta(league_name: str):
             div = "NT_FR"
         else:
             div = "NT"
-        return (div, kind, women, national)
+        return (div, "national", False, True)
 
+    # --- 2. ЖЕНСКИЕ
+    women = any(w in ln for w in (
+        "women", "womens", "ladies", "female", "женск"
+    ))
+    if women:
+        return ("W_", "women", True, False)
+
+    # --- 3. НЕ-АНГЛИЙСКИЕ "ЧЕМПИОНШИПЫ" И ДРУГИЕ ЛИГИ (важно: ДО mapping!)
+    # США
+    if "usl" in ln or "united soccer league" in ln:
+        if "league one" in ln:
+            return ("US_L1", "club", False, False)
+        return ("US_USL", "club", False, False)
+    if "mls" in ln or "major league soccer" in ln or "usa major" in ln:
+        return ("US_MLS", "club", False, False)
+    # Шотландия
+    if "scottish" in ln or "scotland" in ln:
+        return ("SC_", "club", False, False)
+    # Австралия
+    if "a-league" in ln or "a league" in ln or "australia" in ln:
+        return ("AU_", "club", False, False)
+    # Япония
+    if "j1" in ln or "j-league" in ln or "jleague" in ln or "japan" in ln:
+        return ("JP_", "club", False, False)
+    # Корея
+    if "k league" in ln or "k-league" in ln or "korea" in ln:
+        return ("KR_", "club", False, False)
+    # Китай
+    if "chinese super" in ln or "china" in ln:
+        return ("CN_", "club", False, False)
+    # Мексика
+    if "liga mx" in ln or "mexico" in ln:
+        return ("MX_", "club", False, False)
+    # Бразилия
+    if "brasileir" in ln or "brazil" in ln:
+        return ("BR_", "club", False, False)
+    # Аргентина
+    if "argentina" in ln or "primera division arg" in ln:
+        return ("AR_", "club", False, False)
+
+    # --- 4. АНГЛИЙСКИЕ / ЕВРОПЕЙСКИЕ ЛИГИ (после USL!)
     mapping = [
-        (("premier league", "epl"), "E0"),
-        (("championship",), "E1"),
-        (("la liga", "laliga"), "SP1"),
-        (("segunda",), "SP2"),
-        (("serie a",), "I1"),
-        (("serie b",), "I2"),
-        (("bundesliga",), "D1"),
-        (("2. bundesliga",), "D2"),
-        (("3. liga",), "D3"),
-        (("ligue 1",), "F1"),
-        (("ligue 2",), "F2"),
-        (("eredivisie",), "N1"),
-        (("pro league", "first division a"), "B1"),
-        (("primeira liga",), "P1"),
-        (("super lig", "super league"), "T1"),
-        (("champions league",), "C1"),
-        (("europa league",), "EL"),
-        (("conference league",), "EC"),
-        (("russian premier",), "R1"),
-        (("super league greece",), "G1"),
+        # Англия — ВАЖНО: точное совпадение "english championship"/"efl championship"
+        (("english premier league", "epl"), "E0"),
+        (("efl championship", "english championship",
+          "sky bet championship"), "E1"),
+        (("efl league one", "english league one", "sky bet league one"), "E2"),
+        (("efl league two", "english league two", "sky bet league two"), "E3"),
+        # Испания
+        (("spanish la liga", "la liga", "laliga"), "SP1"),
+        (("spanish segunda", "segunda division", "laliga 2"), "SP2"),
+        # Италия
+        (("italian serie a", "serie a"), "I1"),
+        (("italian serie b", "serie b"), "I2"),
+        # Германия
+        (("german bundesliga", "bundesliga"), "D1"),
+        (("2. bundesliga", "german 2"), "D2"),
+        (("3. liga", "german 3"), "D3"),
+        # Франция
+        (("french ligue 1", "ligue 1"), "F1"),
+        (("french ligue 2", "ligue 2"), "F2"),
+        # Нидерланды
+        (("dutch eredivisie", "eredivisie"), "N1"),
+        # Бельгия
+        (("belgian pro league", "belgian first division"), "B1"),
+        # Португалия
+        (("portuguese primeira", "primeira liga"), "P1"),
+        # Турция
+        (("turkish super", "super lig"), "T1"),
+        # Греция
+        (("greek super", "super league greece", "super league 1"), "G1"),
+        # Россия
+        (("russian premier", "russian football"), "R1"),
+        # Еврокубки
+        (("uefa champions", "champions league"), "C1"),
+        (("uefa europa", "europa league"), "EL"),
+        (("uefa conference", "conference league"), "EC"),
     ]
-    div = "G"
     for keys, code in mapping:
         if any(k in ln for k in keys):
-            div = code
-            break
-    return (div, "club", False, False)
+            return (code, "club", False, False)
+
+    return ("G", "club", False, False)
 
 
 def tsdb_matches(days: int = 7, logs=None) -> list:
-    """Сбор матчей из TheSportsDB на N дней вперёд (для сканера)."""
+    """Сбор матчей из TheSportsDB на N дней вперёд."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     out = []
     total_days = min(max(1, int(days)), 14)
@@ -210,7 +270,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     for off in range(total_days):
         d = today + timedelta(days=off)
         dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_day_v7_{dstr}"
+        ck = f"tsdb_day_v8_{dstr}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -288,7 +348,6 @@ def _fdorg_get(endpoint: str, params: dict, token: str) -> Optional[dict]:
 
 
 def fdorg_matches(days: int, token: str, logs=None) -> list:
-    """Сбор матчей из football-data.org на N дней вперёд (для сканера)."""
     if not token:
         return []
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -302,7 +361,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                 logs.append("fdorg: soft-лимит исчерпан")
             break
         div_code = FDORG_TO_DIV.get(comp, "G")
-        ck = f"fdorg_v10_{comp}_{d_from}_{d_to}"
+        ck = f"fdorg_v11_{comp}_{d_from}_{d_to}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -356,10 +415,10 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
 
 
 def fdorg_match_result(match_id, token: str) -> Optional[dict]:
-    """Финальный результат матча для авто-сеттла. App.py требует эту функцию."""
+    """Финальный результат для авто-сеттла. App.py v13 требует эту функцию."""
     if not match_id or not token:
         return None
-    ck = f"fdorg_result_v10_{match_id}"
+    ck = f"fdorg_result_v11_{match_id}"
     cached = cache_get(ck, 86400)
     if cached is not None:
         return cached or None
@@ -372,7 +431,6 @@ def fdorg_match_result(match_id, token: str) -> Optional[dict]:
         cache_put(ck, None)
         return None
     score = m.get("score") or {}
-    # Для AET/PEN берём regularTime (ставки на 90 минут)
     if (score.get("duration") or "REGULAR") != "REGULAR":
         reg = score.get("regularTime") or {}
         hg = reg.get("home")
@@ -466,7 +524,7 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         return None
 
 
-# ============ LOGOS (fallback — logos из карточек) ============
+# ============ LOGOS ============
 def team_logo_url(team_name: str) -> Optional[str]:
     return None
 
