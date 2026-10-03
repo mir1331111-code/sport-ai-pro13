@@ -124,6 +124,42 @@ section.stButton > button:active { transform: translateY(0) scale(.98); }
     0% { opacity: .7; }
     100% { opacity: 1; }
 }
+.hero-head {
+    position:relative;
+    display:flex;
+    justify-content:space-between;
+    gap:20px;
+    align-items:flex-start;
+}
+.hero-eyebrow {
+    position:relative;
+    color:#7dd3fc;
+    font-size:.68rem;
+    font-weight:800;
+    letter-spacing:1.8px;
+    margin-bottom:5px;
+}
+.hero-status {
+    position:relative;
+    padding:7px 11px;
+    border-radius:999px;
+    border:1px solid rgba(52,211,153,.25);
+    background:rgba(52,211,153,.08);
+    color:#86efac;
+    font-size:.68rem;
+    font-weight:800;
+    letter-spacing:1px;
+    white-space:nowrap;
+}
+.status-dot {
+    display:inline-block;
+    width:7px;
+    height:7px;
+    border-radius:50%;
+    background:#34d399;
+    margin-right:6px;
+    box-shadow:0 0 10px rgba(52,211,153,.35);
+}
 .hero h1 {
     position: relative;
     margin: 0;
