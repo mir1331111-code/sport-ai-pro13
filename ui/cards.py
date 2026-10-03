@@ -234,7 +234,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         '</div>'
         '<div class="signal-layers">'
         '<span class="layer model-layer">MODEL · Poisson / form / Elo</span>'
-        '<span class="layer market-layer">' + ('MARKET · real odds' if has_real else 'MARKET · unavailable') + '</span>'
+        '<span class="layer market-layer">' + ('MARKET · real odds · DATA OK' if quality == 'REAL_MARKET' else 'MARKET · unavailable · DATA INCOMPLETE') + '</span>'
         '<span class="layer value-layer">' + ('VALUE · bet' if is_bet else 'VALUE · no bet') + '</span>'
         '</div>' + warn + '</div>'
 
