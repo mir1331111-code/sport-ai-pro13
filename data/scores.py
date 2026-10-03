@@ -62,9 +62,9 @@ def _get_token() -> str:
         return ""
 
 
-# ============ ESPN (все лиги + сборные) ============
+# ============ ESPN ============
 def _espn_day(date_iso: str) -> list:
-    ck = f"espn_day_v2_{date_iso}"    # ← v2 — новый кэш
+    ck = f"espn_day_v2_{date_iso}"
     cached = cache_get(ck, 3600)
     if cached is not None:
         return cached if isinstance(cached, list) else []
