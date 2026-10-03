@@ -218,7 +218,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         ';border-bottom:1px solid ' + mbd + ';padding:16px 24px;">'
         '<div style="font-size:1.2rem;font-weight:900;color:#fff;margin-bottom:10px;'
         'letter-spacing:-.3px;">' + mt + '</div>'
-        <div class="signal-grid">
+        '<div class="signal-grid">'
         '<div class="signal-metric model"><span>MODEL P</span><b>' + prob_display + '%</b></div>'
         '<div class="signal-metric market"><span>MARKET ODDS</span><b>' + odd_display + '</b></div>'
         '<div class="signal-metric value"><span>EDGE</span><b>' + edge_display + '</b></div>'
