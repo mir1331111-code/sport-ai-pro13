@@ -336,7 +336,45 @@ def render():
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("CLV avg", f"{clv.get('avg_clv', 0)*100:+.2f}%")
             c2.metric("CLV N", clv.get("n", 0))
-            c3.metric("Max DD", f"-{max_dd*100:.1f}%")
+            c3.metric("CLV +", f"{clv.get('positive_share', 0)*100:.1f}%")
             c4.metric("Sharpe", f"{sharpe:.2f}")
+
+            st.caption(
+                "CLV показывает изменение цены между входом и закрытием рынка; "
+                "положительная доля — процент ставок с CLV > 0."
+            )
+            try:
+                import pandas as pd
+                market_rows = db.clv_breakdown("market")
+                league_rows = db.clv_breakdown("league")
+                if market_rows or league_rows:
+                    st.subheader("🔎 CLV по рынкам и лигам")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**Рынки**")
+                        df_m = pd.DataFrame(market_rows)
+                        if not df_m.empty:
+                            df_m = df_m.rename(columns={
+                                "group": "Рынок", "n": "N",
+                                "avg_clv": "CLV avg",
+                                "positive_share": "CLV +"
+                            })
+                            df_m["CLV avg"] = df_m["CLV avg"].map(lambda x: f"{x*100:+.2f}%")
+                            df_m["CLV +"] = df_m["CLV +"].map(lambda x: f"{x*100:.1f}%")
+                            st.dataframe(df_m, use_container_width=True, hide_index=True)
+                    with c2:
+                        st.markdown("**Лиги**")
+                        df_l = pd.DataFrame(league_rows)
+                        if not df_l.empty:
+                            df_l = df_l.rename(columns={
+                                "group": "Лига", "n": "N",
+                                "avg_clv": "CLV avg",
+                                "positive_share": "CLV +"
+                            })
+                            df_l["CLV avg"] = df_l["CLV avg"].map(lambda x: f"{x*100:+.2f}%")
+                            df_l["CLV +"] = df_l["CLV +"].map(lambda x: f"{x*100:.1f}%")
+                            st.dataframe(df_l, use_container_width=True, hide_index=True)
+            except Exception:
+                pass
         except Exception:
             pass
