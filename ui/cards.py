@@ -117,14 +117,19 @@ def render_verdict_card(c: dict, thr: float) -> str:
     h_badge = _team_badge_html(h_en, h_ru, c.get("home_badge", "") or "")
     a_badge = _team_badge_html(a_en, a_ru, c.get("away_badge", "") or "")
 
-    if is_action and has_real:
+    is_bet = bool(v.get("is_bet", False))
+    if is_bet:
         mb = "linear-gradient(135deg,rgba(52,211,153,.22),rgba(16,185,129,.08))"
         mbd = "rgba(52,211,153,.65)"
-        mt = "🎯 СТАВЬ: " + esc(pick)
+        mt = "🎯 СТАВКА: " + esc(pick)
+    elif is_action and has_real:
+        mb = "linear-gradient(135deg,rgba(251,191,36,.20),rgba(202,138,4,.08))"
+        mbd = "rgba(251,191,36,.55)"
+        mt = "⚠️ VALUE НЕ ПРОШЁЛ ФИЛЬТР"
     elif is_action:
         mb = "linear-gradient(135deg,rgba(251,191,36,.20),rgba(202,138,4,.08))"
         mbd = "rgba(251,191,36,.55)"
-        mt = "🤔 ВЫСОКАЯ P: " + esc(pick)
+        mt = "🤔 КАНДИДАТ МОДЕЛИ: " + esc(pick)
     else:
         mb = "linear-gradient(135deg,rgba(148,163,184,.15),rgba(100,116,139,.08))"
         mbd = "rgba(148,163,184,.4)"
@@ -179,6 +184,10 @@ def render_verdict_card(c: dict, thr: float) -> str:
 
     odd_display = str(round(odd, 2)) if has_real else "—"
     prob_display = str(round(prob * 100))
+    fair_display = str(round(float(v.get("fair_odd") or 0), 2)) if v.get("fair_odd") else "—"
+    ev_display = f"{float(v.get('ev', 0)) * 100:+.1f}%" if v.get("ev") is not None else "—"
+    edge_display = f"{float(v.get('edge', 0)) * 100:+.1f}%" if v.get("edge") is not None else "—"
+    stake_display = f"{float(v.get('stake', 0)):.0f}" if v.get("stake") is not None else "—"
 
     return (
         '<div class="vcard" style="background:' + bg + ';">'
@@ -209,12 +218,18 @@ def render_verdict_card(c: dict, thr: float) -> str:
         ';border-bottom:1px solid ' + mbd + ';padding:16px 24px;">'
         '<div style="font-size:1.2rem;font-weight:900;color:#fff;margin-bottom:10px;'
         'letter-spacing:-.3px;">' + mt + '</div>'
-        '<div style="display:flex;gap:24px;font-size:.9rem;color:#e6eaf2;flex-wrap:wrap;">'
-        '<div>Вероятность: <b style="color:#34d399;font-size:1.15rem;'
-        'font-family:JetBrains Mono,monospace;">' + prob_display + '%</b></div>'
-        '<div>Кэф: <b style="color:#a5f3fc;font-size:1.15rem;'
-        'font-family:JetBrains Mono,monospace;">' + odd_display + '</b></div>'
-        '<div>Уверенность: <b style="color:' + cc + ';">' + esc(conf) + '</b></div>'
+        <div class="signal-grid">
+        '<div class="signal-metric model"><span>MODEL P</span><b>' + prob_display + '%</b></div>'
+        '<div class="signal-metric market"><span>MARKET ODDS</span><b>' + odd_display + '</b></div>'
+        '<div class="signal-metric value"><span>EDGE</span><b>' + edge_display + '</b></div>'
+        '<div class="signal-metric value"><span>EV</span><b>' + ev_display + '</b></div>'
+        '<div class="signal-metric"><span>FAIR ODDS</span><b>' + fair_display + '</b></div>'
+        '<div class="signal-metric"><span>STAKE</span><b>' + stake_display + '</b></div>'
+        '</div>'
+        '<div class="signal-layers">'
+        '<span class="layer model-layer">MODEL · Poisson / form / Elo</span>'
+        '<span class="layer market-layer">' + ('MARKET · real odds' if has_real else 'MARKET · unavailable') + '</span>'
+        '<span class="layer value-layer">' + ('VALUE · bet' if is_bet else 'VALUE · no bet') + '</span>'
         '</div>' + warn + '</div>'
 
         '<div style="padding:16px 24px;">'
