@@ -1,55 +1,122 @@
-"""storage/usage.py — счётчики дневных лимитов."""
+"""storage/usage.py — счётчики дневных лимитов и локальные данные (v2).
+
+Что изменено:
+  * read-modify-write под блокировкой (потоки Streamlit больше не затирают друг друга);
+  * если файл временно недоступен — НЕ перезаписываем его «пустышкой»
+    (раньше increment() мог стереть весь портфель из neuro_local.json);
+  * битый JSON сохраняется в *.corrupt-<время>, а не теряется молча;
+  * атомарная запись с fsync, права 600 (в файле лежат API-ключи);
+  * ошибки пишутся в лог, а не глотаются.
+"""
 from __future__ import annotations
-import json, os
+
+import json
+import logging
+import os
+import shutil
+import threading
+import time
 from datetime import datetime
+from typing import Callable
 
 from config import (LOCAL_FILE, AUTO_SETTLE_LIMIT, LLM_DAILY_LIMIT,
                     ODDS_LIMIT_DAILY, FOOTBALL_DATA_ORG_DAILY_LIMIT)
+
+log = logging.getLogger("usage")
+_LOCK = threading.RLock()
 
 
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def _backup_corrupt() -> None:
+    try:
+        dst = f"{LOCAL_FILE}.corrupt-{datetime.now():%Y%m%d_%H%M%S}"
+        shutil.copy2(LOCAL_FILE, dst)
+        log.error("neuro_local.json повреждён, копия сохранена: %s", dst)
+    except Exception as e:
+        log.error("не удалось сохранить копию битого файла: %s", e)
+
+
 def _load_all() -> dict:
-    try:
-        if os.path.exists(LOCAL_FILE):
+    """Читает файл. Бросает OSError, если он недоступен (писать поверх нельзя)."""
+    for attempt in range(3):
+        try:
+            if not os.path.exists(LOCAL_FILE):
+                return {}
             with open(LOCAL_FILE, "r", encoding="utf-8") as f:
-                return json.load(f) or {}
-    except Exception:
-        pass
-    return {}
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            _backup_corrupt()
+            return {}
+        except OSError:
+            time.sleep(0.1 * (attempt + 1))
+    raise OSError(f"{LOCAL_FILE} недоступен")
 
 
-def _save_all(data: dict) -> None:
+def _save_all(data: dict) -> bool:
+    tmp = f"{LOCAL_FILE}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
-        tmp = LOCAL_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
         os.replace(tmp, LOCAL_FILE)
-    except Exception:
-        pass
+        return True
+    except Exception as e:
+        log.error("запись %s не удалась: %s", LOCAL_FILE, e)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _update(mutator: Callable[[dict], None]) -> bool:
+    with _LOCK:
+        try:
+            all_ = _load_all()
+        except OSError as e:
+            log.error("%s — запись пропущена, чтобы не затереть данные", e)
+            return False
+        mutator(all_)
+        return _save_all(all_)
+
+
+def _safe_read() -> dict:
+    with _LOCK:
+        try:
+            return _load_all()
+        except OSError:
+            return {}
 
 
 def _load_counter(name: str) -> dict:
-    all_ = _load_all()
-    u = (all_.get("usage") or {}).get(name)
+    u = (_safe_read().get("usage") or {}).get(name)
     if isinstance(u, dict) and u.get("date") == _today():
         return u
     return {"date": _today(), "count": 0}
 
 
-def _save_counter(name: str, d: dict) -> None:
-    all_ = _load_all()
-    all_.setdefault("usage", {})[name] = d
-    _save_all(all_)
-
-
 def increment(name: str, n: int = 1) -> dict:
-    d = _load_counter(name)
-    d["count"] = int(d.get("count", 0)) + n
-    _save_counter(name, d)
-    return d
+    result: dict = {}
+
+    def _m(all_: dict) -> None:
+        u = (all_.get("usage") or {}).get(name)
+        if not (isinstance(u, dict) and u.get("date") == _today()):
+            u = {"date": _today(), "count": 0}
+        u["count"] = int(u.get("count", 0)) + n
+        all_.setdefault("usage", {})[name] = u
+        result.update(u)
+
+    _update(_m)
+    return result or _load_counter(name)
 
 
 def remaining(name: str, limit: int) -> int:
@@ -58,7 +125,7 @@ def remaining(name: str, limit: int) -> int:
 
 def reset(name: str) -> dict:
     d = {"date": _today(), "count": 0}
-    _save_counter(name, d)
+    _update(lambda all_: all_.setdefault("usage", {}).__setitem__(name, d))
     return d
 
 
@@ -111,10 +178,8 @@ def fdorg_reset() -> dict:
 
 
 def get_local_data() -> dict:
-    return (_load_all().get("data") or {})
+    return _safe_read().get("data") or {}
 
 
 def set_local_data(data: dict) -> None:
-    all_ = _load_all()
-    all_["data"] = data
-    _save_all(all_)
+    _update(lambda all_: all_.__setitem__("data", data))
