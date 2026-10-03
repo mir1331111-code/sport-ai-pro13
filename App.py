@@ -343,7 +343,7 @@ with st.sidebar:
         "<div style='font-size:.72rem;color:#8b93a7;margin-bottom:6px;'>"
         "🎯 Параметры</div>",
         unsafe_allow_html=True)
-    min_prob = st.slider("Мин. P %", 50, 85, 55, 1) / 100
+    min_prob = st.slider("Мин. Р %", 30, 85, 40, 1) / 100
     kelly_frac = st.slider("Kelly", 0.05, 0.40, 0.25, 0.05)
     matrix_n = st.slider("Матрица", 6, 15, 12, 1)
 
