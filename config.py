@@ -273,3 +273,8 @@ DIV_TO_FDORG = {
     "D1": "BL1", "F1": "FL1", "N1": "DED", "P1": "PPL", "C1": "CL",
 }
 FDORG_TO_DIV = {v: k for k, v in DIV_TO_FDORG.items()}
+
+
+# ============ AUTO-SETTLE ============
+AUTO_SETTLE_THROTTLE_SEC = 3600      # 1 час между автосеттлами в одной сессии
+AUTO_SETTLE_LIMIT = 20               # максимум ставок за один проход
