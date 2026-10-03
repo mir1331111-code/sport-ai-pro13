@@ -1,16 +1,11 @@
-"""data/scores.py — ESPN (все лиги) → football-data.org → OpenLigaDB (v2).
+"""data/scores.py — ESPN + football-data.org + OpenLigaDB (v3).
 
 Что изменено:
-  * сопоставление команд по токенам (убраны диакритики, «FC/AC…», алиасы), а не по
-    подстроке: «Arsenal» больше не совпадает с «Arsenal Women»; «Fenerbahçe» == «Fenerbahce»;
-  * пустое нормализованное имя больше не совпадает со всем подряд;
-  * football-data.org: ОДИН запрос /v4/matches на дату вместо 13 лиг × 3 дня × 6.5 с паузы
-    (раньше до ~4 минут на одну ставку, блокируя Streamlit); 429 → кулдаун, без sleep(60);
-  * сбои API (HTTP != 200, исключения) больше не кэшируются как «пустой день»;
-  * TTL кэша: свежие даты 10 мин, старые — 7 дней;
-  * матчи с доп. временем/пенальти НЕ отдаются как обычный счёт (status="AET") —
-    ставка уйдёт на ручную проверку; используется regularTime, если он есть;
-  * OpenLigaDB: сезон считается от даты (раньше жёстко "2026"), лига-сезон кэшируется целиком.
+  * _same_team: мягкий матчинг (Brooklyn FC ↔ Brooklyn, Rhode Island FC ↔ Rhode Island)
+  * _find_espn: логирование near-miss (для диагностики NOT FOUND)
+  * Сохранены все защиты v2: токены, диакритика, алиасы, женские/юношеские
+  * football-data.org: 1 запрос /v4/matches на дату
+  * AET: отдельный статус (не путается со FT)
 """
 from __future__ import annotations
 
@@ -31,8 +26,6 @@ NO_PROXY = {"http": None, "https": None, "all": None}
 ESPN_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard"
 FDORG_URL = "https://api.football-data.org/v4/matches"
 
-# Турниры бесплатного тарифа (как в config.DIV_TO_FDORG). SD/SB/BL2/FL2 убраны:
-# на бесплатном тарифе их нет, запрос с ними даёт 403 — проверьте свой тариф.
 FDORG_COMPETITIONS = ["PL", "ELC", "PD", "SA", "BL1", "FL1", "DED", "PPL", "CL"]
 
 
@@ -77,6 +70,11 @@ _ALIASES = {
     "inter milan": "inter", "paris saint germain": "psg", "paris sg": "psg",
     "bayern munich": "bayern", "bayern munchen": "bayern",
     "nott m forest": "nottingham forest",
+    # USL (для тех, что не матчились)
+    "brooklyn": "brooklyn fc",
+    "rhode island": "rhode island fc",
+    "detroit city": "detroit city fc",
+    "birmingham legion": "birmingham legion fc",
 }
 
 
@@ -93,14 +91,25 @@ def _tokens(name: str) -> tuple[frozenset, frozenset]:
 
 
 def _same_team(a: str, b: str) -> bool:
+    """Мягкий матчинг: ESPN часто даёт короткие названия USL-команд."""
     ca, fa = _tokens(a)
     cb, fb = _tokens(b)
     if not ca or not cb or fa != fb:
         return False
     if ca == cb:
         return True
+
+    # Одно подмножество другого
     small, big = (ca, cb) if len(ca) <= len(cb) else (cb, ca)
-    return small <= big and max(len(t) for t in small) >= 4
+    if small <= big:
+        return True
+
+    # 60% общих слов + хотя бы одно длинное (>=4)
+    common = small & big
+    if len(common) / max(1, len(small)) >= 0.6:
+        if any(len(t) >= 4 for t in common):
+            return True
+    return False
 
 
 def _parse_day(date_iso: str) -> Optional[datetime]:
@@ -127,7 +136,7 @@ def _ttl(date_iso: str) -> int:
 
 # ============ ESPN ============
 def _espn_day(date_iso: str) -> list:
-    ck = f"espn_day_v3_{date_iso}"
+    ck = f"espn_day_v4_{date_iso}"
     cached = cache_get(ck, _ttl(date_iso))
     if isinstance(cached, list):
         return cached
@@ -140,7 +149,7 @@ def _espn_day(date_iso: str) -> list:
         return []
     if r.status_code != 200:
         log.warning("espn HTTP %s %s", r.status_code, date_iso)
-        return []                      # сбой НЕ кэшируем
+        return []
     out = []
     for e in (r.json() or {}).get("events") or []:
         try:
@@ -170,11 +179,30 @@ def _espn_day(date_iso: str) -> list:
 
 
 def _find_espn(home: str, away: str, date_iso: str) -> Optional[dict]:
+    """ESPN. Near-miss логирование для диагностики NOT FOUND."""
     for d_str in _day_offsets(date_iso):
-        for e in _espn_day(d_str):
+        events = _espn_day(d_str)
+        for e in events:
             if _same_team(home, e["home"]) and _same_team(away, e["away"]):
                 return {"home": e["hs"], "away": e["as"],
                         "status": e["status"], "source": "espn"}
+        # Диагностика — только когда дата = сегодня (не спамим на -1/+1)
+        if d_str != date_iso:
+            continue
+        try:
+            ht, _ = _tokens(home)
+            at, _ = _tokens(away)
+            near = []
+            for e in events:
+                eh_t, _ = _tokens(e["home"])
+                ea_t, _ = _tokens(e["away"])
+                if (ht & eh_t) or (at & ea_t):
+                    near.append(f"{e['home']} vs {e['away']}")
+            if near:
+                log.info("NEAR MISS: want '%s vs %s' | ESPN has: %s",
+                         home, away, "; ".join(near[:5]))
+        except Exception:
+            pass
     return None
 
 
@@ -191,12 +219,11 @@ def _fdorg_rate_limit() -> None:
 
 
 def _fdorg_range(date_iso: str) -> list:
-    """Все завершённые матчи за [дата-1; дата+1] одним запросом."""
     token = _get_token()
     d = _parse_day(date_iso)
     if not token or d is None or _time.time() < _FDORG_COOLDOWN_UNTIL[0]:
         return []
-    ck = f"fdorg_rng_v4_{d:%Y-%m-%d}"
+    ck = f"fdorg_rng_v5_{d:%Y-%m-%d}"
     cached = cache_get(ck, _ttl(date_iso))
     if isinstance(cached, list):
         return cached
@@ -213,11 +240,11 @@ def _fdorg_range(date_iso: str) -> list:
         return []
     if r.status_code == 429:
         _FDORG_COOLDOWN_UNTIL[0] = _time.time() + 120
-        log.warning("fdorg 429 — пауза 120с без блокировки")
+        log.warning("fdorg 429 — пауза 120с")
         return []
     if r.status_code != 200:
         log.warning("fdorg HTTP %s", r.status_code)
-        return []                      # сбой НЕ кэшируем
+        return []
     out = []
     for m in (r.json() or {}).get("matches") or []:
         try:
@@ -276,7 +303,7 @@ def _olb_season(date_iso: str) -> Optional[int]:
 
 
 def _olb_league(league: str, season: int) -> list:
-    ck = f"olb_{league}_{season}_v4"
+    ck = f"olb_{league}_{season}_v5"
     cached = cache_get(ck, 1800)
     if isinstance(cached, list):
         return cached
@@ -298,7 +325,7 @@ def _olb_league(league: str, season: int) -> list:
             a = (m.get("team2") or {}).get("teamName") or ""
             hs = ags = None
             for res in m.get("matchResults") or []:
-                if res.get("resultTypeID") == 2:      # Endergebnis
+                if res.get("resultTypeID") == 2:
                     hs, ags = res.get("pointsTeam1"), res.get("pointsTeam2")
                     break
             if not h or not a or hs is None or ags is None:
@@ -329,10 +356,12 @@ def _find_olb(home: str, away: str, date_iso: str) -> Optional[dict]:
 
 # ============ ПУБЛИЧНАЯ ФУНКЦИЯ ============
 def find_match_score(home: str, away: str, date_iso: str) -> Optional[dict]:
-    """ESPN → football-data.org → OpenLigaDB. status: FT | AET (доп. время — вручную)."""
+    """ESPN → football-data.org → OpenLigaDB.
+    status: FT | AET (доп. время — не закрывается автоматически)."""
     if not home or not away or not date_iso:
         return None
-    for name, fn in (("espn", _find_espn), ("fdorg", _find_fdorg),
+    for name, fn in (("espn", _find_espn),
+                     ("fdorg", _find_fdorg),
                      ("olb", _find_olb)):
         try:
             r = fn(home, away, date_iso)
@@ -340,7 +369,8 @@ def find_match_score(home: str, away: str, date_iso: str) -> Optional[dict]:
             log.warning("%s fail: %s", name, e)
             continue
         if r:
-            log.info("FOUND %s: %s vs %s = %s:%s (%s)", r["source"], home, away,
+            log.info("FOUND %s: %s vs %s = %s:%s (%s)",
+                     r["source"], home, away,
                      r["home"], r["away"], r["status"])
             return r
     log.info("NOT FOUND: %s vs %s @ %s", home, away, date_iso)
