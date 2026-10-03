@@ -1,4 +1,4 @@
-"""ui/cards.py — карточки с логотипами + контекст + хелперы сортировки."""
+"""ui/cards.py — карточки с логотипами + контекст + rank badge + сортировка."""
 from __future__ import annotations
 import html as _html
 from datetime import datetime
@@ -10,6 +10,7 @@ esc = _html.escape
 
 # ============ ХЕЛПЕРЫ ДЛЯ СОРТИРОВКИ ============
 def parse_card_date(c: dict) -> datetime:
+    """Возвращает datetime карточки для сортировки по дате."""
     try:
         iso = (c.get("date_iso") or "")[:10]
         if iso:
@@ -20,6 +21,7 @@ def parse_card_date(c: dict) -> datetime:
 
 
 def day_label(dt) -> str:
+    """Сегодня / Завтра / Послезавтра / Пт 20.09 / Прошлое."""
     if not dt:
         return "—"
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -117,20 +119,31 @@ def render_verdict_card(c: dict, thr: float) -> str:
     h_badge = _team_badge_html(h_en, h_ru, c.get("home_badge", "") or "")
     a_badge = _team_badge_html(a_en, a_ru, c.get("away_badge", "") or "")
 
-    is_bet = bool(v.get("is_bet", False))
-    quality = str(c.get("data_quality") or "MODEL_ONLY")
-    if is_bet:
+    # ============ SIGNAL RANK BADGE ============
+    rank_html = ""
+    try:
+        from betting.ranking import rank_score, rank_label, rank_color
+        _rs = rank_score(c)
+        _rl = rank_label(_rs)
+        _rc = rank_color(_rs)
+        rank_html = (
+            f'<span style="background:{_rc}22;color:{_rc};'
+            f'padding:3px 10px;border-radius:999px;font-size:.7rem;'
+            f'font-weight:800;margin-right:6px;'
+            f'border:1px solid {_rc}55;">'
+            f'{_rl} · {_rs*100:.0f}</span>'
+        )
+    except Exception:
+        rank_html = ""
+
+    if is_action and has_real:
         mb = "linear-gradient(135deg,rgba(52,211,153,.22),rgba(16,185,129,.08))"
         mbd = "rgba(52,211,153,.65)"
-        mt = "🎯 СТАВКА: " + esc(pick)
-    elif is_action and has_real:
-        mb = "linear-gradient(135deg,rgba(251,191,36,.20),rgba(202,138,4,.08))"
-        mbd = "rgba(251,191,36,.55)"
-        mt = "⚠️ VALUE НЕ ПРОШЁЛ ФИЛЬТР"
+        mt = "🎯 СТАВЬ: " + esc(pick)
     elif is_action:
         mb = "linear-gradient(135deg,rgba(251,191,36,.20),rgba(202,138,4,.08))"
         mbd = "rgba(251,191,36,.55)"
-        mt = "🤔 КАНДИДАТ МОДЕЛИ: " + esc(pick)
+        mt = "🤔 ВЫСОКАЯ P: " + esc(pick)
     else:
         mb = "linear-gradient(135deg,rgba(148,163,184,.15),rgba(100,116,139,.08))"
         mbd = "rgba(148,163,184,.4)"
@@ -154,18 +167,13 @@ def render_verdict_card(c: dict, thr: float) -> str:
     reasons_html = "".join("<li>" + esc(r) + "</li>" for r in reasons)
 
     warn = ""
-    if is_action and has_real and not is_bet:
-        warn = ('<div style="color:#fde68a;font-size:.78rem;margin-top:10px;'
-                'padding:8px 12px;background:rgba(251,191,36,.08);'
-                'border-radius:10px;border:1px solid rgba(251,191,36,.25);">'
-                '⚠️ Рынок найден, но value не прошёл фильтр EV / Edge — ставка не добавлена.</div>')
-    elif is_action and not has_real:
+    if is_action and not has_real:
         warn = ('<div style="color:#fde68a;font-size:.78rem;margin-top:10px;'
                 'padding:8px 12px;background:rgba(251,191,36,.08);'
                 'border-radius:10px;border:1px solid rgba(251,191,36,.25);">'
                 '⚠️ Реального кэфа нет — paper-режим.</div>')
 
-    # ============ БЛОК КОНТЕКСТА ============
+    # ============ КОНТЕКСТ ============
     context_html = ""
     ctx = c.get("context")
     if ctx:
@@ -190,17 +198,13 @@ def render_verdict_card(c: dict, thr: float) -> str:
 
     odd_display = str(round(odd, 2)) if has_real else "—"
     prob_display = str(round(prob * 100))
-    fair_display = str(round(float(v.get("fair_odd") or 0), 2)) if v.get("fair_odd") else "—"
-    ev_display = f"{float(v.get('ev', 0)) * 100:+.1f}%" if v.get("ev") is not None else "—"
-    edge_display = f"{float(v.get('edge', 0)) * 100:+.1f}%" if v.get("edge") is not None else "—"
-    stake_display = f"{float(v.get('stake', 0)):.0f}" if v.get("stake") is not None else "—"
 
     return (
         '<div class="vcard" style="background:' + bg + ';">'
         '<div style="padding:20px 24px;">'
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'
         '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
-        + league_html +
+        + rank_html + league_html +
         '<span class="date-badge">📅 ' + esc(c.get('date', '—')) + '</span>'
         '</div>'
         '<div style="font-size:.75rem;color:#8b93a7;font-family:JetBrains Mono,monospace;">'
@@ -224,19 +228,12 @@ def render_verdict_card(c: dict, thr: float) -> str:
         ';border-bottom:1px solid ' + mbd + ';padding:16px 24px;">'
         '<div style="font-size:1.2rem;font-weight:900;color:#fff;margin-bottom:10px;'
         'letter-spacing:-.3px;">' + mt + '</div>'
-        '<div class="signal-grid">'
-        '<div class="signal-metric model"><span>MODEL P</span><b>' + prob_display + '%</b></div>'
-        '<div class="signal-metric market"><span>MARKET ODDS</span><b>' + odd_display + '</b></div>'
-        '<div class="signal-metric value"><span>EDGE</span><b>' + edge_display + '</b></div>'
-        '<div class="signal-metric value"><span>EV</span><b>' + ev_display + '</b></div>'
-        '<div class="signal-metric"><span>FAIR ODDS</span><b>' + fair_display + '</b></div>'
-        '<div class="signal-metric"><span>STAKE</span><b>' + stake_display + '</b></div>'
-        '<div class="signal-metric"><span>CONFIDENCE</span><b>' + (str(round(float(v.get("confidence_score")), 0)) + '/100 · ' + str(v.get("confidence_label", "—")) if v.get("confidence_score") is not None else '—') + '</b></div>'
-        '</div>'
-        '<div class="signal-layers">'
-        '<span class="layer model-layer">MODEL · Poisson / form / Elo</span>'
-        '<span class="layer market-layer">' + ('MARKET · real odds · DATA OK' if quality == 'REAL_MARKET' else 'MARKET · unavailable · DATA INCOMPLETE') + '</span>'
-        '<span class="layer value-layer">' + ('VALUE · bet' if is_bet else 'VALUE · no bet') + '</span>'
+        '<div style="display:flex;gap:24px;font-size:.9rem;color:#e6eaf2;flex-wrap:wrap;">'
+        '<div>Вероятность: <b style="color:#34d399;font-size:1.15rem;'
+        'font-family:JetBrains Mono,monospace;">' + prob_display + '%</b></div>'
+        '<div>Кэф: <b style="color:#a5f3fc;font-size:1.15rem;'
+        'font-family:JetBrains Mono,monospace;">' + odd_display + '</b></div>'
+        '<div>Уверенность: <b style="color:' + cc + ';">' + esc(conf) + '</b></div>'
         '</div>' + warn + '</div>'
 
         '<div style="padding:16px 24px;">'
