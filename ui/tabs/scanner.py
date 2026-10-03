@@ -125,7 +125,7 @@ def _load_engine(matrix_n, logs, update_loader):
 def render(min_prob, kelly_frac, matrix_n):
     D = st.session_state.data
 
-    # ============ ИНИЦИАЛИЗАЦИЯ СЧЁТЧИКОВ ============
+    # ============ ИНИЦИАЛИЗАЦИЯ СЧЁТЧИКОВ (до использования) ============
     model_candidates = 0
     market_checked = 0
     value_rejected = 0
