@@ -118,6 +118,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
     a_badge = _team_badge_html(a_en, a_ru, c.get("away_badge", "") or "")
 
     is_bet = bool(v.get("is_bet", False))
+    quality = str(c.get("data_quality") or "MODEL_ONLY")
     if is_bet:
         mb = "linear-gradient(135deg,rgba(52,211,153,.22),rgba(16,185,129,.08))"
         mbd = "rgba(52,211,153,.65)"
