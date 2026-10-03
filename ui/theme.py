@@ -86,10 +86,10 @@ section.stButton > button:hover::before {
 section.stButton > button:hover,
 section.stDownloadButton > button:hover {
     background-position: 100% 100%;
-    transform: translateY(-2px) scale(1.02);
+    transform: translateY(-1px);
     box-shadow:
-        0 16px 40px rgba(139,92,246,.55),
-        0 0 40px rgba(34,211,238,.35),
+        0 12px 30px rgba(139,92,246,.35),
+        0 0 22px rgba(34,211,238,.18),
         inset 0 0 0 1px rgba(255,255,255,.20);
 }
 section.stButton > button:active { transform: translateY(0) scale(.98); }
@@ -191,8 +191,8 @@ section.stButton > button:active { transform: translateY(0) scale(.98); }
 }
 .kpi:hover {
     border-color: rgba(34,211,238,.4);
-    transform: translateY(-3px);
-    box-shadow: 0 16px 40px rgba(34,211,238,.20);
+    transform: translateY(-1px);
+    box-shadow: 0 10px 26px rgba(34,211,238,.12);
 }
 .kpi .t {
     color: #7dd3fc;
@@ -213,6 +213,55 @@ section.stButton > button:active { transform: translateY(0) scale(.98); }
 .kpi .v.g { color: #34d399; text-shadow: 0 0 24px rgba(52,211,153,.45); }
 .kpi .v.y { color: #fbbf24; text-shadow: 0 0 24px rgba(251,191,36,.45); }
 .kpi .v.r { color: #f87171; text-shadow: 0 0 24px rgba(248,113,113,.45); }
+
+.signal-grid {
+    display:grid;
+    grid-template-columns:repeat(6,minmax(0,1fr));
+    gap:8px;
+    margin-top:4px;
+}
+.signal-metric {
+    background:rgba(255,255,255,.035);
+    border:1px solid rgba(255,255,255,.07);
+    border-radius:11px;
+    padding:9px 10px;
+}
+.signal-metric span {
+    display:block;
+    color:#8b93a7;
+    font-size:.61rem;
+    font-weight:800;
+    letter-spacing:.8px;
+    margin-bottom:4px;
+}
+.signal-metric b {
+    color:#f1f5f9;
+    font-family:'JetBrains Mono',monospace;
+    font-size:1rem;
+}
+.signal-metric.model b { color:#a5f3fc; }
+.signal-metric.market b { color:#c4b5fd; }
+.signal-metric.value b { color:#34d399; }
+.signal-layers {
+    display:flex;
+    flex-wrap:wrap;
+    gap:7px;
+    margin-top:11px;
+}
+.layer {
+    padding:5px 9px;
+    border-radius:999px;
+    font-size:.63rem;
+    font-weight:700;
+    letter-spacing:.5px;
+    border:1px solid rgba(255,255,255,.08);
+}
+.model-layer { color:#a5f3fc; background:rgba(34,211,238,.07); }
+.market-layer { color:#c4b5fd; background:rgba(139,92,246,.07); }
+.value-layer { color:#86efac; background:rgba(52,211,153,.07); }
+@media (max-width: 900px) {
+    .signal-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
 
 /* ============ VERDICT CARD ============ */
 .vcard {
