@@ -153,6 +153,42 @@ def clv_summary() -> dict:
 
 
 @_cache(ttl=30, show_spinner=False)
+def clv_breakdown(group_by: str = "market") -> list:
+    """CLV-разбивка по рынку или лиге."""
+    if group_by not in ("market", "league"):
+        group_by = "market"
+    column = "market" if group_by == "market" else "league"
+    try:
+        with _db() as c:
+            rows = c.execute(
+                f"""
+                SELECT COALESCE(NULLIF({column}, ''), '—') AS grp,
+                       COUNT(*) AS n,
+                       AVG(clv) AS avg_clv,
+                       SUM(CASE WHEN clv > 0 THEN 1 ELSE 0 END) AS positive_n
+                FROM bets
+                WHERE clv IS NOT NULL
+                GROUP BY {column}
+                ORDER BY avg_clv DESC
+                """
+            ).fetchall()
+        return [
+            {
+                "group": str(row[0] or "—"),
+                "n": int(row[1] or 0),
+                "avg_clv": float(row[2] or 0.0),
+                "positive_share": (
+                    float(row[3] or 0) / int(row[1])
+                    if row[1] else 0.0
+                ),
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
+@_cache(ttl=30, show_spinner=False)
 def bank_history(limit: int = 5000) -> list:
     with _db() as c:
         c.row_factory = sqlite3.Row
