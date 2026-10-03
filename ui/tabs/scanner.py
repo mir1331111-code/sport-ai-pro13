@@ -649,6 +649,9 @@ def render(min_prob, kelly_frac, matrix_n):
 
             if best is not None:
                 matches_with_best += 1
+                quality_real_market += 1
+            elif verdict.get("is_action"):
+                quality_missing_market += 1
 
             cards.append(
                 {
@@ -722,7 +725,8 @@ def render(min_prob, kelly_frac, matrix_n):
             f"рынок проверен {market_checked} · "
             f"value прошло {matches_with_best} · "
             f"отфильтровано {value_rejected} · "
-            f"Risk Guard {risk_rejected}"
+            f"Risk Guard {risk_rejected} · "
+            f"Data Quality {quality_real_market}/{quality_real_market + quality_missing_market if (quality_real_market + quality_missing_market) else 0} market"
         )
 
         # ============================================================
@@ -967,6 +971,8 @@ def render(min_prob, kelly_frac, matrix_n):
         national_bet_count = 0
         risk_rejected = 0
         risk_reasons = []
+        quality_real_market = 0
+        quality_missing_market = 0
         # Risk Guard: лимиты относятся только к НОВОЙ экспозиции этого скана.
         max_new_exposure = float(D.get("bank") or 0) * 0.20
         max_league_exposure = float(D.get("bank") or 0) * 0.10
@@ -1148,6 +1154,8 @@ def render(min_prob, kelly_frac, matrix_n):
             "risk_new_exposure": new_exposure,
             "risk_max_exposure": max_new_exposure,
             "risk_max_league": max_league_exposure,
+            "quality_real_market": quality_real_market,
+            "quality_missing_market": quality_missing_market,
         }
 
         st.session_state.data = D2
