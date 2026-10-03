@@ -333,11 +333,12 @@ def render():
                 if banks[i - 1] > 0:
                     rets.append((banks[i] - banks[i - 1]) / banks[i - 1])
             sharpe = _sharpe(rets)
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("CLV avg", f"{clv.get('avg_clv', 0)*100:+.2f}%")
             c2.metric("CLV N", clv.get("n", 0))
             c3.metric("CLV +", f"{clv.get('positive_share', 0)*100:.1f}%")
-            c4.metric("Sharpe", f"{sharpe:.2f}")
+            c4.metric("Max DD", f"-{max_dd*100:.1f}%")
+            c5.metric("Sharpe", f"{sharpe:.2f}")
 
             st.caption(
                 "CLV показывает изменение цены между входом и закрытием рынка; "
