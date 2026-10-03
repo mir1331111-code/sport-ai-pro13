@@ -244,6 +244,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 f"📡 {fn.get('src', 0)} матчей · "
                 f"⚠️ отфильтровано {fn.get('value_rejected', 0)} · "
                 f"💰 заморожено {fn.get('frozen', 0):.0f} · "
+                f"🛡️ Risk Guard: {fn.get('risk_rejected', 0)} отклонено · "
                 f"🤖 LLM {fn.get('llm', 0)} · "
                 f"🔍 контекст {fn.get('ctx', 0)}"
             )
@@ -719,8 +720,9 @@ def render(min_prob, kelly_frac, matrix_n):
         logs.append(
             f"🎯 Воронка: модель {model_candidates} · "
             f"рынок проверен {market_checked} · "
-            f"value прошёл {matches_with_best} · "
-            f"отфильтровано {value_rejected}"
+            f"value прошло {matches_with_best} · "
+            f"отфильтровано {value_rejected} · "
+            f"Risk Guard {risk_rejected}"
         )
 
         # ============================================================
@@ -963,6 +965,13 @@ def render(min_prob, kelly_frac, matrix_n):
 
         women_bet_count = 0
         national_bet_count = 0
+        risk_rejected = 0
+        risk_reasons = []
+        # Risk Guard: лимиты относятся только к НОВОЙ экспозиции этого скана.
+        max_new_exposure = float(D.get("bank") or 0) * 0.20
+        max_league_exposure = float(D.get("bank") or 0) * 0.10
+        new_exposure = 0.0
+        league_exposure = {}
 
         for c in cards:
             b = c.get("best")
@@ -988,6 +997,19 @@ def render(min_prob, kelly_frac, matrix_n):
             )
 
             if stake <= 0:
+                continue
+
+            # Risk Guard #1: общий лимит новой экспозиции.
+            if new_exposure + stake > max_new_exposure + 1e-9:
+                risk_rejected += 1
+                risk_reasons.append("общий лимит экспозиции")
+                continue
+
+            league_key = str(c.get("league") or c.get("div") or "OTHER")
+            current_league = float(league_exposure.get(league_key, 0.0))
+            if current_league + stake > max_league_exposure + 1e-9:
+                risk_rejected += 1
+                risk_reasons.append(f"лимит лиги: {league_key}")
                 continue
 
             # Реальный коэффициент обязателен.
@@ -1082,6 +1104,8 @@ def render(min_prob, kelly_frac, matrix_n):
             )
 
             existing.add(bk)
+            new_exposure += stake
+            league_exposure[league_key] = current_league + stake
 
         # ============================================================
         # 8. СОХРАНЕНИЕ
@@ -1120,6 +1144,10 @@ def render(min_prob, kelly_frac, matrix_n):
             "ctx": ctx_count,
             "women": women_bet_count,
             "national": national_bet_count,
+            "risk_rejected": risk_rejected,
+            "risk_new_exposure": new_exposure,
+            "risk_max_exposure": max_new_exposure,
+            "risk_max_league": max_league_exposure,
         }
 
         st.session_state.data = D2
