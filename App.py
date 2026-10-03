@@ -194,7 +194,7 @@ st.markdown(f"""
     <h1>NEURO BET PRO</h1>
     <p>Модель → рынок → value → портфель</p>
   </div>
-  <div class="hero-status"><span class="status-dot"></span>LIVE · PAPER</div>
+  <div class="hero-status"><span class="status-dot"></span>LIVE · {str(D.get('mode', 'paper')).upper()}</div>
 </div>
 <div class="kpis">
  <div class="kpi"><div class="t">Банкролл</div>
