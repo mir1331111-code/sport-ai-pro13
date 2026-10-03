@@ -185,6 +185,75 @@ pending_count = sum(1 for b in D["bets"]
                     if isinstance(b, dict) and b.get("status") == "pending")
 
 
+def _model_health(D):
+    """Компактный health-check по закрытым ставкам; только диагностика."""
+    closed = [
+        b for b in D.get("bets", [])
+        if isinstance(b, dict) and b.get("status") in ("won", "lost")
+    ]
+    calibration = []
+    for b in closed:
+        try:
+            p = float(b.get("prob"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= p <= 1:
+            calibration.append((p, 1.0 if b.get("status") == "won" else 0.0))
+
+    brier = None
+    cal_error = None
+    if calibration:
+        brier = sum((p - y) ** 2 for p, y in calibration) / len(calibration)
+        cal_error = sum(abs(p - y) for p, y in calibration) / len(calibration)
+
+    clv = {}
+    try:
+        clv = db.clv_summary()
+    except Exception:
+        clv = {}
+
+    sample = len(calibration)
+    checks = []
+    if sample < 20:
+        checks.append(("neutral", "Мало данных", f"{sample} ставок для оценки модели"))
+    else:
+        if brier is not None and brier > 0.25:
+            checks.append(("warn", "Brier выше 0.25", f"{brier:.3f}"))
+        if cal_error is not None and cal_error > 0.10:
+            checks.append(("warn", "Calibration error > 10 п.п.", f"{cal_error*100:.1f} п.п."))
+
+    clv_n = int(clv.get("n", 0) or 0)
+    clv_avg = float(clv.get("avg_clv", 0) or 0)
+    if clv_n >= 20 and clv_avg < 0:
+        checks.append(("warn", "CLV отрицательный", f"{clv_avg*100:+.2f}%"))
+
+    warnings = [x for x in checks if x[0] == "warn"]
+    if warnings:
+        return {
+            "status": "ATTENTION",
+            "label": "⚠️ MODEL HEALTH · ATTENTION",
+            "details": warnings,
+            "sample": sample,
+            "brier": brier,
+            "cal_error": cal_error,
+            "clv": clv_avg,
+            "clv_n": clv_n,
+        }
+    return {
+        "status": "OK" if sample >= 20 else "MONITORING",
+        "label": "🟢 MODEL HEALTH · OK" if sample >= 20 else "🟡 MODEL HEALTH · MONITORING",
+        "details": checks,
+        "sample": sample,
+        "brier": brier,
+        "cal_error": cal_error,
+        "clv": clv_avg,
+        "clv_n": clv_n,
+    }
+
+
+model_health = _model_health(D)
+
+
 # ==================== HERO ====================
 st.markdown(f"""
 <div class="hero">
@@ -204,6 +273,26 @@ st.markdown(f"""
  <div class="kpi"><div class="t">ROI</div>
   <div class="v {'r' if D.get('stats', {}).get('profit', 0) < 0 else 'g'}">{((D.get('stats', {}).get('profit', 0) / D.get('meta', {}).get('initial_bank', 10000.0)) * 100 if D.get('meta', {}).get('initial_bank', 10000.0) else 0):+.1f}%</div></div>
 </div></div>""", unsafe_allow_html=True)
+
+if model_health["status"] == "ATTENTION":
+    _health_items = " · ".join(
+        f"{x[1]} ({x[2]})" for x in model_health["details"]
+    )
+    st.warning(
+        f"{model_health['label']} — {_health_items}. "
+        "Это диагностический сигнал, а не автоматическое изменение параметров ставок."
+    )
+elif model_health["status"] == "MONITORING":
+    st.info(
+        f"{model_health['label']} — закрытых ставок с P: "
+        f"{model_health['sample']}. Нужна более длинная выборка для оценки."
+    )
+else:
+    st.success(
+        f"{model_health['label']} · Brier {model_health['brier']:.3f} · "
+        f"Calibration {model_health['cal_error']*100:.1f} п.п. · "
+        f"CLV {model_health['clv']*100:+.2f}%"
+    )
 
 
 # ==================== SIDEBAR ====================
