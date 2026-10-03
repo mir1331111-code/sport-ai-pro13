@@ -231,6 +231,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         '<div class="signal-metric value"><span>EV</span><b>' + ev_display + '</b></div>'
         '<div class="signal-metric"><span>FAIR ODDS</span><b>' + fair_display + '</b></div>'
         '<div class="signal-metric"><span>STAKE</span><b>' + stake_display + '</b></div>'
+        '<div class="signal-metric"><span>CONFIDENCE</span><b>' + (str(round(float(v.get("confidence_score")), 0)) + '/100 · ' + str(v.get("confidence_label", "—")) if v.get("confidence_score") is not None else '—') + '</b></div>'
         '</div>'
         '<div class="signal-layers">'
         '<span class="layer model-layer">MODEL · Poisson / form / Elo</span>'
