@@ -187,15 +187,22 @@ pending_count = sum(1 for b in D["bets"]
 
 # ==================== HERO ====================
 st.markdown(f"""
-<div class="hero"><h1>NEURO BET PRO</h1>
-<p>v{APP_VERSION} · 100% FREE · ИИ-аналитик · SQLite · CLV · 🧠 Контекст</p>
+<div class="hero">
+<div class="hero-head">
+  <div>
+    <div class="hero-eyebrow">TODAY · VALUE TERMINAL</div>
+    <h1>NEURO BET PRO</h1>
+    <p>Модель → рынок → value → портфель</p>
+  </div>
+  <div class="hero-status"><span class="status-dot"></span>LIVE · PAPER</div>
+</div>
 <div class="kpis">
  <div class="kpi"><div class="t">Банкролл</div>
   <div class="v y">{D['bank']:.0f} у.е.</div></div>
- <div class="kpi"><div class="t">В работе</div><div class="v">{pending_count}</div></div>
- <div class="kpi"><div class="t">Всего</div><div class="v">{len(D['bets'])}</div></div>
- <div class="kpi"><div class="t">Ошибок</div>
-  <div class="v {'r' if ERR else 'g'}">{len(ERR)}</div></div>
+ <div class="kpi"><div class="t">Сигналы сегодня</div><div class="v">{sum(1 for c in D.get('cards', []) if isinstance(c, dict) and (c.get('date_iso') or '').startswith(datetime.now().strftime('%Y-%m-%d')) and c.get('best') is not None)}</div></div>
+ <div class="kpi"><div class="t">Активные ставки</div><div class="v">{pending_count}</div></div>
+ <div class="kpi"><div class="t">ROI</div>
+  <div class="v {'r' if D.get('stats', {}).get('profit', 0) < 0 else 'g'}">{((D.get('stats', {}).get('profit', 0) / D.get('meta', {}).get('initial_bank', 10000.0)) * 100 if D.get('meta', {}).get('initial_bank', 10000.0) else 0):+.1f}%</div></div>
 </div></div>""", unsafe_allow_html=True)
 
 
