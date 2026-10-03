@@ -1,4 +1,4 @@
-"""ui/tabs/scanner.py — Сканер v13.3: TheSportsDB + Context + LLM + сборные."""
+"""ui/tabs/scanner.py — Сканер v13.4: TSDB + fdorg + estimated fallback."""
 from __future__ import annotations
 
 import time
@@ -19,11 +19,12 @@ from data.sources import (
 )
 from model.engine import Engine
 from betting.verdict import build_verdict, refine_with_real_odds
+from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
 
 try:
-    from context_football import analyze_match_context, render_context_flags
+    from context_football import analyze_match_context
     HAS_CONTEXT = True
 except Exception:
     HAS_CONTEXT = False
@@ -58,20 +59,16 @@ def _train_engine(matrix_n, logs, update_loader):
     for i, dv in enumerate(train_divs):
         pct = 0.1 + (i + 1) / len(train_divs) * 0.4
         update_loader(
-            f"История [{i + 1}/{len(train_divs)}] — "
-            f"{DIV_NAMES.get(dv, dv)}",
-            pct,
-            logs,
+            f"История [{i + 1}/{len(train_divs)}] — {DIV_NAMES.get(dv, dv)}",
+            pct, logs,
         )
         dp[dv] = load_seasonal(dv, season_str(prev_year))
         dc[dv] = load_seasonal(dv, season_str(cur_year))
         logs.append(
-            f"OK {DIV_NAMES.get(dv, dv)}: "
-            f"{len(dp[dv]) + len(dc[dv])}"
+            f"OK {DIV_NAMES.get(dv, dv)}: {len(dp[dv]) + len(dc[dv])}"
         )
     total = sum(
-        len(dp.get(dv, [])) + len(dc.get(dv, []))
-        for dv in train_divs
+        len(dp.get(dv, [])) + len(dc.get(dv, [])) for dv in train_divs
     )
     processed = 0
     trained = 0
@@ -82,14 +79,8 @@ def _train_engine(matrix_n, logs, update_loader):
                     hg = float(r.get("FTHG", 0))
                     ag = float(r.get("FTAG", 0))
                     engine.learn_step(
-                        r["HomeTeam"],
-                        r["AwayTeam"],
-                        hg,
-                        ag,
-                        r,
-                        lg=dv,
-                        match_num=processed,
-                        total=total,
+                        r["HomeTeam"], r["AwayTeam"], hg, ag, r,
+                        lg=dv, match_num=processed, total=total,
                         match_date=parse_date(r.get("Date", "")),
                     )
                     trained += 1
@@ -108,14 +99,9 @@ def _train_engine(matrix_n, logs, update_loader):
 
 
 def _load_engine(matrix_n, logs, update_loader):
-    import gzip
-    import os
-    import pickle
+    import gzip, os, pickle
     from config import DISK_CACHE_DIR
-    p = os.path.join(
-        DISK_CACHE_DIR,
-        f"engine_{matrix_n}.pkl.gz",
-    )
+    p = os.path.join(DISK_CACHE_DIR, f"engine_{matrix_n}.pkl.gz")
     if os.path.exists(p):
         try:
             with open(p, "rb") as f:
@@ -128,11 +114,9 @@ def _load_engine(matrix_n, logs, update_loader):
     engine = _train_engine(matrix_n, logs, update_loader)
     try:
         with open(p, "wb") as f:
-            f.write(
-                gzip.compress(
-                    pickle.dumps({"fp": APP_VERSION, "engine": engine})
-                )
-            )
+            f.write(gzip.compress(pickle.dumps(
+                {"fp": APP_VERSION, "engine": engine}
+            )))
     except Exception:
         pass
     return engine
@@ -141,7 +125,7 @@ def _load_engine(matrix_n, logs, update_loader):
 def render(min_prob, kelly_frac, matrix_n):
     D = st.session_state.data
 
-    # ============ ИНИЦИАЛИЗАЦИЯ СЧЁТЧИКОВ (ДО ИСПОЛЬЗОВАНИЯ) ============
+    # ============ ИНИЦИАЛИЗАЦИЯ СЧЁТЧИКОВ ============
     model_candidates = 0
     market_checked = 0
     value_rejected = 0
@@ -176,11 +160,10 @@ def render(min_prob, kelly_frac, matrix_n):
                 f"📡 {fn.get('src', 0)} матчей · "
                 f"⚠️ отфильтровано {fn.get('value_rejected', 0)} · "
                 f"💰 заморожено {fn.get('frozen', 0):.0f} · "
-                f"🛡️ Risk Guard: {fn.get('risk_rejected', 0)} отклонено · "
+                f"🛡️ Risk Guard: {fn.get('risk_rejected', 0)} · "
                 f"🤖 LLM {fn.get('llm', 0)} · "
                 f"🔍 контекст {fn.get('ctx', 0)}"
             )
-
         if HAS_CONTEXT:
             st.caption("🟢 Context Engine: подключён")
 
@@ -206,7 +189,6 @@ def render(min_prob, kelly_frac, matrix_n):
                 unsafe_allow_html=True,
             )
             shown += 1
-
         if shown == 0 and hidden == 0:
             st.info("Нажми ⚡ СКАН.")
         elif shown == 0 and hidden > 0:
@@ -255,25 +237,29 @@ def render(min_prob, kelly_frac, matrix_n):
         )
         logs = []
 
-        # 1. THESPORTSDB
+        # ============ 1. THESPORTSDB ============
         update_loader("📡 TheSportsDB: сбор всех лиг...", 0.05, logs)
-        tsdb_rows = tsdb_matches(days, logs)
+        try:
+            tsdb_rows = tsdb_matches(days, logs)
+        except Exception as e:
+            logs.append(f"⚠️ TSDB ошибка: {e}")
+            tsdb_rows = []
 
-        # 2. FOOTBALL-DATA.ORG
+        # ============ 2. FOOTBALL-DATA.ORG ============
         token = D.get("meta", {}).get("fdorg_token", "").strip()
         fdorg_rows = []
         if token:
             update_loader(
                 "📡 football-data.org: дополнение...", 0.10, logs
             )
-            fdorg_rows = fdorg_matches(days, token, logs)
+            try:
+                fdorg_rows = fdorg_matches(days, token, logs)
+            except Exception as e:
+                logs.append(f"⚠️ fdorg ошибка: {e}")
         else:
-            logs.append(
-                "📡 football-data.org: токен не задан "
-                "(работаем на TheSportsDB)"
-            )
+            logs.append("📡 football-data.org: токен не задан")
 
-        # ОБЪЕДИНЕНИЕ + ДЕДУПЛИКАЦИЯ
+        # ============ ОБЪЕДИНЕНИЕ ============
         seen_ids = set()
         rows_raw = []
         for r in tsdb_rows + fdorg_rows:
@@ -295,11 +281,11 @@ def render(min_prob, kelly_frac, matrix_n):
             f"🌍 сборные {n_count}"
         )
 
-        # 3. ENGINE
+        # ============ 3. ENGINE ============
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
 
-        # 4. АНАЛИЗ
+        # ============ 4. АНАЛИЗ ============
         update_loader("🧠 Анализ матчей...", 0.50, logs)
         cards = []
         odds_key = D.get("meta", {}).get("odds_api_key", "")
@@ -322,9 +308,9 @@ def render(min_prob, kelly_frac, matrix_n):
                     h_en, a_en, lg,
                     match_date=d,
                     cup=lg in (
-                        "C1", "EL", "EC",
-                        "W_C1", "NT_WC", "NT_EURO",
-                        "NT_CA", "NT_ACN", "NT_ASC",
+                        "C1", "EL", "EC", "W_C1",
+                        "NT_WC", "NT_EURO", "NT_CA",
+                        "NT_ACN", "NT_ASC",
                     ),
                 )
             except Exception:
@@ -337,12 +323,14 @@ def render(min_prob, kelly_frac, matrix_n):
             )
 
             best = None
-            odds_source = "unavailable"
+            odds_source = "estimated"
 
             if verdict.get("is_action"):
                 model_candidates += 1
                 sport_key = DIV_TO_ODDS.get(lg)
                 real_odds = None
+
+                # Пробуем реальные кэфы
                 if (
                     sport_key and odds_key
                     and usage.odds_remaining() > 0
@@ -354,8 +342,7 @@ def render(min_prob, kelly_frac, matrix_n):
                         )
                     except Exception as exc:
                         logs.append(
-                            f"⚠️ Odds API error "
-                            f"{h_en} — {a_en}: {exc}"
+                            f"⚠️ Odds API error {h_en} — {a_en}: {exc}"
                         )
                         real_odds = None
 
@@ -368,19 +355,35 @@ def render(min_prob, kelly_frac, matrix_n):
                         )
                     except Exception as exc:
                         logs.append(
-                            f"⚠️ Ошибка обработки odds "
-                            f"{h_en} — {a_en}: {exc}"
+                            f"⚠️ Ошибка odds {h_en} — {a_en}: {exc}"
                         )
                         best = None
                     if best is not None:
                         odds_source = "market"
 
+                # ============ FALLBACK: estimated кэф ============
                 if best is None:
-                    if verdict.get("real_odds", False):
-                        value_rejected += 1
-                        verdict["is_bet"] = False
-                        verdict["stake"] = 0.0
-                        odds_source = "market"
+                    est_odd = verdict.get("fair_odd")
+                    if est_odd and est_odd > 1.01:
+                        prob_ = verdict["prob"]
+                        ev_ = prob_ * est_odd - 1
+                        min_stake = round(D["bank"] * 0.005, 2)
+                        stake_ = max(
+                            kelly(prob_, est_odd, D["bank"], kelly_frac),
+                            min_stake,
+                        )
+                        verdict["real_odds"] = False
+                        verdict["odd"] = est_odd
+                        verdict["ev"] = ev_
+                        verdict["edge"] = ev_
+                        verdict["stake"] = stake_
+                        verdict["is_bet"] = True
+                        best = (
+                            market_type(verdict["pick"]),
+                            verdict["pick"],
+                            est_odd, ev_, prob_, stake_,
+                        )
+                        odds_source = "estimated"
                     else:
                         verdict["real_odds"] = False
                         verdict["odd"] = None
@@ -388,7 +391,6 @@ def render(min_prob, kelly_frac, matrix_n):
                         verdict["edge"] = None
                         verdict["stake"] = 0.0
                         verdict["is_bet"] = False
-                        verdict["is_action"] = False
                         odds_source = "unavailable"
             else:
                 verdict["real_odds"] = False
@@ -400,9 +402,10 @@ def render(min_prob, kelly_frac, matrix_n):
 
             if best is not None:
                 matches_with_best += 1
-                quality_real_market += 1
-            elif verdict.get("is_action"):
-                quality_missing_market += 1
+                if odds_source == "market":
+                    quality_real_market += 1
+                else:
+                    quality_missing_market += 1
 
             cards.append({
                 "div": lg,
@@ -434,15 +437,12 @@ def render(min_prob, kelly_frac, matrix_n):
 
         logs.append(
             f"🎯 Воронка: модель {model_candidates} · "
-            f"рынок проверен {market_checked} · "
-            f"value прошло {matches_with_best} · "
-            f"отфильтровано {value_rejected} · "
-            f"Risk Guard {risk_rejected} · "
-            f"Data Quality {quality_real_market}/"
-            f"{quality_real_market + quality_missing_market if (quality_real_market + quality_missing_market) else 0} market"
+            f"рынок {market_checked} · value {matches_with_best} · "
+            f"estimated {quality_missing_market} · "
+            f"real {quality_real_market}"
         )
 
-        # 5. LLM
+        # ============ 5. LLM ============
         llm_key = D.get("meta", {}).get("llm_api_key", "")
         llm_prov = D.get("meta", {}).get(
             "llm_provider", "Groq (бесплатно, быстро)"
@@ -453,22 +453,19 @@ def render(min_prob, kelly_frac, matrix_n):
         action_cards.sort(
             key=lambda c: -(c.get("verdict", {}).get("prob") or 0)
         )
-        llm_done = 0
 
         if llm_key and usage.llm_remaining() > 0:
             for i_, card in enumerate(action_cards[:LLM_TOP_N]):
                 if usage.llm_remaining() <= 0:
                     break
                 update_loader(
-                    f"🤖 ИИ-анализ [{i_ + 1}/"
-                    f"{min(LLM_TOP_N, len(action_cards))}]",
+                    f"🤖 ИИ [{i_ + 1}/{min(LLM_TOP_N, len(action_cards))}]",
                     0.70 + 0.10 * (i_ + 1) / max(1, LLM_TOP_N),
                     logs,
                 )
                 v_ = card.get("verdict", {})
                 ctx = {
-                    "api_key": llm_key,
-                    "provider": llm_prov,
+                    "api_key": llm_key, "provider": llm_prov,
                     "model": llm_model,
                     "home": card.get("match_ru", "").split(" — ")[0],
                     "away": card.get("match_ru", "").split(" — ")[-1],
@@ -476,13 +473,11 @@ def render(min_prob, kelly_frac, matrix_n):
                     "date": card.get("date", ""),
                     "lam_h": card.get("lam_h", 0),
                     "lam_a": card.get("lam_a", 0),
-                    "p1": card.get("p1", 0),
-                    "px": card.get("px", 0),
+                    "p1": card.get("p1", 0), "px": card.get("px", 0),
                     "p2": card.get("p2", 0),
                     "over": card.get("over", 0),
                     "btts": card.get("btts", 0),
-                    "fh": card.get("fh", "—"),
-                    "fa": card.get("fa", "—"),
+                    "fh": card.get("fh", "—"), "fa": card.get("fa", "—"),
                     "pick": v_.get("label", ""),
                     "prob": v_.get("prob", 0),
                     "confidence": v_.get("confidence", ""),
@@ -493,13 +488,10 @@ def render(min_prob, kelly_frac, matrix_n):
                     card["llm_opinion"] = opinion
                     llm_done += 1
             logs.append(f"🤖 LLM: {llm_done} мнений")
-        elif not llm_key:
-            logs.append("🤖 LLM: ключ не задан")
 
-        # 6. CONTEXT ENGINE
-        ctx_count = 0
+        # ============ 6. CONTEXT ============
         if HAS_CONTEXT:
-            update_loader("🔍 Контекстный анализ...", 0.85, logs)
+            update_loader("🔍 Контекст...", 0.85, logs)
             cur_y = today.year if today.month >= 7 else today.year - 1
             s_ctx = season_str(cur_y)
             for c in cards:
@@ -510,24 +502,24 @@ def render(min_prob, kelly_frac, matrix_n):
                 try:
                     parts_m = c["match"].split(" vs ")
                     if len(parts_m) == 2:
-                        ctx = analyze_match_context(
+                        c["context"] = analyze_match_context(
                             parts_m[0], parts_m[1],
                             c.get("div", ""), s_ctx,
                         )
-                        c["context"] = ctx
                         ctx_count += 1
                 except Exception:
                     pass
-            logs.append(f"🔍 Контекст: {ctx_count} клубных матчей")
+            logs.append(f"🔍 Контекст: {ctx_count}")
 
-        # 7. СТАВКИ
-        update_loader("💼 Формирование портфеля...", 0.95, logs)
+        # ============ 7. СТАВКИ ============
+        update_loader("💼 Портфель...", 0.95, logs)
         new_bets = []
         existing = {
             f"{b['match']}|{b['pick']}"
             for b in D["bets"]
             if isinstance(b, dict) and b.get("status") == "pending"
         }
+
         max_new_exposure = float(D.get("bank") or 0) * 0.20
         max_league_exposure = float(D.get("bank") or 0) * 0.10
         new_exposure = 0.0
@@ -539,38 +531,24 @@ def render(min_prob, kelly_frac, matrix_n):
                 continue
             mkt, pick, odd, ev, prob, stake = b
             stake = round(
-                min(max(float(stake), 0.0), D["bank"] * 0.05),
-                2,
+                min(max(float(stake), 0.0), D["bank"] * 0.05), 2
             )
             if stake <= 0:
                 continue
 
             if new_exposure + stake > max_new_exposure + 1e-9:
                 risk_rejected += 1
-                risk_reasons.append("общий лимит экспозиции")
                 continue
 
             league_key = str(c.get("league") or c.get("div") or "OTHER")
             current_league = float(league_exposure.get(league_key, 0.0))
             if current_league + stake > max_league_exposure + 1e-9:
                 risk_rejected += 1
-                risk_reasons.append(f"лимит лиги: {league_key}")
                 continue
 
-            if odd is None:
+            if odd is None or odd <= 1.0:
                 continue
-            try:
-                odd = float(odd)
-            except (TypeError, ValueError):
-                continue
-            if odd <= 1.0:
-                continue
-
             if ev is None:
-                continue
-            try:
-                ev = float(ev)
-            except (TypeError, ValueError):
                 continue
 
             bk = f"{c['match']}|{pick}"
@@ -582,26 +560,21 @@ def render(min_prob, kelly_frac, matrix_n):
             if c.get("national"):
                 national_bet_count += 1
 
+            mode = "real" if c.get("odds_source") == "market" else "paper"
+
             new_bets.append({
-                "match": c["match"],
-                "match_ru": c["match_ru"],
-                "div": c["div"],
-                "league": c["league"],
-                "market": mkt,
-                "pick": pick,
-                "odds": odd,
-                "stake": stake,
-                "prob": prob,
-                "status": "pending",
-                "strat": "value",
-                "odds_source": "market",
-                "mode": "real",
+                "match": c["match"], "match_ru": c["match_ru"],
+                "div": c["div"], "league": c["league"],
+                "market": mkt, "pick": pick,
+                "odds": odd, "stake": stake, "prob": prob,
+                "status": "pending", "strat": "value",
+                "odds_source": c.get("odds_source", "estimated"),
+                "mode": mode,
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
                 "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "fixture_id": c.get("fixture_id"),
-                "score": None,
-                "ev": ev,
+                "score": None, "ev": ev,
                 "women": c.get("women", False),
                 "national": c.get("national", False),
             })
@@ -609,7 +582,7 @@ def render(min_prob, kelly_frac, matrix_n):
             new_exposure += stake
             league_exposure[league_key] = current_league + stake
 
-        # 8. СОХРАНЕНИЕ
+        # ============ 8. СОХРАНЕНИЕ ============
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
@@ -630,9 +603,6 @@ def render(min_prob, kelly_frac, matrix_n):
             "women": women_bet_count,
             "national": national_bet_count,
             "risk_rejected": risk_rejected,
-            "risk_new_exposure": new_exposure,
-            "risk_max_exposure": max_new_exposure,
-            "risk_max_league": max_league_exposure,
             "quality_real_market": quality_real_market,
             "quality_missing_market": quality_missing_market,
         }
@@ -646,12 +616,8 @@ def render(min_prob, kelly_frac, matrix_n):
 
         update_loader(
             f"✅ Готово! +{len(new_bets)} ставок · "
-            f"📡 {len(rows)} матчей · "
-            f"🤖 {llm_done} LLM · "
-            f"👩 {women_bet_count} женских · "
-            f"🌍 {national_bet_count} сборных",
-            1.0,
-            logs,
+            f"📡 {len(rows)} матчей · 🤖 {llm_done} LLM",
+            1.0, logs,
         )
         time.sleep(1.5)
         loader_ph.empty()
