@@ -1,30 +1,176 @@
+"""data/sources.py — TheSportsDB + football-data.org + Odds API + logos (v3).
+
+Совместим с App.py v13 (исправленная версия):
+  * parse_date, fdorg_match_result    — для авто-сеттла
+  * fdorg_matches, tsdb_matches       — для сканера
+  * load_seasonal, season_str         — для обучения модели
+  * odds_api_fixture                  — для реальных кэфов
+  * team_logo_url, league_logo_url    — заглушки (логотипы идут из карточек)
+"""
+from __future__ import annotations
+import csv, io, re
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+
+try:
+    from urllib3.util.retry import Retry
+    _HAS_RETRY = True
+except Exception:
+    _HAS_RETRY = False
+
+from config import (CACHE_TTL, FOOTBALL_DATA_ORG_HOST,
+                    DIV_TO_FDORG, FDORG_TO_DIV)
+from security import cache_get, cache_put
+from storage import usage
+
+
+MSK_OFFSET_HOURS = 3
+
+
+# ============ ВРЕМЯ ============
+def _msk_date(utc_iso: str) -> str:
+    try:
+        dt = datetime.strptime(utc_iso[:19], "%Y-%m-%dT%H:%M:%S")
+        msk = dt + timedelta(hours=MSK_OFFSET_HOURS)
+        return msk.strftime("%Y-%m-%d")
+    except Exception:
+        return utc_iso[:10] if utc_iso else ""
+
+
+def _msk_time(utc_iso: str) -> str:
+    try:
+        dt = datetime.strptime(utc_iso[:19], "%Y-%m-%dT%H:%M:%S")
+        msk = dt + timedelta(hours=MSK_OFFSET_HOURS)
+        return msk.strftime("%H:%M")
+    except Exception:
+        return utc_iso[11:16] if len(utc_iso) >= 16 else ""
+
+
+def parse_date(s) -> Optional[datetime]:
+    """Парсит дату из строки. Нужна для App.py и сканера."""
+    if s is None:
+        return None
+    src = str(s).strip()
+    if not src:
+        return None
+    for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d",
+                "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            sc = src[:19] if "%z" in fmt or "T" in fmt else src
+            return datetime.strptime(sc, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def season_str(year: int) -> str:
+    return f"{year % 100:02d}{(year + 1) % 100:02d}"
+
+
+def _norm_name(s: str) -> str:
+    return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
+
+
+# ============ SESSION ============
+def _session() -> requests.Session:
+    s = requests.Session()
+    if _HAS_RETRY:
+        r = Retry(total=3, connect=3, read=3, backoff_factor=1.5,
+                  status_forcelist=[429, 500, 502, 503, 504],
+                  allowed_methods=frozenset(["GET", "HEAD"]),
+                  raise_on_status=False)
+        ad = HTTPAdapter(max_retries=r, pool_connections=20, pool_maxsize=20)
+        s.mount("https://", ad)
+        s.mount("http://", ad)
+    s.headers.update({"User-Agent": "Mozilla/5.0 Chrome/120.0"})
+    s.trust_env = False
+    s.proxies = {"http": None, "https": None}
+    return s
+
+
+_sess = _session()
+NO_PROXY = {"http": None, "https": None, "all": None}
+
+
+def _f(v):
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+
+# ============ FOOTBALL-DATA.CO.UK (история для модели) ============
+def load_seasonal(div: str, season: str) -> list:
+    ck = f"fd_{div}_{season}"
+    cached = cache_get(ck, CACHE_TTL["seasonal"])
+    if cached is not None:
+        return cached if isinstance(cached, list) else []
+    url = f"https://www.football-data.co.uk/mmz4281/{season}/{div}.csv"
+    try:
+        r = _sess.get(url, timeout=25, proxies=NO_PROXY)
+        if r.status_code != 200 or not r.content:
+            return []
+        text = r.content.decode("utf-8", errors="ignore").lstrip("\ufeff")
+        out = []
+        for row in csv.DictReader(io.StringIO(text)):
+            if not isinstance(row, dict):
+                continue
+            if not row.get("HomeTeam") or not row.get("AwayTeam"):
+                continue
+            if row.get("FTHG") in (None, "") or row.get("FTAG") in (None, ""):
+                continue
+            out.append(row)
+        cache_put(ck, out)
+        return out
+    except Exception:
+        return []
+
+
+# ============ THESPORTSDB (матчи для сканера) ============
 def _tsdb_league_meta(league_name: str):
-    """Определяет (div, kind, women, national) по названию лиги TheSportsDB."""
+    """Определяет (div, kind, women, national) по названию лиги TheSportsDB.
+
+    ВАЖНО: U21/U19/U23 проверяются РАНЬШЕ, чем "championship",
+    иначе France U21 мапится на English Championship.
+    """
     if not league_name:
         return ("G", "club", False, False)
     ln = league_name.lower()
 
-    # ВАЖНО: сначала "национальные" признаки — U21/U19/U23 имеют приоритет
-    # над "championship", иначе U21-турнир мапится на Английский Чемпионшип.
+    # Сначала — сборные/U-возрасты (приоритет над клубными лигами)
     national = any(n in ln for n in (
         "u21", "u19", "u23", "u20", "u18", "u17",
         "national", "international", "world cup", "euro",
         "nations league", "friendly", "fifa", "uefa nations",
         "copa america", "africa cup", "afc asian",
     ))
-
     women = any(w in ln for w in (
         "women", "womens", "ladies", "female", "женск"
     ))
 
-    # Если это сборная/U21 — НЕ мапим на клубную лигу
     if national or women:
         kind = "national" if national else "women"
-        div = "NT_U21" if "u21" in ln else (
-              "NT_U19" if "u19" in ln else (
-              "NT_U23" if "u23" in ln else (
-              "NT_WC" if "world cup" in ln else (
-              "NT_EURO" if "euro" in ln else "NT"))))
+        if "u21" in ln:
+            div = "NT_U21"
+        elif "u19" in ln:
+            div = "NT_U19"
+        elif "u23" in ln:
+            div = "NT_U23"
+        elif "world cup" in ln:
+            div = "NT_WC"
+        elif "euro" in ln:
+            div = "NT_EURO"
+        elif "nations league" in ln:
+            div = "NT_UNL"
+        elif "friendly" in ln:
+            div = "NT_FR"
+        else:
+            div = "NT"
         return (div, kind, women, national)
 
     # Клубные лиги
@@ -55,5 +201,278 @@ def _tsdb_league_meta(league_name: str):
         if any(k in ln for k in keys):
             div = code
             break
-
     return (div, "club", False, False)
+
+
+def tsdb_matches(days: int = 7, logs=None) -> list:
+    """Сбор матчей из TheSportsDB на N дней вперёд (для сканера)."""
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    out = []
+    total_days = min(max(1, int(days)), 14)
+
+    for off in range(total_days):
+        d = today + timedelta(days=off)
+        dstr = d.strftime("%Y-%m-%d")
+        ck = f"tsdb_day_v6_{dstr}"
+        cached = cache_get(ck, 1800)
+        if cached is not None:
+            if isinstance(cached, list):
+                out += cached
+                if logs:
+                    logs.append(f"TSDB {dstr}: {len(cached)} (cached)")
+            continue
+        try:
+            r = _sess.get(
+                "https://www.thesportsdb.com/api/v1/json/3/eventsday.php",
+                params={"d": dstr, "s": "Soccer"},
+                timeout=15, proxies=NO_PROXY)
+            if r.status_code != 200:
+                if logs:
+                    logs.append(f"TSDB {dstr}: HTTP {r.status_code}")
+                cache_put(ck, [])
+                continue
+            ev = (r.json() or {}).get("events") or []
+            rows = []
+            for e in ev:
+                if not isinstance(e, dict):
+                    continue
+                h = e.get("strHomeTeam")
+                a = e.get("strAwayTeam")
+                if not h or not a:
+                    continue
+                league = e.get("strLeague") or "Матч"
+                div, kind, women, national = _tsdb_league_meta(league)
+                rows.append({
+                    "Div": div,
+                    "League": league,
+                    "Date": (e.get("dateEvent") or "")[:10],
+                    "Time": (e.get("strTime") or "")[:5],
+                    "HomeTeam": h,
+                    "AwayTeam": a,
+                    "fixture_id": e.get("idEvent"),
+                    "home_badge": e.get("strHomeTeamBadge"),
+                    "away_badge": e.get("strAwayTeamBadge"),
+                    "league_badge": e.get("strLeagueBadge"),
+                    "women": women,
+                    "national": national,
+                    "kind": kind,
+                })
+            out += rows
+            cache_put(ck, rows)
+            if logs:
+                logs.append(f"TSDB {dstr}: {len(rows)}")
+        except Exception as e:
+            if logs:
+                logs.append(f"TSDB {dstr}: ошибка {type(e).__name__}")
+    return out
+
+
+# ============ FOOTBALL-DATA.ORG ============
+def _fdorg_get(endpoint: str, params: dict, token: str) -> Optional[dict]:
+    if not token:
+        return None
+    if usage.fdorg_remaining() <= 0:
+        return None
+    url = f"https://{FOOTBALL_DATA_ORG_HOST}/v4/{endpoint}"
+    headers = {"X-Auth-Token": token}
+    try:
+        r = _sess.get(url, headers=headers, params=params,
+                      timeout=15, proxies=NO_PROXY)
+        usage.fdorg_increment(1)
+        if r.status_code == 429:
+            import time
+            time.sleep(60)
+            return None
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+
+def fdorg_matches(days: int, token: str, logs=None) -> list:
+    """Сбор матчей из football-data.org на N дней вперёд (для сканера)."""
+    if not token:
+        return []
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    d_from = today.strftime("%Y-%m-%d")
+    d_to = (today + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    out = []
+    for comp in list(DIV_TO_FDORG.values()):
+        if usage.fdorg_remaining() <= 0:
+            if logs:
+                logs.append("fdorg: soft-лимит исчерпан")
+            break
+        div_code = FDORG_TO_DIV.get(comp, "G")
+        ck = f"fdorg_v9_{comp}_{d_from}_{d_to}"
+        cached = cache_get(ck, 1800)
+        if cached is not None:
+            if isinstance(cached, list):
+                out += cached
+                if logs:
+                    logs.append(f"fdorg {comp}: {len(cached)} (cached)")
+            continue
+        data = _fdorg_get("matches",
+                          {"dateFrom": d_from, "dateTo": d_to,
+                           "competitions": comp},
+                          token)
+        if not data or not data.get("matches"):
+            if logs:
+                logs.append(f"fdorg {comp}: 0")
+            cache_put(ck, [])
+            continue
+        rows = []
+        for m in data["matches"]:
+            try:
+                home = (m.get("homeTeam") or {}).get("name")
+                away = (m.get("awayTeam") or {}).get("name")
+                if not home or not away:
+                    continue
+                utc_date = m.get("utcDate") or ""
+                rows.append({
+                    "Div": div_code,
+                    "League": (m.get("competition") or {}).get("name") or comp,
+                    "competition": comp,
+                    "Date": _msk_date(utc_date),
+                    "Time": _msk_time(utc_date),
+                    "HomeTeam": home,
+                    "AwayTeam": away,
+                    "fixture_id": m.get("id"),
+                    "home_badge": (m.get("homeTeam") or {}).get("crest") or "",
+                    "away_badge": (m.get("awayTeam") or {}).get("crest") or "",
+                    "league_badge": (m.get("competition") or {}).get("emblem") or "",
+                    "status": m.get("status", ""),
+                    "women": False,
+                    "national": False,
+                    "kind": "club",
+                    "referee": ((m.get("referees") or [{}])[0].get("name", "")
+                                if m.get("referees") else ""),
+                })
+            except Exception:
+                continue
+        out += rows
+        cache_put(ck, rows)
+        if logs:
+            logs.append(f"fdorg {comp}: {len(rows)}")
+    return out
+
+
+def fdorg_match_result(match_id, token: str) -> Optional[dict]:
+    """Финальный результат матча для авто-сеттла (App.py v13 требует)."""
+    if not match_id or not token:
+        return None
+    ck = f"fdorg_result_v9_{match_id}"
+    cached = cache_get(ck, 86400)
+    if cached is not None:
+        return cached or None
+    data = _fdorg_get(f"matches/{match_id}", {}, token)
+    if not data or not data.get("match"):
+        cache_put(ck, None)
+        return None
+    m = data["match"]
+    if m.get("status") != "FINISHED":
+        cache_put(ck, None)
+        return None
+    score = m.get("score") or {}
+    # Для AET/PEN берём regularTime (ставки на 90 минут)
+    if (score.get("duration") or "REGULAR") != "REGULAR":
+        reg = score.get("regularTime") or {}
+        hg = reg.get("home")
+        ag = reg.get("away")
+        if hg is None or ag is None:
+            # Нет regularTime — отдаём как AET, авто-сеттл не закроет
+            cache_put(ck, {"home": 0, "away": 0, "status": "AET"})
+            return {"home": 0, "away": 0, "status": "AET"}
+    else:
+        full = score.get("fullTime") or {}
+        hg = full.get("home")
+        ag = full.get("away")
+    if hg is None or ag is None:
+        cache_put(ck, None)
+        return None
+    res = {"home": int(hg), "away": int(ag), "status": "FT"}
+    cache_put(ck, res)
+    return res
+
+
+# ============ THE ODDS API ============
+def odds_api_fixture(sport_key: str, home: str, away: str,
+                     api_key: str) -> Optional[dict]:
+    if not api_key or not sport_key:
+        return None
+    ck = f"odds_{sport_key}_{_norm_name(home)}_{_norm_name(away)}"
+    cached = cache_get(ck, CACHE_TTL["odds"])
+    if cached is not None:
+        return cached or None
+    if usage.odds_remaining() <= 0:
+        return None
+    try:
+        r = _sess.get(
+            f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds",
+            params={"apiKey": api_key, "regions": "eu",
+                    "markets": "h2h,totals,btts", "oddsFormat": "decimal"},
+            timeout=20, proxies=NO_PROXY)
+        usage.odds_increment(1)
+        if r.status_code != 200:
+            return None
+        events = r.json() or []
+        hn, an = _norm_name(home), _norm_name(away)
+        target = None
+        for ev in events:
+            eh = _norm_name(ev.get("home_team", ""))
+            ea = _norm_name(ev.get("away_team", ""))
+            if eh == hn and ea == an:
+                target = ev
+                break
+            if (eh in hn or hn in eh) and (ea in an or an in ea):
+                target = ev
+                break
+        if not target:
+            return None
+        acc = defaultdict(list)
+        for bmk in target.get("bookmakers") or []:
+            for mkt in bmk.get("markets") or []:
+                name = mkt.get("key")
+                for out in mkt.get("outcomes") or []:
+                    on = out.get("name") or ""
+                    odd = _f(out.get("price"))
+                    if odd is None or odd <= 1.0:
+                        continue
+                    if name == "h2h":
+                        if on == target.get("home_team"):
+                            acc["П1"].append(odd)
+                        elif on == target.get("away_team"):
+                            acc["П2"].append(odd)
+                        elif on == "Draw":
+                            acc["X"].append(odd)
+                    elif name == "totals":
+                        pt = _f(out.get("point"))
+                        if pt is not None and abs(pt - 2.5) < 0.01:
+                            if on == "Over":
+                                acc["ТБ 2.5"].append(odd)
+                            elif on == "Under":
+                                acc["ТМ 2.5"].append(odd)
+                    elif name == "btts":
+                        if on == "Yes":
+                            acc["BTTS да"].append(odd)
+                        elif on == "No":
+                            acc["BTTS нет"].append(odd)
+        out = {k: sum(v) / len(v) for k, v in acc.items() if v}
+        if not (("П1" in out and "X" in out and "П2" in out) or
+                ("ТБ 2.5" in out and "ТМ 2.5" in out) or
+                ("BTTS да" in out and "BTTS нет" in out)):
+            out = {}
+        cache_put(ck, out or None)
+        return out or None
+    except Exception:
+        return None
+
+
+# ============ LOGOS (fallback — logos идут из карточек) ============
+def team_logo_url(team_name: str) -> Optional[str]:
+    return None
+
+
+def league_logo_url(div_code: str) -> Optional[str]:
+    return None
