@@ -1,11 +1,11 @@
 """data/sources.py — TheSportsDB + football-data.org + Odds API + logos (v3).
 
-Совместим с App.py v13 (исправленная версия):
+Совместим с App.py v13:
   * parse_date, fdorg_match_result    — для авто-сеттла
   * fdorg_matches, tsdb_matches       — для сканера
   * load_seasonal, season_str         — для обучения модели
   * odds_api_fixture                  — для реальных кэфов
-  * team_logo_url, league_logo_url    — заглушки (логотипы идут из карточек)
+  * team_logo_url, league_logo_url    — заглушки (логотипы из карточек)
 """
 from __future__ import annotations
 import csv, io, re
@@ -51,7 +51,7 @@ def _msk_time(utc_iso: str) -> str:
 
 
 def parse_date(s) -> Optional[datetime]:
-    """Парсит дату из строки. Нужна для App.py и сканера."""
+    """Парсит дату из строки. Нужна для App.py и scanner."""
     if s is None:
         return None
     src = str(s).strip()
@@ -135,14 +135,12 @@ def load_seasonal(div: str, season: str) -> list:
 def _tsdb_league_meta(league_name: str):
     """Определяет (div, kind, women, national) по названию лиги TheSportsDB.
 
-    ВАЖНО: U21/U19/U23 проверяются РАНЬШЕ, чем "championship",
-    иначе France U21 мапится на English Championship.
+    ВАЖНО: U21/U19/U23 проверяются РАНЬШЕ, чем "championship".
     """
     if not league_name:
         return ("G", "club", False, False)
     ln = league_name.lower()
 
-    # Сначала — сборные/U-возрасты (приоритет над клубными лигами)
     national = any(n in ln for n in (
         "u21", "u19", "u23", "u20", "u18", "u17",
         "national", "international", "world cup", "euro",
@@ -173,7 +171,6 @@ def _tsdb_league_meta(league_name: str):
             div = "NT"
         return (div, kind, women, national)
 
-    # Клубные лиги
     mapping = [
         (("premier league", "epl"), "E0"),
         (("championship",), "E1"),
@@ -213,7 +210,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     for off in range(total_days):
         d = today + timedelta(days=off)
         dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_day_v6_{dstr}"
+        ck = f"tsdb_day_v7_{dstr}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -305,7 +302,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                 logs.append("fdorg: soft-лимит исчерпан")
             break
         div_code = FDORG_TO_DIV.get(comp, "G")
-        ck = f"fdorg_v9_{comp}_{d_from}_{d_to}"
+        ck = f"fdorg_v10_{comp}_{d_from}_{d_to}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -359,10 +356,10 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
 
 
 def fdorg_match_result(match_id, token: str) -> Optional[dict]:
-    """Финальный результат матча для авто-сеттла (App.py v13 требует)."""
+    """Финальный результат матча для авто-сеттла. App.py требует эту функцию."""
     if not match_id or not token:
         return None
-    ck = f"fdorg_result_v9_{match_id}"
+    ck = f"fdorg_result_v10_{match_id}"
     cached = cache_get(ck, 86400)
     if cached is not None:
         return cached or None
@@ -381,9 +378,9 @@ def fdorg_match_result(match_id, token: str) -> Optional[dict]:
         hg = reg.get("home")
         ag = reg.get("away")
         if hg is None or ag is None:
-            # Нет regularTime — отдаём как AET, авто-сеттл не закроет
-            cache_put(ck, {"home": 0, "away": 0, "status": "AET"})
-            return {"home": 0, "away": 0, "status": "AET"}
+            res = {"home": 0, "away": 0, "status": "AET"}
+            cache_put(ck, res)
+            return res
     else:
         full = score.get("fullTime") or {}
         hg = full.get("home")
@@ -469,7 +466,7 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         return None
 
 
-# ============ LOGOS (fallback — logos идут из карточек) ============
+# ============ LOGOS (fallback — logos из карточек) ============
 def team_logo_url(team_name: str) -> Optional[str]:
     return None
 
