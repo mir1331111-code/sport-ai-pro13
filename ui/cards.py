@@ -271,6 +271,10 @@ def render_verdict_card(c: dict, thr: float) -> str:
                 "ставку не добавляем в портфель."
             )
 
+        decision_reason = str(
+            v.get("decision_reason") or c.get("decision_reason") or rationale
+        ).strip()
+
         market_html = (
             '<div style="margin-top:12px;padding:12px 14px;border-radius:12px;'
             'background:rgba(15,23,42,.48);border:1px solid ' + color + '55;">'
@@ -287,6 +291,9 @@ def render_verdict_card(c: dict, thr: float) -> str:
             '</div>'
             '<div style="margin-top:8px;color:#94a3b8;font-size:.76rem;">'
             'Решение: ' + rationale +
+            '</div>' +
+            '<div style="margin-top:7px;color:' + color + ';font-size:.73rem;font-weight:700;">' +
+            'Причина: ' + esc(decision_reason) +
             '</div>' +
             '<div style="margin-top:8px;font-size:.7rem;color:#64748b;">' +
             ('BET → в автоматический портфель' if explicit_decision == "BET" else
