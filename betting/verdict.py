@@ -334,6 +334,7 @@ def refine_with_real_odds(
         return verdict, None
 
     verdict["stake"] = stake
+    verdict["kelly_pct"] = (stake / float(bank)) if float(bank) > 0 else 0.0
     verdict["is_bet"] = True
 
     best = (
