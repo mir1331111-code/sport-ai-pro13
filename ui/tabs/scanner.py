@@ -361,37 +361,19 @@ def render(min_prob, kelly_frac, matrix_n):
                     if best is not None:
                         odds_source = "market"
 
-                # ============ FALLBACK: estimated кэф ============
+                # ============ NO REAL MARKET ============
+                # fair_odd is the model's theoretical price, not a bookmaker
+                # price. Without a real market quote we keep the model signal
+                # visible, but MUST NOT turn it into a portfolio bet.
                 if best is None:
-                    est_odd = verdict.get("fair_odd")
-                    if est_odd and est_odd > 1.01:
-                        prob_ = verdict["prob"]
-                        ev_ = prob_ * est_odd - 1
-                        min_stake = round(D["bank"] * 0.005, 2)
-                        stake_ = max(
-                            kelly(prob_, est_odd, D["bank"], kelly_frac),
-                            min_stake,
-                        )
-                        verdict["real_odds"] = False
-                        verdict["odd"] = est_odd
-                        verdict["ev"] = ev_
-                        verdict["edge"] = ev_
-                        verdict["stake"] = stake_
-                        verdict["is_bet"] = True
-                        best = (
-                            market_type(verdict["pick"]),
-                            verdict["pick"],
-                            est_odd, ev_, prob_, stake_,
-                        )
-                        odds_source = "estimated"
-                    else:
-                        verdict["real_odds"] = False
-                        verdict["odd"] = None
-                        verdict["ev"] = None
-                        verdict["edge"] = None
-                        verdict["stake"] = 0.0
-                        verdict["is_bet"] = False
-                        odds_source = "unavailable"
+                    verdict["real_odds"] = False
+                    verdict["odd"] = verdict.get("fair_odd")
+                    verdict["ev"] = None
+                    verdict["edge"] = None
+                    verdict["stake"] = 0.0
+                    verdict["kelly_pct"] = 0.0
+                    verdict["is_bet"] = False
+                    odds_source = "estimated" if verdict.get("fair_odd") else "unavailable"
             else:
                 verdict["real_odds"] = False
                 verdict["odd"] = None
