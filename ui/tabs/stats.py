@@ -113,6 +113,8 @@ def _render_model(D):
 
     _render_walk_forward_thresholds()
 
+    _render_kelly_sensitivity()
+
     # ==================== QUALITY BUCKETS ====================
     def _num(v):
         try:
@@ -467,6 +469,90 @@ def _render_walk_forward_thresholds():
     st.caption(
         f"Train: {dates[0]} → {dates[split-1]} · Test: {dates[split]} → {dates[-1]}. "
         "Это один временной split, а не доказательство устойчивого преимущества."
+    )
+
+
+def _render_kelly_sensitivity():
+    """Исследовательский тест Kelly fractions на завершившихся snapshots."""
+    if not db.SQLITE_BOOT_OK:
+        return
+
+    snapshots = db.fetch_decision_snapshots(limit=100000)
+    samples = []
+    for r in snapshots:
+        if str(r.get("result_status") or "").lower() not in ("won", "lost"):
+            continue
+        try:
+            odd = float(r.get("market_odd"))
+            kelly = float(r.get("kelly_pct"))
+            if odd <= 1.01 or kelly <= 0:
+                continue
+            base_pnl = (odd - 1.0) if str(r.get("result_status")).lower() == "won" else -1.0
+            date = str(r.get("date_iso") or "")[:10]
+            if not date:
+                continue
+        except (TypeError, ValueError):
+            continue
+        samples.append({"date": date, "kelly": kelly, "pnl": base_pnl})
+
+    if len(samples) < 20:
+        return
+
+    fractions = [0.25, 0.50, 0.75, 1.00]
+    import pandas as pd
+
+    rows = []
+    for frac in fractions:
+        equity = 100.0
+        peak = equity
+        max_dd = 0.0
+        pnl = 0.0
+        for s in sorted(samples, key=lambda x: x["date"]):
+            # kelly_pct хранится как доля банка, поэтому ограничиваем риск
+            # консервативно 5% банка на один виртуальный сигнал.
+            stake_pct = min(max(s["kelly"], 0.0) * frac, 0.05)
+            trade_pnl = equity * stake_pct * s["pnl"]
+            equity += trade_pnl
+            pnl += trade_pnl
+            peak = max(peak, equity)
+            dd = (peak - equity) / peak if peak > 0 else 0.0
+            max_dd = max(max_dd, dd)
+
+        rows.append({
+            "Kelly": f"{frac:.2f}×",
+            "Signals": len(samples),
+            "Final Equity": equity,
+            "PnL": pnl,
+            "ROI": (equity / 100.0 - 1.0) * 100,
+            "Max Drawdown": max_dd * 100,
+        })
+
+    st.subheader("💰 Kelly Sensitivity")
+    st.caption(
+        "Виртуальная симуляция на завершившихся signals. Kelly fraction меняется, "
+        "реальный банк не затрагивается. Для сравнения применяется одинаковый cap 5% "
+        "виртуального банка на один сигнал."
+    )
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df.assign(
+            **{
+                "Final Equity": df["Final Equity"].map(lambda x: f"{x:.2f}"),
+                "PnL": df["PnL"].map(lambda x: f"{x:+.2f}"),
+                "ROI": df["ROI"].map(lambda x: f"{x:+.1f}%"),
+                "Max Drawdown": df["Max Drawdown"].map(lambda x: f"-{x:.1f}%"),
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    best = max(rows, key=lambda r: r["ROI"])
+    low_dd = min(rows, key=lambda r: r["Max Drawdown"])
+    st.caption(
+        f"Лучший исторический ROI: {best['Kelly']} · {best['ROI']:+.1f}%. "
+        f"Минимальная просадка: {low_dd['Kelly']} · -{low_dd['Max Drawdown']:.1f}%. "
+        "Это backtest, а не автоматическая рекомендация менять Kelly."
     )
 
 
