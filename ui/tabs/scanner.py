@@ -598,6 +598,25 @@ def render(min_prob, kelly_frac, matrix_n):
         update_loader("🧠 Анализ матчей...", 0.50, logs)
         cards = []
         odds_key = D.get("meta", {}).get("odds_api_key", "")
+        llm_provider_now = D.get("meta", {}).get("llm_provider", "")
+        grok_key = str(D.get("meta", {}).get("llm_api_key", "") or "").strip()
+        grok_remaining = usage.llm_remaining()
+        grok_enabled = (
+            llm_provider_now == "Grok (x.ai)"
+            and bool(grok_key)
+            and grok_remaining > 0
+        )
+        if grok_enabled:
+            logs.append(
+                f"🌐 GROK WEB: ON · лимит LLM {grok_remaining} · "
+                "источник кэфов: Web Search"
+            )
+        elif llm_provider_now != "Grok (x.ai)":
+            logs.append(f"🌐 GROK WEB: OFF · выбран провайдер {llm_provider_now or 'не задан'}")
+        elif not grok_key:
+            logs.append("🌐 GROK WEB: OFF · не задан LLM key")
+        else:
+            logs.append("🌐 GROK WEB: OFF · дневной лимит LLM исчерпан")
         skipped_started = 0
         skipped_bad_time = 0
 
@@ -653,14 +672,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 # Пробуем реальные кэфы.
                 # Если выбран Grok — сначала экспериментальный Web Search,
                 # затем обычный Odds API как fallback.
-                llm_provider_now = D.get("meta", {}).get(
-                    "llm_provider", ""
-                )
-                grok_key = D.get("meta", {}).get("llm_api_key", "")
                 if (
-                    llm_provider_now == "Grok (x.ai)"
-                    and grok_key
-                    and usage.llm_remaining() > 0
+                    grok_enabled
                     and matches_with_best < 15
                 ):
                     try:
