@@ -196,6 +196,23 @@ def render_verdict_card(c: dict, thr: float) -> str:
         except Exception:
             context_html = ""
 
+    grok_comment = c.get("grok_comment") or ""
+    grok_html = ""
+    if grok_comment:
+        bookmaker = esc(c.get("grok_bookmaker") or "источник не указан")
+        grok_html = (
+            '<div style="background:rgba(14,165,233,.08);'
+            'border:1px solid rgba(14,165,233,.25);border-radius:14px;'
+            'padding:12px 16px;margin-top:12px;">'
+            '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
+            'font-weight:700;margin-bottom:6px;letter-spacing:1.4px;">'
+            '🌐 GROK · РАЗБОР ЦЕНЫ</div>'
+            '<div style="color:#dbeafe;font-size:.88rem;line-height:1.55;">'
+            + esc(grok_comment) + '</div>'
+            '<div style="color:#64748b;font-size:.68rem;margin-top:6px;">'
+            + bookmaker + '</div></div>'
+        )
+
     llm_opinion = c.get("llm_opinion") or ""
     llm_html = ""
     if llm_opinion:
@@ -308,6 +325,6 @@ def render_verdict_card(c: dict, thr: float) -> str:
         'font-size:.86rem;line-height:1.65;">' + reasons_html + '</ul>'
         '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
         'font-weight:700;margin-bottom:8px;letter-spacing:1.4px;">Альтернативы</div>'
-        + alt_html + context_html + llm_html +
+        + alt_html + context_html + grok_html + llm_html +
         '</div></div>'
     )
