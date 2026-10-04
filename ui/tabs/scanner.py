@@ -556,8 +556,9 @@ def render(min_prob, kelly_frac, matrix_n):
                 # fair_odd is the model's theoretical price, not a bookmaker
                 # price. Without a real market quote we keep the model signal
                 # visible, but MUST NOT turn it into a portfolio bet.
-                if best is None:
-                    verdict["real_odds"] = False
+                # If a real quote was received but Kelly is zero, preserve the
+                # real quote and its EV/Edge instead of replacing it with fair_odd.
+                if best is None and not verdict.get("real_odds", False):
                     verdict["odd"] = verdict.get("fair_odd")
                     verdict["ev"] = None
                     verdict["edge"] = None
