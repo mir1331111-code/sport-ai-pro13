@@ -579,6 +579,10 @@ def render(min_prob, kelly_frac, matrix_n):
         n_count = sum(1 for r in rows if r.get("national"))
         c_count = len(rows) - w_count - n_count
         logs.append(
+            f"📡 ИСТОЧНИКИ: TSDB {len(tsdb_rows)} · "
+            f"fdorg {len(fdorg_rows)} · ESPN {len(espn_rows)}"
+        )
+        logs.append(
             f"📡 ИТОГО: {len(rows)} · "
             f"🏟 клубные {c_count} · "
             f"👩 женские {w_count} · "
@@ -747,6 +751,8 @@ def render(min_prob, kelly_frac, matrix_n):
                     if skipped_bad_time else ""
                 )
             )
+        else:
+            logs.append("⏱️ Scanner: начавшихся/завершённых матчей не найдено")
 
         logs.append(
             f"🎯 Воронка: модель {model_candidates} · "
