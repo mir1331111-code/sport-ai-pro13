@@ -122,16 +122,27 @@ def render_verdict_card(c: dict, thr: float) -> str:
     # ============ SIGNAL RANK BADGE ============
     rank_html = ""
     try:
-        from betting.ranking import rank_score, rank_label, rank_color
+        from betting.ranking import (
+            rank_score, rank_label, rank_color, signal_score, value_score,
+        )
         _rs = rank_score(c)
         _rl = rank_label(_rs)
         _rc = rank_color(_rs)
+        _ss = signal_score(c)
+        _vs = value_score(c)
         rank_html = (
             f'<span style="background:{_rc}22;color:{_rc};'
             f'padding:3px 10px;border-radius:999px;font-size:.7rem;'
-            f'font-weight:800;margin-right:6px;'
-            f'border:1px solid {_rc}55;">'
+            f'font-weight:800;margin-right:6px;border:1px solid {_rc}55;">'
             f'{_rl} · {_rs*100:.0f}</span>'
+            f'<span style="background:rgba(96,165,250,.10);color:#93c5fd;'
+            f'padding:3px 8px;border-radius:999px;font-size:.68rem;'
+            f'font-weight:700;margin-right:5px;">'
+            f'SIGNAL {_ss*100:.0f}</span>'
+            f'<span style="background:rgba(52,211,153,.10);color:#6ee7b7;'
+            f'padding:3px 8px;border-radius:999px;font-size:.68rem;'
+            f'font-weight:700;">'
+            f'VALUE {_vs*100:.0f}</span>'
         )
     except Exception:
         rank_html = ""
