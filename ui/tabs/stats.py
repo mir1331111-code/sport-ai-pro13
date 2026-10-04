@@ -115,6 +115,8 @@ def _render_model(D):
 
     _render_kelly_sensitivity()
 
+    _render_strategy_diagnostics()
+
     # ==================== QUALITY BUCKETS ====================
     def _num(v):
         try:
@@ -469,6 +471,156 @@ def _render_walk_forward_thresholds():
     st.caption(
         f"Train: {dates[0]} → {dates[split-1]} · Test: {dates[split]} → {dates[-1]}. "
         "Это один временной split, а не доказательство устойчивого преимущества."
+    )
+
+
+def _render_strategy_diagnostics():
+    """Агрегированная диагностика завершившихся decision snapshots."""
+    if not db.SQLITE_BOOT_OK:
+        return
+
+    snapshots = db.fetch_decision_snapshots(limit=100000)
+    rows = []
+    for r in snapshots:
+        if str(r.get("result_status") or "").lower() not in ("won", "lost"):
+            continue
+        try:
+            odd = float(r.get("market_odd"))
+            pnl = (odd - 1.0) if str(r.get("result_status")).lower() == "won" else -1.0
+            edge = float(r.get("edge"))
+            ev = float(r.get("ev"))
+            conf = float(r.get("confidence"))
+            league = str(r.get("league") or "Unknown")
+            market = str(r.get("market") or "Unknown")
+            decision = str(r.get("decision") or "Unknown").upper()
+        except (TypeError, ValueError):
+            continue
+
+        if odd <= 1.01:
+            continue
+
+        rows.append({
+            "league": league,
+            "market": market,
+            "edge": edge,
+            "ev": ev,
+            "confidence": conf,
+            "decision": decision,
+            "pnl": pnl,
+            "won": 1 if pnl > 0 else 0,
+        })
+
+    if len(rows) < 20:
+        return
+
+    import pandas as pd
+
+    df = pd.DataFrame(rows)
+
+    def bucket(x, cuts, labels):
+        return labels[max(0, min(len(labels) - 1, sum(x >= c for c in cuts)))]
+
+    df["Edge bucket"] = df["edge"].map(
+        lambda x: bucket(x, [0.01, 0.03, 0.05], ["<1%", "1–3%", "3–5%", "5%+"])
+    )
+    df["Confidence bucket"] = df["confidence"].map(
+        lambda x: bucket(x, [0.60, 0.70, 0.80], ["<60%", "60–70%", "70–80%", "80%+"])
+    )
+
+    def aggregate(frame, dimension):
+        out = (
+            frame.groupby(dimension, dropna=False)
+            .agg(
+                N=("pnl", "size"),
+                WinRate=("won", "mean"),
+                PnL=("pnl", "sum"),
+                AvgEdge=("edge", "mean"),
+                AvgEV=("ev", "mean"),
+            )
+            .reset_index()
+        )
+        out["ROI"] = out["PnL"] / out["N"] * 100.0
+        return out.sort_values(["N", "ROI"], ascending=[False, False])
+
+    st.subheader("🧠 Strategy Diagnostics")
+    st.caption(
+        "Историческая диагностика завершившихся snapshots. ROI нормирован на 1u "
+        "виртуальной ставки; реальные BET/WATCH правила не меняются."
+    )
+
+    min_n = 10
+
+    for dimension, title in [
+        ("market", "🎯 По рынкам"),
+        ("league", "🏆 По лигам"),
+        ("Edge bucket", "📐 По Edge"),
+        ("Confidence bucket", "🎯 По Confidence"),
+        ("decision", "⚖️ BET / WATCH / SKIP"),
+    ]:
+        agg = aggregate(df, dimension)
+        agg = agg[agg["N"] >= min_n].copy()
+        if agg.empty:
+            continue
+
+        display = agg.rename(columns={
+            dimension: "Segment",
+            "N": "N",
+            "WinRate": "Win Rate",
+            "PnL": "PnL",
+            "ROI": "ROI",
+            "AvgEdge": "Avg Edge",
+            "AvgEV": "Avg EV",
+        })[
+            ["Segment", "N", "Win Rate", "ROI", "PnL", "Avg Edge", "Avg EV"]
+        ]
+        st.markdown(f"**{title}**")
+        st.dataframe(
+            display.assign(
+                **{
+                    "Win Rate": display["Win Rate"].map(lambda x: f"{x:.1%}"),
+                    "ROI": display["ROI"].map(lambda x: f"{x:+.1f}%"),
+                    "PnL": display["PnL"].map(lambda x: f"{x:+.2f}"),
+                    "Avg Edge": display["Avg Edge"].map(lambda x: f"{x:.1%}"),
+                    "Avg EV": display["Avg EV"].map(lambda x: f"{x:.1%}"),
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    reliable = df.groupby(["market", "league"], dropna=False).agg(
+        N=("pnl", "size"),
+        WinRate=("won", "mean"),
+        PnL=("pnl", "sum"),
+        AvgEdge=("edge", "mean"),
+        AvgEV=("ev", "mean"),
+    ).reset_index()
+    reliable["ROI"] = reliable["PnL"] / reliable["N"] * 100.0
+    reliable = reliable[reliable["N"] >= 20].copy()
+
+    if not reliable.empty:
+        best = reliable.sort_values(["ROI", "N"], ascending=[False, False]).head(3)
+        weak = reliable.sort_values(["ROI", "N"], ascending=[True, False]).head(3)
+
+        st.markdown("**🔥 BEST ZONES**")
+        for _, r in best.iterrows():
+            st.write(
+                f"🟢 **{r['market']} · {r['league']}** — "
+                f"N={int(r['N'])} · Win {r['WinRate']:.1%} · ROI {r['ROI']:+.1f}% · "
+                f"Edge {r['AvgEdge']:.1%} · EV {r['AvgEV']:.1%}"
+            )
+
+        st.markdown("**⚠️ WEAK ZONES**")
+        for _, r in weak.iterrows():
+            st.write(
+                f"🔴 **{r['market']} · {r['league']}** — "
+                f"N={int(r['N'])} · Win {r['WinRate']:.1%} · ROI {r['ROI']:+.1f}% · "
+                f"Edge {r['AvgEdge']:.1%} · EV {r['AvgEV']:.1%}"
+            )
+
+    st.caption(
+        "BEST/WEAK — исследовательские сигналы, не автоматическое изменение фильтров. "
+        "Для зон требуется минимум 20 завершённых observations."
     )
 
 
