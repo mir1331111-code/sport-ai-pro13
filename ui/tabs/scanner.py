@@ -226,6 +226,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 f"⚠️ отфильтровано {fn.get('value_rejected', 0)} · "
                 f"💰 заморожено {fn.get('frozen', 0):.0f} · "
                 f"🛡️ Risk Guard: {fn.get('risk_rejected', 0)} · "
+                f"♻️ Дубли: {fn.get('duplicate_rejected', 0)} · "
                 f"🤖 LLM {fn.get('llm', 0)} · "
                 f"🔍 контекст {fn.get('ctx', 0)}"
             )
@@ -383,6 +384,9 @@ def render(min_prob, kelly_frac, matrix_n):
                         f"EV **{float(wv.get('ev') or 0.0):.1%}** · "
                         f"Kelly **{float(wv.get('kelly_pct') or 0.0):.1%}**"
                     )
+                    st.caption("Причина: " + str(
+                        wc.get('decision_reason') or wv.get('decision_reason') or "Цена ждёт улучшения."
+                    ))
 
         if skip_cards:
             with st.expander(f"🔴 SKIP · {len(skip_cards)} цен не проходят"):
@@ -396,6 +400,9 @@ def render(min_prob, kelly_frac, matrix_n):
                         f"EV {float(sv.get('ev') or 0.0):.1%} · "
                         f"Kelly {float(sv.get('kelly_pct') or 0.0):.1%}"
                     )
+                    st.caption("Причина: " + str(
+                        sc.get('decision_reason') or sv.get('decision_reason') or "Цена не проходит фильтр."
+                    ))
 
         waiting = [
             c for c in cards_view
