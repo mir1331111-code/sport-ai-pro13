@@ -109,6 +109,8 @@ def _render_model(D):
         )
 
 
+    _render_snapshot_calibration(D)
+
     # ==================== QUALITY BUCKETS ====================
     def _num(v):
         try:
@@ -349,6 +351,94 @@ def _render_model(D):
     dd_positive = ec[["Drawdown"]]
     st.subheader("📉 Drawdown")
     st.line_chart(dd_positive, height=220)
+
+
+def _render_snapshot_calibration(D):
+    """Калибровка модели по завершившимся decision snapshots."""
+    if not db.SQLITE_BOOT_OK:
+        return
+
+    rows = db.fetch_decision_snapshots(limit=100000)
+    samples = []
+    for r in rows:
+        outcome = str(r.get("result_status") or "").lower()
+        if outcome not in ("won", "lost"):
+            continue
+        try:
+            p = float(r.get("model_prob"))
+        except (TypeError, ValueError):
+            continue
+        if not 0.0 <= p <= 1.0:
+            continue
+        samples.append((p, 1.0 if outcome == "won" else 0.0))
+
+    if len(samples) < 5:
+        return
+
+    import pandas as pd
+
+    bins = [(i / 10, (i + 1) / 10) for i in range(10)]
+    rows_out = []
+    for lo, hi in bins:
+        bucket = [
+            (p, y) for p, y in samples
+            if (lo <= p < hi) or (hi >= 1.0 and lo <= p <= 1.0)
+        ]
+        if not bucket:
+            continue
+        n = len(bucket)
+        avg_p = sum(p for p, _ in bucket) / n
+        actual = sum(y for _, y in bucket) / n
+        rows_out.append({
+            "P модели": f"{lo*100:.0f}–{hi*100:.0f}%",
+            "N": n,
+            "Model P": avg_p,
+            "Факт": actual,
+            "Ошибка": actual - avg_p,
+        })
+
+    brier = sum((p - y) ** 2 for p, y in samples) / len(samples)
+    mae = sum(abs(p - y) for p, y in samples) / len(samples)
+
+    st.subheader("🧪 Signal Calibration")
+    st.caption(
+        "Калибровка по завершившимся сохранённым сигналам, включая WATCH. "
+        "Это исследовательская выборка и не влияет на банк или правила BET."
+    )
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Signals", len(samples))
+    c2.metric("Brier", f"{brier:.3f}")
+    c3.metric("Средняя абсолютная ошибка", f"{mae*100:.1f} п.п.")
+
+    df = pd.DataFrame(rows_out)
+    if not df.empty:
+        chart = df.set_index("P модели")[["Model P", "Факт"]] * 100
+        st.line_chart(chart, height=260)
+        st.dataframe(
+            df.assign(
+                **{
+                    "Model P": df["Model P"].map(lambda x: f"{x*100:.1f}%"),
+                    "Факт": df["Факт"].map(lambda x: f"{x*100:.1f}%"),
+                    "Ошибка": df["Ошибка"].map(lambda x: f"{x*100:+.1f} п.п."),
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        reliable = [r for r in rows_out if r["N"] >= 10]
+        if reliable:
+            worst = max(reliable, key=lambda r: abs(r["Ошибка"]))
+            direction = "недооценивает" if worst["Ошибка"] > 0 else "переоценивает"
+            st.warning(
+                f"Наиболее заметное отклонение при N≥10: {worst['P модели']} — "
+                f"модель {direction} фактический результат на "
+                f"{abs(worst['Ошибка'])*100:.1f} п.п."
+            )
+    st.caption(
+        "Важно: snapshots разных решений могут быть зависимыми между сканами; "
+        "это мониторинг калибровки, а не независимый backtest."
+    )
 
 
 def _render_overview(D):
