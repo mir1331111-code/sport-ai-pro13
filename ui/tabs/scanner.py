@@ -260,14 +260,33 @@ def render(min_prob, kelly_frac, matrix_n):
             logs.append("📡 football-data.org: токен не задан")
 
         # ============ ОБЪЕДИНЕНИЕ ============
+        # Источники используют разные fixture_id, поэтому одного ID
+        # недостаточно для дедупликации. Второй ключ — дата + команды.
         seen_ids = set()
+        seen_matches = set()
         rows_raw = []
         for r in tsdb_rows + fdorg_rows:
-            fid = str(r.get("fixture_id", ""))
+            fid = str(r.get("fixture_id", "")).strip()
+            home_key = "".join(
+                ch for ch in str(r.get("HomeTeam", "")).lower()
+                if ch.isalnum()
+            )
+            away_key = "".join(
+                ch for ch in str(r.get("AwayTeam", "")).lower()
+                if ch.isalnum()
+            )
+            date_key = str(r.get("Date", ""))[:10]
+            match_key = (date_key, home_key, away_key)
+
             if fid and fid in seen_ids:
                 continue
+            if match_key != ("", "", "") and match_key in seen_matches:
+                continue
+
             if fid:
                 seen_ids.add(fid)
+            if match_key != ("", "", ""):
+                seen_matches.add(match_key)
             rows_raw.append(r)
         rows = _safe_filter(rows_raw)
 
