@@ -71,7 +71,6 @@ CREATE TABLE IF NOT EXISTS decision_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_decision ON decision_snapshots(decision);
 CREATE INDEX IF NOT EXISTS idx_decisions_date ON decision_snapshots(date_iso);
-CREATE INDEX IF NOT EXISTS idx_decisions_result ON decision_snapshots(result_status);
 
 CREATE TABLE IF NOT EXISTS bank_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,6 +103,10 @@ def db_init() -> bool:
                     c.execute(
                         f"ALTER TABLE decision_snapshots ADD COLUMN {column} {kind}"
                     )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_decisions_result "
+                "ON decision_snapshots(result_status)"
+            )
         SQLITE_BOOT_OK = True
         SQLITE_BOOT_ERROR = ""
         return True
