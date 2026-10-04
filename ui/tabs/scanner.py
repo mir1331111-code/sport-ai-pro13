@@ -189,6 +189,35 @@ def render(min_prob, kelly_frac, matrix_n):
         if HAS_CONTEXT:
             st.caption("🟢 Context Engine: подключён")
 
+        # ============ PORTFOLIO RISK ============
+        pending_stake = sum(
+            float(b.get("stake", 0) or 0)
+            for b in D.get("bets", [])
+            if isinstance(b, dict) and b.get("status") == "pending"
+        )
+        current_bank = float(D.get("bank") or 0.0)
+        initial_bank = float(
+            (D.get("meta") or {}).get("initial_bank")
+            or (current_bank + pending_stake)
+            or 1.0
+        )
+        risk_ratio = pending_stake / max(initial_bank, 1.0)
+        risk_pct = risk_ratio * 100
+        risk_color = "#34d399" if risk_pct <= 10 else ("#fbbf24" if risk_pct <= 20 else "#f87171")
+        risk_label = "LOW" if risk_pct <= 10 else ("WATCH" if risk_pct <= 20 else "HIGH")
+        rr1, rr2, rr3 = st.columns([2.2, 1, 1])
+        with rr1:
+            st.markdown(
+                f"**BANK RISK · <span style='color:{risk_color}'>{risk_label}</span>**",
+                unsafe_allow_html=True,
+            )
+            st.progress(min(risk_ratio, 1.0), text=f"Заморожено {risk_pct:.1f}% банка")
+        with rr2:
+            st.metric("Pending exposure", f"{pending_stake:.0f}")
+        with rr3:
+            st.metric("Свободный банк", f"{current_bank:.0f}")
+        st.caption("Риск = сумма незакрытых ставок / начальный банк. Ориентир: до 20%.")
+
         with st.expander("🔌 Диагностика"):
             for line in D.get("report", []):
                 st.text(line)
