@@ -397,6 +397,95 @@ def espn_matches(days: int, logs=None) -> list:
                 logs.append(f"⚠️ ESPN {dstr}: {type(exc).__name__}")
     return out
 
+def tsdb_match_result(match_id, logs=None) -> Optional[dict]:
+    """Финальный счёт TSDB event."""
+    if not match_id:
+        return None
+    ck = f"tsdb_result_v2_{match_id}"
+    cached = cache_get(ck, 86400)
+    if cached is not None:
+        return cached or None
+    try:
+        r = _sess.get(
+            "https://www.thesportsdb.com/api/v1/json/3/lookupevent.php",
+            params={"id": str(match_id)}, timeout=15, proxies=NO_PROXY,
+        )
+        if r.status_code != 200:
+            return None
+        event = ((r.json() or {}).get("events") or [None])[0]
+        if not event:
+            return None
+        status = str(event.get("strStatus") or "").lower()
+        hg, ag = event.get("intHomeScore"), event.get("intAwayScore")
+        if hg is None or ag is None:
+            return None
+        if status not in ("match finished", "finished", "ft", "after extra time", "after penalties"):
+            # TSDB sometimes leaves status empty but has final scores.
+            if not event.get("strStatus") and event.get("strResult"):
+                pass
+            elif status and "finish" not in status and status not in ("ft",):
+                return None
+        res = {"home": int(hg), "away": int(ag), "status": "FT"}
+        cache_put(ck, res)
+        return res
+    except Exception as e:
+        if logs:
+            logs.append(f"TSDB result: {type(e).__name__}")
+        return None
+
+
+def espn_match_result(fixture_id, date_iso="", logs=None) -> Optional[dict]:
+    """Ищет финальный счёт ESPN по event id."""
+    event_id = str(fixture_id or "")
+    if event_id.startswith("espn:"):
+        event_id = event_id.split(":", 1)[1]
+    if not event_id:
+        return None
+    ck = f"espn_result_v2_{event_id}"
+    cached = cache_get(ck, 86400)
+    if cached is not None:
+        return cached or None
+    dates = []
+    if date_iso:
+        try:
+            base = datetime.strptime(str(date_iso)[:10], "%Y-%m-%d")
+            dates = [(base + timedelta(days=i)).strftime("%Y%m%d") for i in (-1, 0, 1)]
+        except Exception:
+            pass
+    if not dates:
+        dates = [datetime.now().strftime("%Y%m%d")]
+    try:
+        for dstr in dates:
+            r = _sess.get(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard",
+                params={"dates": dstr}, timeout=15, proxies=NO_PROXY,
+            )
+            if r.status_code != 200:
+                continue
+            for event in (r.json() or {}).get("events") or []:
+                if str(event.get("id")) != event_id:
+                    continue
+                status = ((event.get("status") or {}).get("type") or {})
+                if not status.get("completed"):
+                    return None
+                comp = (event.get("competitions") or [{}])[0]
+                cs = comp.get("competitors") or []
+                home = next((x for x in cs if x.get("homeAway") == "home"), None)
+                away = next((x for x in cs if x.get("homeAway") == "away"), None)
+                if not home or not away:
+                    return None
+                hs, aws = home.get("score"), away.get("score")
+                if hs is None or aws is None:
+                    return None
+                res = {"home": int(float(hs)), "away": int(float(aws)), "status": "FT"}
+                cache_put(ck, res)
+                return res
+    except Exception as e:
+        if logs:
+            logs.append(f"ESPN result: {type(e).__name__}")
+    return None
+
+
 # ============ GROK WEB MARKET ODDS ============
 def grok_web_odds(home: str, away: str, league: str, api_key: str,
                   logs=None) -> dict:
