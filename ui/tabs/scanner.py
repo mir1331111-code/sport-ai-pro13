@@ -24,7 +24,7 @@ from betting.verdict import (
 from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
-from betting.ranking import sort_cards
+from betting.ranking import sort_cards, value_score
 
 try:
     from context_football import analyze_match_context
@@ -229,6 +229,56 @@ def render(min_prob, kelly_frac, matrix_n):
         )
         shown = 0
         hidden = 0
+
+        # ============ TOP VALUE ============
+        real_value_cards = [
+            c for c in cards_view
+            if c.get("best")
+            and (c.get("odds_source") in ("market", "manual"))
+            and (c.get("verdict") or {}).get("real_odds", False)
+        ]
+        real_value_cards.sort(
+            key=lambda c: (
+                -float(value_score(c) or 0.0),
+                -float((c.get("verdict") or {}).get("ev") or 0.0),
+                -float((c.get("verdict") or {}).get("edge") or 0.0),
+            )
+        )
+        if real_value_cards:
+            st.markdown("### 🏆 TOP VALUE")
+            st.caption("Лучшие реальные цены по Value Score · максимум 5. Это shortlist, а не отдельный лимит риска.")
+            tv_cols = st.columns(min(5, len(real_value_cards)))
+            for ti, tc in enumerate(real_value_cards[:5]):
+                tv = tc.get("verdict") or {}
+                tb = tc.get("best") or ()
+                odd = float(tb[2] or 0.0) if len(tb) > 2 else float(tv.get("odd") or 0.0)
+                ev = tv.get("ev")
+                edge = tv.get("edge")
+                stake = float(tb[5] or 0.0) if len(tb) > 5 else float(tv.get("stake") or 0.0)
+                fair = float(tv.get("fair_odd") or 0.0)
+                vs = float(value_score(tc) or 0.0)
+                status = (
+                    "🟢" if ev is not None and edge is not None
+                    and float(ev) >= 0.03 and float(edge) >= 0.03
+                    else "🟡" if ev is not None and edge is not None
+                    and float(ev) >= 0 and float(edge) >= 0
+                    else "🔴"
+                )
+                with tv_cols[ti % len(tv_cols)]:
+                    st.markdown(
+                        f"**{status} {tc.get('match_ru', tc.get('match', '—'))}**"
+                    )
+                    st.caption(
+                        f"{tv.get('pick', '—')} · **@ {odd:.2f}** · Fair {fair:.2f}"
+                    )
+                    st.markdown(
+                        f"Edge **{float(edge):.1%}** · EV **{float(ev):.1%}**"
+                        if ev is not None and edge is not None
+                        else "Edge / EV —"
+                    )
+                    st.caption(f"Value Score {vs:.2f} · ставка {stake:.0f}")
+        else:
+            st.info("🏆 TOP VALUE появится после получения реальных кэфов.")
 
         waiting = [
             c for c in cards_view
