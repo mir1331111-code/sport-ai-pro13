@@ -11,6 +11,8 @@
   8. Восстановление из бэкапа валидируется; исправлен бесконечный rerun при загрузке файла.
   9. Константы вынесены, мусор (ERR, _print_log) заменён на logging.
  10. Удаление прокси из окружения можно отключить: NEURO_KEEP_PROXY=1.
+ 11. Порядок источников авто-сеттла: ESPN/TheSportsDB/OpenLigaDB → fdorg.
+     Раньше fdorg шёл первым и упирался в 429; теперь он только fallback.
 """
 from __future__ import annotations
 
@@ -45,21 +47,18 @@ log = logging.getLogger("neurobet")
 
 # ==================== КОНСТАНТЫ ====================
 DEFAULT_BANK = 10000.0
-AUTO_SETTLE_EVERY_SEC = AUTO_SETTLE_THROTTLE_SEC  # из config.py (3600 с)
-SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)   # не закрывать раньше конца матча
-RETRY_EVERY = timedelta(minutes=60)     # пауза между попытками по одной ставке
-STALE_AFTER = timedelta(hours=48)       # после этого ставка помечается stale (НЕ void)
-MAX_PER_RUN = 20                        # максимум ставок за один проход
+AUTO_SETTLE_EVERY_SEC = AUTO_SETTLE_THROTTLE_SEC
+SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)
+RETRY_EVERY = timedelta(minutes=60)
+STALE_AFTER = timedelta(hours=48)
+MAX_PER_RUN = 20
 SECRET_KEYS = ("fdorg_token", "odds_api_key", "llm_api_key")
-# AET/PEN сюда НЕ входят: счёт с доп. временем/пенальти не годится для рынков на 90 минут,
-# такие ставки остаются pending и закрываются вручную.
 FINISHED_STATUSES = {"finished", "ft", "final", "closed", "ended",
                      "full-time", "full_time", "completed"}
 
 
 # ==================== ХЕЛПЕРЫ ====================
 def _naive(dt):
-    """Приводит дату к naive-локальному времени (убирает tzinfo)."""
     if dt is None:
         return None
     if getattr(dt, "tzinfo", None) is not None:
@@ -82,7 +81,6 @@ def _bet_date(b):
 
 
 def _is_finished(res) -> bool:
-    """Если источник отдаёт статус — принимаем только завершённые матчи."""
     if not isinstance(res, dict):
         return False
     try:
@@ -94,7 +92,6 @@ def _is_finished(res) -> bool:
 
 
 def _recompute_stats(bets, old=None):
-    """Пересчёт статистики из списка ставок — единый источник правды."""
     s = dict(old or {})
     s.update({"won": 0, "lost": 0, "push": 0, "void": 0, "profit": 0.0})
     for b in bets:
@@ -118,7 +115,6 @@ def _recompute_stats(bets, old=None):
 
 
 def _roi_from_bets(bets):
-    """ROI = прибыль / оборот (сумма ставок по won+lost). Возвращает (roi_pct, profit, turnover)."""
     profit = turnover = 0.0
     for b in bets:
         if not isinstance(b, dict) or b.get("status") not in ("won", "lost"):
@@ -141,7 +137,6 @@ def _strip_secrets(D):
 
 
 def _validate_data(raw):
-    """Проверка и нормализация данных из бэкапа. Бросает ValueError при мусоре."""
     if isinstance(raw, dict) and isinstance(raw.get("data"), dict):
         raw = raw["data"]
     if not isinstance(raw, dict):
@@ -188,13 +183,7 @@ if "initial_bank" not in D["meta"]:
 
 # ==================== AUTO-SETTLE ====================
 def _auto_settle(D, force: bool = False):
-    """Закрывает pending: fdorg → Sofascore → TheSportsDB → OpenLigaDB.
-
-    Возвращает (новые_данные, закрыто, попыток).
-    Правила: не раньше SETTLE_MIN_AGE после старта; только завершённые матчи;
-    пауза RETRY_EVERY между попытками по одной ставке (если не force);
-    неудачные запросы лимит не расходуют; НИКАКОГО авто-void.
-    """
+    """ESPN/TheSportsDB/OpenLigaDB → fdorg. Не раньше MIN_AGE. Никакого авто-void."""
     D2 = dict(D)
     bets = list(D2.get("bets", []))
     closed = tried = 0
@@ -223,44 +212,44 @@ def _auto_settle(D, force: bool = False):
         res, source = None, None
         tried += 1
 
-        # 1) football-data.org по fixture_id
-        fid = b.get("fixture_id")
-        if fid and token:
+        # 1) ESPN / TheSportsDB / OpenLigaDB — без лимита, быстрый путь
+        h_team = (b.get("home") or "").strip()
+        a_team = (b.get("away") or "").strip()
+        if not (h_team and a_team):
+            m = b.get("match") or ""
+            if " vs " in m:
+                h_team, a_team = [p.strip() for p in m.split(" vs ", 1)]
+        d_iso = b.get("date_iso") or ""
+        if h_team and a_team and d_iso:
             try:
-                res = fdorg_match_result(fid, token)
+                from data.scores import find_match_score
+                res = find_match_score(h_team, a_team, d_iso)
                 if res:
-                    source = "fdorg"
+                    source = res.get("source", "auto")
             except Exception as e:
-                log.warning("fdorg error: %s", e)
+                log.warning("find_match_score error: %s", e)
 
-        # 2-4) Sofascore / TheSportsDB / OpenLigaDB по названиям
+        # 2) football-data.org — только если первый источник не справился
         if not _is_finished(res):
             res = None
-            h_team = (b.get("home") or "").strip()
-            a_team = (b.get("away") or "").strip()
-            if not (h_team and a_team):
-                m = b.get("match") or ""
-                if " vs " in m:
-                    h_team, a_team = [p.strip() for p in m.split(" vs ", 1)]
-            d_iso = b.get("date_iso") or ""
-            if h_team and a_team and d_iso:
+            fid = b.get("fixture_id")
+            if fid and token:
                 try:
-                    from data.scores import find_match_score
-                    res = find_match_score(h_team, a_team, d_iso)
+                    res = fdorg_match_result(fid, token)
                     if res:
-                        source = res.get("source", "auto")
+                        source = "fdorg"
                 except Exception as e:
-                    log.warning("find_match_score error: %s", e)
+                    log.warning("fdorg error: %s", e)
 
         b2 = dict(b)
         b2["last_settle_try"] = now.isoformat()
         log.info("%s | src=%s | res=%s", b.get("match_ru", "?"), source, res)
 
         if not _is_finished(res):
-            bets[idx] = b2          # запоминаем время попытки, ставка остаётся pending
+            bets[idx] = b2
             continue
 
-        usage.settle_increment(1)   # лимит тратим только на успешный ответ
+        usage.settle_increment(1)
         outcome, reason = determine_outcome(
             b.get("market"), b.get("pick"), int(res["home"]), int(res["away"]))
         if outcome is None:
@@ -294,7 +283,6 @@ def _auto_settle(D, force: bool = False):
         bets[idx] = b2
         closed += 1
 
-    # Устаревшие ставки НЕ закрываем автоматически — только помечаем
     for idx, b in enumerate(bets):
         if isinstance(b, dict) and b.get("status") == "pending":
             bd = _bet_date(b)
@@ -310,7 +298,6 @@ def _auto_settle(D, force: bool = False):
 
 
 def _void_stale(D):
-    """Ручной возврат стейков по устаревшим ставкам (по кнопке)."""
     D2 = dict(D)
     bets = list(D2.get("bets", []))
     n = 0
@@ -341,10 +328,9 @@ def _apply_settle_result(D2, closed, tried, event):
         db.invalidate_caches()
 
 
-# Авто-сеттл при заходе (раз в 30 минут на сессию)
 _now_ts = time.time()
 if _now_ts - st.session_state.get("_last_auto_settle_ts", 0) > AUTO_SETTLE_EVERY_SEC:
-    st.session_state["_last_auto_settle_ts"] = _now_ts   # ставим до вызова: сбой не зациклит
+    st.session_state["_last_auto_settle_ts"] = _now_ts
     with st.spinner("Проверяю результаты матчей…"):
         D2, n, tried = _auto_settle(D)
     _apply_settle_result(D2, n, tried, "auto_settle")
@@ -360,7 +346,6 @@ stale_count = sum(1 for b in _bets
 
 # ==================== MODEL HEALTH ====================
 def _ece(pairs, n_bins: int = 5) -> float:
-    """Expected Calibration Error: взвешенная |средняя P − фактическая частота| по бинам."""
     bins = [[] for _ in range(n_bins)]
     for p, y in pairs:
         bins[min(int(p * n_bins), n_bins - 1)].append((p, y))
@@ -375,7 +360,6 @@ def _ece(pairs, n_bins: int = 5) -> float:
 
 
 def _model_health(D):
-    """Компактный health-check по закрытым ставкам; только диагностика."""
     closed = [b for b in D.get("bets", [])
               if isinstance(b, dict) and b.get("status") in ("won", "lost")]
     calibration = []
@@ -531,7 +515,6 @@ with st.sidebar:
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
                 unsafe_allow_html=True)
 
-    # ===== ДЕЙСТВИЯ =====
     if st.button("🔃 Проверить результаты", use_container_width=True,
                  help="Форсировать авто-сеттл прямо сейчас (игнорирует паузу между попытками)"):
         with st.spinner("Проверяю результаты матчей…"):
@@ -568,7 +551,6 @@ with st.sidebar:
         st.toast("Счётчики сброшены")
         st.rerun()
 
-    # ===== РЕЗЕРВНАЯ КОПИЯ (без ключей!) =====
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
                 unsafe_allow_html=True)
     st.markdown(
@@ -586,13 +568,11 @@ with st.sidebar:
                            key="restore_upload",
                            label_visibility="collapsed")
     if _up is not None:
-        # Без этой защиты файл остаётся в uploader и восстановление крутится в бесконечном rerun
         _up_id = f"{_up.name}:{_up.size}"
         if st.session_state.get("_restored_id") != _up_id:
             st.session_state["_restored_id"] = _up_id
             try:
                 _r = _validate_data(json.loads(_up.read().decode("utf-8")))
-                # Текущие ключи сохраняем — бэкап их не содержит
                 for _sk in SECRET_KEYS:
                     if D["meta"].get(_sk):
                         _r["meta"][_sk] = D["meta"][_sk]
@@ -604,7 +584,6 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"❌ Не удалось восстановить: {e}")
 
-    # ===== ОЧИСТКА ПОРТФЕЛЯ =====
     if "confirm_clear" not in st.session_state:
         st.session_state.confirm_clear = False
 
