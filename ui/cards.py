@@ -171,7 +171,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         warn = ('<div style="color:#fde68a;font-size:.78rem;margin-top:10px;'
                 'padding:8px 12px;background:rgba(251,191,36,.08);'
                 'border-radius:10px;border:1px solid rgba(251,191,36,.25);">'
-                '⚠️ Реального кэфа нет — paper-режим.</div>')
+                '⚠️ Реального кэфа нет — введи его вручную ниже, чтобы проверить value.</div>')
 
     # ============ КОНТЕКСТ ============
     context_html = ""
