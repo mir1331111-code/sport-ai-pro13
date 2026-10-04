@@ -236,7 +236,7 @@ def render(min_prob, kelly_frac, matrix_n):
         real_value_cards = [
             c for c in cards_view
             if c.get("best")
-            and (c.get("odds_source") in ("market", "manual"))
+            and (c.get("odds_source") in ("market", "grok_web", "manual"))
             and (c.get("verdict") or {}).get("real_odds", False)
         ]
         real_value_cards.sort(
