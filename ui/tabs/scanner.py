@@ -18,7 +18,9 @@ from data.sources import (
     parse_date,
 )
 from model.engine import Engine
-from betting.verdict import build_verdict, refine_with_real_odds
+from betting.verdict import (
+    build_verdict, refine_with_real_odds, refine_with_manual_odd,
+)
 from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
@@ -179,16 +181,125 @@ def render(min_prob, kelly_frac, matrix_n):
         )
         shown = 0
         hidden = 0
-        for c in cards_view:
+        for idx, c in enumerate(cards_view):
             v = c.get("verdict") or {}
             if not v.get("is_action", False):
                 hidden += 1
                 continue
+
             st.markdown(
                 render_verdict_card(c, min_prob),
                 unsafe_allow_html=True,
             )
             shown += 1
+
+            # Ручная котировка букмекера без платного Odds API.
+            if not v.get("real_odds", False) and not c.get("best"):
+                fair = float(v.get("fair_odd") or 0.0)
+                prob = float(v.get("prob") or 0.0)
+                min_entry = (1.03 / prob) if prob > 0 else 0.0
+                key_base = str(c.get("fixture_id") or c.get("match")) + "_" + str(v.get("pick") or "pick")
+                st.markdown("**🎯 Ввести кэф букмекера вручную**")
+                q1, q2, q3 = st.columns([1.2, 1.2, 1])
+                manual_odd = q1.number_input(
+                    "Кэф",
+                    min_value=1.01,
+                    max_value=100.0,
+                    value=1.50,
+                    step=0.01,
+                    format="%.2f",
+                    key=f"manual_odd_{key_base}",
+                )
+                q2.caption(f"Fair: **{fair:.2f}** · мин. вход: **{min_entry:.2f}**")
+                q3.caption("EV / Edge / Kelly")
+                if st.button(
+                    "Проверить кэф → добавить",
+                    key=f"manual_add_{key_base}",
+                    type="secondary",
+                ):
+                    try:
+                        manual_v, manual_best = refine_with_manual_odd(
+                            dict(v),
+                            [],
+                            manual_odd,
+                            float(D.get("bank") or 0.0),
+                            kelly_frac,
+                        )
+                    except Exception as exc:
+                        manual_v, manual_best = dict(v), None
+                        st.error(f"Ошибка расчёта кэфа: {exc}")
+
+                    if manual_best is None:
+                        edge_v = manual_v.get("edge")
+                        ev_v = manual_v.get("ev")
+                        if edge_v is not None and ev_v is not None:
+                            st.warning(
+                                f"Кэф не прошёл value: Edge {edge_v:.1%} · EV {ev_v:.1%}."
+                            )
+                        else:
+                            st.warning("Кэф не прошёл проверку value.")
+                    else:
+                        mkt, pick, odd, ev, prob, stake = manual_best
+                        stake = round(
+                            min(
+                                max(float(stake), 0.0),
+                                float(D.get("bank") or 0.0) * 0.05,
+                            ),
+                            2,
+                        )
+                        existing_keys = {
+                            f"{b.get('match')}|{b.get('pick')}"
+                            for b in D.get("bets", [])
+                            if isinstance(b, dict) and b.get("status") == "pending"
+                        }
+                        bk = f"{c['match']}|{pick}"
+                        if bk in existing_keys:
+                            st.info("Такая ставка уже есть в pending.")
+                        elif stake <= 0:
+                            st.warning("Kelly дал нулевую ставку.")
+                        elif stake > float(D.get("bank") or 0.0):
+                            st.warning("Недостаточно свободного банка.")
+                        else:
+                            c["verdict"] = manual_v
+                            c["best"] = (mkt, pick, odd, ev, prob, stake)
+                            c["odds_source"] = "manual"
+                            bet = {
+                                "match": c["match"],
+                                "match_ru": c["match_ru"],
+                                "div": c["div"],
+                                "league": c["league"],
+                                "market": mkt,
+                                "pick": pick,
+                                "odds": odd,
+                                "stake": stake,
+                                "prob": prob,
+                                "status": "pending",
+                                "strat": "value",
+                                "odds_source": "manual",
+                                "mode": "real",
+                                "date": datetime.now().strftime("%d.%m.%Y"),
+                                "date_iso": c.get("date_iso"),
+                                "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                "fixture_id": c.get("fixture_id"),
+                                "score": None,
+                                "ev": ev,
+                                "women": c.get("women", False),
+                                "national": c.get("national", False),
+                            }
+                            D2 = dict(D)
+                            D2["cards"] = cards_view
+                            D2["bets"] = list(D.get("bets", [])) + [bet]
+                            D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - stake)
+                            st.session_state.data = D2
+                            usage.set_local_data(D2)
+                            if db.SQLITE_BOOT_OK:
+                                db.insert_bets_batch([bet])
+                                db.log_bank(D2["bank"], event="manual_odds")
+                                db.invalidate_caches()
+                            st.success(
+                                f"Добавлено: {pick} @ {odd:.2f} · EV {ev:.1%} · ставка {stake:.2f}"
+                            )
+                            st.rerun()
         if shown == 0 and hidden == 0:
             st.info("Нажми ⚡ СКАН.")
         elif shown == 0 and hidden > 0:
