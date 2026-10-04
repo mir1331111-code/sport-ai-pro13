@@ -451,15 +451,6 @@ def render(min_prob, kelly_frac, matrix_n):
             rows_raw.append(r)
         rows = _safe_filter(rows_raw)
 
-        if skipped_started or skipped_bad_time:
-            logs.append(
-                f"⏱️ Scanner: исключено начавшихся/завершённых {skipped_started}"
-                + (
-                    f" · без времени сегодня {skipped_bad_time}"
-                    if skipped_bad_time else ""
-                )
-            )
-
         w_count = sum(1 for r in rows if r.get("women"))
         n_count = sum(1 for r in rows if r.get("national"))
         c_count = len(rows) - w_count - n_count
@@ -622,6 +613,15 @@ def render(min_prob, kelly_frac, matrix_n):
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
             })
+
+        if skipped_started or skipped_bad_time:
+            logs.append(
+                f"⏱️ Scanner: исключено начавшихся/завершённых {skipped_started}"
+                + (
+                    f" · без времени сегодня {skipped_bad_time}"
+                    if skipped_bad_time else ""
+                )
+            )
 
         logs.append(
             f"🎯 Воронка: модель {model_candidates} · "
