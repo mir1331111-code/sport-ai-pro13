@@ -26,7 +26,7 @@ from betting.verdict import (
 from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
-from betting.ranking import sort_cards, value_score
+from betting.ranking import sort_cards, value_score, rank_score
 
 try:
     from context_football import analyze_match_context
@@ -621,7 +621,6 @@ def render(min_prob, kelly_frac, matrix_n):
         skipped_started = 0
         skipped_bad_time = 0
 
-        grok_candidate_rank = 0
         for r in rows:
             d = parse_date(r.get("Date", ""))
             if not d:
@@ -668,76 +667,26 @@ def render(min_prob, kelly_frac, matrix_n):
 
             if verdict.get("is_action"):
                 model_candidates += 1
-                sport_key = DIV_TO_ODDS.get(lg)
-                real_odds = None
+            else:
+                verdict["real_odds"] = False
+                verdict["odd"] = None
+                verdict["ev"] = None
+                verdict["edge"] = None
+                verdict["stake"] = 0.0
+                verdict["is_bet"] = False
 
-                # Пробуем реальные кэфы.
-                # Если выбран Grok — сначала экспериментальный Web Search,
-                # затем обычный Odds API как fallback.
-                if (
-                    grok_enabled
-                    and grok_candidate_rank < GROK_ODDS_TOP_N
-                ):
-                    grok_candidate_rank += 1
-                    try:
-                        grok_quote = grok_web_odds(
-                            h_en, a_en, r.get("League") or "Football",
-                            grok_key, logs,
-                        )
-                        if grok_quote.get("odds"):
-                            real_odds = grok_quote["odds"]
-                            odds_source = "grok_web"
-                            market_checked += 1
-                    except Exception as exc:
-                        logs.append(
-                            f"⚠️ Grok odds error {h_en} — {a_en}: {exc}"
-                        )
-
-                if (
-                    not real_odds
-                    and sport_key and odds_key
-                    and usage.odds_remaining() > 0
-                    and matches_with_best < 15
-                ):
-                    try:
-                        real_odds = odds_api_fixture(
-                            sport_key, h_en, a_en, odds_key
-                        )
-                    except Exception as exc:
-                        logs.append(
-                            f"⚠️ Odds API error {h_en} — {a_en}: {exc}"
-                        )
-                        real_odds = None
-                    if real_odds:
-                        odds_source = "market"
-                        market_checked += 1
-
-                if real_odds:
-                    try:
-                        verdict, best = refine_with_real_odds(
-                            verdict, rows_, real_odds,
-                            D["bank"], kelly_frac,
-                        )
-                    except Exception as exc:
-                        logs.append(
-                            f"⚠️ Ошибка odds {h_en} — {a_en}: {exc}"
-                        )
-                        best = None
-
-                # ============ NO REAL MARKET ============
-                # fair_odd is the model's theoretical price, not a bookmaker
-                # price. Without a real market quote we keep the model signal
-                # visible, but MUST NOT turn it into a portfolio bet.
-                # If a real quote was received but Kelly is zero, preserve the
-                # real quote and its EV/Edge instead of replacing it with fair_odd.
-                if best is None and not verdict.get("real_odds", False):
-                    verdict["odd"] = verdict.get("fair_odd")
-                    verdict["ev"] = None
-                    verdict["edge"] = None
-                    verdict["stake"] = 0.0
-                    verdict["kelly_pct"] = 0.0
-                    verdict["is_bet"] = False
-                    odds_source = "estimated" if verdict.get("fair_odd") else "unavailable"
+            # На первом проходе НЕ трогаем рынок.
+            # Сначала собираем весь пул модельных кандидатов, затем
+            # выбираем лучшие и только им запрашиваем реальные цены.
+            if verdict.get("is_action"):
+                verdict["real_odds"] = False
+                verdict["odd"] = verdict.get("fair_odd")
+                verdict["ev"] = None
+                verdict["edge"] = None
+                verdict["stake"] = 0.0
+                verdict["kelly_pct"] = 0.0
+                verdict["is_bet"] = False
+                odds_source = "estimated" if verdict.get("fair_odd") else "unavailable"
             else:
                 verdict["real_odds"] = False
                 verdict["odd"] = None
@@ -778,16 +727,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
-                "grok_comment": (
-                    str(grok_quote.get("comment") or "").strip()
-                    if "grok_quote" in locals() and odds_source == "grok_web"
-                    else ""
-                ),
-                "grok_bookmaker": (
-                    str(grok_quote.get("bookmaker") or "").strip()
-                    if "grok_quote" in locals() and odds_source == "grok_web"
-                    else ""
-                ),
+                "grok_comment": "",
+                "grok_bookmaker": "",
                 "min_entry_odd": round(min_entry_odd, 2) if min_entry_odd > 0 else None,
                 "women": r.get("women", False),
                 "national": r.get("national", False),
@@ -796,6 +737,92 @@ def render(min_prob, kelly_frac, matrix_n):
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
             })
+
+        # ============ 4B. РЫНОК ТОЛЬКО ДЛЯ ЛУЧШИХ ============
+        # Важно: не берём "первые N матчей". Сначала строим весь модельный
+        # пул, ранжируем его, затем Grok/рынок получает только top-N сигналов.
+        market_candidates = [
+            c for c in cards
+            if (c.get("verdict") or {}).get("is_action", False)
+        ]
+        market_candidates.sort(key=lambda c: -float(rank_score(c) or 0.0))
+        market_candidates = market_candidates[:GROK_ODDS_TOP_N]
+
+        for c in market_candidates:
+            v = c.get("verdict") or {}
+            h_en, a_en = c.get("match", "").split(" vs ", 1)
+            sport_key = DIV_TO_ODDS.get(c.get("div"))
+            real_odds = None
+            odds_source = "estimated"
+            grok_quote = {}
+
+            # Сначала Grok Web Search, если он выбран как провайдер.
+            if grok_enabled:
+                try:
+                    grok_quote = grok_web_odds(
+                        h_en, a_en, c.get("league") or "Football",
+                        grok_key, logs,
+                    )
+                    if grok_quote.get("odds"):
+                        real_odds = grok_quote["odds"]
+                        odds_source = "grok_web"
+                        market_checked += 1
+                except Exception as exc:
+                    logs.append(
+                        f"⚠️ Grok odds error {h_en} — {a_en}: {exc}"
+                    )
+
+            # Если Grok не дал цену — fallback на обычный Odds API.
+            if (
+                not real_odds
+                and sport_key and odds_key
+                and usage.odds_remaining() > 0
+            ):
+                try:
+                    real_odds = odds_api_fixture(
+                        sport_key, h_en, a_en, odds_key
+                    )
+                except Exception as exc:
+                    logs.append(
+                        f"⚠️ Odds API error {h_en} — {a_en}: {exc}"
+                    )
+                    real_odds = None
+                if real_odds:
+                    odds_source = "market"
+                    market_checked += 1
+
+            if real_odds:
+                try:
+                    refined_v, best = refine_with_real_odds(
+                        dict(v), [], real_odds,
+                        D["bank"], kelly_frac,
+                    )
+                    c["verdict"] = refined_v
+                    c["best"] = best
+                    c["odds_source"] = odds_source
+                    if best is not None:
+                        matches_with_best += 1
+                        quality_real_market += 1
+                    elif refined_v.get("real_odds"):
+                        # Реальная цена есть, но Kelly/value не прошёл.
+                        quality_real_market += 1
+                    c["grok_comment"] = (
+                        str(grok_quote.get("comment") or "").strip()
+                        if odds_source == "grok_web" else ""
+                    )
+                    c["grok_bookmaker"] = (
+                        str(grok_quote.get("bookmaker") or "").strip()
+                        if odds_source == "grok_web" else ""
+                    )
+                except Exception as exc:
+                    logs.append(
+                        f"⚠️ Ошибка odds {h_en} — {a_en}: {exc}"
+                    )
+
+            if c.get("best") is None and not (c.get("verdict") or {}).get("real_odds", False):
+                c["odds_source"] = "estimated" if v.get("fair_odd") else "unavailable"
+                c["grok_comment"] = ""
+                c["grok_bookmaker"] = ""
 
         if skipped_started or skipped_bad_time:
             logs.append(
