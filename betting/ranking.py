@@ -102,24 +102,24 @@ def rank_score(card: dict,
 
     conf = _confidence_norm(card)
 
-    try:
-        ev = float(v.get("ev") or 0.0)
-    except (TypeError, ValueError):
-        ev = 0.0
-    try:
-        edge = float(v.get("edge") or v.get("ev") or 0.0)
-    except (TypeError, ValueError):
-        edge = 0.0
-    try:
-        kelly_ = float(v.get("stake") or 0.0)
-        if kelly_ <= 0:
-            kelly_ = 0.0
-    except (TypeError, ValueError):
-        kelly_ = 0.0
+    def _metric(name: str):
+        raw = v.get(name)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
 
-    s_ev = _sigmoid(ev, SCALE_EV)
-    s_edge = _sigmoid(edge, SCALE_EDGE)
-    s_kelly = _sigmoid(kelly_, SCALE_KELLY)
+    ev = _metric("ev")
+    edge = _metric("edge")
+    kelly_ = _metric("kelly_pct")
+
+    # Отсутствие рынка/EV/Edge не должно давать искусственные 0.5.
+    # Для model-only кандидата эти компоненты нейтрально равны 0.
+    s_ev = _sigmoid(ev, SCALE_EV) if ev is not None else 0.0
+    s_edge = _sigmoid(edge, SCALE_EDGE) if edge is not None else 0.0
+    s_kelly = _sigmoid(kelly_, SCALE_KELLY) if kelly_ is not None else 0.0
 
     penalty = _risk_penalty(card)
 
