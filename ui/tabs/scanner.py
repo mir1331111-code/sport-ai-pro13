@@ -824,6 +824,18 @@ def render(min_prob, kelly_frac, matrix_n):
                 c["grok_comment"] = ""
                 c["grok_bookmaker"] = ""
 
+        # Финальный рейтинг строится ПОСЛЕ реальных цен.
+        # Поэтому верхние места теперь занимают лучшие betting opportunities,
+        # а не просто матчи с самой высокой модельной вероятностью.
+        cards.sort(
+            key=lambda c: (
+                -float(rank_score(c) or 0.0),
+                -float(value_score(c) or 0.0),
+                -float((c.get("verdict") or {}).get("ev") or 0.0),
+                -float((c.get("verdict") or {}).get("edge") or 0.0),
+            )
+        )
+
         if skipped_started or skipped_bad_time:
             logs.append(
                 f"⏱️ Scanner: исключено начавшихся/завершённых {skipped_started}"
