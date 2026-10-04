@@ -324,6 +324,77 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     return out
 
 
+# ============ ESPN SOCCER FALLBACK ============
+_ESPN_DIVS = {
+    "eng.1": "E0", "esp.1": "SP1", "ita.1": "I1",
+    "ger.1": "D1", "fra.1": "F1", "eng.2": "E1",
+    "esp.2": "SP2", "ita.2": "I2", "ger.2": "D2",
+    "fra.2": "F2", "uefa.champions": "C1",
+    "uefa.europa": "EL", "uefa.europa.conf": "EC",
+}
+
+def espn_matches(days: int, logs=None) -> list:
+    out = []
+    start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    for i in range(max(1, min(int(days), 14))):
+        d = start + timedelta(days=i)
+        dstr = d.strftime("%Y%m%d")
+        ck = f"espn_soccer_v2_{dstr}"
+        cached = cache_get(ck, 900)
+        if cached is not None:
+            if isinstance(cached, list):
+                out += cached
+                if logs:
+                    logs.append(f"ESPN {dstr}: {len(cached)} (cached)")
+            continue
+        try:
+            r = _sess.get(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard",
+                params={"dates": dstr}, timeout=15, proxies=NO_PROXY,
+            )
+            if r.status_code != 200:
+                if logs:
+                    logs.append(f"⚠️ ESPN {dstr}: HTTP {r.status_code}")
+                continue
+            payload = r.json()
+            rows = []
+            for event in payload.get("events") or []:
+                comp = (event.get("competitions") or [{}])[0]
+                competitors = comp.get("competitors") or []
+                if len(competitors) < 2:
+                    continue
+                home = next((x for x in competitors if x.get("homeAway") == "home"), competitors[0])
+                away = next((x for x in competitors if x.get("homeAway") == "away"), competitors[1])
+                hn = ((home.get("team") or {}).get("displayName") or home.get("displayName") or "").strip()
+                an = ((away.get("team") or {}).get("displayName") or away.get("displayName") or "").strip()
+                if not hn or not an:
+                    continue
+                league_obj = event.get("league") or {}
+                league = league_obj.get("name") or league_obj.get("abbreviation") or "Soccer"
+                slug = str(league_obj.get("slug") or "")
+                logos = league_obj.get("logos") or []
+                rows.append({
+                    "Div": _ESPN_DIVS.get(slug, "G"),
+                    "League": league, "competition": slug,
+                    "Date": _msk_date(event.get("date") or ""),
+                    "Time": _msk_time(event.get("date") or ""),
+                    "HomeTeam": hn, "AwayTeam": an,
+                    "fixture_id": f"espn:{event.get('id')}",
+                    "home_badge": (home.get("team") or {}).get("logo") or "",
+                    "away_badge": (away.get("team") or {}).get("logo") or "",
+                    "league_badge": logos[0].get("href", "") if logos else "",
+                    "status": ((event.get("status") or {}).get("type") or {}).get("name", ""),
+                    "women": False, "national": False, "kind": "club",
+                })
+            out += rows
+            cache_put(ck, rows)
+            if logs:
+                logs.append(f"ESPN {dstr}: {len(rows)}")
+        except Exception as exc:
+            if logs:
+                logs.append(f"⚠️ ESPN {dstr}: {type(exc).__name__}")
+    return out
+
 # ============ FOOTBALL-DATA.ORG ============
 def _fdorg_get(endpoint: str, params: dict, token: str) -> Optional[dict]:
     if not token:
@@ -337,13 +408,17 @@ def _fdorg_get(endpoint: str, params: dict, token: str) -> Optional[dict]:
                       timeout=15, proxies=NO_PROXY)
         usage.fdorg_increment(1)
         if r.status_code == 429:
-            import time
-            time.sleep(60)
+            log.warning("fdorg HTTP 429 — rate limit")
+            return None
+        if r.status_code == 403:
+            log.warning("fdorg HTTP 403 — token rejected or limit")
             return None
         if r.status_code != 200:
+            log.warning("fdorg HTTP %s", r.status_code)
             return None
         return r.json()
-    except Exception:
+    except Exception as exc:
+        log.warning("fdorg network error: %s", type(exc).__name__)
         return None
 
 
@@ -361,7 +436,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                 logs.append("fdorg: soft-лимит исчерпан")
             break
         div_code = FDORG_TO_DIV.get(comp, "G")
-        ck = f"fdorg_v11_{comp}_{d_from}_{d_to}"
+        ck = f"fdorg_v12_{comp}_{d_from}_{d_to}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -373,7 +448,11 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                           {"dateFrom": d_from, "dateTo": d_to,
                            "competitions": comp},
                           token)
-        if not data or not data.get("matches"):
+        if data is None:
+            if logs:
+                logs.append(f"fdorg {comp}: request failed (not cached)")
+            continue
+        if not data.get("matches"):
             if logs:
                 logs.append(f"fdorg {comp}: 0")
             cache_put(ck, [])
