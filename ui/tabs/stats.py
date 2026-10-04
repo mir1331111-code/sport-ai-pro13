@@ -213,6 +213,38 @@ def _render_model(D):
                 ), use_container_width=True, hide_index=True,
             )
 
+
+    # ==================== MODEL VERDICT ====================
+    def _best_reliable(rows):
+        reliable = [r for r in rows if r["N"] >= 10]
+        if not reliable:
+            return None
+        return max(reliable, key=lambda r: r["ROI"])
+
+    best_edge = _best_reliable(edge_rows)
+    best_conf = _best_reliable(conf_rows)
+
+    st.subheader("🧠 Где модель сильнее")
+    vc1, vc2 = st.columns(2)
+    with vc1:
+        if best_edge:
+            st.metric(
+                "Лучший диапазон Edge",
+                best_edge["Edge"],
+                f"ROI {best_edge['ROI']:+.1f}% · N={best_edge['N']}",
+            )
+        else:
+            st.caption("Для надёжного вывода по Edge нужно ≥10 ставок в диапазоне.")
+    with vc2:
+        if best_conf:
+            st.metric(
+                "Лучший диапазон Confidence",
+                best_conf["Confidence"],
+                f"ROI {best_conf['ROI']:+.1f}% · N={best_conf['N']}",
+            )
+        else:
+            st.caption("Для надёжного вывода по Confidence нужно ≥10 ставок в диапазоне.")
+
     if edge_items or conf_items:
         st.caption(
             "Edge = P модели − 1/кэф. Для старых ставок без отдельного Confidence "
