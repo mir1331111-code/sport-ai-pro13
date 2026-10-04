@@ -504,8 +504,39 @@ def _render_by_market(D):
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
+def _render_decision_log(D):
+    """Показывает сохранённый снимок решения для закрытых ставок."""
+    bets = _closed_bets(D)
+    rows = []
+    for b in bets:
+        snap = b.get("decision_snapshot") or {}
+        if not snap and b.get("decision"):
+            snap = {"model_prob": b.get("prob"), "market_odd": b.get("odds"), "ev": b.get("ev"), "market": b.get("market")}
+        rows.append({
+            "Дата": b.get("date") or "—",
+            "Матч": b.get("match_ru") or b.get("match") or "—",
+            "Рынок": snap.get("market") or b.get("market") or "—",
+            "Решение": b.get("decision") or "BET",
+            "P": f"{float(snap.get('model_prob') or b.get('prob') or 0):.1%}",
+            "Fair": f"{float(snap.get('fair_odd') or 0):.2f}" if snap.get("fair_odd") else "—",
+            "Кэф": f"{float(snap.get('market_odd') or b.get('odds') or 0):.2f}",
+            "Edge": f"{float(snap.get('edge') or 0):+.1%}" if snap.get("edge") is not None else "—",
+            "EV": f"{float(snap.get('ev') or b.get('ev') or 0):+.1%}" if (snap.get("ev") is not None or b.get("ev") is not None) else "—",
+            "Kelly": f"{float(snap.get('kelly_pct') or 0):.1%}",
+            "Conf": f"{float(snap.get('confidence') or 0):.1%}" if snap.get("confidence") is not None else "—",
+            "Value": f"{float(snap.get('value_score') or 0):.2f}",
+            "Результат": b.get("status", "—").upper(),
+        })
+    st.subheader("🧾 Decision Log")
+    if not rows:
+        st.info("Decision Log появится после первых закрытых ставок. Новые ставки сохраняют снимок решения BET на момент входа.")
+        return
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.caption("Снимок фиксируется в момент ставки и не пересчитывается задним числом. Старые ставки без snapshot показываются с доступными полями.")
+
 def render():
     D = st.session_state.data
+    _render_decision_log(D)
     st.header("📈 Статистика")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(
         ["📊 Обзор", "🧪 Модель", "🏆 По лигам", "📅 По дням", "🎯 По рынкам"])
