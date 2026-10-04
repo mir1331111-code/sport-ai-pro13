@@ -22,6 +22,7 @@ from betting.verdict import build_verdict, refine_with_real_odds
 from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
+from betting.ranking import sort_cards
 
 try:
     from context_football import analyze_match_context
@@ -172,10 +173,9 @@ def render(min_prob, kelly_frac, matrix_n):
                 st.text(line)
 
         all_cards = D.get("cards", [])
-        cards_view = sorted(
+        cards_view = sort_cards(
             [c for c in all_cards if isinstance(c, dict)],
-            key=lambda c: (c.get("verdict", {}).get("prob") or 0),
-            reverse=True,
+            mode="rank",
         )
         shown = 0
         hidden = 0
