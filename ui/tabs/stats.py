@@ -776,11 +776,99 @@ def _render_watch_lab(D):
         if reliable:
             best = max(reliable, key=lambda x: x["ROI"])
             st.success(
-                f"Лучший наблюдаемый порог при N≥10: {best['Edge + EV порог']} · "
+                f"Лучший совместный порог при N≥10: {best['Edge + EV порог']} · "
                 f"ROI {best['ROI']:+.1f}% · N={best['N']}"
             )
         else:
             st.caption("Для сравнения порогов пока нужна выборка минимум 10 завершённых WATCH.")
+
+        # Независимая диагностика: Edge и EV по отдельности.
+        # Это позволяет не делать ложный вывод, что оба метрика одинаково полезны.
+        st.markdown("**📐 Edge отдельно vs EV отдельно**")
+        edge_rows, ev_rows = [], []
+        for t in thresholds:
+            for label, key, target in (
+                ("Edge", "edge", edge_rows),
+                ("EV", "ev", ev_rows),
+            ):
+                selected = [
+                    x for x in settled_watch
+                    if float(x.get(key) or 0) >= t
+                ]
+                pnl = sum(float(x.get("virtual_pnl") or 0) for x in selected)
+                roi = pnl / len(selected) * 100 if selected else 0.0
+                wins = sum(1 for x in selected if x.get("result_status") == "won")
+                target.append({
+                    "Порог": f"{t:.0%}",
+                    "N": len(selected),
+                    "Win Rate": wins / len(selected) * 100 if selected else 0.0,
+                    "Virtual PnL": pnl,
+                    "ROI": roi,
+                })
+
+        col_e, col_v = st.columns(2)
+        with col_e:
+            st.caption("EDGE")
+            df_e = pd.DataFrame(edge_rows)
+            st.dataframe(
+                df_e.assign(
+                    **{
+                        "Win Rate": df_e["Win Rate"].map(lambda x: f"{x:.1f}%"),
+                        "Virtual PnL": df_e["Virtual PnL"].map(lambda x: f"{x:+.2f}u"),
+                        "ROI": df_e["ROI"].map(lambda x: f"{x:+.1f}%"),
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        with col_v:
+            st.caption("EV")
+            df_v = pd.DataFrame(ev_rows)
+            st.dataframe(
+                df_v.assign(
+                    **{
+                        "Win Rate": df_v["Win Rate"].map(lambda x: f"{x:.1f}%"),
+                        "Virtual PnL": df_v["Virtual PnL"].map(lambda x: f"{x:+.2f}u"),
+                        "ROI": df_v["ROI"].map(lambda x: f"{x:+.1f}%"),
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        edge_reliable = [x for x in edge_rows if x["N"] >= 10]
+        ev_reliable = [x for x in ev_rows if x["N"] >= 10]
+        if edge_reliable or ev_reliable:
+            parts = []
+            if edge_reliable:
+                b = max(edge_reliable, key=lambda x: x["ROI"])
+                parts.append(f"Edge {b['Порог']} → {b['ROI']:+.1f}% ROI (N={b['N']})")
+            if ev_reliable:
+                b = max(ev_reliable, key=lambda x: x["ROI"])
+                parts.append(f"EV {b['Порог']} → {b['ROI']:+.1f}% ROI (N={b['N']})")
+            st.info(" | ".join(parts))
+
+        # Пересечение: высокий Edge при слабом EV и наоборот.
+        cross = []
+        for t in thresholds[1:]:
+            e_only = [
+                x for x in settled_watch
+                if float(x.get("edge") or 0) >= t
+                and float(x.get("ev") or 0) < t
+            ]
+            v_only = [
+                x for x in settled_watch
+                if float(x.get("ev") or 0) >= t
+                and float(x.get("edge") or 0) < t
+            ]
+            cross.append({
+                "Порог": f"{t:.0%}",
+                "Edge≥T / EV<T": len(e_only),
+                "EV≥T / Edge<T": len(v_only),
+            })
+        if cross:
+            st.caption("Где метрики расходятся")
+            st.dataframe(pd.DataFrame(cross), use_container_width=True, hide_index=True)
 
 
 def _render_decision_log(D):
