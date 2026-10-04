@@ -117,6 +117,8 @@ def _render_model(D):
 
     _render_strategy_diagnostics()
 
+    _render_drift_monitor()
+
     # ==================== QUALITY BUCKETS ====================
     def _num(v):
         try:
@@ -471,6 +473,139 @@ def _render_walk_forward_thresholds():
     st.caption(
         f"Train: {dates[0]} → {dates[split-1]} · Test: {dates[split]} → {dates[-1]}. "
         "Это один временной split, а не доказательство устойчивого преимущества."
+    )
+
+
+def _render_drift_monitor():
+    """Сравнивает свежие завершённые snapshots с предыдущим периодом."""
+    if not db.SQLITE_BOOT_OK:
+        return
+
+    snapshots = db.fetch_decision_snapshots(limit=100000)
+    rows = []
+    for r in snapshots:
+        if str(r.get("result_status") or "").lower() not in ("won", "lost"):
+            continue
+        try:
+            odd = float(r.get("market_odd"))
+            prob = float(r.get("model_prob"))
+            edge = float(r.get("edge"))
+            ev = float(r.get("ev"))
+            date = str(r.get("date_iso") or "")[:10]
+            if odd <= 1.01 or not date or not (0.0 <= prob <= 1.0):
+                continue
+            won = 1.0 if str(r.get("result_status")).lower() == "won" else 0.0
+            pnl = (odd - 1.0) if won else -1.0
+        except (TypeError, ValueError):
+            continue
+        rows.append({
+            "date": date,
+            "won": won,
+            "pnl": pnl,
+            "edge": edge,
+            "ev": ev,
+            "brier": (prob - won) ** 2,
+        })
+
+    if len(rows) < 40:
+        return
+
+    rows.sort(key=lambda x: x["date"])
+    split = len(rows) // 2
+    old = rows[:split]
+    new = rows[split:]
+
+    def metrics(data):
+        n = len(data)
+        return {
+            "N": n,
+            "Win Rate": sum(x["won"] for x in data) / n,
+            "ROI": sum(x["pnl"] for x in data) / n * 100.0,
+            "Avg Edge": sum(x["edge"] for x in data) / n,
+            "Avg EV": sum(x["ev"] for x in data) / n,
+            "Brier": sum(x["brier"] for x in data) / n,
+        }
+
+    a = metrics(old)
+    b = metrics(new)
+
+    comparisons = [
+        ("Win Rate", a["Win Rate"], b["Win Rate"], "pp"),
+        ("ROI", a["ROI"], b["ROI"], "pp"),
+        ("Avg Edge", a["Avg Edge"], b["Avg Edge"], "pp"),
+        ("Avg EV", a["Avg EV"], b["Avg EV"], "pp"),
+        ("Brier", a["Brier"], b["Brier"], "raw"),
+    ]
+
+    # Для ROI/Win Rate/Edge/EV падение негативно; для Brier рост негативен.
+    deterioration = []
+    for name, old_v, new_v, unit in comparisons:
+        delta = new_v - old_v
+        bad = delta < -0.03 if unit == "pp" and name != "Brier" else (
+            delta > 0.03 if unit == "pp" and name == "Brier" else (
+                delta > 0.02 if name == "Brier" else False
+            )
+        )
+        deterioration.append((name, delta, bad))
+
+    bad_count = sum(x[2] for x in deterioration)
+    if bad_count >= 3:
+        status = "🔴 DEGRADING"
+    elif bad_count >= 1:
+        status = "🟡 DRIFT"
+    else:
+        status = "🟢 STABLE"
+
+    st.subheader("⚠️ Drift Monitor")
+    st.metric("Model status", status)
+    st.caption(
+        f"Сравнение двух последовательных половин завершённых snapshots: "
+        f"{old[0]['date']} → {old[-1]['date']} vs {new[0]['date']} → {new[-1]['date']}. "
+        "Это диагностический индикатор, не статистический тест."
+    )
+
+    table = pd.DataFrame([
+        {
+            "Metric": name,
+            "Previous": old_v,
+            "Recent": new_v,
+            "Delta": new_v - old_v,
+        }
+        for name, old_v, new_v, _ in comparisons
+    ])
+    st.dataframe(
+        table.assign(
+            Previous=table.apply(
+                lambda r: f"{r['Previous']:.1%}" if r["Metric"] != "Brier"
+                else f"{r['Previous']:.3f}", axis=1
+            ),
+            Recent=table.apply(
+                lambda r: f"{r['Recent']:.1%}" if r["Metric"] != "Brier"
+                else f"{r['Recent']:.3f}", axis=1
+            ),
+            Delta=table.apply(
+                lambda r: (
+                    f"{r['Delta']:+.1%}" if r["Metric"] != "Brier"
+                    else f"{r['Delta']:+.3f}"
+                ), axis=1
+            ),
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    if bad_count:
+        names = ", ".join(x[0] for x in deterioration if x[2])
+        st.warning(
+            f"Негативная динамика: {names}. "
+            "Проверь рынок, источник коэффициентов и последние сигналы перед повышением риска."
+        )
+    else:
+        st.success("Существенного ухудшения по выбранным метрикам не обнаружено.")
+
+    st.caption(
+        "Пороговые значения эвристические. При малой истории или смене состава лиг "
+        "Drift Monitor может давать ложные предупреждения."
     )
 
 
