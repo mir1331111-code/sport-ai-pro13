@@ -100,6 +100,8 @@ def render_verdict_card(c: dict, thr: float) -> str:
     prob = v.get("prob", 0)
     odd = v.get("odd")
     has_real = v.get("real_odds", False) and odd is not None
+    odds_source = c.get("odds_source", "")
+    source_label = {"market": "BOOKMAKER API", "grok_web": "GROK WEB", "manual": "MANUAL"}.get(odds_source, "MARKET")
     conf = v.get("confidence", "средняя")
     cc = v.get("conf_color", "#fbbf24")
     reasons = v.get("reasons", [])
@@ -249,7 +251,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
             '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;'
             'font-size:.76rem;font-weight:800;letter-spacing:1px;">'
             '<span style="color:' + color + ';">● ' + status + ' · ' + label + '</span>'
-            '<span style="color:#94a3b8;">MARKET PRICE</span></div>'
+            '<span style="color:#94a3b8;">MARKET PRICE · ' + source_label + '</span></div>'
             '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:9px;'
             'font-size:.78rem;color:#cbd5e1;">'
             '<span>Fair <b style="color:#e2e8f0;">' + (f"{fair:.2f}" if fair else "—") + '</b></span>'
