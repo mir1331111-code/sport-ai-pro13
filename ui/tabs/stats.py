@@ -214,6 +214,71 @@ def _render_model(D):
             )
 
 
+    # ==================== MARKET × EDGE ====================
+    market_edge_rows = []
+    edge_ranges = [
+        (0.00, 0.03, "0–3%"),
+        (0.03, 0.05, "3–5%"),
+        (0.05, 0.08, "5–8%"),
+        (0.08, 1.01, "8%+"),
+    ]
+    market_edge_groups = defaultdict(list)
+    for b in bets:
+        edge = _edge_value(b)
+        market = str(b.get("market") or "OTHER").strip() or "OTHER"
+        if edge is None or edge < 0:
+            continue
+        for lo, hi, label in edge_ranges:
+            if lo <= edge < hi:
+                market_edge_groups[(market, label)].append(b)
+                break
+
+    for (market, edge_label), items in market_edge_groups.items():
+        n = len(items)
+        stake = sum(float(b.get("stake") or 0) for b in items)
+        pnl = sum(_bet_pnl(b) for b in items)
+        won = sum(1 for b in items if b.get("status") == "won")
+        market_edge_rows.append({
+            "Рынок": market,
+            "Edge": edge_label,
+            "N": n,
+            "Win Rate": won / n * 100 if n else 0.0,
+            "PnL": pnl,
+            "ROI": pnl / stake * 100 if stake else 0.0,
+        })
+
+    st.subheader("🔬 Рынок × Edge")
+    st.caption(
+        "Помогает понять, в каких конкретных рынках высокий Edge действительно окупается. "
+        "Это исследовательская сегментация; малые выборки не являются доказательством преимущества."
+    )
+    if market_edge_rows:
+        market_edge_rows.sort(key=lambda r: (r["N"] >= 10, r["ROI"], r["N"]), reverse=True)
+        df_me = pd.DataFrame(market_edge_rows)
+        st.dataframe(
+            df_me.assign(
+                **{
+                    "Win Rate": df_me["Win Rate"].map(lambda x: f"{x:.1f}%"),
+                    "PnL": df_me["PnL"].map(lambda x: f"{x:+.2f}"),
+                    "ROI": df_me["ROI"].map(lambda x: f"{x:+.1f}%"),
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        reliable_me = [r for r in market_edge_rows if r["N"] >= 10]
+        if reliable_me:
+            best_me = max(reliable_me, key=lambda r: r["ROI"])
+            st.success(
+                f"Лучший сегмент при N≥10: {best_me['Рынок']} · Edge {best_me['Edge']} · "
+                f"ROI {best_me['ROI']:+.1f}% · N={best_me['N']}"
+            )
+        else:
+            st.caption("Надёжного сегмента пока нет: нужно минимум 10 закрытых ставок в группе.")
+    else:
+        st.info("Пока недостаточно закрытых ставок с Edge для сегментации.")
+
+
     # ==================== MODEL VERDICT ====================
     def _best_reliable(rows):
         reliable = [r for r in rows if r["N"] >= 10]
