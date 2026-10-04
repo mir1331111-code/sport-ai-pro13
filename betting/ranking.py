@@ -91,6 +91,40 @@ def _risk_penalty(card: dict) -> float:
     return min(0.5, penalty)          # ограничиваем
 
 
+def signal_score(card: dict) -> float:
+    """Сила модельного сигнала, без зависимости от цены букмекера."""
+    conf = _confidence_norm(card)
+    try:
+        prob = max(0.0, min(1.0, float((card.get("verdict") or {}).get("prob", 0.0))))
+    except (TypeError, ValueError):
+        prob = 0.0
+    score = 0.65 * conf + 0.35 * prob
+    score -= _risk_penalty(card)
+    return max(0.0, min(1.0, score))
+
+
+def value_score(card: dict) -> float:
+    """Привлекательность текущей цены. Без рынка score = 0."""
+    v = card.get("verdict", {}) or {}
+
+    def metric(name):
+        try:
+            raw = v.get(name)
+            return None if raw is None else float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    ev = metric("ev")
+    edge = metric("edge")
+    kelly_ = metric("kelly_pct")
+    if ev is None and edge is None and kelly_ is None:
+        return 0.0
+
+    ev_s = max(0.0, min(1.0, ev / SCALE_EV)) if ev is not None else 0.0
+    edge_s = max(0.0, min(1.0, edge / SCALE_EDGE)) if edge is not None else 0.0
+    kelly_s = max(0.0, min(1.0, kelly_ / SCALE_KELLY)) if kelly_ is not None else 0.0
+    return 0.50 * ev_s + 0.35 * edge_s + 0.15 * kelly_s
+
 def rank_score(card: dict,
                weights: Optional[dict] = None) -> float:
     """Возвращает score в [0;1] — чем выше, тем сильнее сигнал."""
