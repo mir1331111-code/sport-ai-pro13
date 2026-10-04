@@ -397,6 +397,110 @@ def espn_matches(days: int, logs=None) -> list:
                 logs.append(f"⚠️ ESPN {dstr}: {type(exc).__name__}")
     return out
 
+# ============ GROK WEB MARKET ODDS ============
+def grok_web_odds(home: str, away: str, league: str, api_key: str,
+                  logs=None) -> dict:
+    """Ищет текущие bookmaker odds через xAI Web Search.
+
+    Возвращает только структурированные decimal odds для модельных рынков.
+    Это экспериментальный источник: UI явно помечает его как GROK WEB.
+    """
+    if not api_key or not home or not away:
+        return {}
+
+    ck = f"grok_odds_v1_{_norm_name(home)}_{_norm_name(away)}"
+    cached = cache_get(ck, 600)
+    if isinstance(cached, dict):
+        if logs:
+            logs.append(f"GROK WEB: {home} — {away} (cached)")
+        return cached
+
+    prompt = f"""Find current bookmaker football odds for this match:
+{home} vs {away}
+League: {league}
+
+Use web search. Prefer current bookmaker/odds pages and identify the bookmaker
+and timestamp/date when available. Return ONLY valid JSON, no markdown:
+{{"bookmaker":"name or unknown","updated":"date/time or unknown",
+"odds":{{"П1":0,"X":0,"П2":0,"ТБ 2.5":0,"ТМ 2.5":0,
+"BTTS да":0,"BTTS нет":0}}}}
+
+Use decimal odds. Put 0 when a market is not found. Do not invent odds.
+Only return odds that are explicitly visible in the searched web results."""
+
+    try:
+        r = _sess.post(
+            "https://api.x.ai/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "grok-4.7",
+                "input": prompt,
+                "tools": [{"type": "web_search"}],
+            },
+            timeout=45,
+            proxies=NO_PROXY,
+        )
+        usage.llm_increment(1)
+        if r.status_code != 200:
+            if logs:
+                logs.append(f"GROK WEB: HTTP {r.status_code}")
+            return {}
+
+        data = r.json() or {}
+        content = data.get("output_text") or ""
+        if not content:
+            # Responses API may expose text inside output content blocks.
+            parts = []
+            for item in data.get("output") or []:
+                for part in item.get("content") or []:
+                    if isinstance(part, dict) and part.get("text"):
+                        parts.append(str(part["text"]))
+            content = "".join(parts).strip()
+
+        match = re.search(r"\{.*\}", content, re.S)
+        if not match:
+            if logs:
+                logs.append("GROK WEB: JSON не найден")
+            return {}
+
+        parsed = __import__("json").loads(match.group(0))
+        raw_odds = parsed.get("odds") or {}
+        odds = {}
+        for key in ("П1", "X", "П2", "ТБ 2.5", "ТМ 2.5", "BTTS да", "BTTS нет"):
+            try:
+                value = float(raw_odds.get(key) or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 1.01:
+                odds[key] = value
+
+        if not odds:
+            if logs:
+                logs.append("GROK WEB: подходящих кэфов не найдено")
+            return {}
+
+        result = {
+            "odds": odds,
+            "bookmaker": str(parsed.get("bookmaker") or "unknown"),
+            "updated": str(parsed.get("updated") or "unknown"),
+            "source": "grok_web",
+        }
+        cache_put(ck, result)
+        if logs:
+            logs.append(
+                f"GROK WEB: {len(odds)} рынков · "
+                f"{result['bookmaker']} · {result['updated']}"
+            )
+        return result
+    except Exception as exc:
+        if logs:
+            logs.append(f"GROK WEB: {type(exc).__name__}")
+        return {}
+
+
 # ============ FOOTBALL-DATA.ORG ============
 def _fdorg_get(endpoint: str, params: dict, token: str) -> Optional[dict]:
     if not token:
