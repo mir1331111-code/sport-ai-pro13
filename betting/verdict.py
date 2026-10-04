@@ -210,6 +210,47 @@ def build_verdict(
     return verdict, rows, None
 
 
+def refine_with_manual_odd(
+    verdict: dict,
+    rows: list,
+    manual_odd: float,
+    bank: float,
+    kelly_frac: float,
+    min_edge: float = 0.03,
+    min_ev: float = 0.03,
+):
+    """Apply one manually entered bookmaker odd to the model pick.
+
+    Manual input is treated exactly like a real market quote: it can create
+    a bet only when the model candidate, edge, EV and Kelly checks pass.
+    The model fair_odd is never used as a market price.
+    """
+    try:
+        odd = float(manual_odd)
+    except (TypeError, ValueError):
+        odd = 0.0
+
+    if odd <= 1.01:
+        verdict["real_odds"] = False
+        verdict["odd"] = None
+        verdict["ev"] = None
+        verdict["edge"] = None
+        verdict["stake"] = 0.0
+        verdict["kelly_pct"] = 0.0
+        verdict["is_bet"] = False
+        return verdict, None
+
+    return refine_with_real_odds(
+        verdict,
+        rows,
+        {verdict["pick"]: odd},
+        bank,
+        kelly_frac,
+        min_edge=min_edge,
+        min_ev=min_ev,
+    )
+
+
 def refine_with_real_odds(
     verdict: dict,
     rows: list,
