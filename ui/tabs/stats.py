@@ -111,6 +111,8 @@ def _render_model(D):
 
     _render_snapshot_calibration(D)
 
+    _render_walk_forward_thresholds()
+
     # ==================== QUALITY BUCKETS ====================
     def _num(v):
         try:
@@ -351,6 +353,121 @@ def _render_model(D):
     dd_positive = ec[["Drawdown"]]
     st.subheader("📉 Drawdown")
     st.line_chart(dd_positive, height=220)
+
+
+def _render_walk_forward_thresholds():
+    """Простая walk-forward проверка Edge/EV: train -> следующий test-период."""
+    if not db.SQLITE_BOOT_OK:
+        return
+
+    snapshots = db.fetch_decision_snapshots(limit=100000)
+    samples = []
+    for r in snapshots:
+        if str(r.get("result_status") or "").lower() not in ("won", "lost"):
+            continue
+        try:
+            date = str(r.get("date_iso") or "")[:10]
+            edge = float(r.get("edge"))
+            ev = float(r.get("ev"))
+            pnl = float(r.get("virtual_pnl"))
+            if not date or not all(x == x for x in (edge, ev, pnl)):
+                continue
+        except (TypeError, ValueError):
+            continue
+        samples.append({"date": date, "edge": edge, "ev": ev, "pnl": pnl,
+                        "won": str(r.get("result_status")).lower() == "won"})
+
+    if len(samples) < 20:
+        return
+
+    samples.sort(key=lambda x: x["date"])
+    dates = sorted({x["date"] for x in samples})
+    if len(dates) < 4:
+        return
+
+    thresholds = [0.00, 0.01, 0.02, 0.03, 0.05]
+    split = max(2, int(len(dates) * 0.70))
+    if split >= len(dates):
+        return
+
+    train_dates = set(dates[:split])
+    test_dates = set(dates[split:])
+    train = [x for x in samples if x["date"] in train_dates]
+    test = [x for x in samples if x["date"] in test_dates]
+
+    def score(items, metric, threshold):
+        chosen = [x for x in items if x[metric] >= threshold]
+        if not chosen:
+            return {"N": 0, "WR": 0.0, "PnL": 0.0, "ROI": 0.0}
+        pnl = sum(x["pnl"] for x in chosen)
+        return {
+            "N": len(chosen),
+            "WR": sum(x["won"] for x in chosen) / len(chosen) * 100,
+            "PnL": pnl,
+            "ROI": pnl / len(chosen) * 100,
+        }
+
+    st.subheader("🧪 Walk-forward Threshold Test")
+    st.caption(
+        "70% первых дат используются только для выбора порога; последние 30% — "
+        "отдельный test. В текущие правила BET результат не подмешивается."
+    )
+
+    import pandas as pd
+    rows = []
+    for metric, label in (("edge", "Edge"), ("ev", "EV")):
+        train_scores = {t: score(train, metric, t) for t in thresholds}
+        reliable = [t for t in thresholds if train_scores[t]["N"] >= 10]
+        if not reliable:
+            continue
+        best_t = max(reliable, key=lambda t: train_scores[t]["ROI"])
+        for t in thresholds:
+            tr, te = train_scores[t], score(test, metric, t)
+            rows.append({
+                "Метрика": label,
+                "Threshold": f"{t*100:.0f}%",
+                "Train N": tr["N"],
+                "Train ROI": tr["ROI"],
+                "Test N": te["N"],
+                "Test Win Rate": te["WR"],
+                "Test PnL": te["PnL"],
+                "Test ROI": te["ROI"],
+                "Выбран": "←" if t == best_t else "",
+            })
+
+    if not rows:
+        st.info("Недостаточно данных для выбора threshold на train-периоде.")
+        return
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df.assign(
+            **{
+                "Train ROI": df["Train ROI"].map(lambda x: f"{x:+.1f}%"),
+                "Test Win Rate": df["Test Win Rate"].map(lambda x: f"{x:.1f}%"),
+                "Test PnL": df["Test PnL"].map(lambda x: f"{x:+.2f}"),
+                "Test ROI": df["Test ROI"].map(lambda x: f"{x:+.1f}%"),
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    for label in ("Edge", "EV"):
+        part = [r for r in rows if r["Метрика"] == label and r["Выбран"] == "←"]
+        if not part:
+            continue
+        r = part[0]
+        st.metric(
+            f"Out-of-sample {label}",
+            r["Threshold"],
+            f"Test ROI {r['Test ROI']:+.1f}% · N={r['Test N']}",
+        )
+
+    st.caption(
+        f"Train: {dates[0]} → {dates[split-1]} · Test: {dates[split]} → {dates[-1]}. "
+        "Это один временной split, а не доказательство устойчивого преимущества."
+    )
 
 
 def _render_snapshot_calibration(D):
