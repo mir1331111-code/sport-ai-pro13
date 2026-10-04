@@ -504,6 +504,141 @@ def _render_by_market(D):
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
+def _render_watch_lab(D):
+    """Исследование исторических WATCH без фиктивного учёта их как ставок."""
+    if not db.SQLITE_BOOT_OK:
+        st.info("WATCH LAB доступен после инициализации SQLite.")
+        return
+
+    rows = db.fetch_decision_snapshots(limit=100000)
+    watch = [r for r in rows if str(r.get("decision", "")).upper() == "WATCH"]
+    if not watch:
+        st.info(
+            "Пока нет сохранённых WATCH-снимков. Запусти несколько сканов — "
+            "новые WATCH будут сохраняться автоматически."
+        )
+        return
+
+    # WATCH — это наблюдение, поэтому здесь нет фактического PnL.
+    # Сначала показываем распределение причин и качества цены.
+    import pandas as pd
+
+    def num(v):
+        try:
+            x = float(v)
+            return x if x == x else None
+        except (TypeError, ValueError):
+            return None
+
+    def bucket(x):
+        if x is None:
+            return "нет данных"
+        if x < 0:
+            return "<0%"
+        if x < 0.03:
+            return "0–3%"
+        if x < 0.05:
+            return "3–5%"
+        if x < 0.08:
+            return "5–8%"
+        return "8%+"
+
+    n = len(watch)
+    edges = [num(r.get("edge")) for r in watch if num(r.get("edge")) is not None]
+    evs = [num(r.get("ev")) for r in watch if num(r.get("ev")) is not None]
+    kells = [num(r.get("kelly_pct")) for r in watch if num(r.get("kelly_pct")) is not None]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("WATCH snapshots", n)
+    c2.metric("Средний Edge", f"{sum(edges)/len(edges)*100:+.1f}%" if edges else "—")
+    c3.metric("Средний EV", f"{sum(evs)/len(evs)*100:+.1f}%" if evs else "—")
+    c4.metric("Kelly > 0", f"{sum(1 for x in kells if x > 0)/len(kells)*100:.1f}%" if kells else "—")
+
+    st.caption(
+        "WATCH LAB пока измеряет качество ценового фильтра. Это не ROI WATCH: "
+        "виртуальный PnL не считаем, пока результат матча не привязан к snapshot."
+    )
+
+    reason_counts = defaultdict(int)
+    for r in watch:
+        reason_counts[r.get("decision_reason") or "Причина не сохранена"] += 1
+    reason_rows = [
+        {"Причина": k, "N": v, "%": v / n * 100}
+        for k, v in sorted(reason_counts.items(), key=lambda kv: -kv[1])
+    ]
+    st.markdown("**Почему WATCH**")
+    df_reason = pd.DataFrame(reason_rows)
+    st.dataframe(
+        df_reason.assign(
+            **{"%": df_reason["%"].map(lambda x: f"{x:.1f}%")}
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # Разрез по Edge/EV показывает, где находится WATCH относительно порога.
+    grouped = defaultdict(list)
+    for r in watch:
+        grouped[bucket(num(r.get("edge")))].append(r)
+
+    bucket_rows = []
+    for label, items in grouped.items():
+        vals_edge = [num(x.get("edge")) for x in items if num(x.get("edge")) is not None]
+        vals_ev = [num(x.get("ev")) for x in items if num(x.get("ev")) is not None]
+        bucket_rows.append({
+            "Edge": label,
+            "N": len(items),
+            "Avg Edge": sum(vals_edge) / len(vals_edge) * 100 if vals_edge else 0.0,
+            "Avg EV": sum(vals_ev) / len(vals_ev) * 100 if vals_ev else 0.0,
+            "Kelly > 0": (
+                sum(1 for x in items if (num(x.get("kelly_pct")) or 0) > 0)
+                / len(items) * 100
+            ),
+        })
+    bucket_rows.sort(key=lambda x: ["<0%", "0–3%", "3–5%", "5–8%", "8%+", "нет данных"].index(x["Edge"])
+                         if x["Edge"] in ["<0%", "0–3%", "3–5%", "5–8%", "8%+", "нет данных"] else 99)
+    if bucket_rows:
+        st.markdown("**WATCH по диапазону Edge**")
+        df_b = pd.DataFrame(bucket_rows)
+        st.dataframe(
+            df_b.assign(
+                **{
+                    "Avg Edge": df_b["Avg Edge"].map(lambda x: f"{x:+.1f}%"),
+                    "Avg EV": df_b["Avg EV"].map(lambda x: f"{x:+.1f}%"),
+                    "Kelly > 0": df_b["Kelly > 0"].map(lambda x: f"{x:.1f}%"),
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("**Последние WATCH**")
+    latest = sorted(
+        watch,
+        key=lambda x: x.get("created_at") or "",
+        reverse=True,
+    )[:20]
+    latest_rows = []
+    for r in latest:
+        latest_rows.append({
+            "Дата": r.get("date_iso") or "—",
+            "Матч": r.get("match_ru") or r.get("match") or "—",
+            "Рынок": r.get("market") or "—",
+            "Исход": r.get("pick") or "—",
+            "Кэф": f"{num(r.get('market_odd')):.2f}" if num(r.get("market_odd")) else "—",
+            "Edge": f"{num(r.get('edge')):+.1%}" if num(r.get("edge")) is not None else "—",
+            "EV": f"{num(r.get('ev')):+.1%}" if num(r.get("ev")) is not None else "—",
+            "Причина": r.get("decision_reason") or "—",
+        })
+    st.dataframe(latest_rows, use_container_width=True, hide_index=True)
+
+    st.warning(
+        "Следующий этап для настоящего WATCH ROI: при завершении матча нужно "
+        "сопоставлять snapshot с финальным результатом и считать виртуальный PnL. "
+        "Тогда можно честно сравнить пороги 1%, 2%, 3%, 5% и выбрать рабочий фильтр."
+    )
+
+
 def _render_decision_log(D):
     """Показывает сохранённый снимок решения для закрытых ставок."""
     bets = _closed_bets(D)
@@ -538,8 +673,8 @@ def render():
     D = st.session_state.data
     _render_decision_log(D)
     st.header("📈 Статистика")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["📊 Обзор", "🧪 Модель", "🏆 По лигам", "📅 По дням", "🎯 По рынкам"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["📊 Обзор", "🧪 Модель", "🏆 По лигам", "📅 По дням", "🎯 По рынкам", "🟡 WATCH LAB"])
     with tab1:
         _render_overview(D)
     with tab2:
@@ -550,6 +685,8 @@ def render():
         _render_by_day(D)
     with tab5:
         _render_by_market(D)
+    with tab6:
+        _render_watch_lab(D)
 
     if db.SQLITE_BOOT_OK:
         st.divider()
