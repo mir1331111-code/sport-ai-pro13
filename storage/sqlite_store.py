@@ -60,6 +60,18 @@ CREATE INDEX IF NOT EXISTS idx_bets_status ON bets(status);
 CREATE INDEX IF NOT EXISTS idx_bets_date ON bets(date_iso);
 CREATE INDEX IF NOT EXISTS idx_bets_fixture ON bets(fixture_id);
 CREATE INDEX IF NOT EXISTS idx_bets_mode ON bets(mode);
+CREATE TABLE IF NOT EXISTS decision_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_key TEXT UNIQUE,
+    fixture_id TEXT, match TEXT, match_ru TEXT, league TEXT, market TEXT, pick TEXT,
+    decision TEXT, decision_reason TEXT,
+    model_prob REAL, fair_odd REAL, market_odd REAL,
+    edge REAL, ev REAL, kelly_pct REAL, confidence REAL, value_score REAL,
+    odds_source TEXT, date_iso TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_decision ON decision_snapshots(decision);
+CREATE INDEX IF NOT EXISTS idx_decisions_date ON decision_snapshots(date_iso);
+
 CREATE TABLE IF NOT EXISTS bank_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -84,7 +96,7 @@ def db_init() -> bool:
 
 
 def invalidate_caches() -> None:
-    for fn in ("fetch_bets", "clv_summary", "clv_breakdown", "bank_history"):
+    for fn in ("fetch_bets", "fetch_decision_snapshots", "clv_summary", "clv_breakdown", "bank_history"):
         try:
             globals()[fn].clear()
         except Exception:
@@ -124,6 +136,47 @@ def insert_bets_batch(bets: Iterable) -> int:
             raise
     invalidate_caches()
     return len(rows)
+
+
+def insert_decision_snapshots(snapshots: Iterable) -> int:
+    rows = []
+    for x in snapshots:
+        if not isinstance(x, dict):
+            continue
+        rows.append((
+            x.get("snapshot_key"),
+            str(x.get("fixture_id")) if x.get("fixture_id") else None,
+            x.get("match"), x.get("match_ru"), x.get("league"),
+            x.get("market"), x.get("pick"), x.get("decision"),
+            x.get("decision_reason"), x.get("model_prob"), x.get("fair_odd"),
+            x.get("market_odd"), x.get("edge"), x.get("ev"), x.get("kelly_pct"),
+            x.get("confidence"), x.get("value_score"), x.get("odds_source"),
+            x.get("date_iso"),
+        ))
+    if not rows:
+        return 0
+    with _db() as c:
+        c.executemany("""
+            INSERT OR IGNORE INTO decision_snapshots (
+                snapshot_key, fixture_id, match, match_ru, league, market, pick,
+                decision, decision_reason, model_prob, fair_odd, market_odd,
+                edge, ev, kelly_pct, confidence, value_score, odds_source, date_iso
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, rows)
+    return len(rows)
+
+@_cache(ttl=30, show_spinner=False)
+def fetch_decision_snapshots(decision: Optional[str] = None, limit: int = 100000) -> list:
+    q = "SELECT * FROM decision_snapshots"
+    params = []
+    if decision:
+        q += " WHERE decision=?"
+        params.append(str(decision).upper())
+    q += " ORDER BY id DESC LIMIT ?"
+    params.append(int(limit))
+    with _db() as c:
+        c.row_factory = sqlite3.Row
+        return [dict(r) for r in c.execute(q, params).fetchall()]
 
 
 def update_bet(bet_id: int, **fields) -> None:
