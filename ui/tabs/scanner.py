@@ -181,6 +181,36 @@ def render(min_prob, kelly_frac, matrix_n):
         )
         shown = 0
         hidden = 0
+
+        waiting = [
+            c for c in cards_view
+            if (c.get("verdict") or {}).get("is_action", False)
+            and not (c.get("verdict") or {}).get("real_odds", False)
+            and not c.get("best")
+        ]
+        if waiting:
+            st.markdown("### ⏳ WAITING FOR ODDS")
+            st.caption(
+                f"{len(waiting)} модельных сигналов ждут подходящей цены. "
+                "Если букмекер даст кэф не ниже указанного — можно проверить value."
+            )
+            wait_cols = st.columns(min(3, len(waiting)))
+            for wi, wc in enumerate(waiting[:6]):
+                wv = wc.get("verdict") or {}
+                fair_w = float(wv.get("fair_odd") or 0.0)
+                entry_w = float(wc.get("min_entry_odd") or 0.0)
+                with wait_cols[wi % len(wait_cols)]:
+                    st.markdown(
+                        f"**{wc.get('match_ru', wc.get('match', '—'))}**  \
+"
+                        f"{wv.get('pick', '—')} · "
+                        f"**{wv.get('prob', 0) * 100:.1f}%**  \
+"
+                        f"Fair **{fair_w:.2f}** → вход **{entry_w:.2f}+**"
+                    )
+            if len(waiting) > 6:
+                st.caption(f"Ещё {len(waiting) - 6} сигналов ниже.")
+
         for idx, c in enumerate(cards_view):
             v = c.get("verdict") or {}
             if not v.get("is_action", False):
@@ -197,7 +227,7 @@ def render(min_prob, kelly_frac, matrix_n):
             if not v.get("real_odds", False) and not c.get("best"):
                 fair = float(v.get("fair_odd") or 0.0)
                 prob = float(v.get("prob") or 0.0)
-                min_entry = (1.03 / prob) if prob > 0 else 0.0
+                min_entry = float(c.get("min_entry_odd") or 0.0)
                 key_base = str(c.get("fixture_id") or c.get("match")) + "_" + str(v.get("pick") or "pick")
                 st.markdown("**🎯 Ввести кэф букмекера вручную**")
                 q1, q2, q3 = st.columns([1.2, 1.2, 1])
@@ -519,6 +549,11 @@ def render(min_prob, kelly_frac, matrix_n):
                 else:
                     quality_missing_market += 1
 
+            p_top = float(verdict.get("prob") or 0.0)
+            min_edge_price = 1.0 / (p_top - 0.03) if p_top > 0.03 else 0.0
+            min_ev_price = 1.03 / p_top if p_top > 0 else 0.0
+            min_entry_odd = max(min_edge_price, min_ev_price, 0.0)
+
             cards.append({
                 "div": lg,
                 "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
@@ -539,6 +574,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
+                "min_entry_odd": round(min_entry_odd, 2) if min_entry_odd > 0 else None,
                 "women": r.get("women", False),
                 "national": r.get("national", False),
                 "kind": r.get("kind", "club"),
