@@ -16,6 +16,7 @@ import os
 import shutil
 import threading
 import time
+import urllib.request
 from datetime import datetime
 from typing import Callable
 
@@ -177,9 +178,79 @@ def fdorg_reset() -> dict:
     return reset("fdorg_usage")
 
 
+def _secret(name: str) -> str:
+    value = os.environ.get(name, "")
+    if value:
+        return str(value).strip()
+    try:
+        import streamlit as st
+        value = st.secrets.get(name, "")
+        return str(value).strip() if value else ""
+    except Exception:
+        return ""
+
+
+def _gist_config() -> tuple[str, str]:
+    return _secret("GIST_ID"), _secret("GITHUB_TOKEN")
+
+
+def _gist_read() -> dict:
+    gist_id, token = _gist_config()
+    if not gist_id or not token:
+        return {}
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        content = ((payload.get("files") or {}).get("neuro_local.json") or {}).get("content", "")
+        data = json.loads(content) if content else {}
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        log.warning("Gist read failed: %s", type(exc).__name__)
+        return {}
+
+
+def _gist_write(data: dict) -> bool:
+    gist_id, token = _gist_config()
+    if not gist_id or not token:
+        return False
+    safe = dict(data)
+    safe_meta = dict(safe.get("meta") or {})
+    for key in ("fdorg_token", "odds_api_key", "llm_api_key"):
+        safe_meta.pop(key, None)
+    safe["meta"] = safe_meta
+    payload = {"files": {"neuro_local.json": {
+        "content": json.dumps(safe, ensure_ascii=False, default=str)
+    }}}
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/gists/{gist_id}", data=body, method="PATCH",
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/vnd.github+json",
+                     "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=8):
+            return True
+    except Exception as exc:
+        log.warning("Gist write failed: %s", type(exc).__name__)
+        return False
+
+
 def get_local_data() -> dict:
-    return _safe_read().get("data") or {}
+    local = _safe_read().get("data") or {}
+    if local:
+        return local
+    remote = _gist_read()
+    if remote:
+        _update(lambda all_: all_.__setitem__("data", remote))
+        return remote
+    return {}
 
 
 def set_local_data(data: dict) -> None:
     _update(lambda all_: all_.__setitem__("data", data))
+    _gist_write(data)
