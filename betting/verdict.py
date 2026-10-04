@@ -265,11 +265,11 @@ def refine_with_real_odds(
 
     Требования:
     1. Есть реальный bookmaker odd.
-    2. Probability модели выше implied probability рынка.
-    3. Edge >= min_edge.
-    4. EV >= min_ev.
-    5. Kelly > 0.
+    2. Это модельный кандидат (is_action=True).
+    3. Kelly > 0.
 
+    Edge/EV больше не блокируют добавление реального кэфа в портфель:
+    они сохраняются как value-метрики и признак качества цены.
     Никаких ставок по estimated/fair odds.
     """
 
@@ -349,17 +349,11 @@ def refine_with_real_odds(
         verdict["is_bet"] = False
         return verdict, None
 
-    # Реальный market edge.
-    if market_edge < min_edge:
-        verdict["stake"] = 0.0
-        verdict["is_bet"] = False
-        return verdict, None
-
-    # Реальный EV.
-    if ev < min_ev:
-        verdict["stake"] = 0.0
-        verdict["is_bet"] = False
-        return verdict, None
+    # Value больше не является блокирующим фильтром для реального кэфа.
+    # Сохраняем отдельный флаг, чтобы UI/аналитика видели качество цены.
+    verdict["value_passed"] = (
+        market_edge >= min_edge and ev >= min_ev
+    )
 
     stake = kelly(
         prob=prob,
