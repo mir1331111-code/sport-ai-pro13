@@ -806,6 +806,49 @@ def render(min_prob, kelly_frac, matrix_n):
                     elif refined_v.get("real_odds"):
                         # Реальная цена есть, но Kelly/value не прошёл.
                         quality_real_market += 1
+
+                    edge_now = refined_v.get("edge")
+                    ev_now = refined_v.get("ev")
+                    kelly_now = refined_v.get("kelly_pct")
+                    try:
+                        edge_f = float(edge_now) if edge_now is not None else 0.0
+                    except (TypeError, ValueError):
+                        edge_f = 0.0
+                    try:
+                        ev_f = float(ev_now) if ev_now is not None else 0.0
+                    except (TypeError, ValueError):
+                        ev_f = 0.0
+                    try:
+                        kelly_f = float(kelly_now) if kelly_now is not None else 0.0
+                    except (TypeError, ValueError):
+                        kelly_f = 0.0
+
+                    # Жёсткая классификация решения:
+                    # BET = реальный рынок + положительный Kelly + сильное value.
+                    # WATCH = цена ещё недостаточно хороша.
+                    # SKIP = реальная цена не даёт положительного преимущества.
+                    if (
+                        refined_v.get("real_odds", False)
+                        and best is not None
+                        and kelly_f > 0
+                        and edge_f >= 0.03
+                        and ev_f >= 0.03
+                    ):
+                        decision = "BET"
+                    elif (
+                        refined_v.get("real_odds", False)
+                        and kelly_f > 0
+                        and (edge_f > 0 or ev_f > 0)
+                    ):
+                        decision = "WATCH"
+                    else:
+                        decision = "SKIP"
+
+                    refined_v["decision"] = decision
+                    refined_v["is_bet"] = decision == "BET"
+                    c["best"] = best if decision == "BET" else None
+                    c["decision"] = decision
+
                     c["grok_comment"] = (
                         str(grok_quote.get("comment") or "").strip()
                         if odds_source == "grok_web" else ""
@@ -938,6 +981,8 @@ def render(min_prob, kelly_frac, matrix_n):
         league_exposure = {}
 
         for c in cards:
+            if (c.get("decision") or (c.get("verdict") or {}).get("decision")) != "BET":
+                continue
             b = c.get("best")
             if not b:
                 continue
