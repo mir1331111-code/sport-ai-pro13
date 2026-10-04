@@ -16,6 +16,7 @@ from data.sources import (
     espn_matches,
     tsdb_matches,
     odds_api_fixture,
+    grok_web_odds,
     parse_date,
 )
 from model.engine import Engine
@@ -649,9 +650,35 @@ def render(min_prob, kelly_frac, matrix_n):
                 sport_key = DIV_TO_ODDS.get(lg)
                 real_odds = None
 
-                # Пробуем реальные кэфы
+                # Пробуем реальные кэфы.
+                # Если выбран Grok — сначала экспериментальный Web Search,
+                # затем обычный Odds API как fallback.
+                llm_provider_now = D.get("meta", {}).get(
+                    "llm_provider", ""
+                )
                 if (
-                    sport_key and odds_key
+                    llm_provider_now == "Grok (x.ai)"
+                    and odds_key
+                    and usage.llm_remaining() > 0
+                    and matches_with_best < 15
+                ):
+                    try:
+                        grok_quote = grok_web_odds(
+                            h_en, a_en, r.get("League") or "Football",
+                            odds_key, logs,
+                        )
+                        if grok_quote.get("odds"):
+                            real_odds = grok_quote["odds"]
+                            odds_source = "grok_web"
+                            market_checked += 1
+                    except Exception as exc:
+                        logs.append(
+                            f"⚠️ Grok odds error {h_en} — {a_en}: {exc}"
+                        )
+
+                if (
+                    not real_odds
+                    and sport_key and odds_key
                     and usage.odds_remaining() > 0
                     and matches_with_best < 15
                 ):
@@ -664,9 +691,11 @@ def render(min_prob, kelly_frac, matrix_n):
                             f"⚠️ Odds API error {h_en} — {a_en}: {exc}"
                         )
                         real_odds = None
+                    if real_odds:
+                        odds_source = "market"
+                        market_checked += 1
 
                 if real_odds:
-                    market_checked += 1
                     try:
                         verdict, best = refine_with_real_odds(
                             verdict, rows_, real_odds,
@@ -677,8 +706,6 @@ def render(min_prob, kelly_frac, matrix_n):
                             f"⚠️ Ошибка odds {h_en} — {a_en}: {exc}"
                         )
                         best = None
-                    if best is not None:
-                        odds_source = "market"
 
                 # ============ NO REAL MARKET ============
                 # fair_odd is the model's theoretical price, not a bookmaker
@@ -704,7 +731,7 @@ def render(min_prob, kelly_frac, matrix_n):
 
             if best is not None:
                 matches_with_best += 1
-                if odds_source == "market":
+                if odds_source in ("market", "grok_web"):
                     quality_real_market += 1
                 else:
                     quality_missing_market += 1
@@ -879,7 +906,7 @@ def render(min_prob, kelly_frac, matrix_n):
             if c.get("national"):
                 national_bet_count += 1
 
-            mode = "real" if c.get("odds_source") == "market" else "paper"
+            mode = "real" if c.get("odds_source") in ("market", "grok_web") else "paper"
 
             new_bets.append({
                 "match": c["match"], "match_ru": c["match_ru"],
