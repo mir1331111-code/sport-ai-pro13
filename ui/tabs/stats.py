@@ -5,6 +5,7 @@ from collections import defaultdict
 import streamlit as st
 
 from storage import sqlite_store as db
+from data.sources import tsdb_match_result, espn_match_result, fdorg_match_result
 
 
 def _sharpe(returns: list, periods_per_year: int = 252) -> float:
@@ -504,6 +505,30 @@ def _render_by_market(D):
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
+def _watch_pick_result(pick, home, away):
+    """Возвращает win/loss/push для сохранённого рынка по финальному счёту."""
+    try:
+        h, a = int(home), int(away)
+    except (TypeError, ValueError):
+        return None
+    p = str(pick or "").strip()
+    if p == "П1":
+        return "won" if h > a else "lost"
+    if p == "X":
+        return "won" if h == a else "lost"
+    if p == "П2":
+        return "won" if a > h else "lost"
+    if p == "ТБ 2.5":
+        return "won" if h + a >= 3 else "lost"
+    if p == "ТМ 2.5":
+        return "won" if h + a <= 2 else "lost"
+    if p == "BTTS да":
+        return "won" if h > 0 and a > 0 else "lost"
+    if p == "BTTS нет":
+        return "won" if h == 0 or a == 0 else "lost"
+    return None
+
+
 def _render_watch_lab(D):
     """Исследование исторических WATCH без фиктивного учёта их как ставок."""
     if not db.SQLITE_BOOT_OK:
@@ -519,9 +544,77 @@ def _render_watch_lab(D):
         )
         return
 
-    # WATCH — это наблюдение, поэтому здесь нет фактического PnL.
-    # Сначала показываем распределение причин и качества цены.
+    # Обновляем только завершившиеся WATCH. Результат кешируется в snapshot,
+    # поэтому повторные открытия вкладки не создают новую историю.
     import pandas as pd
+    from datetime import datetime, timedelta
+
+    fd_token = str((D.get("meta") or {}).get("fdorg_token") or "")
+    now = datetime.now()
+    evaluated = []
+    pending_eval = 0
+
+    for r in watch[:1000]:
+        if r.get("result_status") in ("won", "lost", "push"):
+            evaluated.append(r)
+            continue
+        date_iso = str(r.get("date_iso") or "")[:10]
+        try:
+            match_date = datetime.strptime(date_iso, "%Y-%m-%d")
+        except Exception:
+            continue
+        if match_date > now - timedelta(hours=2):
+            pending_eval += 1
+            continue
+
+        fid = str(r.get("fixture_id") or "")
+        result = None
+        if fid.startswith("espn:"):
+            result = espn_match_result(fid, date_iso)
+        elif fd_token and fid:
+            result = fdorg_match_result(fid, fd_token)
+        if result is None and fid:
+            result = tsdb_match_result(fid)
+
+        if not result:
+            pending_eval += 1
+            continue
+
+        home_score, away_score = result.get("home"), result.get("away")
+        outcome = _watch_pick_result(r.get("pick"), home_score, away_score)
+        odd = num = None
+        try:
+            num = float(r.get("market_odd"))
+            odd = num if num > 1.01 else None
+        except (TypeError, ValueError):
+            pass
+        if outcome and odd:
+            pnl = (odd - 1.0) if outcome == "won" else (-1.0 if outcome == "lost" else 0.0)
+            db.update_decision_snapshot(
+                int(r["id"]),
+                result_status=outcome,
+                result_score=f"{int(home_score)}:{int(away_score)}",
+                virtual_pnl=pnl,
+                evaluated_at=datetime.now().isoformat(),
+            )
+            r = dict(r)
+            r.update({
+                "result_status": outcome,
+                "result_score": f"{int(home_score)}:{int(away_score)}",
+                "virtual_pnl": pnl,
+                "evaluated_at": datetime.now().isoformat(),
+            })
+            evaluated.append(r)
+
+    # WATCH — наблюдение, но теперь для завершённых матчей можно честно считать
+    # виртуальный результат по тому кэфу, который был сохранён в момент сигнала.
+    settled_watch = [
+        r for r in evaluated
+        if r.get("result_status") in ("won", "lost", "push")
+        and r.get("virtual_pnl") is not None
+    ]
+
+    # Сначала показываем распределение причин и качества цены.
 
     def num(v):
         try:
@@ -550,14 +643,27 @@ def _render_watch_lab(D):
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("WATCH snapshots", n)
-    c2.metric("Средний Edge", f"{sum(edges)/len(edges)*100:+.1f}%" if edges else "—")
-    c3.metric("Средний EV", f"{sum(evs)/len(evs)*100:+.1f}%" if evs else "—")
-    c4.metric("Kelly > 0", f"{sum(1 for x in kells if x > 0)/len(kells)*100:.1f}%" if kells else "—")
+    c2.metric("Результат найден", len(settled_watch))
+    c3.metric("Средний Edge", f"{sum(edges)/len(edges)*100:+.1f}%" if edges else "—")
+    c4.metric("Средний EV", f"{sum(evs)/len(evs)*100:+.1f}%" if evs else "—")
 
-    st.caption(
-        "WATCH LAB пока измеряет качество ценового фильтра. Это не ROI WATCH: "
-        "виртуальный PnL не считаем, пока результат матча не привязан к snapshot."
-    )
+    if settled_watch:
+        v_pnl = sum(float(x.get("virtual_pnl") or 0) for x in settled_watch)
+        v_turnover = sum(1.0 for _ in settled_watch)
+        v_roi = v_pnl / v_turnover * 100 if v_turnover else 0.0
+        w1, w2, w3 = st.columns(3)
+        w1.metric("WATCH virtual PnL", f"{v_pnl:+.2f}u")
+        w2.metric("WATCH ROI", f"{v_roi:+.1f}%")
+        w3.metric("Незавершено", pending_eval)
+        st.caption(
+            "1u = условная единица равная одной ставке. Это исследовательский PnL, "
+            "он не влияет на банкролл и реальные ставки."
+        )
+    else:
+        st.caption(
+            f"Результаты ещё не сопоставлены. Ожидаем: {pending_eval}. "
+            "Виртуальный PnL не влияет на банкролл."
+        )
 
     reason_counts = defaultdict(int)
     for r in watch:
@@ -632,11 +738,49 @@ def _render_watch_lab(D):
         })
     st.dataframe(latest_rows, use_container_width=True, hide_index=True)
 
-    st.warning(
-        "Следующий этап для настоящего WATCH ROI: при завершении матча нужно "
-        "сопоставлять snapshot с финальным результатом и считать виртуальный PnL. "
-        "Тогда можно честно сравнить пороги 1%, 2%, 3%, 5% и выбрать рабочий фильтр."
-    )
+    # Sensitivity: какой совместный Edge/EV threshold дал бы лучший
+    # виртуальный результат на уже завершённых WATCH.
+    if settled_watch:
+        thresholds = [0.00, 0.01, 0.02, 0.03, 0.05]
+        sens = []
+        for t in thresholds:
+            selected = [
+                x for x in settled_watch
+                if (float(x.get("edge") or 0) >= t)
+                and (float(x.get("ev") or 0) >= t)
+            ]
+            pnl = sum(float(x.get("virtual_pnl") or 0) for x in selected)
+            roi = pnl / len(selected) * 100 if selected else 0.0
+            wins = sum(1 for x in selected if x.get("result_status") == "won")
+            sens.append({
+                "Edge + EV порог": f"{t:.0%}",
+                "N": len(selected),
+                "Win Rate": wins / len(selected) * 100 if selected else 0.0,
+                "Virtual PnL": pnl,
+                "ROI": roi,
+            })
+        st.markdown("**🧪 Чувствительность порога Edge + EV**")
+        df_s = pd.DataFrame(sens)
+        st.dataframe(
+            df_s.assign(
+                **{
+                    "Win Rate": df_s["Win Rate"].map(lambda x: f"{x:.1f}%"),
+                    "Virtual PnL": df_s["Virtual PnL"].map(lambda x: f"{x:+.2f}u"),
+                    "ROI": df_s["ROI"].map(lambda x: f"{x:+.1f}%"),
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        reliable = [x for x in sens if x["N"] >= 10]
+        if reliable:
+            best = max(reliable, key=lambda x: x["ROI"])
+            st.success(
+                f"Лучший наблюдаемый порог при N≥10: {best['Edge + EV порог']} · "
+                f"ROI {best['ROI']:+.1f}% · N={best['N']}"
+            )
+        else:
+            st.caption("Для сравнения порогов пока нужна выборка минимум 10 завершённых WATCH.")
 
 
 def _render_decision_log(D):
