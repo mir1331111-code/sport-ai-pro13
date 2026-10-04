@@ -210,6 +210,44 @@ def render_verdict_card(c: dict, thr: float) -> str:
     odd_display = str(round(odd, 2)) if has_real else "—"
     prob_display = str(round(prob * 100))
 
+    # ============ MARKET DECISION ============
+    market_html = ""
+    if has_real:
+        fair = float(v.get("fair_odd") or 0.0)
+        ev = v.get("ev")
+        edge = v.get("edge")
+        kelly_pct = float(v.get("kelly_pct") or 0.0)
+        if ev is not None and float(ev) < 0 or edge is not None and float(edge) < 0:
+            status, color, label = "RED", "#f87171", "НЕГАТИВНАЯ ЦЕНА"
+        elif (ev is not None and float(ev) >= 0.03 and
+              edge is not None and float(edge) >= 0.03):
+            status, color, label = "GREEN", "#34d399", "ХОРОШИЙ VALUE"
+        else:
+            status, color, label = "YELLOW", "#fbbf24", "СЛАБЫЙ VALUE"
+        market_html = (
+            '<div style="margin-top:12px;padding:12px 14px;border-radius:12px;'
+            'background:rgba(15,23,42,.48);border:1px solid ' + color + '55;">'
+            '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;'
+            'font-size:.76rem;font-weight:800;letter-spacing:1px;">'
+            '<span style="color:' + color + ';">● ' + status + ' · ' + label + '</span>'
+            '<span style="color:#94a3b8;">MARKET PRICE</span></div>'
+            '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:9px;'
+            'font-size:.78rem;color:#cbd5e1;">'
+            '<span>Fair <b style="color:#e2e8f0;">' + (f"{fair:.2f}" if fair else "—") + '</b></span>'
+            '<span>Edge <b style="color:#e2e8f0;">' + (f"{float(edge):.1%}" if edge is not None else "—") + '</b></span>'
+            '<span>EV <b style="color:#e2e8f0;">' + (f"{float(ev):.1%}" if ev is not None else "—") + '</b></span>'
+            '<span>Kelly <b style="color:#e2e8f0;">' + f"{kelly_pct:.1%}" + '</b></span>'
+            '</div>'
+            '<div style="margin-top:8px;color:#94a3b8;font-size:.76rem;">'
+            'Решение: ' + (
+                'цена проходит сильный value-порог; модельная вероятность подтверждает вход.'
+                if status == "GREEN" else
+                'реальный кэф положительный по модели, но запас value небольшой.'
+                if status == "YELLOW" else
+                'цена хуже модельной оценки; такую ставку не стоит усиливать.'
+            ) + '</div></div>'
+        )
+
     return (
         '<div class="vcard" style="background:' + bg + ';">'
         '<div style="padding:20px 24px;">'
@@ -245,7 +283,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         '<div>Кэф: <b style="color:#a5f3fc;font-size:1.15rem;'
         'font-family:JetBrains Mono,monospace;">' + odd_display + '</b></div>'
         '<div>Уверенность: <b style="color:' + cc + ';">' + esc(conf) + '</b></div>'
-        '</div>' + warn + '</div>'
+        '</div>' + warn + market_html + '</div>'
 
         '<div style="padding:16px 24px;">'
         '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
