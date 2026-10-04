@@ -1204,7 +1204,54 @@ def render(min_prob, kelly_frac, matrix_n):
             new_exposure += stake
             league_exposure[league_key] = current_league + stake
 
-        # ============ 8. СОХРАНЕНИЕ ============
+        # ============ 8. DECISION SNAPSHOTS ============
+        # WATCH/SKIP сохраняем отдельно от ставок. Это позволяет исследовать
+        # качество фильтра без превращения наблюдения в фиктивную ставку.
+        decision_snapshots = []
+        for dc in cards:
+            dv = dc.get("verdict") or {}
+            decision = str(
+                dc.get("decision") or dv.get("decision") or ""
+            ).upper().strip()
+            if decision not in ("BET", "WATCH", "SKIP"):
+                continue
+            fixture_id = str(dc.get("fixture_id") or "")
+            match = str(dc.get("match") or "")
+            market = str(dv.get("market") or dv.get("market_type") or "")
+            pick = str(dv.get("pick") or "")
+            market_odd = dv.get("odd")
+            # Один и тот же скан + неизменившаяся цена не должен раздувать N.
+            snapshot_key = "|".join([
+                fixture_id or match,
+                market,
+                pick,
+                str(market_odd or ""),
+                decision,
+                str(dc.get("date_iso") or dc.get("date") or ""),
+            ])
+            decision_snapshots.append({
+                "snapshot_key": snapshot_key,
+                "fixture_id": fixture_id,
+                "match": match,
+                "match_ru": dc.get("match_ru"),
+                "league": dc.get("league") or dc.get("div"),
+                "market": market,
+                "pick": pick,
+                "decision": decision,
+                "decision_reason": dc.get("decision_reason") or dv.get("decision_reason"),
+                "model_prob": dv.get("prob"),
+                "fair_odd": dv.get("fair_odd"),
+                "market_odd": market_odd,
+                "edge": dv.get("edge"),
+                "ev": dv.get("ev"),
+                "kelly_pct": dv.get("kelly_pct"),
+                "confidence": dv.get("confidence"),
+                "value_score": value_score(dc),
+                "odds_source": dc.get("odds_source"),
+                "date_iso": dc.get("date_iso") or dc.get("date"),
+            })
+
+        # ============ 9. СОХРАНЕНИЕ ============
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
@@ -1236,6 +1283,7 @@ def render(min_prob, kelly_frac, matrix_n):
 
         if db.SQLITE_BOOT_OK:
             db.insert_bets_batch(new_bets)
+            db.insert_decision_snapshots(decision_snapshots)
             db.log_bank(D2["bank"], event="scan")
             db.invalidate_caches()
 
