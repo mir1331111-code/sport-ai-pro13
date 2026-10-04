@@ -13,6 +13,7 @@ from data.sources import (
     load_seasonal,
     season_str,
     fdorg_matches,
+    espn_matches,
     tsdb_matches,
     odds_api_fixture,
     parse_date,
@@ -513,13 +514,22 @@ def render(min_prob, kelly_frac, matrix_n):
         else:
             logs.append("📡 football-data.org: токен не задан")
 
+        # ============ 3. ESPN FALLBACK ============
+        # Без ключа; полезен как резервный источник, особенно если TSDB/fdorg пусты.
+        update_loader("📡 ESPN: резервный источник...", 0.15, logs)
+        espn_rows = []
+        try:
+            espn_rows = espn_matches(days, logs)
+        except Exception as e:
+            logs.append(f"⚠️ ESPN ошибка: {e}")
+
         # ============ ОБЪЕДИНЕНИЕ ============
         # Источники используют разные fixture_id, поэтому одного ID
         # недостаточно для дедупликации. Второй ключ — дата + команды.
         seen_ids = set()
         seen_matches = set()
         rows_raw = []
-        for r in tsdb_rows + fdorg_rows:
+        for r in tsdb_rows + fdorg_rows + espn_rows:
             fid = str(r.get("fixture_id", "")).strip()
             home_key = "".join(
                 ch for ch in str(r.get("HomeTeam", "")).lower()
