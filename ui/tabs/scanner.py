@@ -50,6 +50,46 @@ def _safe_filter(rows):
     ]
 
 
+def _decision_reason(decision, edge, ev, kelly_pct, real_odds=True):
+    """Короткая машиночитаемая причина решения для UI/логов."""
+    if not real_odds:
+        return "Нет реального кэфа — ждём цену букмекера."
+    try:
+        edge_f = float(edge or 0.0)
+    except (TypeError, ValueError):
+        edge_f = 0.0
+    try:
+        ev_f = float(ev or 0.0)
+    except (TypeError, ValueError):
+        ev_f = 0.0
+    try:
+        kelly_f = float(kelly_pct or 0.0)
+    except (TypeError, ValueError):
+        kelly_f = 0.0
+
+    if decision == "BET":
+        return "Edge ≥ 3%, EV ≥ 3% и Kelly > 0 — цена подтверждена."
+    if decision == "WATCH":
+        if kelly_f <= 0:
+            return "Kelly ≤ 0 — ждём более высокий кэф."
+        if edge_f < 0.03 and ev_f < 0.03:
+            return "Edge и EV ниже 3% — нужен более выгодный кэф."
+        if edge_f < 0.03:
+            return "Edge ниже 3% — нужен более выгодный кэф."
+        if ev_f < 0.03:
+            return "EV ниже 3% — нужен более выгодный кэф."
+        return "Value положительный, но цена пока не проходит полный фильтр."
+    if kelly_f <= 0:
+        return "Kelly ≤ 0 — ставка не оправдывает риск."
+    if edge_f <= 0 and ev_f <= 0:
+        return "Edge и EV ≤ 0 — положительного преимущества нет."
+    if edge_f <= 0:
+        return "Edge ≤ 0 — рыночная цена хуже fair."
+    if ev_f <= 0:
+        return "EV ≤ 0 — математического преимущества нет."
+    return "Цена не проходит строгий фильтр BET."
+
+
 def _match_start_dt(row):
     """Возвращает время старта в той же шкале, что Date/Time источников."""
     d = parse_date(row.get("Date", ""))
@@ -942,8 +982,12 @@ def render(min_prob, kelly_frac, matrix_n):
 
                     refined_v["decision"] = decision
                     refined_v["is_bet"] = decision == "BET"
+                    refined_v["decision_reason"] = _decision_reason(
+                        decision, edge_f, ev_f, kelly_f, True
+                    )
                     c["best"] = best if decision == "BET" else None
                     c["decision"] = decision
+                    c["decision_reason"] = refined_v["decision_reason"]
 
                     c["grok_comment"] = (
                         str(grok_quote.get("comment") or "").strip()
@@ -1066,7 +1110,7 @@ def render(min_prob, kelly_frac, matrix_n):
         update_loader("💼 Портфель...", 0.95, logs)
         new_bets = []
         existing = {
-            f"{b['match']}|{b['pick']}"
+            f"{b.get('match')}|{b.get('market')}|{b.get('pick')}"
             for b in D["bets"]
             if isinstance(b, dict) and b.get("status") == "pending"
         }
@@ -1104,8 +1148,11 @@ def render(min_prob, kelly_frac, matrix_n):
             if ev is None:
                 continue
 
-            bk = f"{c['match']}|{pick}"
+            bk = f"{c['match']}|{mkt}|{pick}"
             if bk in existing:
+                risk_reasons.append(
+                    f"duplicate: {c['match']} · {mkt} · {pick}"
+                )
                 continue
 
             if c.get("women"):
@@ -1141,6 +1188,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     "value_score": float(value_score(c) or 0.0),
                     "market": mkt,
                     "league": c.get("league"),
+                    "decision_reason": c.get("decision_reason") or c.get("verdict", {}).get("decision_reason"),
                 },
                 "women": c.get("women", False),
                 "national": c.get("national", False),
@@ -1170,6 +1218,9 @@ def render(min_prob, kelly_frac, matrix_n):
             "women": women_bet_count,
             "national": national_bet_count,
             "risk_rejected": risk_rejected,
+            "duplicate_rejected": sum(
+                1 for rr in risk_reasons if str(rr).startswith("duplicate:")
+            ),
             "quality_real_market": quality_real_market,
             "quality_missing_market": quality_missing_market,
         }
