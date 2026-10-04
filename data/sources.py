@@ -423,7 +423,8 @@ Use web search. Prefer current bookmaker/odds pages and identify the bookmaker
 and timestamp/date when available. Return ONLY valid JSON, no markdown:
 {{"bookmaker":"name or unknown","updated":"date/time or unknown",
 "odds":{{"П1":0,"X":0,"П2":0,"ТБ 2.5":0,"ТМ 2.5":0,
-"BTTS да":0,"BTTS нет":0}}}}
+"BTTS да":0,"BTTS нет":0}},
+"comment":"one short Russian comment about the found price/value, max 240 chars"}}
 
 Use decimal odds. Put 0 when a market is not found. Do not invent odds.
 Only return odds that are explicitly visible in the searched web results."""
@@ -486,6 +487,7 @@ Only return odds that are explicitly visible in the searched web results."""
             "odds": odds,
             "bookmaker": str(parsed.get("bookmaker") or "unknown"),
             "updated": str(parsed.get("updated") or "unknown"),
+            "comment": str(parsed.get("comment") or "").strip()[:240],
             "source": "grok_web",
         }
         cache_put(ck, result)
