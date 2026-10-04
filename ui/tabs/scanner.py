@@ -283,6 +283,80 @@ def render(min_prob, kelly_frac, matrix_n):
         else:
             st.info("🏆 TOP VALUE появится после получения реальных кэфов.")
 
+        # ============ DECISION BOARD ============
+        bet_cards = [
+            c for c in cards_view
+            if str(c.get("decision") or (c.get("verdict") or {}).get("decision") or "").upper() == "BET"
+        ]
+        watch_cards = [
+            c for c in cards_view
+            if str(c.get("decision") or (c.get("verdict") or {}).get("decision") or "").upper() == "WATCH"
+        ]
+        skip_cards = [
+            c for c in cards_view
+            if str(c.get("decision") or (c.get("verdict") or {}).get("decision") or "").upper() == "SKIP"
+        ]
+
+        st.markdown("### 🎯 DECISION BOARD")
+        db1, db2, db3 = st.columns(3)
+        with db1:
+            st.metric("BET · в портфель", len(bet_cards))
+        with db2:
+            st.metric("WATCH · ждать цену", len(watch_cards))
+        with db3:
+            st.metric("SKIP · не входить", len(skip_cards))
+
+        if bet_cards:
+            st.markdown("#### 🟢 BEST BETS TODAY")
+            st.caption("Только подтверждённые реальные цены · Edge ≥ 3% · EV ≥ 3% · Kelly > 0.")
+            best_cols = st.columns(min(3, len(bet_cards)))
+            for bi, bc in enumerate(bet_cards[:6]):
+                bv = bc.get("verdict") or {}
+                odd_b = float(bv.get("odd") or 0.0)
+                ev_b = float(bv.get("ev") or 0.0)
+                edge_b = float(bv.get("edge") or 0.0)
+                with best_cols[bi % len(best_cols)]:
+                    st.markdown(f"**🟢 {bc.get('match_ru', bc.get('match', '—'))}**")
+                    st.caption(
+                        f"{bv.get('label', '—')} · @ {odd_b:.2f} · "
+                        f"Fair {float(bv.get('fair_odd') or 0.0):.2f}"
+                    )
+                    st.markdown(
+                        f"Edge **{edge_b:.1%}** · EV **{ev_b:.1%}** · "
+                        f"Kelly **{float(bv.get('kelly_pct') or 0.0):.1%}**"
+                    )
+
+        if watch_cards:
+            st.markdown("#### 🟡 WATCHLIST · ЖДЁМ ЛУЧШУЮ ЦЕНУ")
+            st.caption("Модель видит преимущество, но текущий кэф пока не проходит сильный value-фильтр.")
+            watch_cols = st.columns(min(3, len(watch_cards)))
+            for wi, wc in enumerate(watch_cards[:6]):
+                wv = wc.get("verdict") or {}
+                with watch_cols[wi % len(watch_cols)]:
+                    st.markdown(f"**🟡 {wc.get('match_ru', wc.get('match', '—'))}**")
+                    st.caption(
+                        f"{wv.get('label', '—')} · @ {float(wv.get('odd') or 0.0):.2f} · "
+                        f"Fair {float(wv.get('fair_odd') or 0.0):.2f}"
+                    )
+                    st.markdown(
+                        f"Edge **{float(wv.get('edge') or 0.0):.1%}** · "
+                        f"EV **{float(wv.get('ev') or 0.0):.1%}** · "
+                        f"Kelly **{float(wv.get('kelly_pct') or 0.0):.1%}**"
+                    )
+
+        if skip_cards:
+            with st.expander(f"🔴 SKIP · {len(skip_cards)} цен не проходят"):
+                for sc in skip_cards[:10]:
+                    sv = sc.get("verdict") or {}
+                    st.markdown(
+                        f"**{sc.get('match_ru', sc.get('match', '—'))}** · "
+                        f"{sv.get('label', '—')} · "
+                        f"@ {float(sv.get('odd') or 0.0):.2f} · "
+                        f"Edge {float(sv.get('edge') or 0.0):.1%} · "
+                        f"EV {float(sv.get('ev') or 0.0):.1%} · "
+                        f"Kelly {float(sv.get('kelly_pct') or 0.0):.1%}"
+                    )
+
         waiting = [
             c for c in cards_view
             if (c.get("verdict") or {}).get("is_action", False)
@@ -360,15 +434,34 @@ def render(min_prob, kelly_frac, matrix_n):
                         manual_v, manual_best = dict(v), None
                         st.error(f"Ошибка расчёта кэфа: {exc}")
 
-                    if manual_best is None:
-                        edge_v = manual_v.get("edge")
-                        ev_v = manual_v.get("ev")
+                    edge_v = manual_v.get("edge")
+                    ev_v = manual_v.get("ev")
+                    try:
+                        edge_f = float(edge_v) if edge_v is not None else 0.0
+                    except (TypeError, ValueError):
+                        edge_f = 0.0
+                    try:
+                        ev_f = float(ev_v) if ev_v is not None else 0.0
+                    except (TypeError, ValueError):
+                        ev_f = 0.0
+                    try:
+                        kelly_f = float(manual_v.get("kelly_pct") or 0.0)
+                    except (TypeError, ValueError):
+                        kelly_f = 0.0
+
+                    if (
+                        manual_best is None
+                        or kelly_f <= 0
+                        or edge_f < 0.03
+                        or ev_f < 0.03
+                    ):
                         if edge_v is not None and ev_v is not None:
                             st.warning(
-                                f"Кэф не прошёл value: Edge {edge_v:.1%} · EV {ev_v:.1%}."
+                                f"Кэф не стал BET: Edge {edge_f:.1%} · EV {ev_f:.1%} · "
+                                f"Kelly {kelly_f:.1%}. Нужно Edge ≥ 3%, EV ≥ 3%, Kelly > 0."
                             )
                         else:
-                            st.warning("Кэф не прошёл проверку value.")
+                            st.warning("Кэф не прошёл строгий BET-фильтр.")
                     else:
                         mkt, pick, odd, ev, prob, stake = manual_best
                         stake = round(
@@ -391,8 +484,11 @@ def render(min_prob, kelly_frac, matrix_n):
                         elif stake > float(D.get("bank") or 0.0):
                             st.warning("Недостаточно свободного банка.")
                         else:
+                            manual_v["decision"] = "BET"
+                            manual_v["is_bet"] = True
                             c["verdict"] = manual_v
                             c["best"] = (mkt, pick, odd, ev, prob, stake)
+                            c["decision"] = "BET"
                             c["odds_source"] = "manual"
                             bet = {
                                 "match": c["match"],
