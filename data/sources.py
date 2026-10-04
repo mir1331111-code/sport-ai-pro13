@@ -13,7 +13,7 @@
   * Дополнительно распознаются шотландский, австралийский, японский чемпионаты.
 """
 from __future__ import annotations
-import csv, io, re
+import csv, io, re, logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
@@ -32,6 +32,8 @@ from config import (CACHE_TTL, FOOTBALL_DATA_ORG_HOST,
 from security import cache_get, cache_put
 from storage import usage
 
+
+log = logging.getLogger(__name__)
 
 MSK_OFFSET_HOURS = 3
 
