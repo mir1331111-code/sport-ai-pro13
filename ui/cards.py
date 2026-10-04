@@ -236,30 +236,39 @@ def render_verdict_card(c: dict, thr: float) -> str:
         ev = v.get("ev")
         edge = v.get("edge")
         kelly_pct = float(v.get("kelly_pct") or 0.0)
-        value_passed = bool(v.get("value_passed", False))
-        is_bet = bool(v.get("is_bet", False))
+        explicit_decision = str(
+            v.get("decision") or c.get("decision") or ""
+        ).upper().strip()
+        if explicit_decision not in ("BET", "WATCH", "SKIP"):
+            # Backward-compatible fallback for old saved cards.
+            value_passed = bool(v.get("value_passed", False))
+            is_bet = bool(v.get("is_bet", False))
+            if is_bet and value_passed:
+                explicit_decision = "BET"
+            elif is_bet:
+                explicit_decision = "WATCH"
+            else:
+                explicit_decision = "SKIP"
 
-        # Decision layer:
-        # BET   — реальная цена проходит сильный value-фильтр и Kelly > 0.
-        # WATCH — Kelly положительный, но запас value слабый.
-        # SKIP  — реальная цена не дает положительного ожидаемого результата.
-        if is_bet and value_passed:
+        # Decision layer is authoritative when scanner has already classified
+        # the real market price.
+        if explicit_decision == "BET":
             status, color, label = "BET", "#34d399", "В ПОРТФЕЛЬ"
             rationale = (
-                "реальный кэф проходит value-порог; Kelly положительный — "
-                "сигнал можно использовать как вход."
+                "реальный кэф проходит Edge ≥ 3% и EV ≥ 3%; "
+                "Kelly положительный — сигнал можно использовать как вход."
             )
-        elif is_bet:
-            status, color, label = "WATCH", "#fbbf24", "СЛАБЫЙ VALUE"
+        elif explicit_decision == "WATCH":
+            status, color, label = "WATCH", "#fbbf24", "ЖДАТЬ ЛУЧШУЮ ЦЕНУ"
             rationale = (
-                "Kelly положительный, но запас Edge/EV ниже сильного порога; "
-                "ждем более выгодную цену, если не нужен текущий вход."
+                "преимущество ещё есть, но текущая цена не проходит сильный "
+                "value-порог; ждём улучшения кэфа."
             )
         else:
             status, color, label = "SKIP", "#f87171", "НЕ ВХОДИТЬ"
             rationale = (
-                "текущая реальная цена не дает положительного Kelly; "
-                "ждем улучшения кэфа."
+                "текущая реальная цена не даёт положительного преимущества; "
+                "ставку не добавляем в портфель."
             )
 
         market_html = (
@@ -278,6 +287,11 @@ def render_verdict_card(c: dict, thr: float) -> str:
             '</div>'
             '<div style="margin-top:8px;color:#94a3b8;font-size:.76rem;">'
             'Решение: ' + rationale +
+            '</div>' +
+            '<div style="margin-top:8px;font-size:.7rem;color:#64748b;">' +
+            ('BET → в автоматический портфель' if explicit_decision == "BET" else
+             'WATCH → следим за ценой' if explicit_decision == "WATCH" else
+             'SKIP → не замораживаем банк') +
             '</div></div>'
         )
 
