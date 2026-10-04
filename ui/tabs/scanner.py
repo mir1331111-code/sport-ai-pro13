@@ -36,6 +36,7 @@ except Exception:
 
 
 LLM_TOP_N = 8
+GROK_ODDS_TOP_N = 8
 
 
 def _safe_filter(rows):
@@ -620,6 +621,7 @@ def render(min_prob, kelly_frac, matrix_n):
         skipped_started = 0
         skipped_bad_time = 0
 
+        grok_candidate_rank = 0
         for r in rows:
             d = parse_date(r.get("Date", ""))
             if not d:
@@ -674,7 +676,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 # затем обычный Odds API как fallback.
                 if (
                     grok_enabled
-                    and matches_with_best < 15
+                    and grok_candidate_rank < GROK_ODDS_TOP_N
                 ):
                     try:
                         grok_quote = grok_web_odds(
@@ -685,6 +687,7 @@ def render(min_prob, kelly_frac, matrix_n):
                             real_odds = grok_quote["odds"]
                             odds_source = "grok_web"
                             market_checked += 1
+                            grok_candidate_rank += 1
                     except Exception as exc:
                         logs.append(
                             f"⚠️ Grok odds error {h_en} — {a_en}: {exc}"
@@ -775,6 +778,16 @@ def render(min_prob, kelly_frac, matrix_n):
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
+                "grok_comment": (
+                    str(grok_quote.get("comment") or "").strip()
+                    if "grok_quote" in locals() and odds_source == "grok_web"
+                    else ""
+                ),
+                "grok_bookmaker": (
+                    str(grok_quote.get("bookmaker") or "").strip()
+                    if "grok_quote" in locals() and odds_source == "grok_web"
+                    else ""
+                ),
                 "min_entry_odd": round(min_entry_odd, 2) if min_entry_odd > 0 else None,
                 "women": r.get("women", False),
                 "national": r.get("national", False),
