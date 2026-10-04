@@ -656,16 +656,17 @@ def render(min_prob, kelly_frac, matrix_n):
                 llm_provider_now = D.get("meta", {}).get(
                     "llm_provider", ""
                 )
+                grok_key = D.get("meta", {}).get("llm_api_key", "")
                 if (
                     llm_provider_now == "Grok (x.ai)"
-                    and odds_key
+                    and grok_key
                     and usage.llm_remaining() > 0
                     and matches_with_best < 15
                 ):
                     try:
                         grok_quote = grok_web_odds(
                             h_en, a_en, r.get("League") or "Football",
-                            odds_key, logs,
+                            grok_key, logs,
                         )
                         if grok_quote.get("odds"):
                             real_odds = grok_quote["odds"]
