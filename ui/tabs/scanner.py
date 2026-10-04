@@ -678,6 +678,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     grok_enabled
                     and grok_candidate_rank < GROK_ODDS_TOP_N
                 ):
+                    grok_candidate_rank += 1
                     try:
                         grok_quote = grok_web_odds(
                             h_en, a_en, r.get("League") or "Football",
@@ -687,7 +688,6 @@ def render(min_prob, kelly_frac, matrix_n):
                             real_odds = grok_quote["odds"]
                             odds_source = "grok_web"
                             market_checked += 1
-                            grok_candidate_rank += 1
                     except Exception as exc:
                         logs.append(
                             f"⚠️ Grok odds error {h_en} — {a_en}: {exc}"
