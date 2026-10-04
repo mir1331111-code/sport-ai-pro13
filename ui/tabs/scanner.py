@@ -515,13 +515,17 @@ def render(min_prob, kelly_frac, matrix_n):
             logs.append("📡 football-data.org: токен не задан")
 
         # ============ 3. ESPN FALLBACK ============
-        # Без ключа; полезен как резервный источник, особенно если TSDB/fdorg пусты.
-        update_loader("📡 ESPN: резервный источник...", 0.15, logs)
+        # Не расширяем выдачу ESPN поверх рабочих источников:
+        # это резерв только при полном отсутствии матчей.
         espn_rows = []
-        try:
-            espn_rows = espn_matches(days, logs)
-        except Exception as e:
-            logs.append(f"⚠️ ESPN ошибка: {e}")
+        if not tsdb_rows and not fdorg_rows:
+            update_loader("📡 ESPN: резервный источник...", 0.15, logs)
+            try:
+                espn_rows = espn_matches(days, logs)
+            except Exception as e:
+                logs.append(f"⚠️ ESPN ошибка: {e}")
+        else:
+            logs.append("📡 ESPN: не нужен — основной источник уже дал матчи")
 
         # ============ ОБЪЕДИНЕНИЕ ============
         # Источники используют разные fixture_id, поэтому одного ID
