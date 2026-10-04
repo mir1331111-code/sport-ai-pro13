@@ -47,6 +47,25 @@ def _safe_filter(rows):
     ]
 
 
+def _match_start_dt(row):
+    """Возвращает время старта в той же шкале, что Date/Time источников."""
+    d = parse_date(row.get("Date", ""))
+    if not d:
+        return None
+    raw_time = str(row.get("Time", "") or "").strip()
+    if not raw_time:
+        return None
+    for fmt in ("%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.combine(
+                d.date(),
+                datetime.strptime(raw_time[:8], fmt).time(),
+            )
+        except Exception:
+            continue
+    return None
+
+
 def _train_engine(matrix_n, logs, update_loader):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
@@ -373,7 +392,8 @@ def render(min_prob, kelly_frac, matrix_n):
                     unsafe_allow_html=True,
                 )
 
-        today = datetime.now().replace(
+        now = datetime.now()
+        today = now.replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         logs = []
@@ -431,6 +451,15 @@ def render(min_prob, kelly_frac, matrix_n):
             rows_raw.append(r)
         rows = _safe_filter(rows_raw)
 
+        if skipped_started or skipped_bad_time:
+            logs.append(
+                f"⏱️ Scanner: исключено начавшихся/завершённых {skipped_started}"
+                + (
+                    f" · без времени сегодня {skipped_bad_time}"
+                    if skipped_bad_time else ""
+                )
+            )
+
         w_count = sum(1 for r in rows if r.get("women"))
         n_count = sum(1 for r in rows if r.get("national"))
         c_count = len(rows) - w_count - n_count
@@ -449,12 +478,23 @@ def render(min_prob, kelly_frac, matrix_n):
         update_loader("🧠 Анализ матчей...", 0.50, logs)
         cards = []
         odds_key = D.get("meta", {}).get("odds_api_key", "")
+        skipped_started = 0
+        skipped_bad_time = 0
 
         for r in rows:
             d = parse_date(r.get("Date", ""))
             if not d:
                 continue
             if not (today <= d <= today + timedelta(days=days)):
+                continue
+
+            start_dt = _match_start_dt(r)
+            if start_dt is None:
+                if d.date() <= now.date():
+                    skipped_bad_time += 1
+                    continue
+            elif start_dt <= now:
+                skipped_started += 1
                 continue
             h_en = (r.get("HomeTeam") or "").strip()
             a_en = (r.get("AwayTeam") or "").strip()
