@@ -107,6 +107,118 @@ def _render_model(D):
             "Brier Score ниже — лучше; сравнивать его корректно на одинаковой выборке."
         )
 
+
+    # ==================== QUALITY BUCKETS ====================
+    def _num(v):
+        try:
+            x = float(v)
+            return x if x == x else None
+        except (TypeError, ValueError):
+            return None
+
+    def _edge_value(b):
+        edge = _num(b.get("edge"))
+        if edge is not None:
+            return edge
+        p = _num(b.get("prob"))
+        o = _num(b.get("odds"))
+        if p is not None and o is not None and o > 0:
+            return p - (1.0 / o)
+        return None
+
+    def _confidence_value(b):
+        c = _num(b.get("confidence"))
+        if c is None:
+            c = _num(b.get("model_confidence"))
+        if c is None:
+            c = _num(b.get("prob"))
+        if c is None:
+            return None
+        return c / 100.0 if c > 1 else c
+
+    def _bucket_stats(items, label, ranges):
+        rows = []
+        for lo, hi in ranges:
+            bucket = [
+                b for b in items
+                if _num(b.get("_bucket_value")) is not None
+                and lo <= _num(b.get("_bucket_value")) < hi
+            ]
+            if not bucket:
+                continue
+            pnl = sum(_bet_pnl(b) for b in bucket)
+            turnover = sum(float(b.get("stake") or 0) for b in bucket)
+            won = sum(1 for b in bucket if b.get("status") == "won")
+            roi = pnl / turnover * 100 if turnover else 0.0
+            rows.append({
+                label: f"{lo*100:.0f}–{hi*100:.0f}%",
+                "N": len(bucket),
+                "Win Rate": won / len(bucket) * 100,
+                "PnL": pnl,
+                "ROI": roi,
+            })
+        return rows
+
+    edge_items = []
+    conf_items = []
+    for b in bets:
+        edge = _edge_value(b)
+        if edge is not None:
+            x = dict(b)
+            x["_bucket_value"] = edge
+            edge_items.append(x)
+        conf = _confidence_value(b)
+        if conf is not None:
+            x = dict(b)
+            x["_bucket_value"] = conf
+            conf_items.append(x)
+
+    st.subheader("📊 Где модель реально зарабатывает")
+    q1, q2 = st.columns(2)
+    with q1:
+        st.markdown("**ROI по Edge**")
+        edge_rows = _bucket_stats(
+            edge_items, "Edge",
+            [(0.00, 0.03), (0.03, 0.05), (0.05, 0.08), (0.08, 1.01)],
+        )
+        if edge_rows:
+            df_edge = pd.DataFrame(edge_rows)
+            st.dataframe(
+                df_edge.assign(
+                    **{
+                        "Win Rate": df_edge["Win Rate"].map(lambda x: f"{x:.1f}%"),
+                        "PnL": df_edge["PnL"].map(lambda x: f"{x:+.2f}"),
+                        "ROI": df_edge["ROI"].map(lambda x: f"{x:+.1f}%"),
+                    }
+                ), use_container_width=True, hide_index=True,
+            )
+        else:
+            st.caption("Пока нет закрытых ставок с Edge.")
+
+    with q2:
+        st.markdown("**ROI по Confidence**")
+        conf_rows = _bucket_stats(
+            conf_items, "Confidence",
+            [(0.00, 0.60), (0.60, 0.70), (0.70, 0.80), (0.80, 1.01)],
+        )
+        if conf_rows:
+            df_conf = pd.DataFrame(conf_rows)
+            st.dataframe(
+                df_conf.assign(
+                    **{
+                        "Win Rate": df_conf["Win Rate"].map(lambda x: f"{x:.1f}%"),
+                        "PnL": df_conf["PnL"].map(lambda x: f"{x:+.2f}"),
+                        "ROI": df_conf["ROI"].map(lambda x: f"{x:+.1f}%"),
+                    }
+                ), use_container_width=True, hide_index=True,
+            )
+
+    if edge_items or conf_items:
+        st.caption(
+            "Edge = P модели − 1/кэф. Для старых ставок без отдельного Confidence "
+            "используется P модели. Малые выборки не являются доказательством преимущества."
+        )
+
     ordered = sorted(
         bets,
         key=lambda b: (
