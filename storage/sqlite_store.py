@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS decision_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_decision ON decision_snapshots(decision);
 CREATE INDEX IF NOT EXISTS idx_decisions_date ON decision_snapshots(date_iso);
+CREATE INDEX IF NOT EXISTS idx_decisions_result ON decision_snapshots(result_status);
 
 CREATE TABLE IF NOT EXISTS bank_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +87,23 @@ def db_init() -> bool:
     try:
         with _db() as c:
             c.executescript(SCHEMA)
+            # Lightweight migration for decision snapshots created by older builds.
+            existing = {
+                str(row[1]) for row in c.execute(
+                    "PRAGMA table_info(decision_snapshots)"
+                ).fetchall()
+            }
+            migrations = {
+                "result_status": "TEXT",
+                "result_score": "TEXT",
+                "virtual_pnl": "REAL",
+                "evaluated_at": "TEXT",
+            }
+            for column, kind in migrations.items():
+                if column not in existing:
+                    c.execute(
+                        f"ALTER TABLE decision_snapshots ADD COLUMN {column} {kind}"
+                    )
         SQLITE_BOOT_OK = True
         SQLITE_BOOT_ERROR = ""
         return True
@@ -177,6 +195,20 @@ def fetch_decision_snapshots(decision: Optional[str] = None, limit: int = 100000
     with _db() as c:
         c.row_factory = sqlite3.Row
         return [dict(r) for r in c.execute(q, params).fetchall()]
+
+
+def update_decision_snapshot(snapshot_id: int, **fields) -> None:
+    allowed = {"result_status", "result_score", "virtual_pnl", "evaluated_at"}
+    safe = {k: v for k, v in fields.items() if k in allowed}
+    if not safe:
+        return
+    set_sql = ", ".join(f"{k}=?" for k in safe)
+    with _db() as c:
+        c.execute(
+            f"UPDATE decision_snapshots SET {set_sql} WHERE id=?",
+            (*safe.values(), int(snapshot_id)),
+        )
+    invalidate_caches()
 
 
 def update_bet(bet_id: int, **fields) -> None:
