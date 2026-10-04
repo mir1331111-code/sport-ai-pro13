@@ -210,20 +210,39 @@ def render_verdict_card(c: dict, thr: float) -> str:
     odd_display = str(round(odd, 2)) if has_real else "—"
     prob_display = str(round(prob * 100))
 
-    # ============ MARKET DECISION ============
+    # ============ BET / WATCH / SKIP ============
     market_html = ""
     if has_real:
         fair = float(v.get("fair_odd") or 0.0)
         ev = v.get("ev")
         edge = v.get("edge")
         kelly_pct = float(v.get("kelly_pct") or 0.0)
-        if ev is not None and float(ev) < 0 or edge is not None and float(edge) < 0:
-            status, color, label = "RED", "#f87171", "НЕГАТИВНАЯ ЦЕНА"
-        elif (ev is not None and float(ev) >= 0.03 and
-              edge is not None and float(edge) >= 0.03):
-            status, color, label = "GREEN", "#34d399", "ХОРОШИЙ VALUE"
+        value_passed = bool(v.get("value_passed", False))
+        is_bet = bool(v.get("is_bet", False))
+
+        # Decision layer:
+        # BET   — реальная цена проходит сильный value-фильтр и Kelly > 0.
+        # WATCH — Kelly положительный, но запас value слабый.
+        # SKIP  — реальная цена не дает положительного ожидаемого результата.
+        if is_bet and value_passed:
+            status, color, label = "BET", "#34d399", "В ПОРТФЕЛЬ"
+            rationale = (
+                "реальный кэф проходит value-порог; Kelly положительный — "
+                "сигнал можно использовать как вход."
+            )
+        elif is_bet:
+            status, color, label = "WATCH", "#fbbf24", "СЛАБЫЙ VALUE"
+            rationale = (
+                "Kelly положительный, но запас Edge/EV ниже сильного порога; "
+                "ждем более выгодную цену, если не нужен текущий вход."
+            )
         else:
-            status, color, label = "YELLOW", "#fbbf24", "СЛАБЫЙ VALUE"
+            status, color, label = "SKIP", "#f87171", "НЕ ВХОДИТЬ"
+            rationale = (
+                "текущая реальная цена не дает положительного Kelly; "
+                "ждем улучшения кэфа."
+            )
+
         market_html = (
             '<div style="margin-top:12px;padding:12px 14px;border-radius:12px;'
             'background:rgba(15,23,42,.48);border:1px solid ' + color + '55;">'
@@ -239,13 +258,8 @@ def render_verdict_card(c: dict, thr: float) -> str:
             '<span>Kelly <b style="color:#e2e8f0;">' + f"{kelly_pct:.1%}" + '</b></span>'
             '</div>'
             '<div style="margin-top:8px;color:#94a3b8;font-size:.76rem;">'
-            'Решение: ' + (
-                'цена проходит сильный value-порог; модельная вероятность подтверждает вход.'
-                if status == "GREEN" else
-                'реальный кэф положительный по модели, но запас value небольшой.'
-                if status == "YELLOW" else
-                'цена хуже модельной оценки; такую ставку не стоит усиливать.'
-            ) + '</div></div>'
+            'Решение: ' + rationale +
+            '</div></div>'
         )
 
     return (
