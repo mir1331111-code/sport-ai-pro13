@@ -89,14 +89,18 @@ def priority(profile, card):
     ]
     chosen = None
     for key, label in choices:
-        stats = _segment_stats(profile.get(key, []), before)
+        rows = profile.get(key, [])
+        stats = _segment_stats(rows, before)
         if stats is not None:
-            chosen = (stats, label)
+            wf_ok, wf_reason = _walk_forward_gate(rows, before)
+            chosen = (stats, label, wf_ok, wf_reason)
             break
     if chosen is None:
         return 1.0, "Adaptive: N<20 — нейтрально"
 
-    stats, label = chosen
+    stats, label, wf_ok, wf_reason = chosen
+    if not wf_ok:
+        return 1.0, f"Adaptive: {label} · {wf_reason} · нейтрально"
     adj = stats["adj_roi"]
     recent = stats["recent_roi"]
     factor = 1.0
