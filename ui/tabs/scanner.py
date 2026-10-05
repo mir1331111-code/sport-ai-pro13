@@ -870,6 +870,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
+                "fdorg_odds": r.get("odds") or {},
                 "grok_comment": "",
                 "grok_bookmaker": "",
                 "min_entry_odd": round(min_entry_odd, 2) if min_entry_odd > 0 else None,
@@ -889,18 +890,29 @@ def render(min_prob, kelly_frac, matrix_n):
             if (c.get("verdict") or {}).get("is_action", False)
         ]
         market_candidates.sort(key=lambda c: -float(rank_score(c) or 0.0))
-        market_candidates = market_candidates[:GROK_ODDS_TOP_N]
+        top_external_candidates = market_candidates[:GROK_ODDS_TOP_N]
+        fdorg_candidates = [
+            c for c in market_candidates
+            if isinstance(c.get("fdorg_odds"), dict) and c.get("fdorg_odds")
+        ]
+        market_candidates = top_external_candidates + [
+            c for c in fdorg_candidates if c not in top_external_candidates
+        ]
 
         for c in market_candidates:
             v = c.get("verdict") or {}
             h_en, a_en = c.get("match", "").split(" vs ", 1)
             sport_key = DIV_TO_ODDS.get(c.get("div"))
-            real_odds = None
-            odds_source = "estimated"
+            real_odds = c.get("fdorg_odds") or None
+            odds_source = "fdorg" if real_odds else "estimated"
             grok_quote = {}
 
+            if real_odds:
+                market_checked += 1
+
+            # Если football-data.org не дал цену — ищем её внешним источником.
             # Сначала Grok Web Search, если он выбран как провайдер.
-            if grok_enabled:
+            if not real_odds and grok_enabled:
                 try:
                     grok_quote = grok_web_odds(
                         h_en, a_en, c.get("league") or "Football",
