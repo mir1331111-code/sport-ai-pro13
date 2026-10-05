@@ -633,7 +633,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                 logs.append("fdorg: soft-лимит исчерпан")
             break
         div_code = FDORG_TO_DIV.get(comp, "G")
-        ck = f"fdorg_v12_{comp}_{d_from}_{d_to}"
+        ck = f"fdorg_v13_{comp}_{d_from}_{d_to}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -680,6 +680,17 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                     "kind": "club",
                     "referee": ((m.get("referees") or [{}])[0].get("name", "")
                                 if m.get("referees") else ""),
+                    # football-data.org exposes average pre-match 1X2 odds
+                    # when the account has the Odds Add-On enabled.
+                    "odds": {
+                        "П1": _f((m.get("odds") or {}).get("homeWin")),
+                        "X": _f((m.get("odds") or {}).get("draw")),
+                        "П2": _f((m.get("odds") or {}).get("awayWin")),
+                    },
+                    "odds_source": "fdorg" if any(
+                        _f((m.get("odds") or {}).get(k)) is not None
+                        for k in ("homeWin", "draw", "awayWin")
+                    ) else "",
                 })
             except Exception:
                 continue
