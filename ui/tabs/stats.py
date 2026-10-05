@@ -118,6 +118,7 @@ def _render_model(D):
     _render_strategy_diagnostics()
 
     _render_rolling_performance()
+    _render_system_scorecard(D)
     _render_drift_monitor()
 
     # ==================== QUALITY BUCKETS ====================
@@ -476,6 +477,132 @@ def _render_walk_forward_thresholds():
         "Это один временной split, а не доказательство устойчивого преимущества."
     )
 
+
+def _render_system_scorecard(D):
+    """Единый health-check системы: модель, value, форма и риск."""
+    if not db.SQLITE_BOOT_OK:
+        return
+
+    snapshots = db.fetch_decision_snapshots(limit=100000)
+    closed = [
+        r for r in snapshots
+        if str(r.get("result_status") or "").lower() in ("won", "lost")
+    ]
+
+    def n(v):
+        try:
+            x = float(v)
+            return x if x == x else None
+        except (TypeError, ValueError):
+            return None
+
+    def score_status(ok, warn):
+        return "🟢 OK" if ok else ("🟡 MONITOR" if warn else "🔴 ATTENTION")
+
+    # Model: use model-only accuracy when available, otherwise closed snapshots.
+    model_rows = [r for r in closed if n(r.get("model_prob")) is not None]
+    model_only_rows = [
+        r for r in model_rows
+        if str(r.get("decision") or "").upper() == "MODEL_ONLY"
+    ]
+    calibration_rows = model_only_rows or model_rows
+    model_brier = None
+    if calibration_rows:
+        model_brier = sum(
+            (n(r.get("model_prob")) - (1.0 if str(r.get("result_status")).lower() == "won" else 0.0)) ** 2
+            for r in calibration_rows
+            if n(r.get("model_prob")) is not None
+        ) / len([r for r in calibration_rows if n(r.get("model_prob")) is not None])
+
+    # Value: only signals with an actual market price.
+    priced = []
+    for r in closed:
+        odd = n(r.get("market_odd"))
+        if odd is None or odd <= 1.01:
+            continue
+        pnl = odd - 1.0 if str(r.get("result_status")).lower() == "won" else -1.0
+        priced.append((r, pnl))
+    value_roi = sum(p for _, p in priced) / len(priced) * 100 if priced else None
+    avg_edge = sum(n(r.get("edge")) for r, _ in priced if n(r.get("edge")) is not None) / len(
+        [r for r, _ in priced if n(r.get("edge")) is not None]
+    ) * 100 if any(n(r.get("edge")) is not None for r, _ in priced) else None
+
+    # Current form: last 20 priced decisions.
+    priced.sort(key=lambda x: str(x[0].get("date_iso") or ""))
+    recent = priced[-20:]
+    recent_roi = sum(p for _, p in recent) / len(recent) * 100 if recent else None
+
+    # Risk: actual bankroll drawdown.
+    try:
+        ib = float(D.get("meta", {}).get("initial_bank", 10000.0))
+    except Exception:
+        ib = 10000.0
+    hist = db.bank_history(limit=100000)
+    banks = [ib] + [float(h.get("bank") or 0) for h in hist]
+    max_dd = 0.0
+    if banks:
+        peak = banks[0]
+        for bank in banks:
+            peak = max(peak, bank)
+            if peak > 0:
+                max_dd = max(max_dd, (peak - bank) / peak)
+
+    model_ok = model_brier is not None and model_brier <= 0.25
+    model_warn = model_brier is not None and model_brier <= 0.30
+    value_ok = value_roi is not None and value_roi >= 0
+    value_warn = value_roi is not None and value_roi >= -5
+    form_ok = recent_roi is not None and recent_roi >= 0
+    form_warn = recent_roi is not None and recent_roi >= -5
+    risk_ok = max_dd <= 0.10
+    risk_warn = max_dd <= 0.20
+
+    st.subheader("🧭 SYSTEM SCORECARD")
+    st.caption(
+        "Диагностический health-check. Он не меняет BET/WATCH/SKIP и не является "
+        "научно валидированным рейтингом стратегии."
+    )
+    cols = st.columns(4)
+    items = [
+        ("MODEL", score_status(model_ok, model_warn), f"Brier {model_brier:.3f}" if model_brier is not None else "нет данных"),
+        ("VALUE", score_status(value_ok, value_warn), f"ROI {value_roi:+.1f}%" if value_roi is not None else "нет цены"),
+        ("FORM", score_status(form_ok, form_warn), f"Last 20 ROI {recent_roi:+.1f}%" if recent_roi is not None else "нет данных"),
+        ("RISK", score_status(risk_ok, risk_warn), f"Max DD {max_dd:.1%}"),
+    ]
+    for col, (label, status, detail) in zip(cols, items):
+        col.metric(label, status)
+        col.caption(detail)
+
+    details = pd.DataFrame([
+        {
+            "Axis": "MODEL",
+            "Metric": "Brier",
+            "Value": f"{model_brier:.3f}" if model_brier is not None else "—",
+            "Interpretation": "≤0.25 OK · ≤0.30 monitor",
+        },
+        {
+            "Axis": "VALUE",
+            "Metric": "ROI",
+            "Value": f"{value_roi:+.1f}%" if value_roi is not None else "—",
+            "Interpretation": "≥0% OK · ≥−5% monitor",
+        },
+        {
+            "Axis": "FORM",
+            "Metric": "Last 20 ROI",
+            "Value": f"{recent_roi:+.1f}%" if recent_roi is not None else "—",
+            "Interpretation": "≥0% OK · ≥−5% monitor",
+        },
+        {
+            "Axis": "RISK",
+            "Metric": "Max Drawdown",
+            "Value": f"{max_dd:.1%}",
+            "Interpretation": "≤10% OK · ≤20% monitor",
+        },
+    ])
+    st.dataframe(details, use_container_width=True, hide_index=True)
+    st.caption(
+        f"Sample: {len(closed)} завершённых snapshots · priced: {len(priced)} · "
+        f"MODEL ONLY: {len(model_only_rows)}. Пороговые значения — эвристические."
+    )
 
 def _render_rolling_performance():
     """Rolling view: последние N завершённых сигналов без смешивания всей истории."""
