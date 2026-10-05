@@ -1961,16 +1961,19 @@ def _render_adaptive_attribution():
     high_value = [x for x in rows if x["edge"] >= 0.03 and x["ev"] >= 0.03]
     model_strong = [x for x in rows if x["model_prob"] >= 0.60]
 
+    all_roi = _roi(base)
+    neutral_roi = _roi(neutral)
     summary = [
-        {"Слой": "ALL priced", "N": len(base), "ROI": _roi(base)},
-        {"Слой": "MODEL P≥60%", "N": len(model_strong), "ROI": _roi(model_strong)},
-        {"Слой": "VALUE Edge≥3% + EV≥3%", "N": len(high_value), "ROI": _roi(high_value)},
-        {"Слой": "ADAPTIVE boost", "N": len(boosted), "ROI": _roi(boosted)},
-        {"Слой": "ADAPTIVE penalty", "N": len(penalized), "ROI": _roi(penalized)},
-        {"Слой": "ADAPTIVE neutral", "N": len(neutral), "ROI": _roi(neutral)},
+        {"Слой": "ALL priced", "N": len(base), "ROI": all_roi, "Δ vs neutral": 0.0},
+        {"Слой": "MODEL P≥60%", "N": len(model_strong), "ROI": _roi(model_strong), "Δ vs neutral": _roi(model_strong) - neutral_roi},
+        {"Слой": "VALUE Edge≥3% + EV≥3%", "N": len(high_value), "ROI": _roi(high_value), "Δ vs neutral": _roi(high_value) - neutral_roi},
+        {"Слой": "ADAPTIVE boost", "N": len(boosted), "ROI": _roi(boosted), "Δ vs neutral": _roi(boosted) - neutral_roi},
+        {"Слой": "ADAPTIVE penalty", "N": len(penalized), "ROI": _roi(penalized), "Δ vs neutral": _roi(penalized) - neutral_roi},
+        {"Слой": "ADAPTIVE neutral", "N": len(neutral), "ROI": neutral_roi, "Δ vs neutral": 0.0},
     ]
     df = pd.DataFrame(summary)
     df["ROI"] = df["ROI"].map(lambda x: f"{x:+.1%}")
+    df["Δ vs neutral"] = df["Δ vs neutral"].map(lambda x: f"{x:+.1%}")
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     if boosted or penalized:
