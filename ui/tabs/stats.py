@@ -117,6 +117,7 @@ def _render_model(D):
 
     _render_strategy_diagnostics()
 
+    _render_rolling_performance()
     _render_drift_monitor()
 
     # ==================== QUALITY BUCKETS ====================
@@ -475,6 +476,134 @@ def _render_walk_forward_thresholds():
         "Это один временной split, а не доказательство устойчивого преимущества."
     )
 
+
+def _render_rolling_performance():
+    """Rolling view: последние N завершённых сигналов без смешивания всей истории."""
+    if not db.SQLITE_BOOT_OK:
+        return
+
+    snapshots = db.fetch_decision_snapshots(limit=100000)
+    completed = []
+    model_only = []
+    for r in snapshots:
+        status = str(r.get("result_status") or "").lower()
+        if status not in ("won", "lost"):
+            continue
+        if str(r.get("decision") or "").upper() == "MODEL_ONLY":
+            model_only.append(r)
+            continue
+        try:
+            odd = float(r.get("market_odd"))
+            if odd <= 1.01:
+                continue
+        except (TypeError, ValueError):
+            continue
+        completed.append(r)
+
+    import pandas as pd
+    from datetime import datetime
+
+    def dt(r):
+        try:
+            return datetime.fromisoformat(str(r.get("date_iso") or "")[:19])
+        except Exception:
+            try:
+                return datetime.strptime(str(r.get("date_iso") or "")[:10], "%Y-%m-%d")
+            except Exception:
+                return datetime.min
+
+    completed.sort(key=dt)
+    st.subheader("📉 Rolling Performance")
+    st.caption(
+        "Последние 20 / 50 / 100 завершённых ценовых сигналов. "
+        "Это монитор текущей формы, а не замена полной истории."
+    )
+
+    rows = []
+    for window in (20, 50, 100):
+        sample = completed[-window:]
+        if not sample:
+            continue
+        wins = sum(1 for r in sample if str(r.get("result_status")).lower() == "won")
+        pnl = 0.0
+        edges = []
+        evs = []
+        for r in sample:
+            try:
+                odd = float(r.get("market_odd"))
+                pnl += odd - 1.0 if str(r.get("result_status")).lower() == "won" else -1.0
+            except (TypeError, ValueError):
+                pass
+            for key, target in (("edge", edges), ("ev", evs)):
+                try:
+                    target.append(float(r.get(key)))
+                except (TypeError, ValueError):
+                    pass
+        roi = pnl / len(sample) * 100
+        rows.append({
+            "Window": f"Last {window}",
+            "N": len(sample),
+            "Win Rate": wins / len(sample) * 100,
+            "ROI": roi,
+            "Avg Edge": sum(edges) / len(edges) * 100 if edges else None,
+            "Avg EV": sum(evs) / len(evs) * 100 if evs else None,
+        })
+
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df.assign(
+                **{
+                    "Win Rate": df["Win Rate"].map(lambda x: f"{x:.1f}%"),
+                    "ROI": df["ROI"].map(lambda x: f"{x:+.1f}%"),
+                    "Avg Edge": df["Avg Edge"].map(lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"),
+                    "Avg EV": df["Avg EV"].map(lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"),
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Пока недостаточно завершённых ценовых сигналов для rolling-аналитики.")
+
+    if model_only:
+        model_only.sort(key=dt)
+        st.markdown("**🧠 MODEL ONLY — rolling accuracy**")
+        mrows = []
+        for window in (20, 50, 100):
+            sample = model_only[-window:]
+            if not sample:
+                continue
+            wins = sum(1 for r in sample if str(r.get("result_status")).lower() == "won")
+            probs = []
+            brier_terms = []
+            for r in sample:
+                try:
+                    p = float(r.get("model_prob"))
+                    y = 1.0 if str(r.get("result_status")).lower() == "won" else 0.0
+                    probs.append(p)
+                    brier_terms.append((p - y) ** 2)
+                except (TypeError, ValueError):
+                    pass
+            mrows.append({
+                "Window": f"Last {window}",
+                "N": len(sample),
+                "Win Rate": wins / len(sample) * 100,
+                "Brier": sum(brier_terms) / len(brier_terms) if brier_terms else None,
+            })
+        if mrows:
+            dfm = pd.DataFrame(mrows)
+            st.dataframe(
+                dfm.assign(
+                    **{
+                        "Win Rate": dfm["Win Rate"].map(lambda x: f"{x:.1f}%"),
+                        "Brier": dfm["Brier"].map(lambda x: f"{x:.3f}" if pd.notna(x) else "—"),
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        st.caption("MODEL ONLY не имеет цены входа, поэтому здесь показываем только accuracy/Brier, без ROI.")
 
 def _render_drift_monitor():
     """Сравнивает свежие завершённые snapshots с предыдущим периодом."""
