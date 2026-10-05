@@ -89,6 +89,30 @@ def _segment_stats(rows, before_dt):
     return {"n": n, "effective_n": weight_sum, "roi": roi, "adj_roi": adj_roi, "recent_roi": recent_roi}
 
 
+REGIME_MIN_N = 30
+REGIME_RECENT_N = 20
+
+
+def _regime(rows, before_dt):
+    """Сравнивает свежий режим с историческим baseline до даты матча."""
+    if not rows or before_dt is None:
+        return "UNKNOWN", 0.0, "Regime: нет данных"
+    dates = [x[0] for x in rows]
+    cut = bisect_left(dates, before_dt)
+    usable = rows[:cut]
+    if len(usable) < REGIME_MIN_N:
+        return "UNKNOWN", 0.0, f"Regime: N={len(usable)} < {REGIME_MIN_N}"
+    recent = usable[-REGIME_RECENT_N:]
+    baseline = usable[:-REGIME_RECENT_N]
+    recent_roi = sum(x[1] for x in recent) / len(recent)
+    base_roi = sum(x[1] for x in baseline) / len(baseline)
+    delta = recent_roi - base_roi
+    if recent_roi <= -0.05 and delta <= -0.05:
+        return "COOLING", delta, f"Regime COOLING · recent {recent_roi:.1%} vs base {base_roi:.1%}"
+    if recent_roi >= 0.05 and delta >= 0.05:
+        return "RECOVERY", delta, f"Regime RECOVERY · recent {recent_roi:.1%} vs base {base_roi:.1%}"
+    return "NORMAL", delta, f"Regime NORMAL · recent {recent_roi:.1%} vs base {base_roi:.1%}"
+
 def priority(profile, card):
     """Возвращает (factor, reason). Factor ограничен ±10% и включается при N>=20."""
     if not profile or not isinstance(card, dict):
@@ -120,6 +144,12 @@ def priority(profile, card):
         return 1.0, f"Adaptive: {label} · {wf_reason} · нейтрально"
     adj = stats["adj_roi"]
     recent = stats["recent_roi"]
+    regime_rows = None
+    for key, label_candidate in choices:
+        if label_candidate == label:
+            regime_rows = profile.get(key, [])
+            break
+    regime, regime_delta, regime_reason = _regime(regime_rows or [], before)
     factor = 1.0
     if adj >= 0.05 and recent >= 0.0:
         factor = 1.10
@@ -130,10 +160,18 @@ def priority(profile, card):
     elif adj <= -0.025 and recent <= 0.0:
         factor = 0.95
 
+    if regime == "COOLING" and factor > 1.0:
+        factor = 1.0
+    elif regime == "COOLING" and factor == 1.0:
+        factor = 0.95
+    elif regime == "RECOVERY" and factor < 1.0:
+        factor = 1.0
+    factor = max(PRIOR_MIN, min(PRIOR_MAX, factor))
     sign = "↑" if factor > 1 else "↓" if factor < 1 else "→"
     return factor, (
         f"Adaptive {sign} {factor:.2f} · {label} · N={stats['n']} · "
-        f"Adj ROI {adj:.1%} · recent {recent:.1%} · decay {DECAY_HALF_LIFE_DAYS:.0f}d · {wf_reason}"
+        f"Adj ROI {adj:.1%} · recent {recent:.1%} · decay {DECAY_HALF_LIFE_DAYS:.0f}d · "
+        f"{regime_reason} · {wf_reason}"
     )
 
 
