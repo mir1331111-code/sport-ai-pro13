@@ -1912,6 +1912,73 @@ def _render_adaptive_monitor():
     st.dataframe(view[["Рынок", "Лига", "N", "Adj ROI", "Recent ROI", "WF", "Regime", "Factor"]],
                  use_container_width=True, hide_index=True)
     st.caption("WF PASS разрешает только приоритизацию; BET/WATCH/SKIP остаются без изменений.")
+def _render_adaptive_attribution():
+    """Разделяет исторический результат на MODEL / VALUE / ADAPTIVE / REGIME."""
+    if not db.SQLITE_BOOT_OK:
+        return
+    try:
+        from betting.adaptive import build_profiles, priority
+        snapshots = db.fetch_decision_snapshots(limit=100000)
+        profile = build_profiles(snapshots)
+    except Exception:
+        return
+
+    rows = []
+    for r in snapshots:
+        if str(r.get("result_status") or "").lower() not in ("won", "lost"):
+            continue
+        odd = float(r.get("market_odd") or 0.0)
+        if odd <= 1.01:
+            continue
+        pnl = odd - 1.0 if str(r.get("result_status")).lower() == "won" else -1.0
+        base = {
+            "date_iso": r.get("date_iso"),
+            "league": r.get("league"),
+            "div": r.get("league"),
+            "verdict": {"market": r.get("market")},
+        }
+        factor, reason = priority(profile, base)
+        rows.append({
+            "model_prob": float(r.get("model_prob") or 0.0),
+            "edge": float(r.get("edge") or 0.0),
+            "ev": float(r.get("ev") or 0.0),
+            "pnl": pnl,
+            "factor": factor,
+            "reason": reason,
+        })
+    st.subheader("🧩 Adaptive Attribution")
+    if not rows:
+        st.info("Нужны закрытые priced decision snapshots.")
+        return
+
+    def _roi(items):
+        return sum(x["pnl"] for x in items) / len(items) if items else 0.0
+
+    base = rows
+    boosted = [x for x in rows if x["factor"] > 1.0]
+    penalized = [x for x in rows if x["factor"] < 1.0]
+    neutral = [x for x in rows if x["factor"] == 1.0]
+    high_value = [x for x in rows if x["edge"] >= 0.03 and x["ev"] >= 0.03]
+    model_strong = [x for x in rows if x["model_prob"] >= 0.60]
+
+    summary = [
+        {"Слой": "ALL priced", "N": len(base), "ROI": _roi(base)},
+        {"Слой": "MODEL P≥60%", "N": len(model_strong), "ROI": _roi(model_strong)},
+        {"Слой": "VALUE Edge≥3% + EV≥3%", "N": len(high_value), "ROI": _roi(high_value)},
+        {"Слой": "ADAPTIVE boost", "N": len(boosted), "ROI": _roi(boosted)},
+        {"Слой": "ADAPTIVE penalty", "N": len(penalized), "ROI": _roi(penalized)},
+        {"Слой": "ADAPTIVE neutral", "N": len(neutral), "ROI": _roi(neutral)},
+    ]
+    df = pd.DataFrame(summary)
+    df["ROI"] = df["ROI"].map(lambda x: f"{x:+.1%}")
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    if boosted or penalized:
+        st.caption(
+            "Attribution — диагностический анализ: Adaptive не меняет результат ставки задним числом; "
+            "группы показывают, в каких исторических сегментах система применяла приоритет."
+        )
+
 def _render_decision_log(D):
     """Показывает сохранённый снимок решения для закрытых ставок."""
     bets = _closed_bets(D)
@@ -1945,6 +2012,7 @@ def _render_decision_log(D):
 def render():
     D = st.session_state.data
     _render_decision_log(D)
+    _render_adaptive_attribution()
     _render_adaptive_monitor()
     st.header("📈 Статистика")
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
