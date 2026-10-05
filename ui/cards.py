@@ -101,7 +101,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
     odd = v.get("odd")
     has_real = v.get("real_odds", False) and odd is not None
     odds_source = c.get("odds_source", "")
-    source_label = {"market": "BOOKMAKER API", "grok_web": "GROK WEB", "manual": "MANUAL"}.get(odds_source, "MARKET")
+    source_label = {"market": "BOOKMAKER API", "grok_web": "GROK WEB", "manual": "MANUAL", "fdorg": "FOOTBALL-DATA"}.get(odds_source, "MARKET")
     conf = v.get("confidence", "средняя")
     cc = v.get("conf_color", "#fbbf24")
     reasons = v.get("reasons", [])
@@ -132,6 +132,18 @@ def render_verdict_card(c: dict, thr: float) -> str:
         _rc = rank_color(_rs)
         _ss = signal_score(c)
         _vs = value_score(c)
+        adaptive_html = ""
+        try:
+            _af = float(c.get("adaptive_factor") or 1.0)
+            if abs(_af - 1.0) > 0.001:
+                _ar = esc(str(c.get("adaptive_reason") or "Adaptive priority"))
+                adaptive_html = (
+                    f'<span title="{_ar}" style="background:rgba(167,139,250,.10);color:#c4b5fd;'
+                    f'padding:3px 8px;border-radius:999px;font-size:.68rem;'
+                    f'font-weight:700;margin-left:5px;">ADAPTIVE x{_af:.2f}</span>'
+                )
+        except Exception:
+            adaptive_html = ""
         rank_html = (
             f'<span style="background:{_rc}22;color:{_rc};'
             f'padding:3px 10px;border-radius:999px;font-size:.7rem;'
@@ -145,6 +157,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
             f'padding:3px 8px;border-radius:999px;font-size:.68rem;'
             f'font-weight:700;">'
             f'VALUE {_vs*100:.0f}</span>'
+            f'{adaptive_html}'
         )
     except Exception:
         rank_html = ""
