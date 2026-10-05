@@ -119,6 +119,7 @@ def _render_model(D):
 
     _render_rolling_performance()
     _render_system_scorecard(D)
+    _render_adaptive_segments()
     _render_drift_monitor()
 
     # ==================== QUALITY BUCKETS ====================
@@ -602,6 +603,102 @@ def _render_system_scorecard(D):
     st.caption(
         f"Sample: {len(closed)} завершённых snapshots · priced: {len(priced)} · "
         f"MODEL ONLY: {len(model_only_rows)}. Пороговые значения — эвристические."
+    )
+
+def _render_adaptive_segments():
+    """Рейтинг рынков и лиг по фактическому результату с защитой от малых выборок."""
+    if not db.SQLITE_BOOT_OK:
+        return
+
+    snapshots = db.fetch_decision_snapshots(limit=100000)
+    rows = []
+    for r in snapshots:
+        status = str(r.get("result_status") or "").lower()
+        if status not in ("won", "lost"):
+            continue
+        try:
+            odd = float(r.get("market_odd"))
+        except (TypeError, ValueError):
+            continue
+        if odd <= 1.01:
+            continue
+        pnl = odd - 1.0 if status == "won" else -1.0
+        rows.append({
+            "market": str(r.get("market") or "Unknown"),
+            "league": str(r.get("league") or "Unknown"),
+            "pnl": pnl,
+            "won": 1 if status == "won" else 0,
+            "edge": r.get("edge"),
+            "ev": r.get("ev"),
+        })
+
+    st.subheader("🧩 ADAPTIVE MARKET / LEAGUE SCORE")
+    st.caption(
+        "Рейтинг сегментов по завершённым сигналам с реальным кэфом. "
+        "Минимум N=10 для рейтинга; N<20 помечается как ранняя выборка. "
+        "Рейтинг диагностический и ничего автоматически не отключает."
+    )
+    if not rows:
+        st.info("Пока нет завершённых priced-сигналов для сегментного рейтинга.")
+        return
+
+    import pandas as pd
+    from collections import defaultdict
+
+    def aggregate(key):
+        groups = defaultdict(list)
+        for x in rows:
+            groups[x[key]].append(x)
+        out = []
+        for name, items in groups.items():
+            n = len(items)
+            if n < 10:
+                continue
+            pnl = sum(x["pnl"] for x in items)
+            edges = [float(x["edge"]) for x in items if x["edge"] is not None]
+            evs = [float(x["ev"]) for x in items if x["ev"] is not None]
+            wr = sum(x["won"] for x in items) / n
+            roi = pnl / n * 100
+            # Shrinkage: небольшие сегменты подтягиваем к общему ROI.
+            prior_n = 20.0
+            global_roi = sum(x["pnl"] for x in rows) / len(rows) * 100
+            adj_roi = (pnl + global_roi / 100 * prior_n) / (n + prior_n) * 100
+            out.append({
+                "Segment": name,
+                "N": n,
+                "Win Rate": wr * 100,
+                "ROI": roi,
+                "Adj ROI": adj_roi,
+                "Avg Edge": sum(edges) / len(edges) * 100 if edges else None,
+                "Avg EV": sum(evs) / len(evs) * 100 if evs else None,
+                "Status": "CONFIRMED" if n >= 20 else "EARLY",
+            })
+        return sorted(out, key=lambda x: (-x["Adj ROI"], -x["N"]))
+
+    for title, key in (("По рынкам", "market"), ("По лигам", "league")):
+        data = aggregate(key)
+        st.markdown(f"**{title}**")
+        if not data:
+            st.info("Нужно минимум 10 завершённых сигналов в сегменте.")
+            continue
+        df = pd.DataFrame(data)
+        st.dataframe(
+            df.assign(
+                **{
+                    "Win Rate": df["Win Rate"].map(lambda x: f"{x:.1f}%"),
+                    "ROI": df["ROI"].map(lambda x: f"{x:+.1f}%"),
+                    "Adj ROI": df["Adj ROI"].map(lambda x: f"{x:+.1f}%"),
+                    "Avg Edge": df["Avg Edge"].map(lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"),
+                    "Avg EV": df["Avg EV"].map(lambda x: f"{x:+.1f}%" if pd.notna(x) else "—"),
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.caption(
+        "Adj ROI использует shrinkage к общей истории, чтобы N=10 не выглядело "
+        "столь же надёжно, как N=100. Это статистическая стабилизация, не гарантия будущего результата."
     )
 
 def _render_rolling_performance():
