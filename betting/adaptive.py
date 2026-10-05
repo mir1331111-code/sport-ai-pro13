@@ -15,6 +15,7 @@ MIN_ACTION_N = 20
 PRIOR_MIN = 0.90
 PRIOR_MAX = 1.10
 SHRINK_N = 20
+DECAY_HALF_LIFE_DAYS = 60.0
 
 
 def _dt(value):
@@ -62,14 +63,30 @@ def _segment_stats(rows, before_dt):
         return None
     usable = rows[:cut]
     n = len(usable)
-    pnl = sum(x[1] for x in usable)
-    roi = pnl / n
+    # Exponential decay: half-life 60 days. Старые исходы не исчезают,
+    # но их влияние постепенно уменьшается.
+    import math
+    weighted = []
+    for dt, pnl_i in usable:
+        age_days = max(0.0, (before_dt - dt).total_seconds() / 86400.0)
+        w = math.exp(-math.log(2.0) * age_days / DECAY_HALF_LIFE_DAYS)
+        weighted.append((w, pnl_i))
+    weight_sum = sum(w for w, _ in weighted)
+    pnl = sum(w * p for w, p in weighted)
+    roi = pnl / weight_sum if weight_sum > 0 else 0.0
+    # Небольшое сглаживание к нейтральному ROI=0, чтобы decay не создавал
+    # агрессивный factor на малой эффективной выборке.
     prior = SHRINK_N
-    adj_roi = (pnl + roi * prior) / (n + prior)
-    # Recent half is a stability check, not a second optimizer.
+    adj_roi = (pnl + 0.0 * prior) / (weight_sum + prior)
     recent = usable[max(0, n // 2):]
-    recent_roi = sum(x[1] for x in recent) / max(1, len(recent))
-    return {"n": n, "roi": roi, "adj_roi": adj_roi, "recent_roi": recent_roi}
+    recent_weight = []
+    for dt, pnl_i in recent:
+        age_days = max(0.0, (before_dt - dt).total_seconds() / 86400.0)
+        w = math.exp(-math.log(2.0) * age_days / DECAY_HALF_LIFE_DAYS)
+        recent_weight.append((w, pnl_i))
+    rw = sum(w for w, _ in recent_weight)
+    recent_roi = sum(w * p for w, p in recent_weight) / rw if rw > 0 else 0.0
+    return {"n": n, "effective_n": weight_sum, "roi": roi, "adj_roi": adj_roi, "recent_roi": recent_roi}
 
 
 def priority(profile, card):
@@ -116,7 +133,7 @@ def priority(profile, card):
     sign = "↑" if factor > 1 else "↓" if factor < 1 else "→"
     return factor, (
         f"Adaptive {sign} {factor:.2f} · {label} · N={stats['n']} · "
-        f"Adj ROI {adj:.1%} · recent {recent:.1%} · {wf_reason}"
+        f"Adj ROI {adj:.1%} · recent {recent:.1%} · decay {DECAY_HALF_LIFE_DAYS:.0f}d · {wf_reason}"
     )
 
 
