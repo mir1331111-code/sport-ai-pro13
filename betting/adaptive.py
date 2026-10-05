@@ -112,5 +112,33 @@ def priority(profile, card):
     sign = "↑" if factor > 1 else "↓" if factor < 1 else "→"
     return factor, (
         f"Adaptive {sign} {factor:.2f} · {label} · N={stats['n']} · "
-        f"Adj ROI {adj:.1%} · recent {recent:.1%}"
+        f"Adj ROI {adj:.1%} · recent {recent:.1%} · {wf_reason}"
     )
+
+
+
+# Walk-forward gate: минимум 12 исторических наблюдений в OOS-половине
+# и положительный/не ухудшившийся результат относительно train.
+WF_MIN_OOS = 12
+WF_MIN_TRAIN = 12
+
+
+def _walk_forward_gate(rows, before_dt):
+    if not rows or before_dt is None:
+        return False, "WF: нет истории"
+    dates = [x[0] for x in rows]
+    cut = bisect_left(dates, before_dt)
+    usable = rows[:cut]
+    n = len(usable)
+    if n < WF_MIN_TRAIN + WF_MIN_OOS:
+        return False, f"WF: N={n} < {WF_MIN_TRAIN + WF_MIN_OOS}"
+    split = max(WF_MIN_TRAIN, n * 7 // 10)
+    train = usable[:split]
+    test = usable[split:]
+    if len(test) < WF_MIN_OOS:
+        return False, "WF: мало OOS"
+    train_roi = sum(x[1] for x in train) / len(train)
+    test_roi = sum(x[1] for x in test) / len(test)
+    # Не требуем высокой доходности: OOS должен хотя бы не разрушать train.
+    stable = test_roi >= min(0.0, train_roi - 0.05)
+    return stable, f"WF train {train_roi:.1%} · OOS {test_roi:.1%} · N={len(test)}"
