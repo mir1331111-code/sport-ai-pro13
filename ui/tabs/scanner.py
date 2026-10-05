@@ -1230,6 +1230,14 @@ def render(min_prob, kelly_frac, matrix_n):
             ).upper().strip()
             if decision not in ("BET", "WATCH", "SKIP"):
                 continue
+            # Если реального кэфа нет, сохраняем отдельный model-only сигнал.
+            # Он используется только для оценки прогноза и не считается ставкой.
+            model_only = (
+                decision == "SKIP"
+                and not (dv.get("real_odds", False))
+                and bool(dv.get("is_action"))
+            )
+            snapshot_decision = "MODEL_ONLY" if model_only else decision
             fixture_id = str(dc.get("fixture_id") or "")
             match = str(dc.get("match") or "")
             market = str(dv.get("market") or dv.get("market_type") or "")
@@ -1241,7 +1249,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 market,
                 pick,
                 str(market_odd or ""),
-                decision,
+                snapshot_decision,
                 str(dc.get("date_iso") or dc.get("date") or ""),
             ])
             decision_snapshots.append({
@@ -1252,8 +1260,12 @@ def render(min_prob, kelly_frac, matrix_n):
                 "league": dc.get("league") or dc.get("div"),
                 "market": market,
                 "pick": pick,
-                "decision": decision,
-                "decision_reason": dc.get("decision_reason") or dv.get("decision_reason"),
+                "decision": snapshot_decision,
+                "decision_reason": (
+                    "MODEL ONLY — реального кэфа не было; оцениваем только точность прогноза."
+                    if model_only else
+                    dc.get("decision_reason") or dv.get("decision_reason")
+                ),
                 "model_prob": dv.get("prob"),
                 "fair_odd": dv.get("fair_odd"),
                 "market_odd": market_odd,
