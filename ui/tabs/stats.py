@@ -1117,10 +1117,10 @@ def _render_watch_lab(D):
 
     rows = db.fetch_decision_snapshots(limit=100000)
     watch = [r for r in rows if str(r.get("decision", "")).upper() == "WATCH"]
-    if not watch:
+    model_only = [r for r in rows if str(r.get("decision", "")).upper() == "MODEL_ONLY"]
+    if not watch and not model_only:
         st.info(
-            "Пока нет сохранённых WATCH-снимков. Запусти несколько сканов — "
-            "новые WATCH будут сохраняться автоматически."
+            "Пока нет сохранённых WATCH / MODEL ONLY снимков. Запусти несколько сканов."
         )
         return
 
@@ -1132,20 +1132,19 @@ def _render_watch_lab(D):
     fd_token = str((D.get("meta") or {}).get("fdorg_token") or "")
     now = datetime.now()
     evaluated = []
+    model_evaluated = []
     pending_eval = 0
 
-    for r in watch[:1000]:
+    def evaluate_snapshot(r, need_odd=False):
         if r.get("result_status") in ("won", "lost", "push"):
-            evaluated.append(r)
-            continue
+            return dict(r), False
         date_iso = str(r.get("date_iso") or "")[:10]
         try:
             match_date = datetime.strptime(date_iso, "%Y-%m-%d")
         except Exception:
-            continue
+            return None, False
         if match_date > now - timedelta(hours=2):
-            pending_eval += 1
-            continue
+            return None, True
 
         fid = str(r.get("fixture_id") or "")
         result = None
@@ -1155,36 +1154,97 @@ def _render_watch_lab(D):
             result = fdorg_match_result(fid, fd_token)
         if result is None and fid:
             result = tsdb_match_result(fid)
-
         if not result:
-            pending_eval += 1
-            continue
+            return None, True
 
         home_score, away_score = result.get("home"), result.get("away")
         outcome = _watch_pick_result(r.get("pick"), home_score, away_score)
-        odd = num = None
-        try:
-            num = float(r.get("market_odd"))
-            odd = num if num > 1.01 else None
-        except (TypeError, ValueError):
-            pass
-        if outcome and odd:
-            pnl = (odd - 1.0) if outcome == "won" else (-1.0 if outcome == "lost" else 0.0)
-            db.update_decision_snapshot(
-                int(r["id"]),
-                result_status=outcome,
-                result_score=f"{int(home_score)}:{int(away_score)}",
-                virtual_pnl=pnl,
-                evaluated_at=datetime.now().isoformat(),
+        if not outcome:
+            return None, True
+
+        update = {
+            "result_status": outcome,
+            "result_score": f"{int(home_score)}:{int(away_score)}",
+            "evaluated_at": datetime.now().isoformat(),
+        }
+        if need_odd:
+            try:
+                num_odd = float(r.get("market_odd"))
+            except (TypeError, ValueError):
+                num_odd = 0.0
+            if num_odd <= 1.01:
+                return None, True
+            update["virtual_pnl"] = (
+                num_odd - 1.0 if outcome == "won"
+                else (-1.0 if outcome == "lost" else 0.0)
             )
-            r = dict(r)
-            r.update({
-                "result_status": outcome,
-                "result_score": f"{int(home_score)}:{int(away_score)}",
-                "virtual_pnl": pnl,
-                "evaluated_at": datetime.now().isoformat(),
-            })
-            evaluated.append(r)
+
+        db.update_decision_snapshot(int(r["id"]), **update)
+        rr = dict(r)
+        rr.update(update)
+        return rr, False
+
+    for r in watch[:1000]:
+        rr, pending = evaluate_snapshot(r, need_odd=True)
+        if rr:
+            evaluated.append(rr)
+        elif pending:
+            pending_eval += 1
+
+    for r in model_only[:1000]:
+        rr, pending = evaluate_snapshot(r, need_odd=False)
+        if rr:
+            model_evaluated.append(rr)
+        elif pending:
+            pending_eval += 1
+
+    model_settled = [
+        r for r in model_evaluated
+        if r.get("result_status") in ("won", "lost")
+    ]
+
+    st.subheader("🧠 MODEL ONLY")
+    st.caption(
+        "Матчи, которые модель рекомендовала, но реального кэфа не было. "
+        "Это оценка точности прогноза, не ставки и не PnL."
+    )
+    m1, m2, m3 = st.columns(3)
+    m1.metric("MODEL ONLY", len(model_only))
+    m2.metric("Результат найден", len(model_settled))
+    if model_settled:
+        wins = sum(1 for x in model_settled if x.get("result_status") == "won")
+        m3.metric("Win Rate", f"{wins / len(model_settled):.1%}")
+    else:
+        m3.metric("Win Rate", "—")
+
+    if model_settled:
+        probs = [num(x.get("model_prob")) for x in model_settled]
+        probs = [x for x in probs if x is not None]
+        brier = None
+        if probs and len(probs) == len(model_settled):
+            brier = sum(
+                (p - (1.0 if x.get("result_status") == "won" else 0.0)) ** 2
+                for p, x in zip(probs, model_settled)
+            ) / len(probs)
+        st.write(
+            f"Завершено: **{len(model_settled)}** · "
+            f"Brier: **{brier:.3f}**" if brier is not None
+            else f"Завершено: **{len(model_settled)}**"
+        )
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "Match": x.get("match_ru") or x.get("match"),
+                    "Pick": x.get("pick"),
+                    "Model Prob": f"{float(x.get('model_prob')):.1%}" if x.get("model_prob") is not None else "—",
+                    "Result": x.get("result_score"),
+                    "Status": x.get("result_status"),
+                }
+                for x in model_settled[-20:]
+            ]),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     # WATCH — наблюдение, но теперь для завершённых матчей можно честно считать
     # виртуальный результат по тому кэфу, который был сохранён в момент сигнала.
