@@ -1869,7 +1869,7 @@ def _render_adaptive_monitor():
     if not db.SQLITE_BOOT_OK:
         return
     try:
-        from betting.adaptive import build_profiles, _segment_stats, _walk_forward_gate
+        from betting.adaptive import build_profiles, _segment_stats, _walk_forward_gate, _regime
         snapshots = db.fetch_decision_snapshots(limit=100000)
         profile = build_profiles(snapshots)
     except Exception:
@@ -1882,6 +1882,7 @@ def _render_adaptive_monitor():
         before = max(v[0] for v in values) if values else None
         stats = _segment_stats(values, before)
         wf_ok, wf_reason = _walk_forward_gate(values, before)
+        regime, _, _ = _regime(values, before)
         if not stats:
             continue
         factor = 1.0
@@ -1892,8 +1893,8 @@ def _render_adaptive_monitor():
             elif stats["adj_roi"] <= -0.025 and stats["recent_roi"] <= 0: factor = 0.95
         rows.append({"Рынок": key[1], "Лига": key[2], "N": stats["n"],
                      "Adj ROI": stats["adj_roi"], "Recent ROI": stats["recent_roi"],
-                     "WF": "PASS" if wf_ok else "HOLD", "Factor": factor,
-                     "WF detail": wf_reason})
+                     "WF": "PASS" if wf_ok else "HOLD", "Regime": regime,
+                     "Factor": factor, "WF detail": wf_reason})
 
     st.subheader("🧠 Adaptive Monitor")
     if not rows:
@@ -1908,7 +1909,7 @@ def _render_adaptive_monitor():
     view["Adj ROI"] = view["Adj ROI"].map(lambda x: f"{x:+.1%}")
     view["Recent ROI"] = view["Recent ROI"].map(lambda x: f"{x:+.1%}")
     view["Factor"] = view["Factor"].map(lambda x: f"x{x:.2f}")
-    st.dataframe(view[["Рынок", "Лига", "N", "Adj ROI", "Recent ROI", "WF", "Factor"]],
+    st.dataframe(view[["Рынок", "Лига", "N", "Adj ROI", "Recent ROI", "WF", "Regime", "Factor"]],
                  use_container_width=True, hide_index=True)
     st.caption("WF PASS разрешает только приоритизацию; BET/WATCH/SKIP остаются без изменений.")
 def _render_decision_log(D):
