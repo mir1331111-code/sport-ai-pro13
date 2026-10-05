@@ -870,7 +870,10 @@ def render(min_prob, kelly_frac, matrix_n):
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
-                "fdorg_odds": r.get("odds") or {},
+                "fdorg_odds": {
+                    k: float(v) for k, v in (r.get("odds") or {}).items()
+                    if v is not None and float(v) > 1.01
+                },
                 "grok_comment": "",
                 "grok_bookmaker": "",
                 "min_entry_odd": round(min_entry_odd, 2) if min_entry_odd > 0 else None,
