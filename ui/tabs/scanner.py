@@ -27,6 +27,7 @@ from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
 from betting.ranking import sort_cards, value_score, rank_score
+from betting.adaptive import build_profiles as build_adaptive_profiles, priority as adaptive_priority
 
 try:
     from context_football import analyze_match_context
@@ -189,6 +190,17 @@ def _load_engine(matrix_n, logs, update_loader):
 
 def render(min_prob, kelly_frac, matrix_n):
     D = st.session_state.data
+
+    # Adaptive Rules Engine: только история, завершённые priced snapshots.
+    # Если истории мало/нет — factor=1.0 и сканер работает как раньше.
+    adaptive_profile = {}
+    if db.SQLITE_BOOT_OK:
+        try:
+            adaptive_profile = build_adaptive_profiles(
+                db.fetch_decision_snapshots(limit=100000)
+            )
+        except Exception:
+            adaptive_profile = {}
 
     # ============ ИНИЦИАЛИЗАЦИЯ СЧЁТЧИКОВ (до использования) ============
     model_candidates = 0
@@ -849,6 +861,14 @@ def render(min_prob, kelly_frac, matrix_n):
             min_edge_price = 1.0 / (p_top - 0.03) if p_top > 0.03 else 0.0
             min_ev_price = 1.03 / p_top if p_top > 0 else 0.0
             min_entry_odd = max(min_edge_price, min_ev_price, 0.0)
+            adaptive_factor, adaptive_reason = adaptive_priority(
+                adaptive_profile, {
+                    "date_iso": d.strftime("%Y-%m-%d"),
+                    "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                    "div": lg,
+                    "verdict": verdict,
+                },
+            )
 
             cards.append({
                 "div": lg,
@@ -883,6 +903,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
+                "adaptive_factor": adaptive_factor,
+                "adaptive_reason": adaptive_reason,
             })
 
         # ============ 4B. РЫНОК ТОЛЬКО ДЛЯ ЛУЧШИХ ============
@@ -892,7 +914,9 @@ def render(min_prob, kelly_frac, matrix_n):
             c for c in cards
             if (c.get("verdict") or {}).get("is_action", False)
         ]
-        market_candidates.sort(key=lambda c: -float(rank_score(c) or 0.0))
+        market_candidates.sort(
+            key=lambda c: -float(rank_score(c) or 0.0) * float(c.get("adaptive_factor") or 1.0)
+        )
         top_external_candidates = market_candidates[:GROK_ODDS_TOP_N]
         fdorg_candidates = [
             c for c in market_candidates
@@ -1034,7 +1058,7 @@ def render(min_prob, kelly_frac, matrix_n):
         # а не просто матчи с самой высокой модельной вероятностью.
         cards.sort(
             key=lambda c: (
-                -float(rank_score(c) or 0.0),
+                -float(rank_score(c) or 0.0) * float(c.get("adaptive_factor") or 1.0),
                 -float(value_score(c) or 0.0),
                 -float((c.get("verdict") or {}).get("ev") or 0.0),
                 -float((c.get("verdict") or {}).get("edge") or 0.0),
@@ -1051,6 +1075,13 @@ def render(min_prob, kelly_frac, matrix_n):
             )
         else:
             logs.append("⏱️ Scanner: начавшихся/завершённых матчей не найдено")
+
+        adaptive_up = sum(1 for c in cards if float(c.get("adaptive_factor") or 1.0) > 1.0)
+        adaptive_down = sum(1 for c in cards if float(c.get("adaptive_factor") or 1.0) < 1.0)
+        logs.append(
+            f"🧠 Adaptive: ↑ {adaptive_up} · ↓ {adaptive_down} · нейтральных "
+            f"{max(0, len(cards) - adaptive_up - adaptive_down)}"
+        )
 
         logs.append(
             f"🎯 Воронка: модель {model_candidates} · "
