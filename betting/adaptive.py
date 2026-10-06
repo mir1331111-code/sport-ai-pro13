@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 MIN_ACTION_N = 20
@@ -362,7 +362,7 @@ def _priority_with_params(profile, card, decay_days, shrink_n, regime_recent):
     return 1.0
 
 
-def walk_forward_tune(snapshots, min_train=30, min_test=12):
+def walk_forward_tune(snapshots, min_train=30, min_test=12, embargo_days=1):
     """Research-only selection-aware rolling tuner; never changes live constants."""
     import itertools
 
@@ -381,10 +381,24 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
     fold_size = max(min_test, len(candidates) // 5)
     folds = []
     cursor = min_train
+    embargo_days = max(0, int(embargo_days))
 
-    while cursor + min_test <= len(candidates) and len(folds) < 3:
-        train = candidates[:cursor]
-        test = candidates[cursor:min(len(candidates), cursor + fold_size)]
+    while cursor < len(candidates) and len(folds) < 3:
+        train_end = cursor
+        train = candidates[:train_end]
+        if len(train) < min_train:
+            break
+
+        train_last_dt = train[-1]["dt"]
+        embargo_until = train_last_dt + timedelta(days=embargo_days)
+        test_start = train_end
+        while (
+            test_start < len(candidates)
+            and candidates[test_start]["dt"] <= embargo_until
+        ):
+            test_start += 1
+        test_end = min(len(candidates), test_start + fold_size)
+        test = candidates[test_start:test_end]
         if len(train) < min_train or len(test) < min_test:
             break
 
@@ -461,6 +475,11 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         folds.append({
             "train_n": len(train),
             "oos_n": len(test),
+            "embargo_days": embargo_days,
+            "embargo_n": max(0, test_start - train_end),
+            "train_last_date": train_last_dt.date().isoformat(),
+            "oos_first_date": test[0]["dt"].date().isoformat() if test else "",
+            "embargo_until": embargo_until.date().isoformat(),
             "validation_days": val_days,
             "validation_lifts": validation_lifts,
             "validation_days_by_topn": validation_days,
@@ -479,7 +498,7 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
             "oos_delta": oos_lift,
             "oos_daily_lifts": oos_daily,
         })
-        cursor += fold_size
+        cursor = test_end
 
     if not folds:
         return {"status": "INSUFFICIENT", "n": len(candidates)}
@@ -572,4 +591,6 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         "neighborhood_positive": neighborhood_positive,
         "neighborhood_n": len(neighborhood),
         "selection_aware": True,
+        "embargo_days": embargo_days,
+        "purged": embargo_days > 0,
     }
