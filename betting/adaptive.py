@@ -288,6 +288,27 @@ def _bootstrap_ci(values, reps=3000, seed=2026):
     return lo, hi, p_positive
 
 
+def _sign_flip_test(values, reps=5000, seed=2027):
+    """Research-only paired sign-flip test for mean daily lift."""
+    if len(values) < 5:
+        return {"p_value": 1.0, "n_days": len(values)}
+    import random
+    rng = random.Random(seed)
+    observed = sum(values) / len(values)
+    extreme = 0
+    n = len(values)
+    for _ in range(reps):
+        total = 0.0
+        for value in values:
+            total += value if rng.random() >= 0.5 else -value
+        if total / n >= observed:
+            extreme += 1
+    return {
+        "p_value": (extreme + 1) / (reps + 1),
+        "n_days": n,
+    }
+
+
 def _candidate_from_row(r):
     try:
         odd = float(r.get("market_odd") or 0.0)
@@ -507,6 +528,14 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
             "p_positive": p_pos,
             "n_days": len(pooled_daily[top_n]),
         }
+    permutation_by_topn = {
+        top_n: _sign_flip_test(
+            pooled_daily[top_n],
+            reps=5000,
+            seed=2027 + top_n,
+        )
+        for top_n in (1, 3, 5)
+    }
     robust_ci_low = sum(ci_by_topn[k]["low"] for k in (1, 3, 5)) / 3.0
     positive_folds = sum(1 for x in folds if x["oos_delta"] > 0)
     positive_topn = sum(1 for k in (1, 3, 5) if mean_topn[k] > 0)
@@ -516,6 +545,7 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         and positive_topn >= 2
         and robust_mean > 0.0
         and robust_ci_low >= 0.0
+        and permutation_by_topn.get(3, {}).get("p_value", 1.0) <= 0.10
         and stable_count / len(folds) >= 0.67
         and neighborhood_mean >= 0.0
         and neighborhood_positive >= 0.50
@@ -534,6 +564,7 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         "robust_mean_oos_lift": robust_mean,
         "ci_by_topn": ci_by_topn,
         "robust_ci_low": robust_ci_low,
+        "permutation_by_topn": permutation_by_topn,
         "positive_topn": positive_topn,
         "positive_folds": positive_folds,
         "stability_gate": stable_gate,
