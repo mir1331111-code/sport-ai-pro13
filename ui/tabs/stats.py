@@ -1910,7 +1910,7 @@ def _render_adaptive_monitor():
                  use_container_width=True, hide_index=True)
     st.caption("WF PASS + effective N≥8 разрешают только приоритизацию; BET/WATCH/SKIP остаются без изменений.")
 def _render_adaptive_attribution():
-    """Разделяет исторический результат на MODEL / VALUE / ADAPTIVE / REGIME."""
+    """OOS-safe attribution: factor for each signal uses only history before its date."""
     if not db.SQLITE_BOOT_OK:
         return
     try:
@@ -1922,20 +1922,30 @@ def _render_adaptive_attribution():
 
     rows = []
     for r in snapshots:
-        if str(r.get("result_status") or "").lower() not in ("won", "lost"):
+        status = str(r.get("result_status") or "").lower()
+        if status not in ("won", "lost"):
             continue
-        odd = float(r.get("market_odd") or 0.0)
+        try:
+            odd = float(r.get("market_odd") or 0.0)
+        except (TypeError, ValueError):
+            continue
         if odd <= 1.01:
             continue
-        pnl = odd - 1.0 if str(r.get("result_status")).lower() == "won" else -1.0
+
+        pnl = odd - 1.0 if status == "won" else -1.0
         base = {
             "date_iso": r.get("date_iso"),
             "league": r.get("league"),
             "div": r.get("league"),
             "verdict": {"market": r.get("market")},
         }
+        # priority() cuts every profile at date_iso, so future outcomes cannot
+        # influence this signal's factor. Same-date outcomes are also excluded.
         factor, reason = priority(profile, base)
         rows.append({
+            "date": str(r.get("date_iso") or "")[:10],
+            "market": str(r.get("market") or "—"),
+            "league": str(r.get("league") or "—"),
             "model_prob": float(r.get("model_prob") or 0.0),
             "edge": float(r.get("edge") or 0.0),
             "ev": float(r.get("ev") or 0.0),
@@ -1943,41 +1953,103 @@ def _render_adaptive_attribution():
             "factor": factor,
             "reason": reason,
         })
-    st.subheader("🧩 Adaptive Attribution")
+
+    st.subheader("🧩 Adaptive Attribution · OOS")
     if not rows:
         st.info("Нужны закрытые priced decision snapshots.")
         return
 
-    def _roi(items):
-        return sum(x["pnl"] for x in items) / len(items) if items else 0.0
+    def _stats(items):
+        if not items:
+            return {"n": 0, "roi": 0.0, "se": 0.0, "lo": 0.0, "hi": 0.0}
+        vals = [float(x["pnl"]) for x in items]
+        n = len(vals)
+        roi = sum(vals) / n
+        if n < 2:
+            se = 0.0
+        else:
+            mu = roi
+            var = sum((x - mu) ** 2 for x in vals) / (n - 1)
+            se = (var / n) ** 0.5
+        return {"n": n, "roi": roi, "se": se, "lo": roi - 1.96 * se, "hi": roi + 1.96 * se}
 
-    base = rows
+    def _row(label, items, baseline):
+        s = _stats(items)
+        base_roi = _stats(baseline)["roi"] if baseline else 0.0
+        return {
+            "Слой": label,
+            "N": s["n"],
+            "ROI": s["roi"],
+            "95% CI": (s["lo"], s["hi"]),
+            "Δ vs baseline": s["roi"] - base_roi if baseline else 0.0,
+        }
+
+    # Factor is computed OOS for every row. Neutral is the fallback/control
+    # state where the engine did not permit a boost or penalty.
     boosted = [x for x in rows if x["factor"] > 1.0]
     penalized = [x for x in rows if x["factor"] < 1.0]
     neutral = [x for x in rows if x["factor"] == 1.0]
     high_value = [x for x in rows if x["edge"] >= 0.03 and x["ev"] >= 0.03]
     model_strong = [x for x in rows if x["model_prob"] >= 0.60]
 
-    all_roi = _roi(base)
-    neutral_roi = _roi(neutral)
     summary = [
-        {"Слой": "ALL priced", "N": len(base), "ROI": all_roi, "Δ vs neutral": 0.0},
-        {"Слой": "MODEL P≥60%", "N": len(model_strong), "ROI": _roi(model_strong), "Δ vs neutral": _roi(model_strong) - neutral_roi},
-        {"Слой": "VALUE Edge≥3% + EV≥3%", "N": len(high_value), "ROI": _roi(high_value), "Δ vs neutral": _roi(high_value) - neutral_roi},
-        {"Слой": "ADAPTIVE boost", "N": len(boosted), "ROI": _roi(boosted), "Δ vs neutral": _roi(boosted) - neutral_roi},
-        {"Слой": "ADAPTIVE penalty", "N": len(penalized), "ROI": _roi(penalized), "Δ vs neutral": _roi(penalized) - neutral_roi},
-        {"Слой": "ADAPTIVE neutral", "N": len(neutral), "ROI": neutral_roi, "Δ vs neutral": 0.0},
+        _row("ALL priced", rows, []),
+        _row("MODEL P≥60%", model_strong, neutral),
+        _row("VALUE Edge≥3% + EV≥3%", high_value, neutral),
+        _row("ADAPTIVE boost", boosted, neutral),
+        _row("ADAPTIVE penalty", penalized, neutral),
+        _row("ADAPTIVE neutral", neutral, neutral),
     ]
     df = pd.DataFrame(summary)
-    df["ROI"] = df["ROI"].map(lambda x: f"{x:+.1%}")
-    df["Δ vs neutral"] = df["Δ vs neutral"].map(lambda x: f"{x:+.1%}")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    view = df.copy()
+    view["ROI"] = view["ROI"].map(lambda x: f"{x:+.1%}")
+    view["Δ vs baseline"] = view["Δ vs baseline"].map(lambda x: f"{x:+.1%}")
+    view["95% CI"] = view["95% CI"].map(lambda x: f"[{x[0]:+.1%}; {x[1]:+.1%}]")
+    st.dataframe(view, use_container_width=True, hide_index=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("OOS priced", len(rows))
+    c2.metric("Boost", len(boosted))
+    c3.metric("Penalty", len(penalized))
+    c4.metric("Neutral", len(neutral))
 
     if boosted or penalized:
         st.caption(
-            "Attribution — диагностический анализ: Adaptive не меняет результат ставки задним числом; "
-            "группы показывают, в каких исторических сегментах система применяла приоритет."
+            "OOS-safe: factor для каждого сигнала рассчитывается только по завершённым "
+            "результатам до его даты. 95% CI — обычный нормальный интервал для среднего PnL; "
+            "при малом N он нестабилен. Это диагностика, а не доказательство causal lift."
         )
+    if len(boosted) < 20 or len(penalized) < 20:
+        st.warning(
+            "Adaptive boost/penalty пока имеют N<20: разницу ROI нельзя считать устойчивым "
+            "доказательством преимущества."
+        )
+
+    # Контроль по рынку: показывает, не объясняется ли эффект одной большой группой.
+    grouped = defaultdict(list)
+    for x in rows:
+        grouped[(x["market"], x["league"])].append(x)
+    for (market, league), items in grouped.items():
+        b = [x for x in items if x["factor"] > 1.0]
+        n = [x for x in items if x["factor"] == 1.0]
+        if len(b) >= 5 and len(n) >= 5:
+            sb, sn = _stats(b), _stats(n)
+            segment_rows.append({
+                "Рынок": market,
+                "Лига": league,
+                "Boost N": sb["n"],
+                "Boost ROI": sb["roi"],
+                "Neutral N": sn["n"],
+                "Neutral ROI": sn["roi"],
+                "Δ": sb["roi"] - sn["roi"],
+            })
+    if segment_rows:
+        st.markdown("**Контроль: Boost vs Neutral внутри рынка × лиги**")
+        sdf = pd.DataFrame(segment_rows).sort_values(["Δ", "Boost N"], ascending=[False, False])
+        sdf["Boost ROI"] = sdf["Boost ROI"].map(lambda x: f"{x:+.1%}")
+        sdf["Neutral ROI"] = sdf["Neutral ROI"].map(lambda x: f"{x:+.1%}")
+        sdf["Δ"] = sdf["Δ"].map(lambda x: f"{x:+.1%}")
+        st.dataframe(sdf, use_container_width=True, hide_index=True)
 
 def _render_decision_log(D):
     """Показывает сохранённый снимок решения для закрытых ставок."""
