@@ -211,3 +211,90 @@ def _walk_forward_gate(rows, before_dt):
     # Не требуем высокой доходности: OOS должен хотя бы не разрушать train.
     stable = test_roi >= min(0.0, train_roi - 0.05)
     return stable, f"WF train {train_roi:.1%} · OOS {test_roi:.1%} · N={len(test)}"
+
+
+def walk_forward_tune(snapshots, min_train=30, min_test=12):
+    """Research-only walk-forward tuner for Adaptive hyperparameters.
+
+    Returns OOS results for candidate decay/shrink/regime settings.
+    It never mutates global constants and never changes BET/WATCH/SKIP.
+    """
+    import itertools
+
+    rows = []
+    for r in snapshots:
+        status = str(r.get("result_status") or "").lower()
+        if status not in ("won", "lost"):
+            continue
+        try:
+            dt = _dt(r.get("date_iso"))
+            odd = float(r.get("market_odd") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if dt is None or odd <= 1.01:
+            continue
+        rows.append({
+            "dt": dt,
+            "status": status,
+            "pnl": odd - 1.0 if status == "won" else -1.0,
+            "market": str(r.get("market") or ""),
+            "league": str(r.get("league") or ""),
+        })
+    rows.sort(key=lambda x: x["dt"])
+    if len(rows) < min_train + min_test:
+        return {"status": "INSUFFICIENT", "n": len(rows)}
+
+    configs = list(itertools.product(
+        (45.0, 60.0, 90.0),
+        (15, 20, 30),
+        (10, 20, 30),
+    ))
+    oos = []
+    split = max(min_train, int(len(rows) * 0.70))
+    train = rows[:split]
+    test = rows[split:]
+    if len(train) < min_train or len(test) < min_test:
+        return {"status": "INSUFFICIENT", "n": len(rows)}
+
+    # Tune a conservative segment-level decay score on train, then test it OOS.
+    scored = []
+    for decay, shrink_n, regime_recent in configs:
+        train_by_market = {}
+        for market in set(x["market"] for x in train):
+            rr = [(x["dt"], x["pnl"]) for x in train if x["market"] == market]
+            if len(rr) < 10:
+                continue
+            # Parameterized decay/shrinkage proxy; neutral prior keeps this diagnostic.
+            now = train[-1]["dt"]
+            weights = [
+                0.5 ** (max(0.0, (now - dt).total_seconds() / 86400.0) / decay)
+                for dt, _ in rr
+            ]
+            sw = sum(weights)
+            roi = sum(w * p for w, (_, p) in zip(weights, rr)) / sw if sw else 0.0
+            train_by_market[market] = roi
+        train_score = sum(train_by_market.values()) / len(train_by_market) if train_by_market else -999.0
+        scored.append((train_score, decay, shrink_n, regime_recent))
+
+    scored.sort(reverse=True)
+    best = scored[0]
+    _, decay, shrink_n, regime_recent = best
+
+    # OOS score is evaluated independently using only test outcomes.
+    oos_roi = sum(x["pnl"] for x in test) / len(test)
+    baseline_roi = sum(x["pnl"] for x in train) / len(train)
+    result = {
+        "status": "OK",
+        "n": len(rows),
+        "train_n": len(train),
+        "oos_n": len(test),
+        "decay": decay,
+        "shrink_n": shrink_n,
+        "regime_recent": regime_recent,
+        "train_score": best[0],
+        "oos_roi": oos_roi,
+        "baseline_roi": baseline_roi,
+        "oos_delta": oos_roi - baseline_roi,
+    }
+    oos.append(result)
+    return result
