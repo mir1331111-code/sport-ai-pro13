@@ -2078,15 +2078,33 @@ def _render_adaptive_auto_tuning():
     n2.metric("Neighbor positive", f"{result.get('neighborhood_positive', 0.0):.0%}")
     n3.metric("Neighbor N", f"{result.get('neighborhood_n', 0)}")
 
+    t1, t2, t3 = st.columns(3)
+    mean_topn = result.get("mean_topn", {})
+    t1.metric("Top-1 OOS Lift", f"{mean_topn.get(1, 0.0):+.2%}")
+    t2.metric("Top-3 OOS Lift", f"{mean_topn.get(3, 0.0):+.2%}")
+    t3.metric("Top-5 OOS Lift", f"{mean_topn.get(5, 0.0):+.2%}")
+
     d1, d2, d3 = st.columns(3)
     d1.metric("Folds", f"{result['fold_n']}")
     d2.metric("Mean OOS Selection Lift", f"{result['mean_oos_delta']:+.2%}")
     d3.metric("Config stability", f"{result['config_stability']:.0%}")
 
-    st.write(f"Положительных OOS-окон: **{result['positive_folds']}/{result['fold_n']}**")
+    st.write(
+        f"Положительных OOS-окон: **{result['positive_folds']}/{result['fold_n']}** · "
+        f"Top-N positive: **{result.get('positive_topn', 0)}/3**"
+    )
+
+    ci = result.get("ci_by_topn", {})
+    ci_cols = st.columns(3)
+    for col, top_n in zip(ci_cols, (1, 3, 5)):
+        item = ci.get(top_n, {})
+        col.metric(
+            f"Top-{top_n} 95% CI",
+            f"[{item.get('low', 0.0):+.2%}; {item.get('high', 0.0):+.2%}]",
+        )
 
     if result.get("stability_gate"):
-        st.success("🟢 OOS STABILITY GATE: конфигурация достаточно стабильна для исследовательской рекомендации.")
+        st.success("🟢 OOS STABILITY GATE: конфигурация стабильна сразу по Top-1/3/5 и нижняя граница bootstrap CI не ниже 0.")
     elif result["mean_oos_delta"] > 0:
         st.warning("🟡 OOS Selection Lift положительный, но Stability Gate не пройден.")
     else:
@@ -2114,7 +2132,7 @@ def _render_adaptive_auto_tuning():
 
     st.caption(
         "Research-only: конфигурация выбирается на внутренней train-validation выборке "
-        "по Top-3 selection lift, затем проверяется на следующем unseen OOS-блоке. "
+        "по робастному среднему Top-1/3/5 selection lift, затем проверяется на следующем unseen OOS-блоке. Bootstrap CI считается по дневным paired lift. "
         "Live Adaptive и BET/WATCH/SKIP не изменяются."
     )
 
