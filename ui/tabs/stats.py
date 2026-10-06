@@ -2073,6 +2073,11 @@ def _render_adaptive_auto_tuning():
     c2.metric("Shrink N", f"{result['shrink_n']}")
     c3.metric("Regime window", f"{result['regime_recent']}")
 
+    n1, n2, n3 = st.columns(3)
+    n1.metric("Neighbor OOS Δ", f"{result.get('neighborhood_mean', 0.0):+.2%}")
+    n2.metric("Neighbor positive", f"{result.get('neighborhood_positive', 0.0):.0%}")
+    n3.metric("Neighbor N", f"{result.get('neighborhood_n', 0)}")
+
     d1, d2, d3 = st.columns(3)
     d1.metric("Folds", f"{result['fold_n']}")
     d2.metric("Mean OOS Δ", f"{result['mean_oos_delta']:+.2%}")
