@@ -300,6 +300,12 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
     stable_config, stable_count = cfg_counts.most_common(1)[0]
     mean_delta = sum(x["oos_delta"] for x in folds) / len(folds)
     positive_folds = sum(1 for x in folds if x["oos_delta"] > 0)
+    stable_gate = bool(
+        len(folds) >= 3
+        and positive_folds >= 2
+        and mean_delta > 0.0
+        and stable_count / len(folds) >= 0.67
+    )
 
     return {
         "status": "OK",
@@ -312,5 +318,6 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         "config_stability": stable_count / len(folds),
         "mean_oos_delta": mean_delta,
         "positive_folds": positive_folds,
+        "stability_gate": stable_gate,
     }
 
