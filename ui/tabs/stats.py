@@ -2052,7 +2052,356 @@ def _render_adaptive_attribution():
         sdf["Δ"] = sdf["Δ"].map(lambda x: f"{x:+.1%}")
         st.dataframe(sdf, use_container_width=True, hide_index=True)
 
-def _render_adaptive_selection_test():
+def _render_adaptive_auto_tuning():
+    """Research-only walk-forward tuning; parameters are not applied live."""
+    if not db.SQLITE_BOOT_OK:
+        return
+    try:
+        from betting.adaptive import walk_forward_tune
+        snapshots = db.fetch_decision_snapshots(limit=100000)
+        result = walk_forward_tune(snapshots)
+    except Exception:
+        return
+
+    st.subheader("🧠 Adaptive Auto-Tuning · Walk-Forward")
+    if result.get("status") != "OK":
+        st.info(f"Недостаточно OOS-данных для tuning: N={result.get('n', 0)}.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Decay", f"{result['decay']:.0f}d")
+    c2.metric("Shrink N", f"{result['shrink_n']}")
+    c3.metric("Regime window", f"{result['regime_recent']}")
+
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Train score", f"{result['train_score']:+.2%}")
+    d2.metric("OOS ROI", f"{result['oos_roi']:+.2%}")
+    d3.metric("OOS Δ vs Train", f"{result['oos_delta']:+.2%}")
+
+    if result["oos_delta"] > 0:
+        st.success("Подобранная конфигурация сохранила положительный OOS delta.")
+    else:
+        st.warning("Подобранная конфигурация не показала положительного OOS delta.")
+
+    st.caption(
+        "Research-only: параметры подбираются на train 70% и проверяются на следующих 30%. "
+        "В live Adaptive они автоматически НЕ применяются; BET/WATCH/SKIP не меняются."
+    )
+
+def _render_adaptive_selection_test()
+    _render_adaptive_auto_tuning():
+    """Сравнивает Adaptive vs Neutral top-N на одинаковых датах и только OOS-истории."""
+    if not db.SQLITE_BOOT_OK:
+        return
+    try:
+        from betting.adaptive import build_profiles, priority
+        snapshots = db.fetch_decision_snapshots(limit=100000)
+        profile = build_profiles(snapshots)
+    except Exception:
+        return
+
+    candidates = []
+    for r in snapshots:
+        status = str(r.get("result_status") or "").lower()
+        if status not in ("won", "lost"):
+            continue
+        try:
+            odd = float(r.get("market_odd") or 0.0)
+            model_prob = float(r.get("model_prob") or 0.0)
+            edge = float(r.get("edge") or 0.0)
+            ev = float(r.get("ev") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if odd <= 1.01:
+            continue
+        # Selection test applies to priced action candidates only.
+        if model_prob <= 0 or (edge <= 0 and ev <= 0):
+            continue
+
+        base = {
+            "date_iso": r.get("date_iso"),
+            "league": r.get("league"),
+            "div": r.get("league"),
+            "verdict": {"market": r.get("market")},
+        }
+        factor, _ = priority(profile, base)
+        neutral_score = (
+            0.40 * model_prob
+            + 0.25 * max(0.0, ev)
+            + 0.20 * max(0.0, edge)
+        )
+        adaptive_score = neutral_score * factor
+        pnl = odd - 1.0 if status == "won" else -1.0
+        candidates.append({
+            "date": str(r.get("date_iso") or "")[:10],
+            "market": str(r.get("market") or "—"),
+            "league": str(r.get("league") or "—"),
+            "pnl": pnl,
+            "neutral": neutral_score,
+            "adaptive": adaptive_score,
+            "factor": factor,
+        })
+
+    st.subheader("🧪 Adaptive Selection Test")
+    if not candidates:
+        st.info("Нужны закрытые priced action-сигналы для Selection Test.")
+        return
+
+    # Same-day cohorts are the clean comparison unit: Adaptive and Neutral
+    # select from exactly the same candidate pool.
+    top_n_values = [1, 3, 5, 10]
+    results = []
+    by_date = defaultdict(list)
+    for x in candidates:
+        by_date[x["date"]].append(x)
+
+    for top_n in top_n_values:
+        adaptive_items, neutral_items = [], []
+        overlap_items = []
+        days = 0
+        for day, items in sorted(by_date.items()):
+            if len(items) < top_n:
+                continue
+            days += 1
+            a = sorted(items, key=lambda x: (x["adaptive"], x["neutral"]), reverse=True)[:top_n]
+            n = sorted(items, key=lambda x: (x["neutral"], x["adaptive"]), reverse=True)[:top_n]
+            adaptive_items.extend(a)
+            neutral_items.extend(n)
+            overlap_items.extend([x for x in a if x in n])
+
+        def _roi(items):
+            return sum(x["pnl"] for x in items) / len(items) if items else 0.0
+
+        ar = _roi(adaptive_items)
+        nr = _roi(neutral_items)
+        results.append({
+            "Top N": top_n,
+            "Дней": days,
+            "Adaptive N": len(adaptive_items),
+            "Neutral N": len(neutral_items),
+            "Adaptive ROI": ar,
+            "Neutral ROI": nr,
+            "Lift": ar - nr,
+            "Overlap": len(overlap_items) / len(adaptive_items) if adaptive_items else 0.0,
+        })
+
+    df = pd.DataFrame(results)
+    view = df.copy()
+    for col in ("Adaptive ROI", "Neutral ROI", "Lift"):
+        view[col] = view[col].map(lambda x: f"{x:+.1%}")
+    view["Overlap"] = view["Overlap"].map(lambda x: f"{x:.1%}")
+    st.dataframe(view, use_container_width=True, hide_index=True)
+
+    # Daily paired lift avoids giving one high-volume day excessive weight.
+    paired = []
+    for day, items in sorted(by_date.items()):
+        if len(items) < 3:
+            continue
+        a = sorted(items, key=lambda x: (x["adaptive"], x["neutral"]), reverse=True)[:3]
+        n = sorted(items, key=lambda x: (x["neutral"], x["adaptive"]), reverse=True)[:3]
+        paired.append(sum(x["pnl"] for x in a) / 3.0 - sum(x["pnl"] for x in n) / 3.0)
+
+    # Paired bootstrap: resample whole days, preserving the pairing between
+    # Adaptive and Neutral. This estimates uncertainty around the daily lift.
+    paired_rows = []
+    for day, items in sorted(by_date.items()):
+        if len(items) < 3:
+            continue
+        a = sorted(items, key=lambda x: (x["adaptive"], x["neutral"]), reverse=True)[:3]
+        n = sorted(items, key=lambda x: (x["neutral"], x["adaptive"]), reverse=True)[:3]
+        ar = sum(x["pnl"] for x in a) / 3.0
+        nr = sum(x["pnl"] for x in n) / 3.0
+        paired_rows.append(ar - nr)
+
+    if paired_rows:
+        rng_boot = np.random.default_rng(2026)
+        arr = np.asarray(paired_rows, dtype=float)
+        reps = 5000
+        boot = np.empty(reps, dtype=float)
+        for i in range(reps):
+            boot[i] = float(np.mean(rng_boot.choice(arr, size=len(arr), replace=True)))
+        lo, hi = np.percentile(boot, [2.5, 97.5])
+        p_positive = float(np.mean(boot > 0.0))
+        st.subheader("📐 Bootstrap Significance · Adaptive vs Neutral")
+        s1, s2, s3 = st.columns(3)
+        s1.metric("Mean daily Lift", f"{float(np.mean(arr)):+.2%}")
+        s2.metric("95% Bootstrap CI", f"[{lo:+.2%}; {hi:+.2%}]")
+        s3.metric("P(Lift > 0)", f"{p_positive:.1%}")
+        if len(arr) < 20:
+            st.warning("Меньше 20 paired-дней: bootstrap-оценка пока нестабильна.")
+        elif lo > 0:
+            st.success("Adaptive имеет устойчивый положительный Lift по paired-дням.")
+        elif hi < 0:
+            st.error("Adaptive имеет устойчивый отрицательный Lift по paired-дням.")
+        else:
+            st.info("Интервал пересекает 0 — преимущество Adaptive пока не доказано.")
+        st.caption(
+            "Bootstrap пересэмплирует целые дни, а не отдельные ставки. "
+            "Это сохраняет парность Adaptive/Neutral и не использует будущие результаты для ranking."
+        )
+
+    # Random baseline: for each eligible day, average the PnL of a random
+    # top-N-sized subset. This is a lightweight sanity check, not a formal p-value.
+    rng = np.random.default_rng(42)
+    random_lifts = []
+    for day, items in sorted(by_date.items()):
+        if len(items) < 3:
+            continue
+        a = sorted(items, key=lambda x: (x["adaptive"], x["neutral"]), reverse=True)[:3]
+        ar = sum(x["pnl"] for x in a) / 3.0
+        trials = []
+        for _ in range(200):
+            idx = rng.choice(len(items), size=3, replace=False)
+            trials.append(sum(items[int(i)]["pnl"] for i in idx) / 3.0)
+        random_lifts.append((ar, float(np.mean(trials))))
+
+    if random_lifts:
+        adaptive_daily = float(np.mean([x[0] for x in random_lifts]))
+        random_daily = float(np.mean([x[1] for x in random_lifts]))
+        st.subheader("🎲 Random Baseline · Top 3")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Adaptive daily ROI", f"{adaptive_daily:+.2%}")
+        c2.metric("Random subset ROI", f"{random_daily:+.2%}")
+        c3.metric("Adaptive vs Random", f"{adaptive_daily-random_daily:+.2%}")
+        st.caption(
+            "Контрольный baseline: каждый день берём 200 случайных Top-3-sized подмножеств. "
+            "Фиксированный seed нужен только для воспроизводимости; это sanity-check, а не causal proof."
+        )
+
+    if paired:
+        avg_lift = sum(paired) / len(paired)
+        st.metric("Paired daily lift · Top 3", f"{avg_lift:+.2%}", f"N={len(paired)} дней")
+        if len(paired) < 20:
+            st.warning("Для paired-теста пока меньше 20 дней — результат нестабилен.")
+        else:
+            st.caption(
+                "Каждый день имеет одинаковый вес. Lift показывает разницу среднего PnL "
+                "Top-3 Adaptive против Top-3 Neutral на одной и той же корзине кандидатов."
+            )
+    else:
+        st.info("Для paired Top-3 нужно минимум 3 action-сигнала хотя бы в одном дне.")
+
+def _render_decision_log(D):
+    """Показывает сохранённый снимок решения для закрытых ставок."""
+    bets = _closed_bets(D)
+    rows = []
+    for b in bets:
+        snap = b.get("decision_snapshot") or {}
+        if not snap and b.get("decision"):
+            snap = {"model_prob": b.get("prob"), "market_odd": b.get("odds"), "ev": b.get("ev"), "market": b.get("market")}
+        rows.append({
+            "Дата": b.get("date") or "—",
+            "Матч": b.get("match_ru") or b.get("match") or "—",
+            "Рынок": snap.get("market") or b.get("market") or "—",
+            "Решение": b.get("decision") or "BET",
+            "P": f"{float(snap.get('model_prob') or b.get('prob') or 0):.1%}",
+            "Fair": f"{float(snap.get('fair_odd') or 0):.2f}" if snap.get("fair_odd") else "—",
+            "Кэф": f"{float(snap.get('market_odd') or b.get('odds') or 0):.2f}",
+            "Edge": f"{float(snap.get('edge') or 0):+.1%}" if snap.get("edge") is not None else "—",
+            "EV": f"{float(snap.get('ev') or b.get('ev') or 0):+.1%}" if (snap.get("ev") is not None or b.get("ev") is not None) else "—",
+            "Kelly": f"{float(snap.get('kelly_pct') or 0):.1%}",
+            "Conf": f"{float(snap.get('confidence') or 0):.1%}" if snap.get("confidence") is not None else "—",
+            "Value": f"{float(snap.get('value_score') or 0):.2f}",
+            "Результат": b.get("status", "—").upper(),
+        })
+    st.subheader("🧾 Decision Log")
+    if not rows:
+        st.info("Decision Log появится после первых закрытых ставок. Новые ставки сохраняют снимок решения BET на момент входа.")
+        return
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.caption("Снимок фиксируется в момент ставки и не пересчитывается задним числом. Старые ставки без snapshot показываются с доступными полями.")
+
+def render():
+    D = st.session_state.data
+    _render_decision_log(D)
+    _render_adaptive_selection_test()
+    _render_adaptive_attribution()
+    _render_adaptive_monitor()
+    st.header("📈 Статистика")
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["📊 Обзор", "🧪 Модель", "🏆 По лигам", "📅 По дням", "🎯 По рынкам", "🟡 WATCH LAB"])
+    with tab1:
+        _render_overview(D)
+    with tab2:
+        _render_model(D)
+    with tab3:
+        _render_by_league(D)
+    with tab4:
+        _render_by_day(D)
+    with tab5:
+        _render_by_market(D)
+    with tab6:
+        _render_watch_lab(D)
+
+    if db.SQLITE_BOOT_OK:
+        st.divider()
+        st.subheader("🗄 CLV / Drawdown / Sharpe")
+        try:
+            clv = db.clv_summary()
+            ib = float(D.get("meta", {}).get("initial_bank", 10000.0))
+            hist = db.bank_history(limit=100000)
+            banks = [ib] + [float(h.get("bank") or 0)
+                            for h in hist if h.get("bank") is not None]
+            max_dd = 0.0
+            if len(banks) >= 2:
+                peak = banks[0]
+                for b in banks:
+                    if b > peak:
+                        peak = b
+                    if peak > 0:
+                        max_dd = max(max_dd, (peak - b) / peak)
+            rets = []
+            for i in range(1, len(banks)):
+                if banks[i - 1] > 0:
+                    rets.append((banks[i] - banks[i - 1]) / banks[i - 1])
+            sharpe = _sharpe(rets)
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("CLV avg", f"{clv.get('avg_clv', 0)*100:+.2f}%")
+            c2.metric("CLV N", clv.get("n", 0))
+            c3.metric("CLV +", f"{clv.get('positive_share', 0)*100:.1f}%")
+            c4.metric("Max DD", f"-{max_dd*100:.1f}%")
+            c5.metric("Sharpe", f"{sharpe:.2f}")
+
+            st.caption(
+                "CLV показывает изменение цены между входом и закрытием рынка; "
+                "положительная доля — процент ставок с CLV > 0."
+            )
+            try:
+                import pandas as pd
+                market_rows = db.clv_breakdown("market")
+                league_rows = db.clv_breakdown("league")
+                if market_rows or league_rows:
+                    st.subheader("🔎 CLV по рынкам и лигам")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**Рынки**")
+                        df_m = pd.DataFrame(market_rows)
+                        if not df_m.empty:
+                            df_m = df_m.rename(columns={
+                                "group": "Рынок", "n": "N",
+                                "avg_clv": "CLV avg",
+                                "positive_share": "CLV +"
+                            })
+                            df_m["CLV avg"] = df_m["CLV avg"].map(lambda x: f"{x*100:+.2f}%")
+                            df_m["CLV +"] = df_m["CLV +"].map(lambda x: f"{x*100:.1f}%")
+                            st.dataframe(df_m, use_container_width=True, hide_index=True)
+                    with c2:
+                        st.markdown("**Лиги**")
+                        df_l = pd.DataFrame(league_rows)
+                        if not df_l.empty:
+                            df_l = df_l.rename(columns={
+                                "group": "Лига", "n": "N",
+                                "avg_clv": "CLV avg",
+                                "positive_share": "CLV +"
+                            })
+                            df_l["CLV avg"] = df_l["CLV avg"].map(lambda x: f"{x*100:+.2f}%")
+                            df_l["CLV +"] = df_l["CLV +"].map(lambda x: f"{x*100:.1f}%")
+                            st.dataframe(df_l, use_container_width=True, hide_index=True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     """Сравнивает Adaptive vs Neutral top-N на одинаковых датах и только OOS-истории."""
     if not db.SQLITE_BOOT_OK:
         return
