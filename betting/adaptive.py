@@ -56,7 +56,7 @@ def build_profiles(snapshots):
     return groups
 
 
-def _segment_stats(rows, before_dt):
+def _segment_stats(rows, before_dt, decay_days=None, shrink_n=None):
     if not rows or before_dt is None:
         return None
     dates = [x[0] for x in rows]
@@ -65,26 +65,28 @@ def _segment_stats(rows, before_dt):
         return None
     usable = rows[:cut]
     n = len(usable)
-    # Exponential decay: half-life 60 days. Старые исходы не исчезают,
+    decay_days = float(decay_days or DECAY_HALF_LIFE_DAYS)
+    shrink_n = float(shrink_n or SHRINK_N)
+    # Exponential decay: half-life задаётся параметром. Старые исходы не исчезают,
     # но их влияние постепенно уменьшается.
     import math
     weighted = []
     for dt, pnl_i in usable:
         age_days = max(0.0, (before_dt - dt).total_seconds() / 86400.0)
-        w = math.exp(-math.log(2.0) * age_days / DECAY_HALF_LIFE_DAYS)
+        w = math.exp(-math.log(2.0) * age_days / decay_days)
         weighted.append((w, pnl_i))
     weight_sum = sum(w for w, _ in weighted)
     pnl = sum(w * p for w, p in weighted)
     roi = pnl / weight_sum if weight_sum > 0 else 0.0
     # Небольшое сглаживание к нейтральному ROI=0, чтобы decay не создавал
     # агрессивный factor на малой эффективной выборке.
-    prior = SHRINK_N
+    prior = shrink_n
     adj_roi = (pnl + 0.0 * prior) / (weight_sum + prior)
     recent = usable[max(0, n // 2):]
     recent_weight = []
     for dt, pnl_i in recent:
         age_days = max(0.0, (before_dt - dt).total_seconds() / 86400.0)
-        w = math.exp(-math.log(2.0) * age_days / DECAY_HALF_LIFE_DAYS)
+        w = math.exp(-math.log(2.0) * age_days / decay_days)
         recent_weight.append((w, pnl_i))
     rw = sum(w for w, _ in recent_weight)
     recent_roi = sum(w * p for w, p in recent_weight) / rw if rw > 0 else 0.0
@@ -121,7 +123,7 @@ def _factor_from_stats(stats, wf_ok, regime):
     return max(PRIOR_MIN, min(PRIOR_MAX, factor))
 
 
-def _regime(rows, before_dt):
+def _regime(rows, before_dt, recent_n=None):
     """Сравнивает свежий режим с историческим baseline до даты матча."""
     if not rows or before_dt is None:
         return "UNKNOWN", 0.0, "Regime: нет данных"
@@ -130,8 +132,9 @@ def _regime(rows, before_dt):
     usable = rows[:cut]
     if len(usable) < REGIME_MIN_N:
         return "UNKNOWN", 0.0, f"Regime: N={len(usable)} < {REGIME_MIN_N}"
-    recent = usable[-REGIME_RECENT_N:]
-    baseline = usable[:-REGIME_RECENT_N]
+    recent_n = int(recent_n or REGIME_RECENT_N)
+    recent = usable[-recent_n:]
+    baseline = usable[:-recent_n]
     recent_roi = sum(x[1] for x in recent) / len(recent)
     base_roi = sum(x[1] for x in baseline) / len(baseline)
     delta = recent_roi - base_roi
@@ -213,104 +216,180 @@ def _walk_forward_gate(rows, before_dt):
     return stable, f"WF train {train_roi:.1%} · OOS {test_roi:.1%} · N={len(test)}"
 
 
+def _selection_lift(items, factor_fn, top_n=3):
+    """Top-N daily lift versus neutral on one candidate pool."""
+    by_day = defaultdict(list)
+    for item in items:
+        by_day[item["date"]].append(item)
+    daily = []
+    for day_items in by_day.values():
+        if len(day_items) < top_n:
+            continue
+        adaptive = sorted(
+            day_items,
+            key=lambda x: (factor_fn(x), x["neutral"]),
+            reverse=True,
+        )[:top_n]
+        neutral = sorted(
+            day_items,
+            key=lambda x: (x["neutral"], factor_fn(x)),
+            reverse=True,
+        )[:top_n]
+        ar = sum(x["pnl"] for x in adaptive) / top_n
+        nr = sum(x["pnl"] for x in neutral) / top_n
+        daily.append(ar - nr)
+    return (sum(daily) / len(daily) if daily else 0.0), len(daily)
+
+
+def _candidate_from_row(r):
+    try:
+        odd = float(r.get("market_odd") or 0.0)
+        model_prob = float(r.get("model_prob") or 0.0)
+        edge = float(r.get("edge") or 0.0)
+        ev = float(r.get("ev") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    dt = _dt(r.get("date_iso"))
+    status = str(r.get("result_status") or "").lower()
+    if dt is None or odd <= 1.01 or status not in ("won", "lost"):
+        return None
+    if model_prob <= 0 or (edge <= 0 and ev <= 0):
+        return None
+    return {
+        "dt": dt,
+        "date": dt.date().isoformat(),
+        "market": str(r.get("market") or "—").strip() or "—",
+        "league": str(r.get("league") or "—").strip() or "—",
+        "neutral": (
+            0.40 * model_prob
+            + 0.25 * max(0.0, ev)
+            + 0.20 * max(0.0, edge)
+        ),
+        "pnl": odd - 1.0 if status == "won" else -1.0,
+    }
+
+
+def _priority_with_params(profile, card, decay_days, shrink_n, regime_recent):
+    """Research-only parameterized Adaptive priority."""
+    if not profile:
+        return 1.0
+    before = card.get("dt")
+    market = str(card.get("market") or "—")
+    league = str(card.get("league") or "—")
+    choices = [
+        ("market_league", market, league),
+        ("market", market),
+        ("league", league),
+    ]
+    for key in choices:
+        rows = profile.get(key, [])
+        stats = _segment_stats(rows, before, decay_days, shrink_n)
+        if stats is None:
+            continue
+        wf_ok, _ = _walk_forward_gate(rows, before)
+        if not wf_ok:
+            continue
+        regime, _, _ = _regime(rows, before, regime_recent)
+        return _factor_from_stats(stats, wf_ok, regime)
+    return 1.0
+
+
 def walk_forward_tune(snapshots, min_train=30, min_test=12):
-    """Research-only rolling walk-forward tuner; never changes live constants."""
+    """Research-only selection-aware rolling tuner; never changes live constants."""
     import itertools
 
-    rows = []
-    for r in snapshots:
-        status = str(r.get("result_status") or "").lower()
-        if status not in ("won", "lost"):
-            continue
-        try:
-            dt = _dt(r.get("date_iso"))
-            odd = float(r.get("market_odd") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if dt is None or odd <= 1.01:
-            continue
-        rows.append({
-            "dt": dt,
-            "pnl": odd - 1.0 if status == "won" else -1.0,
-            "market": str(r.get("market") or ""),
-        })
-    rows.sort(key=lambda x: x["dt"])
-    if len(rows) < min_train + min_test:
-        return {"status": "INSUFFICIENT", "n": len(rows)}
+    candidates = []
+    for r in snapshots or []:
+        item = _candidate_from_row(r)
+        if item is not None:
+            candidates.append(item)
+    candidates.sort(key=lambda x: x["dt"])
+    if len(candidates) < min_train + min_test:
+        return {"status": "INSUFFICIENT", "n": len(candidates)}
 
-    configs = list(itertools.product((45.0, 60.0, 90.0), (15, 20, 30), (10, 20, 30)))
-    # Three chronological folds. Each fold tunes on its own past and evaluates
-    # only on the immediately following unseen block.
-    fold_size = max(min_test, len(rows) // 5)
+    configs = list(
+        itertools.product((45.0, 60.0, 90.0), (15, 20, 30), (10, 20, 30))
+    )
+    fold_size = max(min_test, len(candidates) // 5)
     folds = []
     cursor = min_train
-    while cursor + min_test <= len(rows) and len(folds) < 3:
-        train_end = cursor
-        test_end = min(len(rows), cursor + fold_size)
-        if train_end < min_train or test_end <= train_end:
+
+    while cursor + min_test <= len(candidates) and len(folds) < 3:
+        train = candidates[:cursor]
+        test = candidates[cursor:min(len(candidates), cursor + fold_size)]
+        if len(train) < min_train or len(test) < min_test:
             break
-        train = rows[:train_end]
-        test = rows[train_end:test_end]
+
+        split = max(20, int(len(train) * 0.70))
+        if len(train) - split < 6:
+            break
+        inner_train = train[:split]
+        validation = train[split:]
+        profile = defaultdict(list)
+        for x in inner_train:
+            profile[("market", x["market"])].append((x["dt"], x["pnl"]))
+            profile[("league", x["league"])].append((x["dt"], x["pnl"]))
+            profile[("market_league", x["market"], x["league"])].append(
+                (x["dt"], x["pnl"])
+            )
+        for key in profile:
+            profile[key].sort(key=lambda z: z[0])
 
         scored = []
         for decay, shrink_n, regime_recent in configs:
-            market_scores = []
-            for market in sorted(set(x["market"] for x in train)):
-                rr = [x for x in train if x["market"] == market]
-                if len(rr) < 10:
-                    continue
-                now = train[-1]["dt"]
-                weights = [
-                    0.5 ** (max(0.0, (now - x["dt"]).total_seconds() / 86400.0) / decay)
-                    for x in rr
-                ]
-                sw = sum(weights)
-                raw = sum(w * x["pnl"] for w, x in zip(weights, rr)) / sw if sw else 0.0
-                adj = raw * sw / (sw + float(shrink_n))
-                recent = rr[-regime_recent:]
-                recent_roi = sum(x["pnl"] for x in recent) / len(recent) if recent else 0.0
-                market_scores.append(0.7 * adj + 0.3 * recent_roi)
-            train_score = sum(market_scores) / len(market_scores) if market_scores else -999.0
-            scored.append((train_score, decay, shrink_n, regime_recent))
+            def factor_fn(x, d=decay, s=shrink_n, rr=regime_recent):
+                return _priority_with_params(profile, x, d, s, rr)
+            lift, val_days = _selection_lift(validation, factor_fn, top_n=3)
+            scored.append((lift, val_days, decay, shrink_n, regime_recent))
 
-        scored.sort(reverse=True)
-        train_score, decay, shrink_n, regime_recent = scored[0]
-        oos_roi = sum(x["pnl"] for x in test) / len(test)
-        baseline_roi = sum(x["pnl"] for x in train) / len(train)
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        best_lift, val_days, decay, shrink_n, regime_recent = scored[0]
+
+        full_profile = defaultdict(list)
+        for x in train:
+            full_profile[("market", x["market"])].append((x["dt"], x["pnl"]))
+            full_profile[("league", x["league"])].append((x["dt"], x["pnl"]))
+            full_profile[("market_league", x["market"], x["league"])].append(
+                (x["dt"], x["pnl"])
+            )
+        for key in full_profile:
+            full_profile[key].sort(key=lambda z: z[0])
+
+        def oos_factor(x, d=decay, s=shrink_n, rr=regime_recent):
+            return _priority_with_params(full_profile, x, d, s, rr)
+
+        oos_lift, oos_days = _selection_lift(test, oos_factor, top_n=3)
         folds.append({
             "train_n": len(train),
             "oos_n": len(test),
+            "validation_days": val_days,
+            "oos_days": oos_days,
             "decay": decay,
             "shrink_n": shrink_n,
             "regime_recent": regime_recent,
-            "train_score": train_score,
-            "oos_roi": oos_roi,
-            "baseline_roi": baseline_roi,
-            "oos_delta": oos_roi - baseline_roi,
+            "train_selection_lift": best_lift,
+            "oos_selection_lift": oos_lift,
+            "oos_roi": sum(x["pnl"] for x in test) / len(test) if test else 0.0,
+            "baseline_roi": sum(x["pnl"] for x in train) / len(train) if train else 0.0,
+            "oos_delta": oos_lift,
         })
-        cursor = test_end
+        cursor += fold_size
 
     if not folds:
-        return {"status": "INSUFFICIENT", "n": len(rows)}
+        return {"status": "INSUFFICIENT", "n": len(candidates)}
 
     from collections import Counter
     cfg_counts = Counter(
         (x["decay"], x["shrink_n"], x["regime_recent"]) for x in folds
     )
-    # Stability is stronger when nearby configurations also retain positive OOS
-    # performance, rather than relying on a single sharp optimum.
-    neighborhood = []
     best_cfg = cfg_counts.most_common(1)[0][0]
-    for x in folds:
-        if (
-            abs(x["decay"] - best_cfg[0]) <= 15.0
-            and abs(x["shrink_n"] - best_cfg[1]) <= 5
-            and abs(x["regime_recent"] - best_cfg[2]) <= 10
-        ):
-            neighborhood.append(x["oos_delta"])
-    neighborhood_mean = (
-        sum(neighborhood) / len(neighborhood) if neighborhood else 0.0
-    )
+    neighborhood = [
+        x["oos_delta"] for x in folds
+        if abs(x["decay"] - best_cfg[0]) <= 15.0
+        and abs(x["shrink_n"] - best_cfg[1]) <= 5
+        and abs(x["regime_recent"] - best_cfg[2]) <= 10
+    ]
+    neighborhood_mean = sum(neighborhood) / len(neighborhood) if neighborhood else 0.0
     neighborhood_positive = (
         sum(1 for x in neighborhood if x > 0) / len(neighborhood)
         if neighborhood else 0.0
@@ -326,10 +405,9 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         and neighborhood_mean >= 0.0
         and neighborhood_positive >= 0.50
     )
-
     return {
         "status": "OK",
-        "n": len(rows),
+        "n": len(candidates),
         "folds": folds,
         "fold_n": len(folds),
         "decay": stable_config[0],
@@ -342,5 +420,5 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         "neighborhood_mean": neighborhood_mean,
         "neighborhood_positive": neighborhood_positive,
         "neighborhood_n": len(neighborhood),
+        "selection_aware": True,
     }
-
