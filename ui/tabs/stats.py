@@ -2209,6 +2209,7 @@ def _render_decision_log(D):
 def render():
     D = st.session_state.data
     _render_decision_log(D)
+    _render_adaptive_selection_test()
     _render_adaptive_attribution()
     _render_adaptive_monitor()
     st.header("📈 Статистика")
