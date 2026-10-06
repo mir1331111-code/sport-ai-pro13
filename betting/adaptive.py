@@ -241,6 +241,53 @@ def _selection_lift(items, factor_fn, top_n=3):
     return (sum(daily) / len(daily) if daily else 0.0), len(daily)
 
 
+def _selection_lift_stats(items, factor_fn, top_n=3):
+    """Daily paired lift with a bootstrap-ready distribution."""
+    by_day = defaultdict(list)
+    for item in items:
+        by_day[item["date"]].append(item)
+    daily = []
+    for day_items in by_day.values():
+        if len(day_items) < top_n:
+            continue
+        adaptive = sorted(
+            day_items,
+            key=lambda x: (factor_fn(x), x["neutral"]),
+            reverse=True,
+        )[:top_n]
+        neutral = sorted(
+            day_items,
+            key=lambda x: (x["neutral"], factor_fn(x)),
+            reverse=True,
+        )[:top_n]
+        ar = sum(x["pnl"] for x in adaptive) / top_n
+        nr = sum(x["pnl"] for x in neutral) / top_n
+        daily.append(ar - nr)
+    return (sum(daily) / len(daily) if daily else 0.0), daily
+
+
+def _bootstrap_ci(values, reps=3000, seed=2026):
+    """Research-only percentile bootstrap over independent daily paired lifts."""
+    if not values:
+        return 0.0, 0.0, 0.0
+    if len(values) < 5:
+        mean = sum(values) / len(values)
+        return mean, mean, 0.0
+    import random
+    rng = random.Random(seed)
+    n = len(values)
+    means = []
+    for _ in range(reps):
+        sample = [values[rng.randrange(n)] for _ in range(n)]
+        means.append(sum(sample) / n)
+    means.sort()
+    lo = means[int(0.025 * (len(means) - 1))]
+    hi = means[int(0.975 * (len(means) - 1))]
+    mean = sum(values) / n
+    p_positive = sum(1 for x in means if x > 0) / len(means)
+    return lo, hi, p_positive
+
+
 def _candidate_from_row(r):
     try:
         odd = float(r.get("market_odd") or 0.0)
@@ -339,11 +386,35 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         for decay, shrink_n, regime_recent in configs:
             def factor_fn(x, d=decay, s=shrink_n, rr=regime_recent):
                 return _priority_with_params(profile, x, d, s, rr)
-            lift, val_days = _selection_lift(validation, factor_fn, top_n=3)
-            scored.append((lift, val_days, decay, shrink_n, regime_recent))
+            validation_lifts = {}
+            validation_days = {}
+            for top_n in (1, 3, 5):
+                lift, daily = _selection_lift_stats(validation, factor_fn, top_n=top_n)
+                validation_lifts[top_n] = lift
+                validation_days[top_n] = len(daily)
+            robust_score = sum(validation_lifts.values()) / 3.0
+            scored.append((
+                robust_score,
+                validation_lifts.get(3, 0.0),
+                validation_days.get(3, 0),
+                decay,
+                shrink_n,
+                regime_recent,
+                validation_lifts,
+                validation_days,
+            ))
 
-        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        best_lift, val_days, decay, shrink_n, regime_recent = scored[0]
+        scored.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+        (
+            best_lift,
+            best_top3,
+            val_days,
+            decay,
+            shrink_n,
+            regime_recent,
+            validation_lifts,
+            validation_days,
+        ) = scored[0]
 
         full_profile = defaultdict(list)
         for x in train:
@@ -358,20 +429,34 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         def oos_factor(x, d=decay, s=shrink_n, rr=regime_recent):
             return _priority_with_params(full_profile, x, d, s, rr)
 
-        oos_lift, oos_days = _selection_lift(test, oos_factor, top_n=3)
+        oos_lifts = {}
+        oos_daily = {}
+        for top_n in (1, 3, 5):
+            lift, daily = _selection_lift_stats(test, oos_factor, top_n=top_n)
+            oos_lifts[top_n] = lift
+            oos_daily[top_n] = daily
+        oos_lift = oos_lifts[3]
+        oos_days = len(oos_daily[3])
         folds.append({
             "train_n": len(train),
             "oos_n": len(test),
             "validation_days": val_days,
+            "validation_lifts": validation_lifts,
+            "validation_days_by_topn": validation_days,
             "oos_days": oos_days,
+            "oos_lifts": oos_lifts,
+            "oos_days_by_topn": {k: len(v) for k, v in oos_daily.items()},
             "decay": decay,
             "shrink_n": shrink_n,
             "regime_recent": regime_recent,
             "train_selection_lift": best_lift,
+            "train_top3_lift": best_top3,
             "oos_selection_lift": oos_lift,
+            "robust_oos_lift": sum(oos_lifts.values()) / 3.0,
             "oos_roi": sum(x["pnl"] for x in test) / len(test) if test else 0.0,
             "baseline_roi": sum(x["pnl"] for x in train) / len(train) if train else 0.0,
             "oos_delta": oos_lift,
+            "oos_daily_lifts": oos_daily,
         })
         cursor += fold_size
 
@@ -396,11 +481,41 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
     )
     stable_config, stable_count = cfg_counts.most_common(1)[0]
     mean_delta = sum(x["oos_delta"] for x in folds) / len(folds)
+    mean_topn = {
+        top_n: sum(x["oos_lifts"][top_n] for x in folds) / len(folds)
+        for top_n in (1, 3, 5)
+    }
+    robust_mean = sum(mean_topn.values()) / 3.0
+    pooled_daily = {
+        top_n: [
+            lift
+            for fold in folds
+            for lift in fold["oos_daily_lifts"].get(top_n, [])
+        ]
+        for top_n in (1, 3, 5)
+    }
+    ci_by_topn = {}
+    for top_n in (1, 3, 5):
+        lo, hi, p_pos = _bootstrap_ci(
+            pooled_daily[top_n],
+            reps=3000,
+            seed=2026 + top_n,
+        )
+        ci_by_topn[top_n] = {
+            "low": lo,
+            "high": hi,
+            "p_positive": p_pos,
+            "n_days": len(pooled_daily[top_n]),
+        }
+    robust_ci_low = sum(ci_by_topn[k]["low"] for k in (1, 3, 5)) / 3.0
     positive_folds = sum(1 for x in folds if x["oos_delta"] > 0)
+    positive_topn = sum(1 for k in (1, 3, 5) if mean_topn[k] > 0)
     stable_gate = bool(
         len(folds) >= 3
         and positive_folds >= 2
-        and mean_delta > 0.0
+        and positive_topn >= 2
+        and robust_mean > 0.0
+        and robust_ci_low >= 0.0
         and stable_count / len(folds) >= 0.67
         and neighborhood_mean >= 0.0
         and neighborhood_positive >= 0.50
@@ -415,6 +530,11 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         "regime_recent": stable_config[2],
         "config_stability": stable_count / len(folds),
         "mean_oos_delta": mean_delta,
+        "mean_topn": mean_topn,
+        "robust_mean_oos_lift": robust_mean,
+        "ci_by_topn": ci_by_topn,
+        "robust_ci_low": robust_ci_low,
+        "positive_topn": positive_topn,
         "positive_folds": positive_folds,
         "stability_gate": stable_gate,
         "neighborhood_mean": neighborhood_mean,
