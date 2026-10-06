@@ -2080,6 +2080,13 @@ def _render_adaptive_auto_tuning():
 
     st.write(f"Положительных OOS-окон: **{result['positive_folds']}/{result['fold_n']}**")
 
+    if result.get("stability_gate"):
+        st.success("🟢 OOS STABILITY GATE: конфигурация достаточно стабильна для исследовательской рекомендации.")
+    elif result["mean_oos_delta"] > 0:
+        st.warning("🟡 OOS Lift положительный, но Stability Gate не пройден.")
+    else:
+        st.error("🔴 OOS Stability Gate не пройден.")
+
     if result["positive_folds"] >= max(2, (result["fold_n"] + 1) // 2) and result["mean_oos_delta"] > 0:
         st.success("Конфигурация прошла rolling OOS-проверку.")
     elif result["mean_oos_delta"] > 0:
