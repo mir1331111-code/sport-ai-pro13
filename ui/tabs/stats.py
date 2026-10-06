@@ -2089,6 +2089,10 @@ def _render_adaptive_auto_tuning():
     d2.metric("Mean OOS Selection Lift", f"{result['mean_oos_delta']:+.2%}")
     d3.metric("Config stability", f"{result['config_stability']:.0%}")
 
+    e1, e2 = st.columns(2)
+    e1.metric("Embargo", f"{result.get('embargo_days', 0)}d")
+    e2.metric("Purged", "YES" if result.get("purged") else "NO")
+
     st.write(
         f"Положительных OOS-окон: **{result['positive_folds']}/{result['fold_n']}** · "
         f"Top-N positive: **{result.get('positive_topn', 0)}/3**"
@@ -2135,12 +2139,14 @@ def _render_adaptive_auto_tuning():
             "Decay": f"{fold['decay']:.0f}d",
             "Shrink N": fold["shrink_n"],
             "Regime": fold["regime_recent"],
+            "Embargo N": fold.get("embargo_n", 0),
+            "Train → OOS": f"{fold.get('train_last_date', '')} → {fold.get('oos_first_date', '')}",
             "OOS Selection Lift": f"{fold['oos_delta']:+.2%}",
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     st.caption(
-        "Research-only: конфигурация выбирается на внутренней train-validation выборке "
+        "Research-only: purged walk-forward с 1-дневным embargo; конфигурация выбирается на внутренней train-validation выборке "
         "по робастному среднему Top-1/3/5 selection lift, затем проверяется на следующем unseen OOS-блоке. Bootstrap CI и sign-flip test считаются по дневным paired lift; p-value — исследовательский, не доказательство причинности. "
         "Live Adaptive и BET/WATCH/SKIP не изменяются."
     )
