@@ -297,6 +297,24 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
     cfg_counts = Counter(
         (x["decay"], x["shrink_n"], x["regime_recent"]) for x in folds
     )
+    # Stability is stronger when nearby configurations also retain positive OOS
+    # performance, rather than relying on a single sharp optimum.
+    neighborhood = []
+    best_cfg = cfg_counts.most_common(1)[0][0]
+    for x in folds:
+        if (
+            abs(x["decay"] - best_cfg[0]) <= 15.0
+            and abs(x["shrink_n"] - best_cfg[1]) <= 5
+            and abs(x["regime_recent"] - best_cfg[2]) <= 10
+        ):
+            neighborhood.append(x["oos_delta"])
+    neighborhood_mean = (
+        sum(neighborhood) / len(neighborhood) if neighborhood else 0.0
+    )
+    neighborhood_positive = (
+        sum(1 for x in neighborhood if x > 0) / len(neighborhood)
+        if neighborhood else 0.0
+    )
     stable_config, stable_count = cfg_counts.most_common(1)[0]
     mean_delta = sum(x["oos_delta"] for x in folds) / len(folds)
     positive_folds = sum(1 for x in folds if x["oos_delta"] > 0)
@@ -305,6 +323,8 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         and positive_folds >= 2
         and mean_delta > 0.0
         and stable_count / len(folds) >= 0.67
+        and neighborhood_mean >= 0.0
+        and neighborhood_positive >= 0.50
     )
 
     return {
@@ -319,5 +339,8 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
         "mean_oos_delta": mean_delta,
         "positive_folds": positive_folds,
         "stability_gate": stable_gate,
+        "neighborhood_mean": neighborhood_mean,
+        "neighborhood_positive": neighborhood_positive,
+        "neighborhood_n": len(neighborhood),
     }
 
