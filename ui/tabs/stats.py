@@ -2080,7 +2080,7 @@ def _render_adaptive_auto_tuning():
 
     d1, d2, d3 = st.columns(3)
     d1.metric("Folds", f"{result['fold_n']}")
-    d2.metric("Mean OOS Δ", f"{result['mean_oos_delta']:+.2%}")
+    d2.metric("Mean OOS Selection Lift", f"{result['mean_oos_delta']:+.2%}")
     d3.metric("Config stability", f"{result['config_stability']:.0%}")
 
     st.write(f"Положительных OOS-окон: **{result['positive_folds']}/{result['fold_n']}**")
@@ -2108,13 +2108,14 @@ def _render_adaptive_auto_tuning():
             "Decay": f"{fold['decay']:.0f}d",
             "Shrink N": fold["shrink_n"],
             "Regime": fold["regime_recent"],
-            "OOS Δ": f"{fold['oos_delta']:+.2%}",
+            "OOS Selection Lift": f"{fold['oos_delta']:+.2%}",
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     st.caption(
-        "Research-only: каждый fold подбирает параметры только на своей train-истории "
-        "и проверяет их на следующем unseen-блоке. Live Adaptive и BET/WATCH/SKIP не изменяются."
+        "Research-only: конфигурация выбирается на внутренней train-validation выборке "
+        "по Top-3 selection lift, затем проверяется на следующем unseen OOS-блоке. "
+        "Live Adaptive и BET/WATCH/SKIP не изменяются."
     )
 
 
