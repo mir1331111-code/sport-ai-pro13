@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections import defaultdict
 
+import numpy as np
 import streamlit as st
 
 from storage import sqlite_store as db
@@ -54,7 +55,6 @@ def _render_model(D):
         return
 
     import pandas as pd
-import numpy as np
 
     rows = []
     for lo in [i / 20 for i in range(20)]:
