@@ -2163,6 +2163,34 @@ def _render_adaptive_selection_test():
         n = sorted(items, key=lambda x: (x["neutral"], x["adaptive"]), reverse=True)[:3]
         paired.append(sum(x["pnl"] for x in a) / 3.0 - sum(x["pnl"] for x in n) / 3.0)
 
+    # Random baseline: for each eligible day, average the PnL of a random
+    # top-N-sized subset. This is a lightweight sanity check, not a formal p-value.
+    rng = np.random.default_rng(42)
+    random_lifts = []
+    for day, items in sorted(by_date.items()):
+        if len(items) < 3:
+            continue
+        a = sorted(items, key=lambda x: (x["adaptive"], x["neutral"]), reverse=True)[:3]
+        ar = sum(x["pnl"] for x in a) / 3.0
+        trials = []
+        for _ in range(200):
+            idx = rng.choice(len(items), size=3, replace=False)
+            trials.append(sum(items[int(i)]["pnl"] for i in idx) / 3.0)
+        random_lifts.append((ar, float(np.mean(trials))))
+
+    if random_lifts:
+        adaptive_daily = float(np.mean([x[0] for x in random_lifts]))
+        random_daily = float(np.mean([x[1] for x in random_lifts]))
+        st.subheader("🎲 Random Baseline · Top 3")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Adaptive daily ROI", f"{adaptive_daily:+.2%}")
+        c2.metric("Random subset ROI", f"{random_daily:+.2%}")
+        c3.metric("Adaptive vs Random", f"{adaptive_daily-random_daily:+.2%}")
+        st.caption(
+            "Контрольный baseline: каждый день берём 200 случайных Top-3-sized подмножеств. "
+            "Фиксированный seed нужен только для воспроизводимости; это sanity-check, а не causal proof."
+        )
+
     if paired:
         avg_lift = sum(paired) / len(paired)
         st.metric("Paired daily lift · Top 3", f"{avg_lift:+.2%}", f"N={len(paired)} дней")
