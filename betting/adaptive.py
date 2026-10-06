@@ -214,7 +214,7 @@ def _walk_forward_gate(rows, before_dt):
 
 
 def walk_forward_tune(snapshots, min_train=30, min_test=12):
-    """Research-only walk-forward tuner; never changes live Adaptive constants."""
+    """Research-only rolling walk-forward tuner; never changes live constants."""
     import itertools
 
     rows = []
@@ -231,7 +231,6 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
             continue
         rows.append({
             "dt": dt,
-            "status": status,
             "pnl": odd - 1.0 if status == "won" else -1.0,
             "market": str(r.get("market") or ""),
         })
@@ -239,50 +238,79 @@ def walk_forward_tune(snapshots, min_train=30, min_test=12):
     if len(rows) < min_train + min_test:
         return {"status": "INSUFFICIENT", "n": len(rows)}
 
-    split = max(min_train, int(len(rows) * 0.70))
-    train, test = rows[:split], rows[split:]
-    if len(test) < min_test:
+    configs = list(itertools.product((45.0, 60.0, 90.0), (15, 20, 30), (10, 20, 30)))
+    # Three chronological folds. Each fold tunes on its own past and evaluates
+    # only on the immediately following unseen block.
+    fold_size = max(min_test, len(rows) // 5)
+    folds = []
+    cursor = min_train
+    while cursor + min_test <= len(rows) and len(folds) < 3:
+        train_end = cursor
+        test_end = min(len(rows), cursor + fold_size)
+        if train_end < min_train or test_end <= train_end:
+            break
+        train = rows[:train_end]
+        test = rows[train_end:test_end]
+
+        scored = []
+        for decay, shrink_n, regime_recent in configs:
+            market_scores = []
+            for market in sorted(set(x["market"] for x in train)):
+                rr = [x for x in train if x["market"] == market]
+                if len(rr) < 10:
+                    continue
+                now = train[-1]["dt"]
+                weights = [
+                    0.5 ** (max(0.0, (now - x["dt"]).total_seconds() / 86400.0) / decay)
+                    for x in rr
+                ]
+                sw = sum(weights)
+                raw = sum(w * x["pnl"] for w, x in zip(weights, rr)) / sw if sw else 0.0
+                adj = raw * sw / (sw + float(shrink_n))
+                recent = rr[-regime_recent:]
+                recent_roi = sum(x["pnl"] for x in recent) / len(recent) if recent else 0.0
+                market_scores.append(0.7 * adj + 0.3 * recent_roi)
+            train_score = sum(market_scores) / len(market_scores) if market_scores else -999.0
+            scored.append((train_score, decay, shrink_n, regime_recent))
+
+        scored.sort(reverse=True)
+        train_score, decay, shrink_n, regime_recent = scored[0]
+        oos_roi = sum(x["pnl"] for x in test) / len(test)
+        baseline_roi = sum(x["pnl"] for x in train) / len(train)
+        folds.append({
+            "train_n": len(train),
+            "oos_n": len(test),
+            "decay": decay,
+            "shrink_n": shrink_n,
+            "regime_recent": regime_recent,
+            "train_score": train_score,
+            "oos_roi": oos_roi,
+            "baseline_roi": baseline_roi,
+            "oos_delta": oos_roi - baseline_roi,
+        })
+        cursor = test_end
+
+    if not folds:
         return {"status": "INSUFFICIENT", "n": len(rows)}
 
-    configs = list(itertools.product((45.0, 60.0, 90.0), (15, 20, 30), (10, 20, 30)))
-    scored = []
-    for decay, shrink_n, regime_recent in configs:
-        market_scores = []
-        for market in sorted(set(x["market"] for x in train)):
-            rr = [x for x in train if x["market"] == market]
-            if len(rr) < 10:
-                continue
-            now = train[-1]["dt"]
-            weights = [
-                0.5 ** (max(0.0, (now - x["dt"]).total_seconds() / 86400.0) / decay)
-                for x in rr
-            ]
-            sw = sum(weights)
-            raw = sum(w * x["pnl"] for w, x in zip(weights, rr)) / sw if sw else 0.0
-            adj = raw * sw / (sw + float(shrink_n))
-            recent = rr[-regime_recent:]
-            recent_roi = sum(x["pnl"] for x in recent) / len(recent) if recent else 0.0
-            # Conservative regime-aware score: recent deterioration matters.
-            score = 0.7 * adj + 0.3 * recent_roi
-            market_scores.append(score)
-        train_score = sum(market_scores) / len(market_scores) if market_scores else -999.0
-        scored.append((train_score, decay, shrink_n, regime_recent))
+    from collections import Counter
+    cfg_counts = Counter(
+        (x["decay"], x["shrink_n"], x["regime_recent"]) for x in folds
+    )
+    stable_config, stable_count = cfg_counts.most_common(1)[0]
+    mean_delta = sum(x["oos_delta"] for x in folds) / len(folds)
+    positive_folds = sum(1 for x in folds if x["oos_delta"] > 0)
 
-    scored.sort(reverse=True)
-    train_score, decay, shrink_n, regime_recent = scored[0]
-    oos_roi = sum(x["pnl"] for x in test) / len(test)
-    baseline_roi = sum(x["pnl"] for x in train) / len(train)
     return {
         "status": "OK",
         "n": len(rows),
-        "train_n": len(train),
-        "oos_n": len(test),
-        "decay": decay,
-        "shrink_n": shrink_n,
-        "regime_recent": regime_recent,
-        "train_score": train_score,
-        "oos_roi": oos_roi,
-        "baseline_roi": baseline_roi,
-        "oos_delta": oos_roi - baseline_roi,
+        "folds": folds,
+        "fold_n": len(folds),
+        "decay": stable_config[0],
+        "shrink_n": stable_config[1],
+        "regime_recent": stable_config[2],
+        "config_stability": stable_count / len(folds),
+        "mean_oos_delta": mean_delta,
+        "positive_folds": positive_folds,
     }
 
