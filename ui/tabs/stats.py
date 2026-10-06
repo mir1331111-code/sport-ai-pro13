@@ -54,6 +54,7 @@ def _render_model(D):
         return
 
     import pandas as pd
+import numpy as np
 
     rows = []
     for lo in [i / 20 for i in range(20)]:
