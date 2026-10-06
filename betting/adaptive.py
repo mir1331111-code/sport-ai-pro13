@@ -16,6 +16,8 @@ PRIOR_MIN = 0.90
 PRIOR_MAX = 1.10
 SHRINK_N = 20
 DECAY_HALF_LIFE_DAYS = 60.0
+# Минимальная effective sample size после time-decay.
+MIN_EFFECTIVE_N = 8.0
 
 
 def _dt(value):
@@ -93,6 +95,32 @@ REGIME_MIN_N = 30
 REGIME_RECENT_N = 20
 
 
+def _factor_from_stats(stats, wf_ok, regime):
+    """Единый расчёт factor для scanner/monitor/attribution."""
+    if not stats or not wf_ok:
+        return 1.0
+    if float(stats.get("effective_n") or 0.0) < MIN_EFFECTIVE_N:
+        return 1.0
+    adj = float(stats.get("adj_roi") or 0.0)
+    recent = float(stats.get("recent_roi") or 0.0)
+    factor = 1.0
+    if adj >= 0.05 and recent >= 0.0:
+        factor = 1.10
+    elif adj >= 0.025 and recent >= 0.0:
+        factor = 1.05
+    elif adj <= -0.05 and recent <= 0.0:
+        factor = 0.90
+    elif adj <= -0.025 and recent <= 0.0:
+        factor = 0.95
+    if regime == "COOLING" and factor > 1.0:
+        factor = 1.0
+    elif regime == "COOLING" and factor == 1.0:
+        factor = 0.95
+    elif regime == "RECOVERY" and factor < 1.0:
+        factor = 1.0
+    return max(PRIOR_MIN, min(PRIOR_MAX, factor))
+
+
 def _regime(rows, before_dt):
     """Сравнивает свежий режим с историческим baseline до даты матча."""
     if not rows or before_dt is None:
@@ -120,9 +148,9 @@ def priority(profile, card):
     before = _dt(card.get("date_iso"))
     if before is None:
         return 1.0, "Adaptive: нет даты"
-    market = str((card.get("verdict") or {}).get("market") or (card.get("verdict") or {}).get("market_type") or "").strip() or "—"
+    verdict = card.get("verdict") or {}
+    market = str(verdict.get("market") or verdict.get("market_type") or "").strip() or "—"
     league = str(card.get("league") or card.get("div") or "").strip() or "—"
-
     choices = [
         (("market_league", market, league), "рынок+лига"),
         (("market", market), "рынок"),
@@ -134,43 +162,25 @@ def priority(profile, card):
         stats = _segment_stats(rows, before)
         if stats is not None:
             wf_ok, wf_reason = _walk_forward_gate(rows, before)
-            chosen = (stats, label, wf_ok, wf_reason)
+            chosen = (stats, label, rows, wf_ok, wf_reason)
             break
     if chosen is None:
         return 1.0, "Adaptive: N<20 — нейтрально"
-
-    stats, label, wf_ok, wf_reason = chosen
+    stats, label, rows, wf_ok, wf_reason = chosen
     if not wf_ok:
         return 1.0, f"Adaptive: {label} · {wf_reason} · нейтрально"
-    adj = stats["adj_roi"]
-    recent = stats["recent_roi"]
-    regime_rows = None
-    for key, label_candidate in choices:
-        if label_candidate == label:
-            regime_rows = profile.get(key, [])
-            break
-    regime, regime_delta, regime_reason = _regime(regime_rows or [], before)
-    factor = 1.0
-    if adj >= 0.05 and recent >= 0.0:
-        factor = 1.10
-    elif adj >= 0.025 and recent >= 0.0:
-        factor = 1.05
-    elif adj <= -0.05 and recent <= 0.0:
-        factor = 0.90
-    elif adj <= -0.025 and recent <= 0.0:
-        factor = 0.95
-
-    if regime == "COOLING" and factor > 1.0:
-        factor = 1.0
-    elif regime == "COOLING" and factor == 1.0:
-        factor = 0.95
-    elif regime == "RECOVERY" and factor < 1.0:
-        factor = 1.0
-    factor = max(PRIOR_MIN, min(PRIOR_MAX, factor))
+    regime, _, regime_reason = _regime(rows, before)
+    factor = _factor_from_stats(stats, wf_ok, regime)
+    if float(stats.get("effective_n") or 0.0) < MIN_EFFECTIVE_N:
+        return 1.0, (
+            f"Adaptive: {label} · effective N={stats.get('effective_n', 0):.1f} "
+            f"< {MIN_EFFECTIVE_N:.0f} · нейтрально"
+        )
     sign = "↑" if factor > 1 else "↓" if factor < 1 else "→"
     return factor, (
         f"Adaptive {sign} {factor:.2f} · {label} · N={stats['n']} · "
-        f"Adj ROI {adj:.1%} · recent {recent:.1%} · decay {DECAY_HALF_LIFE_DAYS:.0f}d · "
+        f"eff.N={stats['effective_n']:.1f} · Adj ROI {stats['adj_roi']:.1%} · "
+        f"recent {stats['recent_roi']:.1%} · decay {DECAY_HALF_LIFE_DAYS:.0f}d · "
         f"{regime_reason} · {wf_reason}"
     )
 
