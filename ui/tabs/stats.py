@@ -1869,7 +1869,7 @@ def _render_adaptive_monitor():
     if not db.SQLITE_BOOT_OK:
         return
     try:
-        from betting.adaptive import build_profiles, _segment_stats, _walk_forward_gate, _regime
+        from betting.adaptive import build_profiles, _segment_stats, _walk_forward_gate, _regime, _factor_from_stats
         snapshots = db.fetch_decision_snapshots(limit=100000)
         profile = build_profiles(snapshots)
     except Exception:
@@ -1885,13 +1885,9 @@ def _render_adaptive_monitor():
         regime, _, _ = _regime(values, before)
         if not stats:
             continue
-        factor = 1.0
-        if wf_ok:
-            if stats["adj_roi"] >= 0.05 and stats["recent_roi"] >= 0: factor = 1.10
-            elif stats["adj_roi"] >= 0.025 and stats["recent_roi"] >= 0: factor = 1.05
-            elif stats["adj_roi"] <= -0.05 and stats["recent_roi"] <= 0: factor = 0.90
-            elif stats["adj_roi"] <= -0.025 and stats["recent_roi"] <= 0: factor = 0.95
+        factor = _factor_from_stats(stats, wf_ok, regime)
         rows.append({"Рынок": key[1], "Лига": key[2], "N": stats["n"],
+                     "Eff.N": stats.get("effective_n", 0.0),
                      "Adj ROI": stats["adj_roi"], "Recent ROI": stats["recent_roi"],
                      "WF": "PASS" if wf_ok else "HOLD", "Regime": regime,
                      "Factor": factor, "WF detail": wf_reason})
@@ -1908,10 +1904,11 @@ def _render_adaptive_monitor():
     view = df.copy()
     view["Adj ROI"] = view["Adj ROI"].map(lambda x: f"{x:+.1%}")
     view["Recent ROI"] = view["Recent ROI"].map(lambda x: f"{x:+.1%}")
+    view["Eff.N"] = view["Eff.N"].map(lambda x: f"{x:.1f}")
     view["Factor"] = view["Factor"].map(lambda x: f"x{x:.2f}")
-    st.dataframe(view[["Рынок", "Лига", "N", "Adj ROI", "Recent ROI", "WF", "Regime", "Factor"]],
+    st.dataframe(view[["Рынок", "Лига", "N", "Eff.N", "Adj ROI", "Recent ROI", "WF", "Regime", "Factor"]],
                  use_container_width=True, hide_index=True)
-    st.caption("WF PASS разрешает только приоритизацию; BET/WATCH/SKIP остаются без изменений.")
+    st.caption("WF PASS + effective N≥8 разрешают только приоритизацию; BET/WATCH/SKIP остаются без изменений.")
 def _render_adaptive_attribution():
     """Разделяет исторический результат на MODEL / VALUE / ADAPTIVE / REGIME."""
     if not db.SQLITE_BOOT_OK:
