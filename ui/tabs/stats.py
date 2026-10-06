@@ -2118,8 +2118,7 @@ def _render_adaptive_auto_tuning():
     )
 
 
-def _render_adaptive_selection_test()
-    _render_adaptive_auto_tuning():
+def _render_adaptive_selection_test():
     """Сравнивает Adaptive vs Neutral top-N на одинаковых датах и только OOS-истории."""
     if not db.SQLITE_BOOT_OK:
         return
