@@ -2094,6 +2094,15 @@ def _render_adaptive_auto_tuning():
         f"Top-N positive: **{result.get('positive_topn', 0)}/3**"
     )
 
+    perm = result.get("permutation_by_topn", {})
+    p_cols = st.columns(3)
+    for col, top_n in zip(p_cols, (1, 3, 5)):
+        item = perm.get(top_n, {})
+        col.metric(
+            f"Top-{top_n} sign-flip p",
+            f"{item.get('p_value', 1.0):.3f}",
+        )
+
     ci = result.get("ci_by_topn", {})
     ci_cols = st.columns(3)
     for col, top_n in zip(ci_cols, (1, 3, 5)):
@@ -2104,7 +2113,7 @@ def _render_adaptive_auto_tuning():
         )
 
     if result.get("stability_gate"):
-        st.success("🟢 OOS STABILITY GATE: конфигурация стабильна сразу по Top-1/3/5 и нижняя граница bootstrap CI не ниже 0.")
+        st.success("🟢 OOS STABILITY GATE: Top-1/3/5 устойчивы, bootstrap CI не ниже 0 и Top-3 sign-flip p ≤ 0.10.")
     elif result["mean_oos_delta"] > 0:
         st.warning("🟡 OOS Selection Lift положительный, но Stability Gate не пройден.")
     else:
@@ -2132,7 +2141,7 @@ def _render_adaptive_auto_tuning():
 
     st.caption(
         "Research-only: конфигурация выбирается на внутренней train-validation выборке "
-        "по робастному среднему Top-1/3/5 selection lift, затем проверяется на следующем unseen OOS-блоке. Bootstrap CI считается по дневным paired lift. "
+        "по робастному среднему Top-1/3/5 selection lift, затем проверяется на следующем unseen OOS-блоке. Bootstrap CI и sign-flip test считаются по дневным paired lift; p-value — исследовательский, не доказательство причинности. "
         "Live Adaptive и BET/WATCH/SKIP не изменяются."
     )
 
