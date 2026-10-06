@@ -2051,6 +2051,131 @@ def _render_adaptive_attribution():
         sdf["Δ"] = sdf["Δ"].map(lambda x: f"{x:+.1%}")
         st.dataframe(sdf, use_container_width=True, hide_index=True)
 
+def _render_adaptive_selection_test():
+    """Сравнивает Adaptive vs Neutral top-N на одинаковых датах и только OOS-истории."""
+    if not db.SQLITE_BOOT_OK:
+        return
+    try:
+        from betting.adaptive import build_profiles, priority
+        snapshots = db.fetch_decision_snapshots(limit=100000)
+        profile = build_profiles(snapshots)
+    except Exception:
+        return
+
+    candidates = []
+    for r in snapshots:
+        status = str(r.get("result_status") or "").lower()
+        if status not in ("won", "lost"):
+            continue
+        try:
+            odd = float(r.get("market_odd") or 0.0)
+            model_prob = float(r.get("model_prob") or 0.0)
+            edge = float(r.get("edge") or 0.0)
+            ev = float(r.get("ev") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if odd <= 1.01:
+            continue
+        # Selection test applies to priced action candidates only.
+        if model_prob <= 0 or (edge <= 0 and ev <= 0):
+            continue
+
+        base = {
+            "date_iso": r.get("date_iso"),
+            "league": r.get("league"),
+            "div": r.get("league"),
+            "verdict": {"market": r.get("market")},
+        }
+        factor, _ = priority(profile, base)
+        neutral_score = (
+            0.40 * model_prob
+            + 0.25 * max(0.0, ev)
+            + 0.20 * max(0.0, edge)
+        )
+        adaptive_score = neutral_score * factor
+        pnl = odd - 1.0 if status == "won" else -1.0
+        candidates.append({
+            "date": str(r.get("date_iso") or "")[:10],
+            "market": str(r.get("market") or "—"),
+            "league": str(r.get("league") or "—"),
+            "pnl": pnl,
+            "neutral": neutral_score,
+            "adaptive": adaptive_score,
+            "factor": factor,
+        })
+
+    st.subheader("🧪 Adaptive Selection Test")
+    if not candidates:
+        st.info("Нужны закрытые priced action-сигналы для Selection Test.")
+        return
+
+    # Same-day cohorts are the clean comparison unit: Adaptive and Neutral
+    # select from exactly the same candidate pool.
+    top_n_values = [1, 3, 5, 10]
+    results = []
+    by_date = defaultdict(list)
+    for x in candidates:
+        by_date[x["date"]].append(x)
+
+    for top_n in top_n_values:
+        adaptive_items, neutral_items = [], []
+        overlap_items = []
+        days = 0
+        for day, items in sorted(by_date.items()):
+            if len(items) < top_n:
+                continue
+            days += 1
+            a = sorted(items, key=lambda x: (x["adaptive"], x["neutral"]), reverse=True)[:top_n]
+            n = sorted(items, key=lambda x: (x["neutral"], x["adaptive"]), reverse=True)[:top_n]
+            adaptive_items.extend(a)
+            neutral_items.extend(n)
+            overlap_items.extend([x for x in a if x in n])
+
+        def _roi(items):
+            return sum(x["pnl"] for x in items) / len(items) if items else 0.0
+
+        ar = _roi(adaptive_items)
+        nr = _roi(neutral_items)
+        results.append({
+            "Top N": top_n,
+            "Дней": days,
+            "Adaptive N": len(adaptive_items),
+            "Neutral N": len(neutral_items),
+            "Adaptive ROI": ar,
+            "Neutral ROI": nr,
+            "Lift": ar - nr,
+            "Overlap": len(overlap_items) / len(adaptive_items) if adaptive_items else 0.0,
+        })
+
+    df = pd.DataFrame(results)
+    view = df.copy()
+    for col in ("Adaptive ROI", "Neutral ROI", "Lift"):
+        view[col] = view[col].map(lambda x: f"{x:+.1%}")
+    view["Overlap"] = view["Overlap"].map(lambda x: f"{x:.1%}")
+    st.dataframe(view, use_container_width=True, hide_index=True)
+
+    # Daily paired lift avoids giving one high-volume day excessive weight.
+    paired = []
+    for day, items in sorted(by_date.items()):
+        if len(items) < 3:
+            continue
+        a = sorted(items, key=lambda x: (x["adaptive"], x["neutral"]), reverse=True)[:3]
+        n = sorted(items, key=lambda x: (x["neutral"], x["adaptive"]), reverse=True)[:3]
+        paired.append(sum(x["pnl"] for x in a) / 3.0 - sum(x["pnl"] for x in n) / 3.0)
+
+    if paired:
+        avg_lift = sum(paired) / len(paired)
+        st.metric("Paired daily lift · Top 3", f"{avg_lift:+.2%}", f"N={len(paired)} дней")
+        if len(paired) < 20:
+            st.warning("Для paired-теста пока меньше 20 дней — результат нестабилен.")
+        else:
+            st.caption(
+                "Каждый день имеет одинаковый вес. Lift показывает разницу среднего PnL "
+                "Top-3 Adaptive против Top-3 Neutral на одной и той же корзине кандидатов."
+            )
+    else:
+        st.info("Для paired Top-3 нужно минимум 3 action-сигнала хотя бы в одном дне.")
+
 def _render_decision_log(D):
     """Показывает сохранённый снимок решения для закрытых ставок."""
     bets = _closed_bets(D)
