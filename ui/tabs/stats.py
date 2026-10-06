@@ -2053,7 +2053,7 @@ def _render_adaptive_attribution():
         st.dataframe(sdf, use_container_width=True, hide_index=True)
 
 def _render_adaptive_auto_tuning():
-    """Research-only walk-forward tuning; parameters are not applied live."""
+    """Research-only rolling walk-forward tuning; parameters are not applied live."""
     if not db.SQLITE_BOOT_OK:
         return
     try:
@@ -2063,7 +2063,7 @@ def _render_adaptive_auto_tuning():
     except Exception:
         return
 
-    st.subheader("🧠 Adaptive Auto-Tuning · Walk-Forward")
+    st.subheader("🧠 Adaptive Auto-Tuning · Rolling Walk-Forward")
     if result.get("status") != "OK":
         st.info(f"Недостаточно OOS-данных для tuning: N={result.get('n', 0)}.")
         return
@@ -2074,19 +2074,37 @@ def _render_adaptive_auto_tuning():
     c3.metric("Regime window", f"{result['regime_recent']}")
 
     d1, d2, d3 = st.columns(3)
-    d1.metric("Train score", f"{result['train_score']:+.2%}")
-    d2.metric("OOS ROI", f"{result['oos_roi']:+.2%}")
-    d3.metric("OOS Δ vs Train", f"{result['oos_delta']:+.2%}")
+    d1.metric("Folds", f"{result['fold_n']}")
+    d2.metric("Mean OOS Δ", f"{result['mean_oos_delta']:+.2%}")
+    d3.metric("Config stability", f"{result['config_stability']:.0%}")
 
-    if result["oos_delta"] > 0:
-        st.success("Подобранная конфигурация сохранила положительный OOS delta.")
+    st.write(f"Положительных OOS-окон: **{result['positive_folds']}/{result['fold_n']}**")
+
+    if result["positive_folds"] >= max(2, (result["fold_n"] + 1) // 2) and result["mean_oos_delta"] > 0:
+        st.success("Конфигурация прошла rolling OOS-проверку.")
+    elif result["mean_oos_delta"] > 0:
+        st.warning("Средний OOS delta положительный, но устойчивость пока слабая.")
     else:
-        st.warning("Подобранная конфигурация не показала положительного OOS delta.")
+        st.warning("Rolling OOS не подтверждает преимущество tuning.")
+
+    rows = []
+    for i, fold in enumerate(result["folds"], 1):
+        rows.append({
+            "Fold": i,
+            "Train N": fold["train_n"],
+            "OOS N": fold["oos_n"],
+            "Decay": f"{fold['decay']:.0f}d",
+            "Shrink N": fold["shrink_n"],
+            "Regime": fold["regime_recent"],
+            "OOS Δ": f"{fold['oos_delta']:+.2%}",
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     st.caption(
-        "Research-only: параметры подбираются на train 70% и проверяются на следующих 30%. "
-        "В live Adaptive они автоматически НЕ применяются; BET/WATCH/SKIP не меняются."
+        "Research-only: каждый fold подбирает параметры только на своей train-истории "
+        "и проверяет их на следующем unseen-блоке. Live Adaptive и BET/WATCH/SKIP не изменяются."
     )
+
 
 def _render_adaptive_selection_test()
     _render_adaptive_auto_tuning():
