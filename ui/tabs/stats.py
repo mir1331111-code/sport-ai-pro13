@@ -2074,7 +2074,7 @@ def _render_adaptive_auto_tuning():
     c3.metric("Regime window", f"{result['regime_recent']}")
 
     n1, n2, n3 = st.columns(3)
-    n1.metric("Neighbor OOS Δ", f"{result.get('neighborhood_mean', 0.0):+.2%}")
+    n1.metric("Neighbor Selection Lift", f"{result.get('neighborhood_mean', 0.0):+.2%}")
     n2.metric("Neighbor positive", f"{result.get('neighborhood_positive', 0.0):.0%}")
     n3.metric("Neighbor N", f"{result.get('neighborhood_n', 0)}")
 
@@ -2088,14 +2088,14 @@ def _render_adaptive_auto_tuning():
     if result.get("stability_gate"):
         st.success("🟢 OOS STABILITY GATE: конфигурация достаточно стабильна для исследовательской рекомендации.")
     elif result["mean_oos_delta"] > 0:
-        st.warning("🟡 OOS Lift положительный, но Stability Gate не пройден.")
+        st.warning("🟡 OOS Selection Lift положительный, но Stability Gate не пройден.")
     else:
         st.error("🔴 OOS Stability Gate не пройден.")
 
     if result["positive_folds"] >= max(2, (result["fold_n"] + 1) // 2) and result["mean_oos_delta"] > 0:
         st.success("Конфигурация прошла rolling OOS-проверку.")
     elif result["mean_oos_delta"] > 0:
-        st.warning("Средний OOS delta положительный, но устойчивость пока слабая.")
+        st.warning("Средний OOS Selection Lift положительный, но устойчивость пока слабая.")
     else:
         st.warning("Rolling OOS не подтверждает преимущество tuning.")
 
