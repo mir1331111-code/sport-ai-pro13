@@ -2164,6 +2164,45 @@ def _render_adaptive_selection_test():
         n = sorted(items, key=lambda x: (x["neutral"], x["adaptive"]), reverse=True)[:3]
         paired.append(sum(x["pnl"] for x in a) / 3.0 - sum(x["pnl"] for x in n) / 3.0)
 
+    # Paired bootstrap: resample whole days, preserving the pairing between
+    # Adaptive and Neutral. This estimates uncertainty around the daily lift.
+    paired_rows = []
+    for day, items in sorted(by_date.items()):
+        if len(items) < 3:
+            continue
+        a = sorted(items, key=lambda x: (x["adaptive"], x["neutral"]), reverse=True)[:3]
+        n = sorted(items, key=lambda x: (x["neutral"], x["adaptive"]), reverse=True)[:3]
+        ar = sum(x["pnl"] for x in a) / 3.0
+        nr = sum(x["pnl"] for x in n) / 3.0
+        paired_rows.append(ar - nr)
+
+    if paired_rows:
+        rng_boot = np.random.default_rng(2026)
+        arr = np.asarray(paired_rows, dtype=float)
+        reps = 5000
+        boot = np.empty(reps, dtype=float)
+        for i in range(reps):
+            boot[i] = float(np.mean(rng_boot.choice(arr, size=len(arr), replace=True)))
+        lo, hi = np.percentile(boot, [2.5, 97.5])
+        p_positive = float(np.mean(boot > 0.0))
+        st.subheader("📐 Bootstrap Significance · Adaptive vs Neutral")
+        s1, s2, s3 = st.columns(3)
+        s1.metric("Mean daily Lift", f"{float(np.mean(arr)):+.2%}")
+        s2.metric("95% Bootstrap CI", f"[{lo:+.2%}; {hi:+.2%}]")
+        s3.metric("P(Lift > 0)", f"{p_positive:.1%}")
+        if len(arr) < 20:
+            st.warning("Меньше 20 paired-дней: bootstrap-оценка пока нестабильна.")
+        elif lo > 0:
+            st.success("Adaptive имеет устойчивый положительный Lift по paired-дням.")
+        elif hi < 0:
+            st.error("Adaptive имеет устойчивый отрицательный Lift по paired-дням.")
+        else:
+            st.info("Интервал пересекает 0 — преимущество Adaptive пока не доказано.")
+        st.caption(
+            "Bootstrap пересэмплирует целые дни, а не отдельные ставки. "
+            "Это сохраняет парность Adaptive/Neutral и не использует будущие результаты для ranking."
+        )
+
     # Random baseline: for each eligible day, average the PnL of a random
     # top-N-sized subset. This is a lightweight sanity check, not a formal p-value.
     rng = np.random.default_rng(42)
