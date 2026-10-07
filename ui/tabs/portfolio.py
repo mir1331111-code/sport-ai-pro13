@@ -109,6 +109,15 @@ def _persist(D):
                 continue
             bet_id = bet.get("id")
             if bet_id is None:
+                db.update_bet_by_identity(
+                    bet.get("match"),
+                    bet.get("market"),
+                    bet.get("pick"),
+                    bet.get("date_iso"),
+                    status=bet.get("status", "pending"),
+                    score=bet.get("score"),
+                    settled_at=bet.get("settled_at"),
+                )
                 continue
             db.update_bet(
                 int(bet_id),
