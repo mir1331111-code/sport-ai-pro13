@@ -2678,7 +2678,7 @@ def _render_decision_log(D):
             "Матч": b.get("match_ru") or b.get("match") or "—",
             "Рынок": snap.get("market") or b.get("market") or "—",
             "Решение": b.get("decision") or "BET",
-            "P": f"{float(snap.get('model_prob') or b.get('prob') or 0):.1%}",
+            "P": f"{_safe_float(snap.get('model_prob') or b.get('prob')):.1%}",
             "Fair": f"{float(snap.get('fair_odd') or 0):.2f}" if snap.get("fair_odd") else "—",
             "Кэф": f"{float(snap.get('market_odd') or b.get('odds') or 0):.2f}",
             "Edge": f"{float(snap.get('edge') or 0):+.1%}" if snap.get("edge") is not None else "—",
