@@ -44,6 +44,15 @@ def _bet_pick_label(b: dict) -> str:
     return mapping.get(pick, pick)
 
 
+def _safe_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _apply_settle(D, idx, outcome, score=None):
     D2 = dict(D)
     bets = list(D2["bets"])
@@ -57,7 +66,7 @@ def _apply_settle(D, idx, outcome, score=None):
     stats = dict(D2.get("stats", {}))
     if outcome == "push":
         b["status"] = "push"
-        D2["bank"] = D2["bank"] + b["stake"]
+        D2["bank"] = _safe_float(D2.get("bank"), 0.0) + _safe_float(b.get("stake"), 0.0)
         stats["push"] = stats.get("push", 0) + 1
     elif outcome == "void":
         b["status"] = "void"
@@ -65,13 +74,13 @@ def _apply_settle(D, idx, outcome, score=None):
         stats["void"] = stats.get("void", 0) + 1
     elif outcome == "won":
         b["status"] = "won"
-        D2["bank"] = D2["bank"] + b["stake"] * b["odds"]
+        D2["bank"] = _safe_float(D2.get("bank"), 0.0) + _safe_float(b.get("stake"), 0.0) * _safe_float(b.get("odds"), 0.0)
         stats["won"] = stats.get("won", 0) + 1
-        stats["profit"] = stats.get("profit", 0) + b["stake"] * (b["odds"] - 1)
+        stats["profit"] = stats.get("profit", 0) + _safe_float(b.get("stake")) * (_safe_float(b.get("odds")) - 1)
     elif outcome == "lost":
         b["status"] = "lost"
         stats["lost"] = stats.get("lost", 0) + 1
-        stats["profit"] = stats.get("profit", 0) - b["stake"]
+        stats["profit"] = stats.get("profit", 0) - _safe_float(b.get("stake"))
     bets[idx] = b
     D2["bets"] = bets
     D2["stats"] = stats
@@ -86,7 +95,7 @@ def _cancel_bet(D, idx):
     b = bets[idx]
     if b.get("status") != "pending":
         return D
-    D2["bank"] = D2["bank"] + float(b.get("stake") or 0)
+    D2["bank"] = _safe_float(D2.get("bank"), 0.0) + _safe_float(b.get("stake"), 0.0)
     bets.pop(idx)
     D2["bets"] = bets
     return D2
@@ -95,7 +104,19 @@ def _cancel_bet(D, idx):
 def _persist(D):
     usage.set_local_data(D)
     if db.SQLITE_BOOT_OK:
-        db.log_bank(D.get("bank", 10000.0), event="manual_settle")
+        for bet in D.get("bets", []):
+            if not isinstance(bet, dict):
+                continue
+            bet_id = bet.get("id")
+            if bet_id is None:
+                continue
+            db.update_bet(
+                int(bet_id),
+                status=bet.get("status", "pending"),
+                score=bet.get("score"),
+                settled_at=bet.get("settled_at"),
+            )
+        db.log_bank(_safe_float(D.get("bank"), 10000.0), event="manual_settle")
         db.invalidate_caches()
 
 
