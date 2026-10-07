@@ -38,8 +38,10 @@ def _closed_bets(D):
 
 
 def _bet_pnl(b):
-    stake = float(b.get("stake") or 0)
-    odds = float(b.get("odds") or 1)
+    stake = _safe_float(b.get("stake"), 0.0)
+    odds = _safe_float(b.get("odds"), 1.0)
+    if stake < 0 or odds <= 0:
+        return 0.0
     if b.get("status") == "won":
         return stake * (odds - 1)
     if b.get("status") == "lost":
