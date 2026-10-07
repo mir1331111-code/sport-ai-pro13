@@ -334,6 +334,27 @@ def _void_stale(D):
             except (KeyError, TypeError, ValueError):
                 pass
             bets[idx] = b2
+            if db.SQLITE_BOOT_OK:
+                try:
+                    if b2.get("id") is not None:
+                        db.update_bet(
+                            int(b2["id"]),
+                            status="void",
+                            score=b2.get("score"),
+                            settled_at=b2.get("settled_at"),
+                        )
+                    else:
+                        db.update_bet_by_identity(
+                            b2.get("match"),
+                            b2.get("market"),
+                            b2.get("pick"),
+                            b2.get("date_iso"),
+                            status="void",
+                            score=b2.get("score"),
+                            settled_at=b2.get("settled_at"),
+                        )
+                except Exception as e:
+                    log.warning("SQLite stale-void persist error: %s", e)
             n += 1
     D2["bets"] = bets
     D2["stats"] = _recompute_stats(bets, D2.get("stats"))
