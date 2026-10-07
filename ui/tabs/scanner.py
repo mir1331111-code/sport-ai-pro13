@@ -38,6 +38,7 @@ except Exception:
 
 LLM_TOP_N = 8
 GROK_ODDS_TOP_N = 8
+ODDS_SCAN_TOP_N = 30
 
 
 def _safe_filter(rows):
@@ -917,14 +918,27 @@ def render(min_prob, kelly_frac, matrix_n):
         market_candidates.sort(
             key=lambda c: -float(rank_score(c) or 0.0) * float(c.get("adaptive_factor") or 1.0)
         )
-        top_external_candidates = market_candidates[:GROK_ODDS_TOP_N]
+        # Не ограничиваем весь market-pool первыми 8 матчами.
+        # Сначала все fdorg-кандидаты, затем до ODDS_SCAN_TOP_N лучших
+        # кандидатов получают внешний lookup. Остальные остаются в общем
+        # scanner pool и не исчезают из событий.
+        top_external_candidates = market_candidates[:ODDS_SCAN_TOP_N]
         fdorg_candidates = [
             c for c in market_candidates
             if isinstance(c.get("fdorg_odds"), dict) and c.get("fdorg_odds")
         ]
-        market_candidates = top_external_candidates + [
-            c for c in fdorg_candidates if c not in top_external_candidates
-        ]
+        market_candidates = []
+        seen_market = set()
+        for candidate in fdorg_candidates + top_external_candidates:
+            key = (
+                str(candidate.get("fixture_id") or ""),
+                str(candidate.get("match") or ""),
+                str(candidate.get("date_iso") or ""),
+            )
+            if key in seen_market:
+                continue
+            seen_market.add(key)
+            market_candidates.append(candidate)
 
         for c in market_candidates:
             v = c.get("verdict") or {}
