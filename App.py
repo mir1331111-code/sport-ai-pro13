@@ -281,6 +281,27 @@ def _auto_settle(D, force: bool = False):
             bets[idx] = b2
             continue
         bets[idx] = b2
+        if db.SQLITE_BOOT_OK:
+            try:
+                if b2.get("id") is not None:
+                    db.update_bet(
+                        int(b2["id"]),
+                        status=b2.get("status"),
+                        score=b2.get("score"),
+                        settled_at=b2.get("settled_at"),
+                    )
+                else:
+                    db.update_bet_by_identity(
+                        b2.get("match"),
+                        b2.get("market"),
+                        b2.get("pick"),
+                        b2.get("date_iso"),
+                        status=b2.get("status"),
+                        score=b2.get("score"),
+                        settled_at=b2.get("settled_at"),
+                    )
+            except Exception as e:
+                log.warning("SQLite settle persist error: %s", e)
         closed += 1
 
     for idx, b in enumerate(bets):
