@@ -364,7 +364,7 @@ def render(min_prob, kelly_frac, matrix_n):
             st.markdown("#### 🟢 BEST BETS TODAY")
             st.caption("Только подтверждённые реальные цены · Edge ≥ 3% · EV ≥ 3% · Kelly > 0.")
             best_cols = st.columns(min(3, len(bet_cards)))
-            for bi, bc in enumerate(bet_cards[:6]):
+            for bi, bc in enumerate(bet_cards):
                 bv = bc.get("verdict") or {}
                 odd_b = float(bv.get("odd") or 0.0)
                 ev_b = float(bv.get("ev") or 0.0)
@@ -384,7 +384,7 @@ def render(min_prob, kelly_frac, matrix_n):
             st.markdown("#### 🟡 WATCHLIST · ЖДЁМ ЛУЧШУЮ ЦЕНУ")
             st.caption("Модель видит преимущество, но текущий кэф пока не проходит сильный value-фильтр.")
             watch_cols = st.columns(min(3, len(watch_cards)))
-            for wi, wc in enumerate(watch_cards[:6]):
+            for wi, wc in enumerate(watch_cards):
                 wv = wc.get("verdict") or {}
                 with watch_cols[wi % len(watch_cols)]:
                     st.markdown(f"**🟡 {wc.get('match_ru', wc.get('match', '—'))}**")
@@ -403,7 +403,7 @@ def render(min_prob, kelly_frac, matrix_n):
 
         if skip_cards:
             with st.expander(f"🔴 SKIP · {len(skip_cards)} цен не проходят"):
-                for sc in skip_cards[:10]:
+                for sc in skip_cards:
                     sv = sc.get("verdict") or {}
                     st.markdown(
                         f"**{sc.get('match_ru', sc.get('match', '—'))}** · "
@@ -430,7 +430,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "Если букмекер даст кэф не ниже указанного — можно проверить value."
             )
             wait_cols = st.columns(min(3, len(waiting)))
-            for wi, wc in enumerate(waiting[:6]):
+            for wi, wc in enumerate(waiting):
                 wv = wc.get("verdict") or {}
                 fair_w = float(wv.get("fair_odd") or 0.0)
                 entry_w = float(wc.get("min_entry_odd") or 0.0)
@@ -444,7 +444,7 @@ def render(min_prob, kelly_frac, matrix_n):
                         f"Fair **{fair_w:.2f}** → вход **{entry_w:.2f}+**"
                     )
             if len(waiting) > 6:
-                st.caption(f"Ещё {len(waiting) - 6} сигналов ниже.")
+                st.caption(f"Все {len(waiting)} сигнала показаны ниже в основном списке.")
 
         for idx, c in enumerate(cards_view):
             v = c.get("verdict") or {}
