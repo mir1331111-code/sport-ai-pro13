@@ -929,6 +929,15 @@ def render(min_prob, kelly_frac, matrix_n):
         # кандидатов получают внешний lookup. Остальные остаются в общем
         # scanner pool и не исчезают из событий.
         top_external_candidates = market_candidates[:ODDS_SCAN_TOP_N]
+        grok_candidates = market_candidates[:GROK_ODDS_TOP_N]
+        grok_keys = {
+            (
+                str(c.get("fixture_id") or ""),
+                str(c.get("match") or ""),
+                str(c.get("date_iso") or ""),
+            )
+            for c in grok_candidates
+        }
         fdorg_candidates = [
             c for c in market_candidates
             if isinstance(c.get("fdorg_odds"), dict) and c.get("fdorg_odds")
@@ -959,7 +968,12 @@ def render(min_prob, kelly_frac, matrix_n):
 
             # Если football-data.org не дал цену — ищем её внешним источником.
             # Сначала Grok Web Search, если он выбран как провайдер.
-            if not real_odds and grok_enabled:
+            candidate_key = (
+                str(c.get("fixture_id") or ""),
+                str(c.get("match") or ""),
+                str(c.get("date_iso") or ""),
+            )
+            if not real_odds and grok_enabled and candidate_key in grok_keys:
                 try:
                     grok_quote = grok_web_odds(
                         h_en, a_en, c.get("league") or "Football",
