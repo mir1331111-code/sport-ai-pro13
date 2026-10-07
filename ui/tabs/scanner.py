@@ -776,10 +776,14 @@ def render(min_prob, kelly_frac, matrix_n):
             logs.append("🌐 GROK WEB: OFF · дневной лимит LLM исчерпан")
         skipped_started = 0
         skipped_bad_time = 0
+        skipped_bad_date = 0
+        skipped_missing_teams = 0
+        skipped_model_error = 0
 
         for r in rows:
             d = parse_date(r.get("Date", ""))
             if not d:
+                skipped_bad_date += 1
                 continue
             if not (today <= d <= today + timedelta(days=days)):
                 continue
@@ -795,6 +799,7 @@ def render(min_prob, kelly_frac, matrix_n):
             h_en = (r.get("HomeTeam") or "").strip()
             a_en = (r.get("AwayTeam") or "").strip()
             if not h_en or not a_en:
+                skipped_missing_teams += 1
                 continue
             h_ru = translate_team(h_en)
             a_ru = translate_team(a_en)
@@ -810,6 +815,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     ),
                 )
             except Exception:
+                skipped_model_error += 1
                 continue
             fh = engine.form_str(h_en)
             fa = engine.form_str(a_en)
@@ -1079,16 +1085,16 @@ def render(min_prob, kelly_frac, matrix_n):
             )
         )
 
-        if skipped_started or skipped_bad_time:
+        if skipped_started or skipped_bad_time or skipped_bad_date or skipped_missing_teams or skipped_model_error:
             logs.append(
-                f"⏱️ Scanner: исключено начавшихся/завершённых {skipped_started}"
-                + (
-                    f" · без времени сегодня {skipped_bad_time}"
-                    if skipped_bad_time else ""
-                )
+                f"⏱️ Scanner пропуски: начавшиеся/завершённые {skipped_started}"
+                f" · без времени сегодня {skipped_bad_time}"
+                f" · битая дата {skipped_bad_date}"
+                f" · без команд {skipped_missing_teams}"
+                f" · ошибка модели {skipped_model_error}"
             )
         else:
-            logs.append("⏱️ Scanner: начавшихся/завершённых матчей не найдено")
+            logs.append("⏱️ Scanner: все события прошли базовые фильтры и модель")
 
         adaptive_up = sum(1 for c in cards if float(c.get("adaptive_factor") or 1.0) > 1.0)
         adaptive_down = sum(1 for c in cards if float(c.get("adaptive_factor") or 1.0) < 1.0)
