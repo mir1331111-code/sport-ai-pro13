@@ -47,6 +47,102 @@ def _bet_pnl(b):
     return 0.0
 
 
+def _render_signal_integrity(D):
+    """Lightweight data-quality gate for bets and decision snapshots."""
+    bets = [b for b in D.get("bets", []) if isinstance(b, dict)]
+    snapshots = []
+    if db.SQLITE_BOOT_OK:
+        try:
+            snapshots = db.fetch_decision_snapshots(limit=100000) or []
+        except Exception:
+            snapshots = []
+
+    issues = []
+    warnings = []
+    bet_ids = set()
+    duplicate_bets = 0
+    for b in bets:
+        key = str(b.get("id") or b.get("fixture_id") or "")
+        if key:
+            if key in bet_ids:
+                duplicate_bets += 1
+            bet_ids.add(key)
+        odds = _safe_float(b.get("odds"), 0.0)
+        prob = _safe_float(b.get("prob"), -1.0)
+        stake = _safe_float(b.get("stake"), -1.0)
+        if odds and odds <= 1.01:
+            issues.append("бет с коэффициентом ≤ 1.01")
+        if prob >= 0 and not 0.0 <= prob <= 1.0:
+            issues.append("бет с вероятностью вне [0, 1]")
+        if stake < 0:
+            issues.append("бет с отрицательной ставкой")
+
+    snapshot_keys = set()
+    duplicate_snapshots = 0
+    malformed_numeric = 0
+    impossible_bet = 0
+    missing_dates = 0
+    for s in snapshots:
+        if not isinstance(s, dict):
+            malformed_numeric += 1
+            continue
+        key = str(s.get("snapshot_key") or "")
+        if key:
+            if key in snapshot_keys:
+                duplicate_snapshots += 1
+            snapshot_keys.add(key)
+        if not s.get("date_iso"):
+            missing_dates += 1
+        numeric_fields = ("model_prob", "fair_odd", "market_odd", "edge", "ev", "kelly_pct")
+        for field in numeric_fields:
+            raw = s.get(field)
+            if raw in (None, ""):
+                continue
+            try:
+                float(raw)
+            except (TypeError, ValueError):
+                malformed_numeric += 1
+        decision = str(s.get("decision") or "").upper()
+        if decision == "BET":
+            odd = _safe_float(s.get("market_odd"), 0.0)
+            edge = _safe_float(s.get("edge"), 0.0)
+            ev = _safe_float(s.get("ev"), 0.0)
+            kelly = _safe_float(s.get("kelly_pct"), 0.0)
+            if odd <= 1.01 or kelly <= 0 or edge < 0.03 or ev < 0.03:
+                impossible_bet += 1
+
+    if duplicate_bets:
+        issues.append(f"дубликаты ставок: {duplicate_bets}")
+    if duplicate_snapshots:
+        issues.append(f"дубликаты decision snapshots: {duplicate_snapshots}")
+    if malformed_numeric:
+        issues.append(f"нечисловые значения snapshots: {malformed_numeric}")
+    if impossible_bet:
+        issues.append(f"BET не проходит текущий gate: {impossible_bet}")
+    if missing_dates:
+        warnings.append(f"без date_iso: {missing_dates}")
+
+    status = "OK" if not issues else "ATTENTION"
+    with st.expander("🧪 Signal Integrity · контроль качества данных", expanded=bool(issues)):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Bets", len(bets))
+        c2.metric("Snapshots", len(snapshots))
+        c3.metric("Status", status)
+        c4.metric("Warnings", len(warnings))
+        if issues:
+            for item in sorted(set(issues)):
+                st.error("• " + item)
+        else:
+            st.success("Данные проходят базовую проверку целостности.")
+        if warnings:
+            for item in sorted(set(warnings)):
+                st.warning("• " + item)
+        st.caption(
+            "Диагностика: не меняет ставки, решения или Adaptive. "
+            "Проверяет только целостность сохранённых данных."
+        )
+
+
 def _render_model(D):
     bets = _closed_bets(D)
     calibration = []
@@ -2385,6 +2481,7 @@ def _render_decision_log(D):
 
 def render():
     D = st.session_state.data
+    _render_signal_integrity(D)
     _render_decision_log(D)
     _render_adaptive_selection_test()
     _render_adaptive_auto_tuning()
