@@ -228,6 +228,33 @@ def update_bet(bet_id: int, **fields) -> None:
 
 
 @_cache(ttl=30, show_spinner=False)
+def update_bet_by_identity(match, market, pick, date_iso, **fields) -> None:
+    """Update the latest pending bet when legacy local records lack SQLite id."""
+    allowed = {"odds", "closing_odds", "stake", "prob", "status", "score",
+               "ev", "clv", "settled_at", "fixture_id", "market"}
+    safe = {k: v for k, v in fields.items() if k in allowed}
+    if not safe:
+        return
+    set_sql = ", ".join(f"{k}=?" for k in safe)
+    values = list(safe.values())
+    with _connect() as c:
+        row = c.execute(
+            """SELECT id FROM bets
+               WHERE match=? AND market=? AND pick=? AND date_iso=?
+                 AND status='pending'
+               ORDER BY id DESC LIMIT 1""",
+            (match, market, pick, date_iso),
+        ).fetchone()
+        if not row:
+            return
+        c.execute(
+            f"UPDATE bets SET {set_sql} WHERE id=?",
+            (*values, row["id"]),
+        )
+        c.commit()
+    _invalidate()
+
+
 def fetch_bets(status: Optional[str] = None, limit: int = 100000) -> list:
     q = "SELECT * FROM bets"
     params = []
