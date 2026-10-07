@@ -1213,7 +1213,7 @@ def render(min_prob, kelly_frac, matrix_n):
             if c.get("national"):
                 national_bet_count += 1
 
-            mode = "real" if c.get("odds_source") in ("market", "grok_web") else "paper"
+            mode = "real" if c.get("odds_source") in ("market", "grok_web", "fdorg", "manual") else "paper"
 
             new_bets.append({
                 "match": c["match"], "match_ru": c["match_ru"],
