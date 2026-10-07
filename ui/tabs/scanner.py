@@ -685,9 +685,9 @@ def render(min_prob, kelly_frac, matrix_n):
         # ============ ОБЪЕДИНЕНИЕ ============
         # Источники используют разные fixture_id, поэтому одного ID
         # недостаточно для дедупликации. Второй ключ — дата + команды.
-        seen_ids = set()
-        seen_matches = set()
-        rows_raw = []
+        rows_by_key = {}
+        key_order = []
+
         for r in tsdb_rows + fdorg_rows + espn_rows:
             fid = str(r.get("fixture_id", "")).strip()
             home_key = "".join(
@@ -700,17 +700,32 @@ def render(min_prob, kelly_frac, matrix_n):
             )
             date_key = str(r.get("Date", ""))[:10]
             match_key = (date_key, home_key, away_key)
+            key = ("id", fid) if fid else ("match",) + match_key
 
-            if fid and fid in seen_ids:
-                continue
-            if match_key != ("", "", "") and match_key in seen_matches:
+            if key not in rows_by_key:
+                rows_by_key[key] = dict(r)
+                key_order.append(key)
                 continue
 
-            if fid:
-                seen_ids.add(fid)
-            if match_key != ("", "", ""):
-                seen_matches.add(match_key)
-            rows_raw.append(r)
+            # Объединяем источники: более полная запись не должна
+            # затирать уже найденные odds/метаданные.
+            existing = rows_by_key[key]
+            for field, value in r.items():
+                if value in (None, "", [], {}):
+                    continue
+                if field == "odds":
+                    merged_odds = dict(existing.get("odds") or {})
+                    merged_odds.update({
+                        k: v for k, v in (value or {}).items()
+                        if v not in (None, "", 0)
+                    })
+                    if merged_odds:
+                        existing["odds"] = merged_odds
+                    continue
+                if not existing.get(field):
+                    existing[field] = value
+
+        rows_raw = [rows_by_key[k] for k in key_order]
         rows = _safe_filter(rows_raw)
 
         w_count = sum(1 for r in rows if r.get("women"))
