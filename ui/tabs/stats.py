@@ -20,6 +20,15 @@ def _sharpe(returns: list, periods_per_year: int = 252) -> float:
     return (mu / sigma) * (periods_per_year ** 0.5)
 
 
+def _safe_float(value, default=0.0):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _closed_bets(D):
     return [
         b for b in D.get("bets", [])
@@ -2357,14 +2366,14 @@ def _render_decision_log(D):
             "Матч": b.get("match_ru") or b.get("match") or "—",
             "Рынок": snap.get("market") or b.get("market") or "—",
             "Решение": b.get("decision") or "BET",
-            "P": f"{float(snap.get('model_prob') or b.get('prob') or 0):.1%}",
+            "P": f"{_safe_float(snap.get('model_prob') or b.get('prob')):.1%}",
             "Fair": f"{float(snap.get('fair_odd') or 0):.2f}" if snap.get("fair_odd") else "—",
-            "Кэф": f"{float(snap.get('market_odd') or b.get('odds') or 0):.2f}",
+            "Кэф": f"{_safe_float(snap.get('market_odd') or b.get('odds')):.2f}",
             "Edge": f"{float(snap.get('edge') or 0):+.1%}" if snap.get("edge") is not None else "—",
             "EV": f"{float(snap.get('ev') or b.get('ev') or 0):+.1%}" if (snap.get("ev") is not None or b.get("ev") is not None) else "—",
-            "Kelly": f"{float(snap.get('kelly_pct') or 0):.1%}",
+            "Kelly": f"{_safe_float(snap.get('kelly_pct')):.1%}",
             "Conf": f"{float(snap.get('confidence') or 0):.1%}" if snap.get("confidence") is not None else "—",
-            "Value": f"{float(snap.get('value_score') or 0):.2f}",
+            "Value": f"{_safe_float(snap.get('value_score')):.2f}",
             "Результат": b.get("status", "—").upper(),
         })
     st.subheader("🧾 Decision Log")
