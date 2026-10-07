@@ -672,35 +672,15 @@ def render(min_prob, kelly_frac, matrix_n):
         else:
             logs.append("📡 football-data.org: токен не задан")
 
-        # ============ 3. ESPN FALLBACK ============
-        # ESPN — настоящий fallback: не расширяем выдачу, если основной
-        # источник уже дал хотя бы один БУДУЩИЙ матч. Но если TSDB/fdorg
-        # вернули только прошедшие/битые по времени события, пробуем ESPN.
-        def _has_future_source_rows(source_rows):
-            for rr in source_rows:
-                dd = parse_date(rr.get("Date", ""))
-                if not dd or not (today <= dd <= today + timedelta(days=days)):
-                    continue
-                ss = _match_start_dt(rr)
-                if ss is None:
-                    # Для будущих дат отсутствие времени не блокирует источник.
-                    if dd.date() > now.date():
-                        return True
-                    continue
-                if ss > now:
-                    return True
-            return False
-
+        # ============ 3. ESPN SUPPLEMENT ============
+        # ESPN не является жёстким fallback: он дополняет TSDB/fdorg,
+        # чтобы матчи из лиг, которых нет в основном источнике, не терялись.
         espn_rows = []
-        primary_rows = tsdb_rows + fdorg_rows
-        if not primary_rows or not _has_future_source_rows(primary_rows):
-            update_loader("📡 ESPN: резервный источник...", 0.15, logs)
-            try:
-                espn_rows = espn_matches(days, logs)
-            except Exception as e:
-                logs.append(f"⚠️ ESPN ошибка: {e}")
-        else:
-            logs.append("📡 ESPN: не нужен — есть будущие матчи в основном источнике")
+        update_loader("📡 ESPN: дополнение покрытия...", 0.15, logs)
+        try:
+            espn_rows = espn_matches(days, logs)
+        except Exception as e:
+            logs.append(f"⚠️ ESPN ошибка: {e}")
 
         # ============ ОБЪЕДИНЕНИЕ ============
         # Источники используют разные fixture_id, поэтому одного ID
