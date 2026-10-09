@@ -851,6 +851,42 @@ def _render_rolling_performance():
         "Это монитор текущей формы, а не замена полной истории."
     )
 
+    model_only.sort(key=dt)
+    st.markdown("**Точность прогнозов без коэффициента — MODEL ONLY**")
+    st.caption(
+        "Отдельная оценка прогнозов без букмекерской цены. Это не ROI и не реальные ставки."
+    )
+    model_rows = []
+    for window in (20, 50, 100):
+        sample = model_only[-window:]
+        if not sample:
+            continue
+        wins = sum(1 for r in sample if str(r.get("result_status") or "").lower() == "won")
+        settled_n = len(sample)
+        probs = []
+        for r in sample:
+            try:
+                p = float(r.get("model_prob"))
+                if 0.0 <= p <= 1.0:
+                    probs.append((p, 1.0 if str(r.get("result_status") or "").lower() == "won" else 0.0))
+            except (TypeError, ValueError):
+                continue
+        brier = (
+            sum((p - outcome) ** 2 for p, outcome in probs) / len(probs)
+            if probs and len(probs) == settled_n else None
+        )
+        model_rows.append({
+            "Окно": f"Последние {window}",
+            "Завершено": settled_n,
+            "Победы": wins,
+            "Точность": f"{wins / settled_n:.1%}" if settled_n else "—",
+            "Brier": f"{brier:.3f}" if brier is not None else "—",
+        })
+    if model_rows:
+        st.dataframe(model_rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("После автоматического определения результатов здесь появится rolling-точность MODEL ONLY.")
+
     rows = []
     for window in (20, 50, 100):
         sample = completed[-window:]
