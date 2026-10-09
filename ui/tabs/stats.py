@@ -1698,6 +1698,37 @@ def _render_watch_lab(D):
     rows = db.fetch_decision_snapshots(limit=100000)
     watch = [r for r in rows if str(r.get("decision", "")).upper() == "WATCH"]
     model_only = [r for r in rows if str(r.get("decision", "")).upper() == "MODEL_ONLY"]
+    bets = [b for b in (D.get("bets") or []) if isinstance(b, dict)]
+    settled_bets = [b for b in bets if str(b.get("status") or "").lower() in ("won", "lost", "push")]
+    won_bets = sum(1 for b in settled_bets if str(b.get("status") or "").lower() == "won")
+    lost_bets = sum(1 for b in settled_bets if str(b.get("status") or "").lower() == "lost")
+    push_bets = sum(1 for b in settled_bets if str(b.get("status") or "").lower() == "push")
+    pending_bets = sum(1 for b in bets if str(b.get("status") or "").lower() not in ("won", "lost", "push"))
+
+    st.subheader("📊 Результаты: прогнозы отдельно от портфеля")
+    st.markdown("**🎯 Все сохранённые прогнозы**")
+    all_settled = [r for r in rows if str(r.get("result_status") or "").lower() in ("won", "lost", "push")]
+    all_won = sum(1 for r in all_settled if str(r.get("result_status") or "").lower() == "won")
+    all_lost = sum(1 for r in all_settled if str(r.get("result_status") or "").lower() == "lost")
+    all_push = sum(1 for r in all_settled if str(r.get("result_status") or "").lower() == "push")
+    all_pending = len(rows) - len(all_settled)
+    a1, a2, a3, a4, a5 = st.columns(5)
+    a1.metric("Выиграли", all_won)
+    a2.metric("Проиграли", all_lost)
+    a3.metric("Возврат", all_push)
+    a4.metric("Ожидают", all_pending)
+    a5.metric("Win Rate", f"{all_won / (all_won + all_lost) * 100:.1f}%" if all_won + all_lost else "—")
+    st.caption("Считаются сохранённые decision snapshots; ожидания и возвраты не входят в Win Rate. Это не равно числу уникальных матчей: один матч мог получить несколько сигналов.")
+
+    st.markdown("**💼 Реальный портфель**")
+    b1, b2, b3, b4, b5 = st.columns(5)
+    b1.metric("Выиграли", won_bets)
+    b2.metric("Проиграли", lost_bets)
+    b3.metric("Возврат", push_bets)
+    b4.metric("Ожидают", pending_bets)
+    b5.metric("Закрыто ставок", len(settled_bets))
+    st.caption("Здесь только ставки из портфеля. Прогнозы WATCH / MODEL ONLY не добавляются в банк и не считаются реальными ставками.")
+
     if not watch and not model_only:
         st.info(
             "Пока нет сохранённых WATCH / MODEL ONLY снимков. Запусти несколько сканов."
@@ -1947,6 +1978,7 @@ def _render_watch_lab(D):
     c3.metric("Средний Edge", f"{sum(edges)/len(edges)*100:+.1f}%" if edges else "—")
     c4.metric("Средний EV", f"{sum(evs)/len(evs)*100:+.1f}%" if evs else "—")
 
+    st.markdown("**🟡 Виртуальная проверка WATCH**")
     if settled_watch:
         v_pnl = sum(float(x.get("virtual_pnl") or 0) for x in settled_watch)
         v_turnover = sum(1.0 for _ in settled_watch)
