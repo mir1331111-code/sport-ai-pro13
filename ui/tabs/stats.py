@@ -1585,6 +1585,13 @@ def _render_watch_lab(D):
         )
         return
 
+    def num(v):
+        try:
+            x = float(v)
+            return x if x == x else None
+        except (TypeError, ValueError):
+            return None
+
     # Сводка охвата: все сохранённые прогнозы отдельно от сигналов с ценой.
     priced = [
         r for r in rows
@@ -1613,13 +1620,6 @@ def _render_watch_lab(D):
     evaluated = []
     model_evaluated = []
     pending_eval = 0
-
-    def num(v):
-        try:
-            x = float(v)
-            return x if x == x else None
-        except (TypeError, ValueError):
-            return None
 
     def evaluate_snapshot(r, need_odd=False):
         if r.get("result_status") in ("won", "lost", "push"):
