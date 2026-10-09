@@ -1288,27 +1288,37 @@ def render(min_prob, kelly_frac, matrix_n):
             decision = str(
                 dc.get("decision") or dv.get("decision") or ""
             ).upper().strip()
-            if decision not in ("BET", "WATCH", "SKIP"):
-                continue
-            # Если реального кэфа нет, сохраняем отдельный model-only сигнал.
-            # Он используется только для оценки прогноза и не считается ставкой.
-            model_only = (
-                decision == "SKIP"
-                and not (dv.get("real_odds", False))
-                and bool(dv.get("is_action"))
+            has_real_odds = bool(dv.get("real_odds", False)) and float(
+                dv.get("odd") or 0.0
+            ) > 1.01
+
+            # Сохраняем каждый прогноз, а не только action-сигналы.
+            # Для матча без кэфа это виртуальный MODEL_ONLY результат:
+            # он не создаёт ставку и не влияет на реальный банк.
+            probs = {
+                "П1": float(dc.get("p1") or 0.0),
+                "X": float(dc.get("px") or 0.0),
+                "П2": float(dc.get("p2") or 0.0),
+            }
+            fallback_pick = max(probs, key=probs.get)
+            market = str(
+                dv.get("market") or dv.get("market_type") or "1X2"
             )
-            snapshot_decision = "MODEL_ONLY" if model_only else decision
+            pick = str(dv.get("pick") or fallback_pick)
+            if not has_real_odds:
+                snapshot_decision = "MODEL_ONLY"
+            elif decision in ("BET", "WATCH", "SKIP"):
+                snapshot_decision = decision
+            else:
+                snapshot_decision = "MODEL_ONLY"
+
             fixture_id = str(dc.get("fixture_id") or "")
             match = str(dc.get("match") or "")
-            market = str(dv.get("market") or dv.get("market_type") or "")
-            pick = str(dv.get("pick") or "")
-            market_odd = dv.get("odd")
-            # Один и тот же скан + неизменившаяся цена не должен раздувать N.
+            market_odd = dv.get("odd") if has_real_odds else None
             snapshot_key = "|".join([
                 fixture_id or match,
                 market,
                 pick,
-                str(market_odd or ""),
                 snapshot_decision,
                 str(dc.get("date_iso") or dc.get("date") or ""),
             ])
@@ -1322,19 +1332,19 @@ def render(min_prob, kelly_frac, matrix_n):
                 "pick": pick,
                 "decision": snapshot_decision,
                 "decision_reason": (
-                    "MODEL ONLY — реального кэфа не было; оцениваем только точность прогноза."
-                    if model_only else
+                    "MODEL ONLY — прогноз сохранён без букмекерского коэффициента."
+                    if snapshot_decision == "MODEL_ONLY" else
                     dc.get("decision_reason") or dv.get("decision_reason")
                 ),
-                "model_prob": dv.get("prob"),
+                "model_prob": dv.get("prob") or probs.get(pick),
                 "fair_odd": dv.get("fair_odd"),
                 "market_odd": market_odd,
-                "edge": dv.get("edge"),
-                "ev": dv.get("ev"),
-                "kelly_pct": dv.get("kelly_pct"),
+                "edge": dv.get("edge") if has_real_odds else None,
+                "ev": dv.get("ev") if has_real_odds else None,
+                "kelly_pct": dv.get("kelly_pct") if has_real_odds else None,
                 "confidence": dv.get("confidence"),
                 "value_score": value_score(dc),
-                "odds_source": dc.get("odds_source"),
+                "odds_source": dc.get("odds_source") if has_real_odds else "model_only",
                 "date_iso": dc.get("date_iso") or dc.get("date"),
             })
 
