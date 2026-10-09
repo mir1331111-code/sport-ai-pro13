@@ -1737,6 +1737,22 @@ def _render_watch_lab(D):
     evaluated = []
     model_evaluated = []
     pending_eval = 0
+    unresolved_diagnostics = []
+
+    def mark_unresolved(r, reason):
+        date_text = str(r.get("date_iso") or "")[:10]
+        try:
+            age_hours = (now - datetime.strptime(date_text, "%Y-%m-%d")).total_seconds() / 3600
+        except Exception:
+            age_hours = None
+        unresolved_diagnostics.append({
+            "Дата": date_text or "—",
+            "Матч": r.get("match_ru") or r.get("match") or "—",
+            "Pick": r.get("pick") or "—",
+            "ID": r.get("fixture_id") or "—",
+            "Возраст": f"{age_hours:.0f} ч" if age_hours is not None else "—",
+            "Причина": reason,
+        })
 
     def evaluate_snapshot(r, need_odd=False):
         if r.get("result_status") in ("won", "lost", "push"):
@@ -1745,24 +1761,32 @@ def _render_watch_lab(D):
         try:
             match_date = datetime.strptime(date_iso, "%Y-%m-%d")
         except Exception:
-            return None, False
+            mark_unresolved(r, "Нет корректной даты матча")
+            return None, True
         if match_date > now - timedelta(hours=2):
+            mark_unresolved(r, "Матч мог ещё не завершиться (менее 2 ч от даты)")
             return None, True
 
-        fid = str(r.get("fixture_id") or "")
+        fid = str(r.get("fixture_id") or "").strip()
+        if not fid:
+            mark_unresolved(r, "Нет fixture_id — автоматическая проверка невозможна")
+            return None, True
+
         result = None
         if fid.startswith("espn:"):
             result = espn_match_result(fid, date_iso)
-        elif fd_token and fid:
+        elif fd_token:
             result = fdorg_match_result(fid, fd_token)
-        if result is None and fid:
+        if result is None:
             result = tsdb_match_result(fid)
         if not result:
+            mark_unresolved(r, "Источники результатов не вернули финальный счёт")
             return None, True
 
         home_score, away_score = result.get("home"), result.get("away")
         outcome = _watch_pick_result(r.get("pick"), home_score, away_score)
         if not outcome:
+            mark_unresolved(r, "Счёт найден, но исход не распознан для этого pick")
             return None, True
 
         update = {
@@ -1776,6 +1800,7 @@ def _render_watch_lab(D):
             except (TypeError, ValueError):
                 num_odd = 0.0
             if num_odd <= 1.01:
+                mark_unresolved(r, "Результат найден, но нет корректного коэффициента")
                 return None, True
             update["virtual_pnl"] = (
                 num_odd - 1.0 if outcome == "won"
@@ -1818,6 +1843,30 @@ def _render_watch_lab(D):
         r for r in model_evaluated
         if r.get("result_status") in ("won", "lost")
     ]
+
+    if unresolved_diagnostics:
+        st.subheader("🕵️ Диагностика незакрытых прогнозов")
+        reason_counts = defaultdict(int)
+        for item in unresolved_diagnostics:
+            reason_counts[item["Причина"]] += 1
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        dc1.metric("Ожидают проверки", len(unresolved_diagnostics))
+        dc2.metric("Без fixture_id", reason_counts.get("Нет fixture_id — автоматическая проверка невозможна", 0))
+        dc3.metric("Без корректной даты", reason_counts.get("Нет корректной даты матча", 0))
+        dc4.metric("Счёт не найден", reason_counts.get("Источники результатов не вернули финальный счёт", 0))
+        st.caption(
+            "Причина описывает текущий результат автоматической проверки, а не доказывает, "
+            "что матч точно не завершён. Записи без результата повторно проверяются при следующем открытии вкладки."
+        )
+        diag_df = pd.DataFrame(unresolved_diagnostics)
+        if not diag_df.empty:
+            diag_df["_age_sort"] = diag_df["Возраст"].map(
+                lambda value: int(value.split()[0]) if value[:-2].isdigit() else -1
+            )
+            diag_df = diag_df.sort_values("_age_sort", ascending=False).drop(columns=["_age_sort"])
+            st.dataframe(diag_df.head(50), use_container_width=True, hide_index=True)
+            if len(diag_df) > 50:
+                st.caption(f"Показаны 50 из {len(diag_df)} незакрытых записей.")
 
     st.subheader("🧠 MODEL ONLY")
     st.caption(
