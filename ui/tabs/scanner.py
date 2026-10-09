@@ -1301,10 +1301,22 @@ def render(min_prob, kelly_frac, matrix_n):
                 "П2": float(dc.get("p2") or 0.0),
             }
             fallback_pick = max(probs, key=probs.get)
-            market = str(
-                dv.get("market") or dv.get("market_type") or "1X2"
-            )
-            pick = str(dv.get("pick") or fallback_pick)
+            verdict_pick = str(dv.get("pick") or "").strip()
+            if has_real_odds and verdict_pick:
+                market = str(
+                    dv.get("market") or dv.get("market_type") or "1X2"
+                )
+                pick = verdict_pick
+                model_prob = dv.get("prob")
+                if model_prob is None:
+                    model_prob = probs.get(pick)
+            else:
+                # MODEL_ONLY всегда оценивается по одному и тому же рынку 1X2.
+                # Не переносим market/probability от случайного verdict другого рынка.
+                market = "1X2"
+                pick = fallback_pick
+                model_prob = probs.get(fallback_pick)
+
             if not has_real_odds:
                 snapshot_decision = "MODEL_ONLY"
             elif decision in ("BET", "WATCH", "SKIP"):
@@ -1314,7 +1326,7 @@ def render(min_prob, kelly_frac, matrix_n):
 
             fixture_id = str(dc.get("fixture_id") or "")
             match = str(dc.get("match") or "")
-            market_odd = dv.get("odd") if has_real_odds else None
+            market_odd = dv.get("odd") if has_real_odds and verdict_pick else None
             snapshot_key = "|".join([
                 fixture_id or match,
                 market,
@@ -1336,7 +1348,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     if snapshot_decision == "MODEL_ONLY" else
                     dc.get("decision_reason") or dv.get("decision_reason")
                 ),
-                "model_prob": dv.get("prob") or probs.get(pick),
+                "model_prob": model_prob,
                 "fair_odd": dv.get("fair_odd"),
                 "market_odd": market_odd,
                 "edge": dv.get("edge") if has_real_odds else None,
