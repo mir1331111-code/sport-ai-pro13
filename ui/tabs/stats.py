@@ -1341,13 +1341,15 @@ def _render_kelly_sensitivity():
 
 
 def _render_snapshot_calibration(D):
-    """Калибровка модели по завершившимся decision snapshots."""
+    """Проверка калибровки MODEL ONLY с хронологической holdout-оценкой."""
     if not db.SQLITE_BOOT_OK:
         return
 
-    rows = db.fetch_decision_snapshots(limit=100000)
+    snapshots = db.fetch_decision_snapshots(limit=100000)
     samples = []
-    for r in rows:
+    for r in snapshots:
+        if str(r.get("decision") or "").upper() != "MODEL_ONLY":
+            continue
         outcome = str(r.get("result_status") or "").lower()
         if outcome not in ("won", "lost"):
             continue
@@ -1357,74 +1359,111 @@ def _render_snapshot_calibration(D):
             continue
         if not 0.0 <= p <= 1.0:
             continue
-        samples.append((p, 1.0 if outcome == "won" else 0.0))
+        date = str(r.get("date_iso") or r.get("created_at") or "")
+        samples.append({
+            "p": p,
+            "y": 1.0 if outcome == "won" else 0.0,
+            "date": date,
+            "pick": str(r.get("pick") or ""),
+        })
 
-    if len(samples) < 5:
+    if len(samples) < 30:
+        st.subheader("🧪 Калибровка MODEL ONLY")
+        st.caption(
+            f"Пока {len(samples)} завершённых прогнозов без коэффициента. "
+            "Для осторожной оценки нужно минимум 30; для надёжных выводов желательно 100+."
+        )
         return
 
     import pandas as pd
 
-    bins = [(i / 10, (i + 1) / 10) for i in range(10)]
-    rows_out = []
-    for lo, hi in bins:
-        bucket = [
-            (p, y) for p, y in samples
-            if (lo <= p < hi) or (hi >= 1.0 and lo <= p <= 1.0)
-        ]
-        if not bucket:
-            continue
-        n = len(bucket)
-        avg_p = sum(p for p, _ in bucket) / n
-        actual = sum(y for _, y in bucket) / n
-        rows_out.append({
-            "P модели": f"{lo*100:.0f}–{hi*100:.0f}%",
-            "N": n,
-            "Model P": avg_p,
-            "Факт": actual,
-            "Ошибка": actual - avg_p,
+    samples.sort(key=lambda x: x["date"])
+    split = max(20, int(len(samples) * 0.7))
+    split = min(split, len(samples) - 10)
+    train = samples[:split]
+    test = samples[split:]
+
+    def brier(items, calibrated=False, mapping=None):
+        terms = []
+        for item in items:
+            p = item["p"]
+            if calibrated and mapping:
+                bucket = min(9, int(p * 10))
+                p = mapping.get(bucket, p)
+            terms.append((p - item["y"]) ** 2)
+        return sum(terms) / len(terms) if terms else None
+
+    # Калибратор обучается только на старшей по времени части. Малые бины
+    # сглаживаются к исходной вероятности, чтобы не переобучаться на шум.
+    grouped = {}
+    for item in train:
+        bucket = min(9, int(item["p"] * 10))
+        grouped.setdefault(bucket, []).append(item)
+    mapping = {}
+    bin_rows = []
+    for bucket, items in grouped.items():
+        n = len(items)
+        mean_p = sum(x["p"] for x in items) / n
+        observed = sum(x["y"] for x in items) / n
+        prior_n = 20.0
+        calibrated_p = (observed * n + mean_p * prior_n) / (n + prior_n)
+        mapping[bucket] = calibrated_p
+        bin_rows.append({
+            "Диапазон P": f"{bucket*10}–{(bucket+1)*10}%",
+            "N train": n,
+            "Средняя P": mean_p,
+            "Факт train": observed,
+            "P после сглаживания": calibrated_p,
         })
 
-    brier = sum((p - y) ** 2 for p, y in samples) / len(samples)
-    mae = sum(abs(p - y) for p, y in samples) / len(samples)
-
-    st.subheader("🧪 Signal Calibration")
+    raw_brier = brier(test)
+    calibrated_brier = brier(test, calibrated=True, mapping=mapping)
+    st.subheader("🧪 Калибровка MODEL ONLY · проверка на отложенной истории")
     st.caption(
-        "Калибровка по завершившимся сохранённым сигналам, включая WATCH. "
-        "Это исследовательская выборка и не влияет на банк или правила BET."
+        "Хронологический split 70/30: калибратор строится только на ранних прогнозах, "
+        "а сравнение делается на более поздних. Коррекция пока диагностическая и "
+        "не меняет карточки, решения BET или банк."
     )
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Signals", len(samples))
-    c2.metric("Brier", f"{brier:.3f}")
-    c3.metric("Средняя абсолютная ошибка", f"{mae*100:.1f} п.п.")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Всего завершено", len(samples))
+    c2.metric("Train", len(train))
+    c3.metric("Holdout", len(test))
+    c4.metric("Brier holdout", f"{raw_brier:.3f}" if raw_brier is not None else "—",
+              delta=(f"{calibrated_brier - raw_brier:+.3f} после калибровки"
+                     if calibrated_brier is not None and raw_brier is not None else None),
+              delta_color="inverse")
 
-    df = pd.DataFrame(rows_out)
-    if not df.empty:
-        chart = df.set_index("P модели")[["Model P", "Факт"]] * 100
-        st.line_chart(chart, height=260)
+    if raw_brier is not None and calibrated_brier is not None:
+        if calibrated_brier < raw_brier:
+            st.success(
+                f"На holdout Brier улучшился на {(raw_brier-calibrated_brier):.3f}. "
+                "Это предварительный результат, не гарантия будущей точности."
+            )
+        elif calibrated_brier > raw_brier:
+            st.warning(
+                f"На holdout Brier ухудшился на {(calibrated_brier-raw_brier):.3f}. "
+                "Не включай коррекцию в прогнозы автоматически."
+            )
+        else:
+            st.info("На этой holdout-выборке калибровка не изменила Brier Score.")
+
+    if bin_rows:
+        df = pd.DataFrame(bin_rows).sort_values("Диапазон P")
         st.dataframe(
             df.assign(
                 **{
-                    "Model P": df["Model P"].map(lambda x: f"{x*100:.1f}%"),
-                    "Факт": df["Факт"].map(lambda x: f"{x*100:.1f}%"),
-                    "Ошибка": df["Ошибка"].map(lambda x: f"{x*100:+.1f} п.п."),
+                    "Средняя P": df["Средняя P"].map(lambda x: f"{x:.1%}"),
+                    "Факт train": df["Факт train"].map(lambda x: f"{x:.1%}"),
+                    "P после сглаживания": df["P после сглаживания"].map(lambda x: f"{x:.1%}"),
                 }
             ),
             use_container_width=True,
             hide_index=True,
         )
-
-        reliable = [r for r in rows_out if r["N"] >= 10]
-        if reliable:
-            worst = max(reliable, key=lambda r: abs(r["Ошибка"]))
-            direction = "недооценивает" if worst["Ошибка"] > 0 else "переоценивает"
-            st.warning(
-                f"Наиболее заметное отклонение при N≥10: {worst['P модели']} — "
-                f"модель {direction} фактический результат на "
-                f"{abs(worst['Ошибка'])*100:.1f} п.п."
-            )
     st.caption(
-        "Важно: snapshots разных решений могут быть зависимыми между сканами; "
-        "это мониторинг калибровки, а не независимый backtest."
+        "Ограничение: MODEL ONLY сейчас в основном оценивается по исходу 1X2, "
+        "а повторные сканы одного матча могут быть зависимыми наблюдениями. "
+        "Перед автоматическим применением нужно проверить достаточность выборки и стабильность по лигам."
     )
 
 
