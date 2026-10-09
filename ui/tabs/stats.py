@@ -589,6 +589,8 @@ def _render_walk_forward_thresholds():
 
 def _render_system_scorecard(D):
     """Единый health-check системы: модель, value, форма и риск."""
+    import pandas as pd
+
     if not db.SQLITE_BOOT_OK:
         return
 
