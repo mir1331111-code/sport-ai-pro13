@@ -1585,8 +1585,26 @@ def _render_watch_lab(D):
         )
         return
 
-    # Обновляем только завершившиеся WATCH. Результат кешируется в snapshot,
-    # поэтому повторные открытия вкладки не создают новую историю.
+    # Сводка охвата: все сохранённые прогнозы отдельно от сигналов с ценой.
+    priced = [
+        r for r in rows
+        if str(r.get("decision", "")).upper() in ("BET", "WATCH", "SKIP")
+        and num(r.get("market_odd")) is not None
+        and num(r.get("market_odd")) > 1.01
+    ]
+    actual_bets = [r for r in rows if str(r.get("decision", "")).upper() == "BET"]
+    st.subheader("📚 Охват прогнозов")
+    cov1, cov2, cov3, cov4 = st.columns(4)
+    cov1.metric("Все сохранённые", len(rows))
+    cov2.metric("Без коэффициента", len(model_only))
+    cov3.metric("С коэффициентом", len(priced))
+    cov4.metric("Сигналы BET", len(actual_bets))
+    st.caption(
+        "Каждый сохранённый MODEL ONLY прогноз учитывается в точности модели; "
+        "ценовые сигналы и реальные ставки не смешиваются с этой статистикой."
+    )
+
+    # Обновляем только незавершённые записи; завершённая история не расходует лимит.
     import pandas as pd
     from datetime import datetime, timedelta
 
@@ -1595,6 +1613,13 @@ def _render_watch_lab(D):
     evaluated = []
     model_evaluated = []
     pending_eval = 0
+
+    def num(v):
+        try:
+            x = float(v)
+            return x if x == x else None
+        except (TypeError, ValueError):
+            return None
 
     def evaluate_snapshot(r, need_odd=False):
         if r.get("result_status") in ("won", "lost", "push"):
@@ -1645,14 +1670,27 @@ def _render_watch_lab(D):
         rr.update(update)
         return rr, False
 
-    for r in watch[:1000]:
+    def pending_first(items):
+        settled = [
+            r for r in items
+            if str(r.get("result_status") or "").lower() in ("won", "lost", "push")
+        ]
+        unresolved = [
+            r for r in items
+            if str(r.get("result_status") or "").lower() not in ("won", "lost", "push")
+        ]
+        # Обрабатываем все завершённые строки для полной статистики и до 1000
+        # незавершённых за один просмотр, чтобы не блокировать свежие записи.
+        return settled + unresolved[:1000]
+
+    for r in pending_first(watch):
         rr, pending = evaluate_snapshot(r, need_odd=True)
         if rr:
             evaluated.append(rr)
         elif pending:
             pending_eval += 1
 
-    for r in model_only[:1000]:
+    for r in pending_first(model_only):
         rr, pending = evaluate_snapshot(r, need_odd=False)
         if rr:
             model_evaluated.append(rr)
@@ -1716,13 +1754,6 @@ def _render_watch_lab(D):
     ]
 
     # Сначала показываем распределение причин и качества цены.
-
-    def num(v):
-        try:
-            x = float(v)
-            return x if x == x else None
-        except (TypeError, ValueError):
-            return None
 
     def bucket(x):
         if x is None:
