@@ -1340,6 +1340,38 @@ def _render_kelly_sensitivity():
     )
 
 
+def _snapshot_fixture_key(row):
+    """Stable fixture key; fallback to normalized teams + match date."""
+    fid = str(row.get("fixture_id") or "").strip()
+    if fid:
+        return "id:" + fid
+    match = str(row.get("match") or row.get("match_ru") or "").lower()
+    match = " ".join("".join(ch if ch.isalnum() else " " for ch in match).split())
+    date = str(row.get("date_iso") or row.get("created_at") or "")[:10]
+    return f"match:{date}:{match}" if match else ""
+
+
+def _dedupe_fixture_rows(rows):
+    """Keep the earliest saved forecast per fixture to avoid scan-frequency bias."""
+    ordered = sorted(
+        rows,
+        key=lambda r: (
+            str(r.get("date_iso") or "")[:10],
+            str(r.get("created_at") or r.get("evaluated_at") or ""),
+            int(r.get("id") or 0),
+        ),
+    )
+    chosen = {}
+    for row in ordered:
+        key = _snapshot_fixture_key(row)
+        if not key:
+            # Without a fixture ID or match name, don't silently merge records.
+            key = f"row:{row.get('id', len(chosen))}"
+        if key not in chosen:
+            chosen[key] = row
+    return list(chosen.values())
+
+
 def _render_snapshot_calibration(D):
     """Проверка калибровки MODEL ONLY с хронологической holdout-оценкой."""
     if not db.SQLITE_BOOT_OK:
@@ -1365,7 +1397,17 @@ def _render_snapshot_calibration(D):
             "y": 1.0 if outcome == "won" else 0.0,
             "date": date,
             "pick": str(r.get("pick") or ""),
+            "fixture_id": r.get("fixture_id"),
+            "match": r.get("match"),
+            "match_ru": r.get("match_ru"),
+            "date_iso": r.get("date_iso"),
+            "created_at": r.get("created_at"),
+            "id": r.get("id"),
         })
+
+    # Один матч — одно наблюдение: иначе частые повторные сканы получают
+    # больший вес и искажают Brier/holdout.
+    samples = _dedupe_fixture_rows(samples)
 
     if len(samples) < 30:
         st.subheader("🧪 Калибровка MODEL ONLY")
@@ -1461,8 +1503,8 @@ def _render_snapshot_calibration(D):
             hide_index=True,
         )
     st.caption(
-        "Ограничение: MODEL ONLY сейчас в основном оценивается по исходу 1X2, "
-        "а повторные сканы одного матча могут быть зависимыми наблюдениями. "
+        "В расчёт входит не более одного (самого раннего сохранённого) прогноза на матч. "
+        "Это уменьшает смещение от повторных сканов, но не гарантирует независимость матчей. "
         "Перед автоматическим применением нужно проверить достаточность выборки и стабильность по лигам."
     )
 
