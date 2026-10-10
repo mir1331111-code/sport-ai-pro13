@@ -2712,6 +2712,46 @@ def _render_decision_log(D):
     st.dataframe(rows, use_container_width=True, hide_index=True)
     st.caption("Снимок фиксируется в момент ставки и не пересчитывается задним числом. Старые ставки без snapshot показываются с доступными полями.")
 
+def _render_quick_results(D):
+    """Видимые сразу сводки прогнозов, портфеля и виртуального WATCH."""
+    if not db.SQLITE_BOOT_OK:
+        return
+    try:
+        rows = db.fetch_decision_snapshots(limit=100000) or []
+    except Exception:
+        rows = []
+
+    def status_counts(items, field):
+        statuses = [str(r.get(field) or "").lower() for r in items]
+        won = statuses.count("won")
+        lost = statuses.count("lost")
+        push = statuses.count("push")
+        pending = len(statuses) - won - lost - push
+        rate = f"{won / (won + lost) * 100:.1f}%" if won + lost else "—"
+        return won, lost, push, pending, rate
+
+    bets = [b for b in (D.get("bets") or []) if isinstance(b, dict)]
+    pw, pl, pp, pend, _ = status_counts(bets, "status")
+    all_w, all_l, all_p, all_pending, all_rate = status_counts(rows, "result_status")
+    watch = [r for r in rows if str(r.get("decision") or "").upper() == "WATCH"]
+    ww, wl, wp, wpend, wrate = status_counts(watch, "result_status")
+
+    st.subheader("📌 Быстрые результаты")
+    st.caption("Эта сводка видна сразу при открытии «Статистика» — портфель и прогнозы считаются отдельно.")
+    with st.expander("🎯 Все сохранённые прогнозы", expanded=True):
+        cols = st.columns(5)
+        for col, label, value in zip(cols, ["Выиграли", "Проиграли", "Возвраты", "Ожидают", "Win Rate"], [all_w, all_l, all_p, all_pending, all_rate]):
+            col.metric(label, value)
+    with st.expander("💼 Реальный портфель", expanded=True):
+        cols = st.columns(4)
+        for col, label, value in zip(cols, ["Выиграли", "Проиграли", "Возвраты", "Ожидают"], [pw, pl, pp, pend]):
+            col.metric(label, value)
+    with st.expander("🟡 Виртуальный WATCH", expanded=False):
+        cols = st.columns(5)
+        for col, label, value in zip(cols, ["Выиграли", "Проиграли", "Возвраты", "Ожидают", "Win Rate"], [ww, wl, wp, wpend, wrate]):
+            col.metric(label, value)
+        st.caption("WATCH — виртуальная проверка сигналов, не реальные ставки и не изменение банка.")
+
 def render():
     D = st.session_state.data
     _render_signal_integrity(D)
@@ -2721,6 +2761,7 @@ def render():
     _render_adaptive_attribution()
     _render_adaptive_monitor()
     st.header("📈 Статистика")
+    _render_quick_results(D)
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         ["📊 Обзор", "🧪 Модель", "🏆 По лигам", "📅 По дням", "🎯 По рынкам", "🟡 WATCH LAB"])
     with tab1:
