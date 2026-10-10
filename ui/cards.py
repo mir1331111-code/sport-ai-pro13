@@ -145,19 +145,16 @@ def render_verdict_card(c: dict, thr: float) -> str:
         except Exception:
             adaptive_html = ""
         rank_html = (
-            f'<span style="background:{_rc}22;color:{_rc};'
-            f'padding:3px 10px;border-radius:999px;font-size:.7rem;'
-            f'font-weight:800;margin-right:6px;border:1px solid {_rc}55;">'
             f'<span title="Ранг матча: общий приоритет сигнала по совокупности факторов. Не вероятность победы." '
             f'style="background:{_rc}22;color:{_rc};padding:3px 10px;border-radius:999px;'
             f'font-size:.7rem;font-weight:800;margin-right:6px;border:1px solid {_rc}55;">'
             f'{_rl} · {_rs*100:.0f}</span>'
-            f'<span title="SIGNAL — оценка силы сигнала модели от 0 до 100; это не вероятность исхода."
+            f'<span title="SIGNAL — оценка силы сигнала модели от 0 до 100; это не вероятность исхода." '
             f'style="background:rgba(96,165,250,.10);color:#93c5fd;'
             f'padding:3px 8px;border-radius:999px;font-size:.68rem;'
             f'font-weight:700;margin-right:5px;">'
             f'SIGNAL {_ss*100:.0f}</span>'
-            f'<span title="VALUE — оценка ценности прогноза/рынка по внутренней формуле от 0 до 100; не гарантия прибыли."
+            f'<span title="VALUE — оценка ценности прогноза/рынка по внутренней формуле от 0 до 100; не гарантия прибыли." '
             f'style="background:rgba(52,211,153,.10);color:#6ee7b7;'
             f'padding:3px 8px;border-radius:999px;font-size:.68rem;'
             f'font-weight:700;">'
