@@ -1827,14 +1827,13 @@ def _render_watch_lab(D):
             "result_score": f"{int(home_score)}:{int(away_score)}",
             "evaluated_at": datetime.now().isoformat(),
         }
-        if need_odd:
-            try:
-                num_odd = float(r.get("market_odd"))
-            except (TypeError, ValueError):
-                num_odd = 0.0
-            if num_odd <= 1.01:
-                mark_unresolved(r, "Результат найден, но нет корректного коэффициента")
-                return None, True
+        # Сначала фиксируем фактический исход для любого сохранённого сигнала.
+        # Отсутствие коэффициента не должно блокировать оценку точности модели.
+        try:
+            num_odd = float(r.get("market_odd"))
+        except (TypeError, ValueError):
+            num_odd = 0.0
+        if num_odd > 1.01:
             update["virtual_pnl"] = (
                 num_odd - 1.0 if outcome == "won"
                 else (-1.0 if outcome == "lost" else 0.0)
@@ -1858,8 +1857,15 @@ def _render_watch_lab(D):
         # незавершённых за один просмотр, чтобы не блокировать свежие записи.
         return settled + unresolved[:1000]
 
-    for r in pending_first(watch):
-        rr, pending = evaluate_snapshot(r, need_odd=True)
+    # Проверяем не только WATCH/MODEL ONLY, но и BET/SKIP.
+    # Иначе большая часть сохранённых сигналов остаётся без фактического результата.
+    priced_decisions = [
+        r for r in rows
+        if str(r.get("decision") or "").upper() in ("BET", "SKIP")
+    ]
+
+    for r in pending_first(watch + priced_decisions):
+        rr, pending = evaluate_snapshot(r, need_odd=False)
         if rr:
             evaluated.append(rr)
         elif pending:
