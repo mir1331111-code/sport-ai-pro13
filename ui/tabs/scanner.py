@@ -137,31 +137,59 @@ def _train_engine(matrix_n, logs, update_loader):
     total = sum(
         len(dp.get(dv, [])) + len(dc.get(dv, [])) for dv in train_divs
     )
-    processed = 0
-    trained = 0
+    # Merge every league/season into one timeline. The engine has shared
+    # league/global state, so training league-by-league can expose future
+    # results from one league to earlier matches in another.
+    all_rows = []
+    skipped = 0
     for dv in train_divs:
         for src in (dp.get(dv, []), dc.get(dv, [])):
-            for r in src:
+            for row in src:
+                if not isinstance(row, dict):
+                    skipped += 1
+                    continue
+                home = str(row.get("HomeTeam") or "").strip()
+                away = str(row.get("AwayTeam") or "").strip()
+                date = parse_date(row.get("Date", ""))
                 try:
-                    hg = float(r.get("FTHG", 0))
-                    ag = float(r.get("FTAG", 0))
-                    engine.learn_step(
-                        r["HomeTeam"], r["AwayTeam"], hg, ag, r,
-                        lg=dv, match_num=processed, total=total,
-                        match_date=parse_date(r.get("Date", "")),
-                    )
-                    trained += 1
-                except Exception:
-                    pass
-                processed += 1
-                if processed % 50 == 0:
-                    update_loader(
-                        f"Обучение [{processed}/{total}]",
-                        0.5 + processed / max(1, total) * 0.3,
-                        logs,
-                    )
+                    raw_hg, raw_ag = row.get("FTHG"), row.get("FTAG")
+                    if raw_hg in (None, "") or raw_ag in (None, ""):
+                        raise ValueError("missing score")
+                    hg, ag = float(raw_hg), float(raw_ag)
+                    if not (hg.is_integer() and ag.is_integer() and 0 <= hg <= 30 and 0 <= ag <= 30):
+                        raise ValueError("invalid score")
+                except (TypeError, ValueError, OverflowError):
+                    skipped += 1
+                    continue
+                if not home or not away or not date or date.date() > today.date():
+                    skipped += 1
+                    continue
+                all_rows.append((date, dv, row, home, away, hg, ag))
+
+    # Stable sort means same-day order is deterministic, though exact kickoff
+    # times are unavailable in many historical sources.
+    all_rows.sort(key=lambda item: (item[0], item[1], item[3], item[4]))
+    total_valid = len(all_rows)
+    trained = 0
+    for processed, (date, dv, row, home, away, hg, ag) in enumerate(all_rows, start=1):
+        try:
+            engine.learn_step(
+                home, away, hg, ag, row,
+                lg=dv, match_num=processed - 1, total=total_valid,
+                match_date=date,
+            )
+            trained += 1
+        except Exception as exc:
+            logs.append(f"⚠️ Пропуск обучающего матча {home} — {away}: {type(exc).__name__}")
+            skipped += 1
+        if processed % 50 == 0 or processed == total_valid:
+            update_loader(
+                f"Обучение [{processed}/{total_valid}]",
+                0.5 + processed / max(1, total_valid) * 0.3,
+                logs,
+            )
     engine.trained_n = trained
-    logs.append(f"Обучено: {trained}")
+    logs.append(f"Обучено: {trained}; пропущено невалидных/будущих: {skipped}")
     return engine
 
 
