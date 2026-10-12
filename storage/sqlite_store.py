@@ -176,15 +176,27 @@ def insert_decision_snapshots(snapshots: Iterable) -> int:
         ))
     if not rows:
         return 0
+    # INSERT OR IGNORE may skip duplicates. Count actual inserts rather than
+    # reporting the number of input rows as if all were newly persisted.
+    inserted = 0
     with _db() as c:
-        c.executemany("""
-            INSERT OR IGNORE INTO decision_snapshots (
-                snapshot_key, fixture_id, match, match_ru, league, market, pick,
-                decision, decision_reason, model_prob, fair_odd, market_odd,
-                edge, ev, kelly_pct, confidence, value_score, odds_source, date_iso
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, rows)
-    return len(rows)
+        c.execute("BEGIN")
+        try:
+            before = c.total_changes
+            c.executemany("""
+                INSERT OR IGNORE INTO decision_snapshots (
+                    snapshot_key, fixture_id, match, match_ru, league, market, pick,
+                    decision, decision_reason, model_prob, fair_odd, market_odd,
+                    edge, ev, kelly_pct, confidence, value_score, odds_source, date_iso
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, rows)
+            inserted = c.total_changes - before
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+    invalidate_caches()
+    return inserted
 
 @_cache(ttl=30, show_spinner=False)
 def fetch_decision_snapshots(decision: Optional[str] = None, limit: int = 100000) -> list:
