@@ -1,12 +1,15 @@
 """ui/tabs/backtest.py — walk-forward бэктест."""
 from __future__ import annotations
 
+from datetime import date
+
 import streamlit as st
 
 from config import DIV_NAMES
 from data.sources import load_seasonal, parse_date
 from model.engine import Engine
 from betting.kelly import edge, expected_value, kelly
+from model.training_data import completed_training_row
 
 
 def _f(value):
@@ -251,14 +254,16 @@ def render(matrix_n):
         bt_season,
     )
 
+    # Use the same strict validation as the main training path: missing,
+    # fractional, non-finite, impossible, and future scores are not results.
     rows_all = [
         r
         for r in rows_all
-        if r.get("FTHG") not in (None, "")
-        and r.get("FTAG") not in (None, "")
-        and parse_date(
-            r.get("Date", "")
-        )
+        if completed_training_row(
+            r,
+            parse_date(r.get("Date", "")),
+            date.today(),
+        ) is not None
     ]
 
     rows_all.sort(
