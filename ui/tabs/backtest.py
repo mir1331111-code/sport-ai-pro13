@@ -519,8 +519,10 @@ def render(matrix_n):
                             }
                         )
 
-        # Update only after every fixture on this date has been predicted.
-        pending_rows.append((j, r, P))
+        # If prediction failed, skip this row rather than recomputing it later
+        # after same-day results have been applied.
+        if P is not None:
+            pending_rows.append((j, r, P))
 
         if j % 25 == 0:
             progress.progress(
