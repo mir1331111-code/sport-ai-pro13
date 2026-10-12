@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+import math
 
 import streamlit as st
 
@@ -309,6 +310,28 @@ def render(matrix_n):
     # WALK-FORWARD
     # ================================================================
 
+    # Do not let one fixture's result influence another fixture on the
+    # same calendar day when the source has no kickoff timestamps.
+    pending_day = None
+    pending_rows = []
+
+    def _learn_pending(day_rows):
+        for pending in day_rows:
+            ph = (pending.get("HomeTeam") or "").strip()
+            pa = (pending.get("AwayTeam") or "").strip()
+            pdate = parse_date(pending.get("Date", ""))
+            try:
+                phg, pag = float(pending["FTHG"]), float(pending["FTAG"])
+                engine.learn_step(
+                    ph, pa, phg, pag, pending, lg=bt_div,
+                    match_num=rows_all.index(pending), total=total,
+                    match_date=pdate,
+                )
+            except (TypeError, ValueError, KeyError):
+                continue
+
+    scored_predictions = []
+
     for j, r in enumerate(rows_all):
         h = (
             r.get("HomeTeam")
@@ -345,6 +368,13 @@ def render(matrix_n):
         if not md:
             continue
 
+        if pending_day is None:
+            pending_day = md
+        elif md != pending_day:
+            _learn_pending(pending_rows)
+            pending_rows = []
+            pending_day = md
+
         # ------------------------------------------------------------
         # После начального training window начинаем тестировать.
         #
@@ -371,6 +401,8 @@ def render(matrix_n):
                 P = None
 
             if P:
+                outcome_index = 0 if hg > ag else (1 if hg == ag else 2)
+                scored_predictions.append((P["p1"], P["x"], P["p2"], outcome_index))
                 historical_odds = (
                     _pick_historical_odds(r)
                 )
@@ -495,25 +527,8 @@ def render(matrix_n):
                             }
                         )
 
-        # ------------------------------------------------------------
-        # После прогноза текущий матч добавляется в модель.
-        # ------------------------------------------------------------
-
-        try:
-            engine.learn_step(
-                h,
-                a,
-                hg,
-                ag,
-                r,
-                lg=bt_div,
-                match_num=j,
-                total=total,
-                match_date=md,
-            )
-
-        except Exception:
-            pass
+        # Update only after every fixture on this date has been predicted.
+        pending_rows.append(r)
 
         if j % 25 == 0:
             progress.progress(
@@ -525,6 +540,9 @@ def render(matrix_n):
                     ),
                 )
             )
+
+    if pending_rows:
+        _learn_pending(pending_rows)
 
     progress.progress(1.0)
 
@@ -597,6 +615,25 @@ def render(matrix_n):
         if n
         else 0.0
     )
+
+    # Probability metrics over the held-out walk-forward matches, not just
+    # selected bets. Multiclass Brier and log loss use pre-result predictions.
+    if scored_predictions:
+        eps = 1e-12
+        brier = 0.0
+        logloss = 0.0
+        for p1, px, p2, actual in scored_predictions:
+            probs = [max(eps, min(1.0, p1)), max(eps, min(1.0, px)), max(eps, min(1.0, p2))]
+            total_p = sum(probs) or 1.0
+            probs = [p / total_p for p in probs]
+            brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(probs))
+            logloss -= math.log(probs[actual])
+        brier /= len(scored_predictions)
+        logloss /= len(scored_predictions)
+        st.caption(
+            f"Out-of-sample matches: {len(scored_predictions)} · "
+            f"Multiclass Brier: {brier:.4f} · Log loss: {logloss:.4f}"
+        )
 
     # ================================================================
     # Верхние метрики
