@@ -316,7 +316,7 @@ def render(matrix_n):
     pending_rows = []
 
     def _learn_pending(day_rows):
-        for pending in day_rows:
+        for pending_index, pending in day_rows:
             ph = (pending.get("HomeTeam") or "").strip()
             pa = (pending.get("AwayTeam") or "").strip()
             pdate = parse_date(pending.get("Date", ""))
@@ -324,7 +324,7 @@ def render(matrix_n):
                 phg, pag = float(pending["FTHG"]), float(pending["FTAG"])
                 engine.learn_step(
                     ph, pa, phg, pag, pending, lg=bt_div,
-                    match_num=rows_all.index(pending), total=total,
+                    match_num=pending_index, total=total,
                     match_date=pdate,
                 )
             except (TypeError, ValueError, KeyError):
@@ -528,7 +528,7 @@ def render(matrix_n):
                         )
 
         # Update only after every fixture on this date has been predicted.
-        pending_rows.append(r)
+        pending_rows.append((j, r))
 
         if j % 25 == 0:
             progress.progress(
