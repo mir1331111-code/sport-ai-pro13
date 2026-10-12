@@ -316,7 +316,7 @@ def render(matrix_n):
     pending_rows = []
 
     def _learn_pending(day_rows):
-        for pending_index, pending in day_rows:
+        for pending_index, pending, pending_prediction in day_rows:
             ph = (pending.get("HomeTeam") or "").strip()
             pa = (pending.get("AwayTeam") or "").strip()
             pdate = parse_date(pending.get("Date", ""))
@@ -325,7 +325,7 @@ def render(matrix_n):
                 engine.learn_step(
                     ph, pa, phg, pag, pending, lg=bt_div,
                     match_num=pending_index, total=total,
-                    match_date=pdate,
+                    match_date=pdate, prediction=pending_prediction,
                 )
             except (TypeError, ValueError, KeyError):
                 continue
@@ -383,24 +383,16 @@ def render(matrix_n):
         # Значит результат текущего матча не попадает в модель.
         # ------------------------------------------------------------
 
-        if j >= MIN_TRAIN_MATCHES:
-            try:
-                P = engine.predict(
-                    h,
-                    a,
-                    bt_div,
-                    match_date=md,
-                    cup=bt_div in (
-                        "C1",
-                        "EL",
-                        "EC",
-                    ),
-                )
+        # Freeze the prediction before any result from this date is learned.
+        try:
+            P = engine.predict(
+                h, a, bt_div, match_date=md,
+                cup=bt_div in ("C1", "EL", "EC"),
+            )
+        except Exception:
+            P = None
 
-            except Exception:
-                P = None
-
-            if P:
+        if j >= MIN_TRAIN_MATCHES and P:
                 outcome_index = 0 if hg > ag else (1 if hg == ag else 2)
                 scored_predictions.append((P["p1"], P["x"], P["p2"], outcome_index))
                 historical_odds = (
@@ -528,7 +520,7 @@ def render(matrix_n):
                         )
 
         # Update only after every fixture on this date has been predicted.
-        pending_rows.append((j, r))
+        pending_rows.append((j, r, P))
 
         if j % 25 == 0:
             progress.progress(
