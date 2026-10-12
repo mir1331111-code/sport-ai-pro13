@@ -20,6 +20,7 @@ from data.sources import (
     parse_date,
 )
 from model.engine import Engine
+from model.training_data import completed_training_row
 from betting.verdict import (
     build_verdict, refine_with_real_odds, refine_with_manual_odd,
 )
@@ -145,25 +146,12 @@ def _train_engine(matrix_n, logs, update_loader):
     for dv in train_divs:
         for src in (dp.get(dv, []), dc.get(dv, [])):
             for row in src:
-                if not isinstance(row, dict):
+                date = parse_date(row.get("Date", "")) if isinstance(row, dict) else None
+                validated = completed_training_row(row, date, today.date())
+                if validated is None:
                     skipped += 1
                     continue
-                home = str(row.get("HomeTeam") or "").strip()
-                away = str(row.get("AwayTeam") or "").strip()
-                date = parse_date(row.get("Date", ""))
-                try:
-                    raw_hg, raw_ag = row.get("FTHG"), row.get("FTAG")
-                    if raw_hg in (None, "") or raw_ag in (None, ""):
-                        raise ValueError("missing score")
-                    hg, ag = float(raw_hg), float(raw_ag)
-                    if not (hg.is_integer() and ag.is_integer() and 0 <= hg <= 30 and 0 <= ag <= 30):
-                        raise ValueError("invalid score")
-                except (TypeError, ValueError, OverflowError):
-                    skipped += 1
-                    continue
-                if not home or not away or not date or date.date() > today.date():
-                    skipped += 1
-                    continue
+                date, home, away, hg, ag = validated
                 all_rows.append((date, dv, row, home, away, hg, ag))
 
     # Stable sort means same-day order is deterministic, though exact kickoff
