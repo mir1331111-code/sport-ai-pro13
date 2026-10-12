@@ -550,6 +550,26 @@ def render(matrix_n):
     # Результаты
     # ================================================================
 
+    # Probability metrics over the held-out walk-forward matches, not just
+    # selected bets. Multiclass Brier and log loss use pre-result predictions.
+    if scored_predictions:
+        eps = 1e-12
+        brier = 0.0
+        logloss = 0.0
+        for p1, px, p2, actual in scored_predictions:
+            probs = [max(eps, min(1.0, p1)), max(eps, min(1.0, px)), max(eps, min(1.0, p2))]
+            total_p = sum(probs) or 1.0
+            probs = [p / total_p for p in probs]
+            brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(probs))
+            logloss -= math.log(probs[actual])
+        brier /= len(scored_predictions)
+        logloss /= len(scored_predictions)
+        st.caption(
+            f"Out-of-sample matches: {len(scored_predictions)} · "
+            f"Multiclass Brier: {brier:.4f} · Log loss: {logloss:.4f}"
+        )
+
+
     if not log:
         st.warning(
             "Сигналов нет. "
@@ -615,25 +635,6 @@ def render(matrix_n):
         if n
         else 0.0
     )
-
-    # Probability metrics over the held-out walk-forward matches, not just
-    # selected bets. Multiclass Brier and log loss use pre-result predictions.
-    if scored_predictions:
-        eps = 1e-12
-        brier = 0.0
-        logloss = 0.0
-        for p1, px, p2, actual in scored_predictions:
-            probs = [max(eps, min(1.0, p1)), max(eps, min(1.0, px)), max(eps, min(1.0, p2))]
-            total_p = sum(probs) or 1.0
-            probs = [p / total_p for p in probs]
-            brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(probs))
-            logloss -= math.log(probs[actual])
-        brier /= len(scored_predictions)
-        logloss /= len(scored_predictions)
-        st.caption(
-            f"Out-of-sample matches: {len(scored_predictions)} · "
-            f"Multiclass Brier: {brier:.4f} · Log loss: {logloss:.4f}"
-        )
 
     # ================================================================
     # Верхние метрики
