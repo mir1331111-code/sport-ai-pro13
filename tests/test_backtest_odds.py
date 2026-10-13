@@ -1,6 +1,6 @@
 import unittest
 
-from ui.tabs.backtest import _pick_historical_odds
+from betting.historical_odds import pick_historical_odds as _pick_historical_odds
 
 
 class HistoricalOddsTests(unittest.TestCase):
