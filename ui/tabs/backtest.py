@@ -12,6 +12,7 @@ from model.engine import Engine
 from betting.kelly import edge, expected_value, kelly
 from model.training_data import completed_training_row
 from model.evaluation import reliability_table, expected_calibration_error
+from betting.historical_odds import pick_historical_odds as _pick_historical_odds
 
 
 def _f(value):
@@ -61,45 +62,6 @@ def _max_drawdown(equity_curve):
                 max_dd = dd
 
     return max_dd
-
-
-def _pick_historical_odds(row):
-    """
-    Берём реальные исторические букмекерские odds.
-
-    Приоритет:
-    Pinnacle -> Bet365.
-
-    Возвращаем:
-        {
-            "П1": ...,
-            "X": ...,
-            "П2": ...
-        }
-    """
-
-    # Use one bookmaker for the whole 1X2 market. Mixing a Pinnacle
-    # home price with Bet365 draw/away prices creates a synthetic market
-    # that never necessarily existed.
-    pinnacle = {
-        "П1": _f(row.get("PSH")),
-        "X": _f(row.get("PSD")),
-        "П2": _f(row.get("PSA")),
-    }
-    if all(value is not None for value in pinnacle.values()):
-        return pinnacle
-
-    bet365 = {
-        "П1": _f(row.get("B365H")),
-        "X": _f(row.get("B365D")),
-        "П2": _f(row.get("B365A")),
-    }
-    if all(value is not None for value in bet365.values()):
-        return bet365
-
-    # Incomplete triplets are excluded from both signal generation and
-    # the market-probability baseline; do not silently mix bookmakers.
-    return {"П1": None, "X": None, "П2": None}
 
 
 def _best_signal(P, odds, min_edge, min_ev):
