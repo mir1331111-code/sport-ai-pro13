@@ -382,10 +382,122 @@ def _render_data_quality_audit(D):
             )
 
 
+def _performance_rows(bets, group_key):
+    groups = {}
+    for bet in bets:
+        if not isinstance(bet, dict):
+            continue
+        status = str(bet.get("status") or "pending").lower()
+        if status not in ("won", "lost", "push", "void"):
+            continue
+        if status in ("push", "void"):
+            continue
+        stake = _safe_float(bet.get("stake"), 0.0)
+        odds = _safe_float(bet.get("odds"), 0.0)
+        if stake <= 0 or odds <= 1:
+            continue
+        if group_key == "odds":
+            if odds < 1.5:
+                label = "< 1.50"
+            elif odds < 2.0:
+                label = "1.50–1.99"
+            elif odds < 3.0:
+                label = "2.00–2.99"
+            elif odds < 5.0:
+                label = "3.00–4.99"
+            else:
+                label = "5.00+"
+        elif group_key == "market":
+            label = str(bet.get("market") or "—")
+        else:
+            label = str(bet.get("league") or bet.get("div") or "—")
+        g = groups.setdefault(label, {"Группа": label, "N": 0, "Won": 0,
+                                      "Lost": 0, "Stake": 0.0, "PnL": 0.0})
+        pnl = stake * (odds - 1.0) if status == "won" else -stake
+        g["N"] += 1
+        g["Won"] += status == "won"
+        g["Lost"] += status == "lost"
+        g["Stake"] += stake
+        g["PnL"] += pnl
+    rows = []
+    for g in groups.values():
+        g["Win rate"] = g["Won"] / g["N"] if g["N"] else 0.0
+        g["ROI"] = g["PnL"] / g["Stake"] if g["Stake"] else 0.0
+        rows.append(g)
+    return sorted(rows, key=lambda x: x["N"], reverse=True)
+
+
+def _render_performance_report():
+    with st.expander("📊 Отчёт по результатам и ошибкам", expanded=False):
+        if not db.SQLITE_BOOT_OK:
+            st.warning("SQLite недоступна: отчёт по сохранённой истории не сформирован.")
+            return
+        try:
+            bets = db.fetch_bets(limit=100000)
+            snapshots = db.fetch_decision_snapshots(limit=100000)
+        except Exception as exc:
+            st.error(f"Не удалось прочитать историю: {type(exc).__name__}")
+            return
+
+        st.caption(
+            "ROI считается только по рассчитанным ставкам с положительным stake и "
+            "валидным коэффициентом. Push/Void и незакрытые записи не входят в ROI. "
+            "Снимки решений показываются отдельно: они не обязательно являются ставками."
+        )
+        decisions = {}
+        for snap in snapshots:
+            decision = str(snap.get("decision") or "UNKNOWN").upper()
+            decisions[decision] = decisions.get(decision, 0) + 1
+        if decisions:
+            st.markdown("**Снимки по типу решения**")
+            st.dataframe(
+                [{"Решение": key, "Снимков": value}
+                 for key, value in sorted(decisions.items())],
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("Снимков решений пока нет.")
+
+        settled = [b for b in bets if str(b.get("status") or "").lower()
+                   in ("won", "lost", "push", "void")]
+        a, b, c, d = st.columns(4)
+        a.metric("Рассчитанные ставки", len(settled))
+        b.metric("Won / Lost", f"{sum(str(x.get('status')).lower() == 'won' for x in settled)} / "
+                               f"{sum(str(x.get('status')).lower() == 'lost' for x in settled)}")
+        scored = [x for x in settled if str(x.get("status") or "").lower() in ("won", "lost")]
+        total_stake = sum(_safe_float(x.get("stake")) for x in scored)
+        total_pnl = sum(
+            _safe_float(x.get("stake")) * (_safe_float(x.get("odds"), 1.0) - 1.0)
+            if str(x.get("status") or "").lower() == "won"
+            else -_safe_float(x.get("stake"))
+            for x in scored
+        )
+        c.metric("PnL", f"{total_pnl:+.2f}")
+        d.metric("ROI", f"{total_pnl / total_stake:.1%}" if total_stake > 0 else "—")
+
+        for key, title in (("market", "По рынкам"), ("league", "По лигам"),
+                           ("odds", "По диапазонам коэффициентов")):
+            rows = _performance_rows(bets, key)
+            st.markdown(f"**{title}**")
+            if rows:
+                display = []
+                for row in rows:
+                    item = dict(row)
+                    item["Win rate"] = f"{row['Win rate']:.1%}"
+                    item["ROI"] = f"{row['ROI']:.1%}"
+                    item["Stake"] = round(row["Stake"], 2)
+                    item["PnL"] = round(row["PnL"], 2)
+                    display.append(item)
+                st.dataframe(display, use_container_width=True, hide_index=True)
+            else:
+                st.caption("Недостаточно рассчитанных ставок для этой разбивки.")
+
+
 def render():
     D = st.session_state.data
     st.header("💼 Портфель")
     _render_data_quality_audit(D)
+    _render_performance_report()
     if not D["bets"]:
         st.warning("Пусто. После СКАНа ставки появятся здесь.")
         return
