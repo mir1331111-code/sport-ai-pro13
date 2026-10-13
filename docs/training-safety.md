@@ -8,6 +8,9 @@
 - Rows without teams/dates and rows dated in the future are rejected.
 - Training rows across leagues/seasons are merged and sorted by date before model updates.
 - Decision snapshot writes report actual inserts and invalidate the read cache.
+- The portfolio includes a read-only audit of pending/stale bets and unresolved decision snapshots.
+- The walk-forward backtest uses a complete 1X2 odds triplet from one bookmaker; incomplete triplets are excluded instead of mixing bookmakers.
+- The backtest warns that historical odds columns do not establish when the quote was available.
 
 ## Verification
 
@@ -19,4 +22,4 @@ python -m unittest discover -s tests -v
 
 ## Important limitations
 
-This is a data-integrity fix, not proof that the model is profitable or that online self-learning is complete. Same-day historical rows are ordered deterministically by league and team because many sources lack kickoff times; they cannot be guaranteed to reflect the true within-day order. Calibration still needs a separate leakage audit and out-of-time evaluation before automatic model promotion should be enabled.
+This is a data-integrity and observability improvement, not proof that the model is profitable or that online self-learning is complete. The portfolio audit is diagnostic only: it does not automatically resolve ambiguous fixtures or retrain the model. Historical bookmaker columns have no verified quote timestamp in the current dataset, so simulated PnL is not proof that the prices were executable when a prediction was made. Same-day historical rows are ordered deterministically by league and team because many sources lack kickoff times; they cannot be guaranteed to reflect the true within-day order. Calibration still needs a separate leakage audit and out-of-time evaluation before automatic model promotion should be enabled.
