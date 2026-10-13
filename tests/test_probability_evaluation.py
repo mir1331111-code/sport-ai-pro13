@@ -1,6 +1,6 @@
 import unittest
 
-from model.evaluation import expected_calibration_error, reliability_table
+from model.evaluation import expected_calibration_error, reliability_table, temporal_calibration_comparison
 
 
 class ProbabilityEvaluationTests(unittest.TestCase):
@@ -25,6 +25,24 @@ class ProbabilityEvaluationTests(unittest.TestCase):
         ])
         self.assertEqual(table, [])
         self.assertIsNone(expected_calibration_error(table))
+
+    def test_temporal_comparison_pairs_raw_and_calibrated_scores(self):
+        rows = [
+            (0.7, 0.2, 0.1, 0, None, 0.5, 0.3, 0.2),
+            (0.2, 0.6, 0.2, 1, None, 0.2, 0.6, 0.2),
+            (0.1, 0.2, 0.7, 2, None, 0.1, 0.2, 0.7),
+            (0.6, 0.2, 0.2, 0, None, 0.6, 0.2, 0.2),
+        ]
+        result = temporal_calibration_comparison(rows)
+        self.assertEqual(len(result), 2)
+        self.assertEqual([r["Матчей"] for r in result], [2, 2])
+        self.assertGreater(result[0]["Raw Brier"], result[0]["Calibrated Brier"])
+
+    def test_temporal_comparison_requires_two_valid_pairs(self):
+        self.assertEqual(
+            temporal_calibration_comparison([(0.5, 0.3, 0.2, 0, None, 0.5, 0.3, 0.2)]),
+            [],
+        )
 
     def test_perfect_frequency_bin_has_zero_error(self):
         table = [
