@@ -251,7 +251,7 @@ def _render_bet(b, D, index):
             st.toast("Ставка отменена, stake возвращён")
             st.rerun()
 
-        if cc[4].button("🔎", key=f"check_result_{index}", help="Проверить официальный счёт"):
+        if cc[4].button("🔎", key=f"check_result_{index}", help="Проверить счёт из источников"):
             home = str(b.get("home") or "").strip()
             away = str(b.get("away") or "").strip()
             match = str(b.get("match") or "")
@@ -272,7 +272,7 @@ def _render_bet(b, D, index):
                 st.session_state[f"result_check_{index}"] = {"result": result, "suggestion": suggestion}
             elif not st.session_state.get(f"result_check_{index}", {}).get("error"):
                 st.session_state[f"result_check_{index}"] = {
-                    "error": "Официальный завершённый счёт не найден. Статус ставки не изменён."
+                    "error": "Завершённый счёт из доступных источников не найден. Статус ставки не изменён."
                 }
             st.rerun()
 
@@ -282,7 +282,7 @@ def _render_bet(b, D, index):
         if check.get("result"):
             result = check["result"]
             st.info(
-                f"Источник: {result.get('source', 'не указан')} · "
+                f"Источник данных: {result.get('source', 'не указан')} · "
                 f"Счёт: {result.get('home')}:{result.get('away')} · "
                 f"Статус: {result.get('status', 'неизвестен')}"
             )
