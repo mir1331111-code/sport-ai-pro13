@@ -394,10 +394,16 @@ def render(matrix_n):
 
         if j >= MIN_TRAIN_MATCHES and P:
                 outcome_index = 0 if hg > ag else (1 if hg == ag else 2)
-                scored_predictions.append((P["p1"], P["x"], P["p2"], outcome_index))
-                historical_odds = (
-                    _pick_historical_odds(r)
-                )
+                historical_odds = _pick_historical_odds(r)
+                market_probs = None
+                if all(historical_odds.get(k) is not None for k in ("П1", "X", "П2")):
+                    implied = [1.0 / historical_odds[k] for k in ("П1", "X", "П2")]
+                    implied_total = sum(implied)
+                    if implied_total > 0:
+                        market_probs = tuple(p / implied_total for p in implied)
+                scored_predictions.append((
+                    P["p1"], P["x"], P["p2"], outcome_index, market_probs
+                ))
 
                 signal = _best_signal(
                     P,
@@ -550,18 +556,41 @@ def render(matrix_n):
         eps = 1e-12
         brier = 0.0
         logloss = 0.0
-        for p1, px, p2, actual in scored_predictions:
+        market_brier = 0.0
+        market_logloss = 0.0
+        market_count = 0
+        model_market_brier = 0.0
+        model_market_logloss = 0.0
+        for p1, px, p2, actual, market_probs in scored_predictions:
             probs = [max(eps, min(1.0, p1)), max(eps, min(1.0, px)), max(eps, min(1.0, p2))]
             total_p = sum(probs) or 1.0
             probs = [p / total_p for p in probs]
-            brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(probs))
-            logloss -= math.log(probs[actual])
+            row_brier = sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(probs))
+            row_logloss = -math.log(probs[actual])
+            brier += row_brier
+            logloss += row_logloss
+            if market_probs is not None:
+                market_count += 1
+                market_brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(market_probs))
+                market_logloss += -math.log(max(eps, market_probs[actual]))
+                model_market_brier += row_brier
+                model_market_logloss += row_logloss
         brier /= len(scored_predictions)
         logloss /= len(scored_predictions)
         st.caption(
             f"Out-of-sample matches: {len(scored_predictions)} · "
-            f"Multiclass Brier: {brier:.4f} · Log loss: {logloss:.4f}"
+            f"Model Brier: {brier:.4f} · Model log loss: {logloss:.4f}"
         )
+        if market_count:
+            st.caption(
+                f"На {market_count} матчах с полными коэффициентами "
+                f"(сравнение на одной и той же выборке): "
+                f"модель Brier {model_market_brier / market_count:.4f} "
+                f"vs рынок {market_brier / market_count:.4f}; "
+                f"модель log loss {model_market_logloss / market_count:.4f} "
+                f"vs рынок {market_logloss / market_count:.4f}. "
+                "Для рынка использованы нормализованные обратные коэффициенты."
+            )
 
 
     if not log:
