@@ -9,6 +9,7 @@ from storage import sqlite_store as db
 from storage import usage
 from ui.cards import translate_match, day_label
 from model.event_status import pending_event_notice
+from betting.result_check import suggest_settlement
 
 
 def _bet_date(b: dict):
@@ -231,7 +232,7 @@ def _render_bet(b, D, index):
 </div>""", unsafe_allow_html=True)
 
     if b.get("status") == "pending":
-        cc = st.columns([1, 1, 1, 1])
+        cc = st.columns([1, 1, 1, 1, 1])
         sin = cc[0].text_input("Счёт", key=f"sc_{index}",
                                 label_visibility="collapsed",
                                 placeholder="2:1")
@@ -249,6 +250,68 @@ def _render_bet(b, D, index):
             _persist(st.session_state.data)
             st.toast("Ставка отменена, stake возвращён")
             st.rerun()
+
+        if cc[4].button("🔎", key=f"check_result_{index}", help="Проверить официальный счёт"):
+            home = str(b.get("home") or "").strip()
+            away = str(b.get("away") or "").strip()
+            match = str(b.get("match") or "")
+            if not (home and away) and " vs " in match:
+                home, away = [part.strip() for part in match.split(" vs ", 1)]
+            date_iso = str(b.get("date_iso") or "")
+            result = None
+            if home and away and date_iso:
+                try:
+                    from data.scores import find_match_score
+                    result = find_match_score(home, away, date_iso)
+                except Exception as exc:
+                    st.session_state[f"result_check_{index}"] = {
+                        "error": f"Ошибка источника: {type(exc).__name__}"
+                    }
+            if result:
+                suggestion = suggest_settlement(b.get("market"), b.get("pick"), result)
+                st.session_state[f"result_check_{index}"] = {"result": result, "suggestion": suggestion}
+            elif not st.session_state.get(f"result_check_{index}", {}).get("error"):
+                st.session_state[f"result_check_{index}"] = {
+                    "error": "Официальный завершённый счёт не найден. Статус ставки не изменён."
+                }
+            st.rerun()
+
+        check = st.session_state.get(f"result_check_{index}") or {}
+        if check.get("error"):
+            st.warning(check["error"])
+        if check.get("result"):
+            result = check["result"]
+            st.info(
+                f"Источник: {result.get('source', 'не указан')} · "
+                f"Счёт: {result.get('home')}:{result.get('away')} · "
+                f"Статус: {result.get('status', 'неизвестен')}"
+            )
+            suggestion = check.get("suggestion") or {}
+            outcome = suggestion.get("outcome")
+            if outcome:
+                labels = {"won": "выигрыш", "lost": "проигрыш", "push": "возврат", "void": "void"}
+                st.caption(f"Предлагаемый расчёт: {labels.get(outcome, outcome)}")
+                if st.button("Подтвердить расчёт по этому счёту", key=f"confirm_result_{index}"):
+                    settled = _apply_settle(
+                        D, index, outcome, score=f"{int(result['home'])}:{int(result['away'])}"
+                    )
+                    if settled is not D:
+                        settled_bets = list(settled.get("bets", []))
+                        if 0 <= index < len(settled_bets):
+                            settled_bets[index] = dict(settled_bets[index])
+                            settled_bets[index]["settle_source"] = result.get("source", "unknown")
+                            settled_bets[index]["settled_at"] = datetime.now().isoformat()
+                            settled["bets"] = settled_bets
+                        st.session_state.data = settled
+                        _persist(settled)
+                        st.session_state.pop(f"result_check_{index}", None)
+                        st.rerun()
+            else:
+                st.warning(
+                    "Счёт найден, но автоматическая подсказка недоступна "
+                    "(например, дополнительное время или неподдерживаемый рынок). "
+                    "Ставка не рассчитана."
+                )
 
 
 def render():
