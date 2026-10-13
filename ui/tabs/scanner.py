@@ -159,23 +159,55 @@ def _train_engine(matrix_n, logs, update_loader):
     all_rows.sort(key=lambda item: (item[0], item[1], item[3], item[4]))
     total_valid = len(all_rows)
     trained = 0
-    for processed, (date, dv, row, home, away, hg, ag) in enumerate(all_rows, start=1):
-        try:
-            engine.learn_step(
-                home, away, hg, ag, row,
-                lg=dv, match_num=processed - 1, total=total_valid,
-                match_date=date,
-            )
-            trained += 1
-        except Exception as exc:
-            logs.append(f"⚠️ Пропуск обучающего матча {home} — {away}: {type(exc).__name__}")
-            skipped += 1
+    # Historical sources often have a date but no reliable kickoff time.
+    # Freeze every prediction for a calendar day before learning any result
+    # from that day, preventing same-day outcome leakage across leagues too.
+    cursor = 0
+    while cursor < total_valid:
+        day = all_rows[cursor][0]
+        day_end = cursor + 1
+        while day_end < total_valid and all_rows[day_end][0] == day:
+            day_end += 1
+
+        frozen_day = []
+        for processed_idx in range(cursor, day_end):
+            date, dv, row, home, away, hg, ag = all_rows[processed_idx]
+            try:
+                prediction = engine.predict(
+                    home, away, dv, match_date=date,
+                    cup=dv in ("C1", "EL", "EC"),
+                )
+                frozen_day.append(
+                    (processed_idx, date, dv, row, home, away, hg, ag, prediction)
+                )
+            except Exception as exc:
+                logs.append(
+                    f"⚠️ Пропуск прогноза {home} — {away}: {type(exc).__name__}"
+                )
+                skipped += 1
+
+        for processed_idx, date, dv, row, home, away, hg, ag, prediction in frozen_day:
+            try:
+                engine.learn_step(
+                    home, away, hg, ag, row,
+                    lg=dv, match_num=processed_idx, total=total_valid,
+                    match_date=date, prediction=prediction,
+                )
+                trained += 1
+            except Exception as exc:
+                logs.append(
+                    f"⚠️ Пропуск обучающего матча {home} — {away}: {type(exc).__name__}"
+                )
+                skipped += 1
+
+        processed = day_end
         if processed % 50 == 0 or processed == total_valid:
             update_loader(
                 f"Обучение [{processed}/{total_valid}]",
                 0.5 + processed / max(1, total_valid) * 0.3,
                 logs,
             )
+        cursor = day_end
     engine.trained_n = trained
     logs.append(f"Обучено: {trained}; пропущено невалидных/будущих: {skipped}")
     return engine
