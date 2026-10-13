@@ -22,15 +22,22 @@ def _bet_date(b: dict):
 
 
 def _event_sort_key(b: dict):
-    """Предстоящие матчи сначала (по возрастанию), прошедшие — затем (по убыванию)."""
+    """Предстоящие матчи сначала, прошедшие — затем; учитывает время начала."""
     dt = _bet_date(b)
     if dt.year >= 2099:
         return (2, 0)
-    today = datetime.now().date()
-    event_day = dt.date()
-    if event_day >= today:
-        return (0, event_day.toordinal())
-    return (1, -event_day.toordinal())
+    match_time = str(b.get("match_time") or "").strip()
+    for fmt in ("%H:%M", "%H.%M"):
+        try:
+            parsed_time = datetime.strptime(match_time, fmt).time()
+            dt = dt.replace(hour=parsed_time.hour, minute=parsed_time.minute)
+            break
+        except ValueError:
+            continue
+    now = datetime.now()
+    if dt >= now:
+        return (0, dt.timestamp())
+    return (1, -dt.timestamp())
 
 
 def _bet_pick_label(b: dict) -> str:
