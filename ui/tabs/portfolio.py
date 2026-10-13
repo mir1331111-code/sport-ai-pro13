@@ -8,6 +8,7 @@ import streamlit as st
 from storage import sqlite_store as db
 from storage import usage
 from ui.cards import translate_match, day_label
+from model.event_status import pending_event_notice
 
 
 def _bet_date(b: dict):
@@ -177,6 +178,12 @@ def _render_bet(b, D, index):
     mode = b.get("mode", "")
     mode_badge = {"paper": "📐 paper", "real": "🎯 real"}.get(mode, "")
 
+    notice = pending_event_notice(st_, b.get("date_iso"), time_str)
+    notice_html = (
+        f"<div style='color:#fbbf24;font-size:.78rem;margin-top:7px;'>⏱ {notice}</div>"
+        if notice else ""
+    )
+
     score_html = ""
     if b.get("score"):
         score_html = (f"<span style='background:rgba(52,211,153,.25);"
@@ -208,6 +215,7 @@ def _render_bet(b, D, index):
       <div style="color:#8b93a7;font-size:.75rem;">
         {league} · 📅 {date_str}{(" " + time_str) if time_str else ""} · {mode_badge}
       </div>
+      {notice_html}
     </div>
     <div style="text-align:right;flex-shrink:0;">
       <div style="color:#34d399;font-weight:700;font-size:.95rem;">
