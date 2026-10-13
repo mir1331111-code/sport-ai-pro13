@@ -11,7 +11,7 @@ from data.sources import load_seasonal, parse_date
 from model.engine import Engine
 from betting.kelly import edge, expected_value, kelly
 from model.training_data import completed_training_row
-from model.evaluation import reliability_table, expected_calibration_error, temporal_calibration_comparison
+from model.evaluation import reliability_table, expected_calibration_error, temporal_calibration_comparison, paired_score_uncertainty
 from betting.historical_odds import pick_historical_odds as _pick_historical_odds
 
 
@@ -571,6 +571,25 @@ def render(matrix_n):
                 f"log loss {raw_logloss / raw_scored_count:.4f}; "
                 f"после текущей калибровки: Brier {brier:.4f}, log loss {logloss:.4f}. "
                 "Меньше — лучше. Это диагностическое сравнение, калибратор автоматически не переключается."
+            )
+        uncertainty = paired_score_uncertainty(scored_predictions, n_bootstrap=1000)
+        if uncertainty:
+            st.markdown("#### Статистическая неопределённость")
+            uncertainty_display = []
+            for item in uncertainty:
+                uncertainty_display.append({
+                    "Сравнение": item["Сравнение"],
+                    "Матчей": item["Матчей"],
+                    "Δ Brier": f'{item["Δ Brier"]:+.4f}',
+                    "95% CI Δ Brier": f'[{item["Brier CI 2.5%"]:+.4f}; {item["Brier CI 97.5%"]:+.4f}]',
+                    "Δ Log Loss": f'{item["Δ Log Loss"]:+.4f}',
+                    "95% CI Δ Log Loss": f'[{item["Log Loss CI 2.5%"]:+.4f}; {item["Log Loss CI 97.5%"]:+.4f}]',
+                })
+            st.dataframe(uncertainty_display, use_container_width=True, hide_index=True)
+            st.caption(
+                "Разница = первая модель/метод минус второй; отрицательное значение лучше. "
+                "Если 95% интервал включает ноль, данные не показывают ясного преимущества по этой метрике. "
+                "Это парный bootstrap по матчам, он не устраняет временную зависимость матчей и смещение данных."
             )
         temporal = temporal_calibration_comparison(scored_predictions)
         if temporal:
