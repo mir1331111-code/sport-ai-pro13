@@ -10,6 +10,7 @@ from storage import usage
 from ui.cards import translate_match, day_label
 from model.event_status import pending_event_notice
 from betting.result_check import suggest_settlement
+from betting.performance import performance_rows as _performance_rows
 
 
 def _bet_date(b: dict):
@@ -380,51 +381,6 @@ def _render_data_quality_audit(D):
                 "Это read-only аудит: он ничего не закрывает и не переобучает. "
                 "Снимки без результата остаются ожидающими до отдельной проверки."
             )
-
-
-def _performance_rows(bets, group_key):
-    groups = {}
-    for bet in bets:
-        if not isinstance(bet, dict):
-            continue
-        status = str(bet.get("status") or "pending").lower()
-        if status not in ("won", "lost", "push", "void"):
-            continue
-        if status in ("push", "void"):
-            continue
-        stake = _safe_float(bet.get("stake"), 0.0)
-        odds = _safe_float(bet.get("odds"), 0.0)
-        if stake <= 0 or odds <= 1:
-            continue
-        if group_key == "odds":
-            if odds < 1.5:
-                label = "< 1.50"
-            elif odds < 2.0:
-                label = "1.50–1.99"
-            elif odds < 3.0:
-                label = "2.00–2.99"
-            elif odds < 5.0:
-                label = "3.00–4.99"
-            else:
-                label = "5.00+"
-        elif group_key == "market":
-            label = str(bet.get("market") or "—")
-        else:
-            label = str(bet.get("league") or bet.get("div") or "—")
-        g = groups.setdefault(label, {"Группа": label, "N": 0, "Won": 0,
-                                      "Lost": 0, "Stake": 0.0, "PnL": 0.0})
-        pnl = stake * (odds - 1.0) if status == "won" else -stake
-        g["N"] += 1
-        g["Won"] += status == "won"
-        g["Lost"] += status == "lost"
-        g["Stake"] += stake
-        g["PnL"] += pnl
-    rows = []
-    for g in groups.values():
-        g["Win rate"] = g["Won"] / g["N"] if g["N"] else 0.0
-        g["ROI"] = g["PnL"] / g["Stake"] if g["Stake"] else 0.0
-        rows.append(g)
-    return sorted(rows, key=lambda x: x["N"], reverse=True)
 
 
 def _render_performance_report():
