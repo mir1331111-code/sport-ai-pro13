@@ -1,6 +1,6 @@
 import unittest
 
-from ui.tabs.portfolio import _performance_rows
+from betting.performance import performance_rows as _performance_rows
 
 
 class PerformanceReportTests(unittest.TestCase):
