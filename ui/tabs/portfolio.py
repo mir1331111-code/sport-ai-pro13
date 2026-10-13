@@ -21,6 +21,18 @@ def _bet_date(b: dict):
     return datetime(2099, 1, 1)
 
 
+def _event_sort_key(b: dict):
+    """Предстоящие матчи сначала (по возрастанию), прошедшие — затем (по убыванию)."""
+    dt = _bet_date(b)
+    if dt.year >= 2099:
+        return (2, 0)
+    today = datetime.now().date()
+    event_day = dt.date()
+    if event_day >= today:
+        return (0, event_day.toordinal())
+    return (1, -event_day.toordinal())
+
+
 def _bet_pick_label(b: dict) -> str:
     """Понятная подпись ставки: '🏠 Победа Arsenal' или '⚽ Больше 2.5'."""
     pick = b.get("pick") or "—"
@@ -231,7 +243,8 @@ def render():
 
     sort_mode = c2.selectbox(
         "Сортировка",
-        ["По дате матча (сначала ближайшие)",
+        ["Сначала предстоящие, затем прошедшие",
+         "По дате матча (сначала ближайшие)",
          "По дате матча (сначала поздние)",
          "По дате добавления (новые)",
          "По вероятности",
@@ -278,7 +291,9 @@ def render():
         return
 
     # ==================== СОРТИРОВКА ====================
-    if sort_mode.startswith("По дате матча (сначала ближайшие)"):
+    if sort_mode == "Сначала предстоящие, затем прошедшие":
+        indexed.sort(key=lambda t: _event_sort_key(t[0]))
+    elif sort_mode.startswith("По дате матча (сначала ближайшие)"):
         indexed.sort(key=lambda t: _bet_date(t[0]))
     elif sort_mode.startswith("По дате матча (сначала поздние)"):
         indexed.sort(key=lambda t: _bet_date(t[0]), reverse=True)
@@ -369,9 +384,14 @@ def render():
             label = day_label(dt)
             grouped.setdefault(label, []).append((b, idx))
 
-        sorted_groups = sorted(
-            grouped.items(),
-            key=lambda kv: _bet_date(kv[1][0][0]))
+        if sort_mode == "Сначала предстоящие, затем прошедшие":
+            sorted_groups = sorted(
+                grouped.items(),
+                key=lambda kv: _event_sort_key(kv[1][0][0]))
+        else:
+            sorted_groups = sorted(
+                grouped.items(),
+                key=lambda kv: _bet_date(kv[1][0][0]))
 
         for label, items in sorted_groups:
             g_pending = sum(1 for b, _ in items if b.get("status") == "pending")
