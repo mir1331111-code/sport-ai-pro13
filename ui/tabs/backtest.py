@@ -11,6 +11,7 @@ from data.sources import load_seasonal, parse_date
 from model.engine import Engine
 from betting.kelly import edge, expected_value, kelly
 from model.training_data import completed_training_row
+from model.evaluation import reliability_table, expected_calibration_error
 
 
 def _f(value):
@@ -589,6 +590,30 @@ def render(matrix_n):
             f"Out-of-sample matches: {len(scored_predictions)} · "
             f"Model Brier: {brier:.4f} · Model log loss: {logloss:.4f}"
         )
+        # Reliability is measured only on pre-result walk-forward predictions.
+        # It is a diagnostic, not a guarantee that future probabilities calibrate.
+        reliability = reliability_table(scored_predictions, n_bins=10)
+        ece = expected_calibration_error(reliability)
+        st.markdown("#### Проверка калибровки вероятностей")
+        q1, q2 = st.columns(2)
+        q1.metric("Expected Calibration Error", f"{ece:.4f}" if ece is not None else "—")
+        q2.metric("Матчей вне обучения", len(scored_predictions))
+        st.caption(
+            "Таблица сравнивает среднюю заявленную вероятность с фактической частотой "
+            "для П1, X и П2 по диапазонам вероятности. Чем меньше разрыв, тем лучше; "
+            "редкие диапазоны с малым N ненадёжны. ECE зависит от разбиения на интервалы."
+        )
+        if reliability:
+            display_reliability = []
+            for item in reliability:
+                display_reliability.append({
+                    **item,
+                    "Средняя P": f"{item['Средняя P']:.1%}",
+                    "Фактическая частота": f"{item['Фактическая частота']:.1%}",
+                })
+            st.dataframe(display_reliability, use_container_width=True, hide_index=True)
+        else:
+            st.info("Недостаточно корректных out-of-sample прогнозов для таблицы калибровки.")
         if market_count:
             st.caption(
                 f"На {market_count} матчах с полными коэффициентами "
