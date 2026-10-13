@@ -124,3 +124,65 @@ def temporal_calibration_comparison(predictions):
             "Calibrated Log Loss": sum(item[1][1] for item in segment) / n,
         })
     return result
+
+
+def paired_score_uncertainty(predictions, n_bootstrap=1000, seed=2026):
+    """Bootstrap 95% CIs for paired score differences at the match level.
+
+    Positive difference means the first method has a higher (worse) loss.
+    Prediction rows use calibrated probabilities at [0:3], outcome at [3],
+    market probabilities at [4], and raw probabilities at [5:8].
+    The bootstrap quantifies sampling uncertainty; it does not correct for
+    temporal dependence, market-data bias, or repeated model selection.
+    """
+    import random
+
+    if n_bootstrap < 100:
+        raise ValueError("n_bootstrap must be at least 100")
+    pairs = {"Калибровка − raw": [], "Модель − рынок": []}
+    for row in predictions:
+        try:
+            actual = int(row[3])
+            calibrated = _multiclass_scores(row[:3], actual)
+            raw = _multiclass_scores(row[5:8], actual)
+            market = _multiclass_scores(row[4], actual)
+        except (TypeError, ValueError, IndexError):
+            continue
+        if calibrated is not None and raw is not None:
+            pairs["Калибровка − raw"].append((
+                calibrated[0] - raw[0], calibrated[1] - raw[1]
+            ))
+        if calibrated is not None and market is not None:
+            pairs["Модель − рынок"].append((
+                calibrated[0] - market[0], calibrated[1] - market[1]
+            ))
+
+    rng = random.Random(seed)
+    results = []
+    for comparison, values in pairs.items():
+        if len(values) < 2:
+            continue
+        n = len(values)
+        point_brier = sum(v[0] for v in values) / n
+        point_logloss = sum(v[1] for v in values) / n
+        boot_brier = []
+        boot_logloss = []
+        for _ in range(n_bootstrap):
+            sample = [values[rng.randrange(n)] for _ in range(n)]
+            boot_brier.append(sum(v[0] for v in sample) / n)
+            boot_logloss.append(sum(v[1] for v in sample) / n)
+        boot_brier.sort()
+        boot_logloss.sort()
+        lo = max(0, int(0.025 * n_bootstrap))
+        hi = min(n_bootstrap - 1, int(0.975 * n_bootstrap))
+        results.append({
+            "Сравнение": comparison,
+            "Матчей": n,
+            "Δ Brier": point_brier,
+            "Brier CI 2.5%": boot_brier[lo],
+            "Brier CI 97.5%": boot_brier[hi],
+            "Δ Log Loss": point_logloss,
+            "Log Loss CI 2.5%": boot_logloss[lo],
+            "Log Loss CI 97.5%": boot_logloss[hi],
+        })
+    return results
