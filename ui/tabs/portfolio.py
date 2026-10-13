@@ -314,9 +314,77 @@ def _render_bet(b, D, index):
                 )
 
 
+def _render_data_quality_audit(D):
+    """Read-only audit: surface unresolved results and weak match identifiers."""
+    bets = [b for b in D.get("bets", []) if isinstance(b, dict)]
+    pending = [b for b in bets if b.get("status", "pending") == "pending"]
+    now = datetime.now()
+    stale = 0
+    missing_fixture = 0
+    missing_date_or_teams = 0
+    for b in pending:
+        if not b.get("fixture_id"):
+            missing_fixture += 1
+        if not (b.get("date_iso") or b.get("date")) or not (
+            b.get("home") and b.get("away")
+        ):
+            # Legacy records often only have a combined match label; flag them
+            # for review instead of silently treating them as matchable.
+            if not (b.get("match") or b.get("match_ru")):
+                missing_date_or_teams += 1
+        try:
+            dt = _bet_date(b)
+            if dt.year < 2099 and now - dt > timedelta(hours=48):
+                stale += 1
+        except (TypeError, ValueError):
+            pass
+
+    snapshots = []
+    if db.SQLITE_BOOT_OK:
+        try:
+            snapshots = db.fetch_decision_snapshots(limit=100000)
+        except Exception:
+            snapshots = []
+    snap_total = len(snapshots)
+    snap_pending = sum(
+        1 for x in snapshots
+        if str(x.get("result_status") or "pending").lower()
+        in ("", "pending", "unknown", "unresolved")
+    )
+    snap_without_fixture = sum(1 for x in snapshots if not x.get("fixture_id"))
+    snap_errors = sum(
+        1 for x in snapshots
+        if str(x.get("result_status") or "").lower()
+        in ("error", "invalid", "ambiguous", "match_not_found")
+    )
+
+    with st.expander("🧪 Контроль качества данных и результатов", expanded=True):
+        a, b, c, d = st.columns(4)
+        a.metric("Открытые ставки", len(pending))
+        b.metric("Старше 48 часов", stale)
+        c.metric("Без fixture_id", missing_fixture)
+        d.metric("Без надёжного описания", missing_date_or_teams)
+        st.caption(
+            "Старые незакрытые записи требуют проверки. Отсутствие fixture_id "
+            "не доказывает ошибку результата, но повышает риск неверного сопоставления."
+        )
+        if not db.SQLITE_BOOT_OK:
+            st.warning("SQLite недоступна: аудит снимков прогнозов ограничен локальным портфелем.")
+        else:
+            x, y, z = st.columns(3)
+            x.metric("Снимков прогнозов в SQLite", snap_total)
+            y.metric("Ожидают оценки результата", snap_pending)
+            z.metric("Без fixture_id / с ошибкой", f"{snap_without_fixture} / {snap_errors}")
+            st.caption(
+                "Это read-only аудит: он ничего не закрывает и не переобучает. "
+                "Снимки без результата остаются ожидающими до отдельной проверки."
+            )
+
+
 def render():
     D = st.session_state.data
     st.header("💼 Портфель")
+    _render_data_quality_audit(D)
     if not D["bets"]:
         st.warning("Пусто. После СКАНа ставки появятся здесь.")
         return
