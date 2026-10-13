@@ -11,7 +11,7 @@ from data.sources import load_seasonal, parse_date
 from model.engine import Engine
 from betting.kelly import edge, expected_value, kelly
 from model.training_data import completed_training_row
-from model.evaluation import reliability_table, expected_calibration_error
+from model.evaluation import reliability_table, expected_calibration_error, temporal_calibration_comparison
 from betting.historical_odds import pick_historical_odds as _pick_historical_odds
 
 
@@ -571,6 +571,15 @@ def render(matrix_n):
                 f"log loss {raw_logloss / raw_scored_count:.4f}; "
                 f"после текущей калибровки: Brier {brier:.4f}, log loss {logloss:.4f}. "
                 "Меньше — лучше. Это диагностическое сравнение, калибратор автоматически не переключается."
+            )
+        temporal = temporal_calibration_comparison(scored_predictions)
+        if temporal:
+            st.markdown("#### Устойчивость калибровки во времени")
+            st.dataframe(temporal, use_container_width=True, hide_index=True)
+            st.caption(
+                "Сравнение ранней и поздней половин показывает, сохраняется ли эффект калибровки. "
+                "Это диагностический срез, а не независимый тест, если результаты уже использовались "
+                "для выбора модели."
             )
         # Reliability is measured only on pre-result walk-forward predictions.
         # It is a diagnostic, not a guarantee that future probabilities calibrate.
