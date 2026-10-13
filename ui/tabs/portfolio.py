@@ -325,13 +325,14 @@ def _render_data_quality_audit(D):
     for b in pending:
         if not b.get("fixture_id"):
             missing_fixture += 1
-        if not (b.get("date_iso") or b.get("date")) or not (
-            b.get("home") and b.get("away")
-        ):
-            # Legacy records often only have a combined match label; flag them
-            # for review instead of silently treating them as matchable.
-            if not (b.get("match") or b.get("match_ru")):
-                missing_date_or_teams += 1
+        has_date = bool(b.get("date_iso") or b.get("date"))
+        has_team_pair = bool(b.get("home") and b.get("away"))
+        has_match_label = bool(b.get("match") or b.get("match_ru"))
+        # Combined labels may be usable by a resolver, but they are weaker
+        # than explicit home/away fields; missing date or all match labels
+        # means the record cannot be safely matched automatically.
+        if not has_date or not (has_team_pair or has_match_label):
+            missing_date_or_teams += 1
         try:
             dt = _bet_date(b)
             if dt.year < 2099 and now - dt > timedelta(hours=48):
