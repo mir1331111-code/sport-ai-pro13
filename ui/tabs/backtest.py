@@ -77,26 +77,28 @@ def _pick_historical_odds(row):
         }
     """
 
-    p1 = (
-        _f(row.get("PSH"))
-        or _f(row.get("B365H"))
-    )
-
-    draw = (
-        _f(row.get("PSD"))
-        or _f(row.get("B365D"))
-    )
-
-    p2 = (
-        _f(row.get("PSA"))
-        or _f(row.get("B365A"))
-    )
-
-    return {
-        "П1": p1,
-        "X": draw,
-        "П2": p2,
+    # Use one bookmaker for the whole 1X2 market. Mixing a Pinnacle
+    # home price with Bet365 draw/away prices creates a synthetic market
+    # that never necessarily existed.
+    pinnacle = {
+        "П1": _f(row.get("PSH")),
+        "X": _f(row.get("PSD")),
+        "П2": _f(row.get("PSA")),
     }
+    if all(value is not None for value in pinnacle.values()):
+        return pinnacle
+
+    bet365 = {
+        "П1": _f(row.get("B365H")),
+        "X": _f(row.get("B365D")),
+        "П2": _f(row.get("B365A")),
+    }
+    if all(value is not None for value in bet365.values()):
+        return bet365
+
+    # Incomplete triplets are excluded from both signal generation and
+    # the market-probability baseline; do not silently mix bookmakers.
+    return {"П1": None, "X": None, "П2": None}
 
 
 def _best_signal(P, odds, min_edge, min_ev):
@@ -176,6 +178,12 @@ def render(matrix_n):
     st.caption(
         "Исторические букмекерские коэффициенты. "
         "Модель не видит результат матча до формирования сигнала."
+    )
+    st.warning(
+        "Ограничение данных: в исторических колонках нет подтверждённого времени "
+        "фиксации коэффициента. Бэктест не доказывает, что цена была доступна "
+        "в момент ставки; виртуальный PnL следует считать оценкой, а не "
+        "гарантируемым исполнимым результатом."
     )
 
     b1, b2, b3, b4 = st.columns(4)
