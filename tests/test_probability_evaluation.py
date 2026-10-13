@@ -1,6 +1,6 @@
 import unittest
 
-from model.evaluation import expected_calibration_error, reliability_table, temporal_calibration_comparison
+from model.evaluation import expected_calibration_error, reliability_table, temporal_calibration_comparison, paired_score_uncertainty
 
 
 class ProbabilityEvaluationTests(unittest.TestCase):
@@ -43,6 +43,26 @@ class ProbabilityEvaluationTests(unittest.TestCase):
             temporal_calibration_comparison([(0.5, 0.3, 0.2, 0, None, 0.5, 0.3, 0.2)]),
             [],
         )
+
+    def test_paired_bootstrap_reports_interval_and_pair_counts(self):
+        rows = [
+            (0.7, 0.2, 0.1, 0, (0.5, 0.3, 0.2), 0.5, 0.3, 0.2),
+            (0.2, 0.6, 0.2, 1, (0.3, 0.4, 0.3), 0.2, 0.6, 0.2),
+            (0.1, 0.2, 0.7, 2, (0.2, 0.3, 0.5), 0.1, 0.2, 0.7),
+            (0.6, 0.2, 0.2, 0, (0.4, 0.3, 0.3), 0.6, 0.2, 0.2),
+        ]
+        result = paired_score_uncertainty(rows, n_bootstrap=200)
+        self.assertEqual(len(result), 2)
+        raw = next(x for x in result if x["Сравнение"] == "Калибровка − raw")
+        market = next(x for x in result if x["Сравнение"] == "Модель − рынок")
+        self.assertEqual(raw["Матчей"], 4)
+        self.assertEqual(market["Матчей"], 4)
+        self.assertLessEqual(raw["Brier CI 2.5%"], raw["Brier CI 97.5%"])
+        self.assertLessEqual(market["Log Loss CI 2.5%"], market["Log Loss CI 97.5%"])
+
+    def test_bootstrap_requires_reasonable_replicates(self):
+        with self.assertRaises(ValueError):
+            paired_score_uncertainty([], n_bootstrap=10)
 
     def test_perfect_frequency_bin_has_zero_error(self):
         table = [
