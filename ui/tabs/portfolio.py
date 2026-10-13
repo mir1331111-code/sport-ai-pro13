@@ -26,6 +26,14 @@ def _event_sort_key(b: dict):
     dt = _bet_date(b)
     if dt.year >= 2099:
         return (2, 0)
+    today = datetime.now().date()
+    event_day = dt.date()
+    if event_day > today:
+        return (0, dt.timestamp())
+    if event_day < today:
+        return (1, -dt.timestamp())
+
+    # Матч сегодня без времени нельзя уверенно считать прошедшим.
     match_time = str(b.get("match_time") or "").strip()
     for fmt in ("%H:%M", "%H.%M"):
         try:
@@ -34,6 +42,9 @@ def _event_sort_key(b: dict):
             break
         except ValueError:
             continue
+    else:
+        return (0, 0)
+
     now = datetime.now()
     if dt >= now:
         return (0, dt.timestamp())
