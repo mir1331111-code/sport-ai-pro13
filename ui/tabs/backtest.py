@@ -373,7 +373,8 @@ def render(matrix_n):
                     if implied_total > 0:
                         market_probs = tuple(p / implied_total for p in implied)
                 scored_predictions.append((
-                    P["p1"], P["x"], P["p2"], outcome_index, market_probs
+                    P["p1"], P["x"], P["p2"], outcome_index, market_probs,
+                    P.get("p1_raw"), P.get("x_raw"), P.get("p2_raw"),
                 ))
 
                 signal = _best_signal(
@@ -532,7 +533,11 @@ def render(matrix_n):
         market_count = 0
         model_market_brier = 0.0
         model_market_logloss = 0.0
-        for p1, px, p2, actual, market_probs in scored_predictions:
+        raw_brier = 0.0
+        raw_logloss = 0.0
+        raw_scored_count = 0
+        for prediction_row in scored_predictions:
+            p1, px, p2, actual, market_probs = prediction_row[:5]
             probs = [max(eps, min(1.0, p1)), max(eps, min(1.0, px)), max(eps, min(1.0, p2))]
             total_p = sum(probs) or 1.0
             probs = [p / total_p for p in probs]
@@ -540,6 +545,13 @@ def render(matrix_n):
             row_logloss = -math.log(probs[actual])
             brier += row_brier
             logloss += row_logloss
+            if len(prediction_row) >= 8 and all(v is not None for v in prediction_row[5:8]):
+                raw_probs = [max(eps, min(1.0, float(v))) for v in prediction_row[5:8]]
+                raw_total = sum(raw_probs) or 1.0
+                raw_probs = [v / raw_total for v in raw_probs]
+                raw_brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(raw_probs))
+                raw_logloss += -math.log(raw_probs[actual])
+                raw_scored_count += 1
             if market_probs is not None:
                 market_count += 1
                 market_brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(market_probs))
@@ -550,8 +562,16 @@ def render(matrix_n):
         logloss /= len(scored_predictions)
         st.caption(
             f"Out-of-sample matches: {len(scored_predictions)} · "
-            f"Model Brier: {brier:.4f} · Model log loss: {logloss:.4f}"
+            f"Calibrated Brier: {brier:.4f} · Calibrated log loss: {logloss:.4f}"
         )
+        if raw_scored_count:
+            st.caption(
+                f"Сравнение на тех же {raw_scored_count} матчах — "
+                f"до калибровки: Brier {raw_brier / raw_scored_count:.4f}, "
+                f"log loss {raw_logloss / raw_scored_count:.4f}; "
+                f"после текущей калибровки: Brier {brier:.4f}, log loss {logloss:.4f}. "
+                "Меньше — лучше. Это диагностическое сравнение, калибратор автоматически не переключается."
+            )
         # Reliability is measured only on pre-result walk-forward predictions.
         # It is a diagnostic, not a guarantee that future probabilities calibrate.
         reliability = reliability_table(scored_predictions, n_bins=10)
