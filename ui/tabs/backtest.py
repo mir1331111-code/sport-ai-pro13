@@ -221,22 +221,40 @@ def render(matrix_n):
     # Загрузка истории
     # ================================================================
 
-    rows_all = load_seasonal(
+    source_rows = load_seasonal(
         bt_div,
         bt_season,
     )
+    source_count = len(source_rows)
 
     # Use the same strict validation as the main training path: missing,
     # fractional, non-finite, impossible, and future scores are not results.
     rows_all = [
         r
-        for r in rows_all
+        for r in source_rows
         if completed_training_row(
             r,
             parse_date(r.get("Date", "")),
             date.today(),
         ) is not None
     ]
+    st.caption(
+        f"Источник: {source_count} строк · "
+        f"валидных завершённых матчей: {len(rows_all)} · "
+        f"лига {bt_div}, сезон {bt_season}"
+    )
+    if not source_rows:
+        st.error(
+            "Источник не вернул исторические данные. Проверь доступность "
+            "football-data.co.uk и повтори запуск позже."
+        )
+        return
+    if not rows_all:
+        st.error(
+            "Данные загружены, но ни одна строка не прошла проверку даты и счёта. "
+            "Бэктест остановлен, чтобы не показывать ложные результаты."
+        )
+        return
 
     rows_all.sort(
         key=lambda r: parse_date(
@@ -302,6 +320,7 @@ def render(matrix_n):
                 continue
 
     scored_predictions = []
+    matches_with_historical_odds = 0
 
     for j, r in enumerate(rows_all):
         h = (
@@ -366,6 +385,8 @@ def render(matrix_n):
         if j >= MIN_TRAIN_MATCHES and P:
                 outcome_index = 0 if hg > ag else (1 if hg == ag else 2)
                 historical_odds = _pick_historical_odds(r)
+                if all(historical_odds.get(k) is not None for k in ("П1", "X", "П2")):
+                    matches_with_historical_odds += 1
                 market_probs = None
                 if all(historical_odds.get(k) is not None for k in ("П1", "X", "П2")):
                     implied = [1.0 / historical_odds[k] for k in ("П1", "X", "П2")]
@@ -643,8 +664,16 @@ def render(matrix_n):
 
     if not log:
         st.warning(
-            "Сигналов нет. "
-            "Попробуй уменьшить min edge / min EV."
+            "Ставок по заданным порогам не найдено. Это не означает, "
+            "что сам бэктест не запускался."
+        )
+        st.caption(
+            f"Диагностика: валидных матчей — {len(rows_all)}; "
+            f"out-of-sample прогнозов — {len(scored_predictions)}; "
+            f"матчей с полными историческими коэффициентами — "
+            f"{matches_with_historical_odds}; ставок после фильтров — 0. "
+            "Если прогнозов 0, проверь обучение/предсказания; если нет полных "
+            "коэффициентов, сравнение ставок ограничено доступной историей."
         )
         return
 
