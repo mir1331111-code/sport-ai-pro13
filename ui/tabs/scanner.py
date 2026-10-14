@@ -39,12 +39,20 @@ def _reconcile_forecast_results(ledger, token, logs):
         return 0
     settled = 0
     try:
+        now = datetime.now(timezone.utc)
         pending = [row for row in ledger.rows() if row.get("result") is None]
         for row in pending:
             fixture_id = row.get("fixture_id")
             if not fixture_id or not str(fixture_id).isdigit():
                 continue
+            # Avoid spending API quota on fixtures that have not finished yet.
             try:
+                kickoff = row.get("kickoff_at")
+                if not kickoff:
+                    continue
+                kickoff_dt = datetime.fromisoformat(str(kickoff).replace("Z", "+00:00"))
+                if kickoff_dt.tzinfo is None or kickoff_dt > now - timedelta(hours=2):
+                    continue
                 result = fdorg_match_result(str(fixture_id), token)
                 if not result or result.get("status") != "FT":
                     continue
@@ -65,7 +73,7 @@ def _reconcile_forecast_results(ledger, token, logs):
     return settled
 
 
-def _record_raw_forecast(ledger, row, home, away, league, probabilities, logs):
+def _record_raw_forecast(ledger, known_keys, row, home, away, league, probabilities, logs):
     """Append one raw 1X2 forecast with source UTC kickoff; never alters served odds."""
     if ledger is None:
         return
@@ -76,7 +84,7 @@ def _record_raw_forecast(ledger, row, home, away, league, probabilities, logs):
     key = f"fdorg:{fixture_id}:{APP_VERSION}"
     try:
         # The scan can run repeatedly; do not rewrite the original forecast timestamp.
-        if any(item.get("forecast_key") == key for item in ledger.rows()):
+        if key in known_keys:
             return
         prices_raw = row.get("odds") or {}
         prices = {}
@@ -96,6 +104,7 @@ def _record_raw_forecast(ledger, row, home, away, league, probabilities, logs):
             entry_odds=prices or None,
             odds_source=row.get("odds_source") or None,
         )
+        known_keys.add(key)
     except Exception as exc:
         logs.append(f"📚 Журнал: прогноз не записан ({type(exc).__name__})")
 
@@ -310,8 +319,13 @@ def render(min_prob, kelly_frac, matrix_n):
 
         # Persistent learning audit: settle previous fixtures before new predictions.
         audit_ledger = _forecast_ledger()
+        audit_keys = set()
         if audit_ledger is not None:
             _reconcile_forecast_results(audit_ledger, token, logs)
+            try:
+                audit_keys = {item.get("forecast_key") for item in audit_ledger.rows()}
+            except Exception:
+                audit_keys = set()
 
         update_loader("📡 Сбор матчей...", 0.05, logs)
         rows_raw = fdorg_matches(days, token, logs)
@@ -356,7 +370,7 @@ def render(min_prob, kelly_frac, matrix_n):
             # Calibration remains shadow-only until chronological holdout validation.
             try:
                 _record_raw_forecast(
-                    audit_ledger, r, h_en, a_en, lg,
+                    audit_ledger, audit_keys, r, h_en, a_en, lg,
                     {"H": float(P["p1"]), "D": float(P["x"]), "A": float(P["p2"])},
                     logs,
                 )
