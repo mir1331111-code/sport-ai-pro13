@@ -1,0 +1,20 @@
+name: Forecast error learning tests
+on:
+  push:
+    branches: ["feat/online-error-learning"]
+  pull_request:
+    branches: [main, "feat/forecast-audit-ledger"]
+jobs:
+  error-learning:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile learning module and tests
+        run: python -m compileall -q model/forecast_ledger.py model/error_learner.py model/learning_service.py tests/test_forecast_ledger.py tests/test_error_learner.py tests/test_learning_service.py
+      - name: Run forecast ledger and learning tests
+        run: python -m unittest discover -s tests -p "test_error_learner.py" -v
+      - name: Run service integration tests
+        run: python -m unittest discover -s tests -p "test_learning_service.py" -v
