@@ -23,13 +23,16 @@ MIN_STAKE_PCT = 0.005   # 0.5% от банка — минимальный сте
 MAX_STAKE_PCT = 0.05    # 5% от банка — максимальный
 
 
-def _forecast_ledger():
-    """Open the persistent audit ledger; failure must never stop match scanning."""
+def _forecast_learning_service():
+    """Open persistent audit + shadow calibration; never block the live scanner."""
     try:
         from model.forecast_ledger import ForecastLedger
-        return ForecastLedger(str(DB_FILE) + ".forecast-ledger.sqlite")
+        from model.learning_service import ForecastLearningService
+        ledger = ForecastLedger(str(DB_FILE) + ".forecast-ledger.sqlite")
+        # Shadow mode: learn/evaluate, but do not change probabilities used for picks.
+        return ForecastLearningService(ledger, enabled=False, min_history=100)
     except Exception as exc:
-        _print_log(f"forecast ledger unavailable: {type(exc).__name__}: {exc}")
+        _print_log(f"forecast learning service unavailable: {type(exc).__name__}: {exc}")
         return None
 
 
@@ -73,7 +76,7 @@ def _reconcile_forecast_results(ledger, token, logs):
     return settled
 
 
-def _record_raw_forecast(ledger, known_keys, row, home, away, league, probabilities, logs):
+def _record_raw_forecast(service, known_keys, row, home, away, league, probabilities, logs):
     """Append one raw 1X2 forecast with source UTC kickoff; never alters served odds."""
     if ledger is None:
         return
@@ -95,7 +98,7 @@ def _record_raw_forecast(ledger, known_keys, row, home, away, league, probabilit
                     prices[outcome] = odd
             except (TypeError, ValueError):
                 pass
-        ledger.record_prediction(
+        decision = service.forecast(
             forecast_key=key, fixture_id=str(fixture_id),
             home_team=home, away_team=away, model_version=str(APP_VERSION),
             probabilities=probabilities,
@@ -105,6 +108,11 @@ def _record_raw_forecast(ledger, known_keys, row, home, away, league, probabilit
             odds_source=row.get("odds_source") or None,
         )
         known_keys.add(key)
+        if decision.get("history_n", 0) >= 100:
+            logs.append(
+                f"🧠 Калибровка в теневом режиме: история={decision['history_n']}, "
+                f"коррекция={'готова к оценке' if decision.get('learning_report') else 'нет данных'}"
+            )
     except Exception as exc:
         logs.append(f"📚 Журнал: прогноз не записан ({type(exc).__name__})")
 
@@ -318,7 +326,8 @@ def render(min_prob, kelly_frac, matrix_n):
         logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
 
         # Persistent learning audit: settle previous fixtures before new predictions.
-        audit_ledger = _forecast_ledger()
+        learning_service = _forecast_learning_service()
+        audit_ledger = learning_service.ledger if learning_service is not None else None
         audit_keys = set()
         if audit_ledger is not None:
             _reconcile_forecast_results(audit_ledger, token, logs)
@@ -370,7 +379,7 @@ def render(min_prob, kelly_frac, matrix_n):
             # Calibration remains shadow-only until chronological holdout validation.
             try:
                 _record_raw_forecast(
-                    audit_ledger, audit_keys, r, h_en, a_en, lg,
+                    learning_service, audit_keys, r, h_en, a_en, lg,
                     {"H": float(P["p1"]), "D": float(P["x"]), "A": float(P["p2"])},
                     logs,
                 )
