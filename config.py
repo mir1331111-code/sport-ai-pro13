@@ -30,7 +30,7 @@ CACHE_TTL = {
 LLM_PROVIDERS = {
     "Groq (бесплатно, быстро)": {
         "base": "https://groq-proxy13.mir1331111.workers.dev/openai/v1",
-        "model": "llama-3.3-70b-versatile",
+        "model": "model": "llama-3.1-8b-instant",
         "key_url": "https://console.groq.com/keys",
     },
     "Gemini (Google, бесплатно)": {
