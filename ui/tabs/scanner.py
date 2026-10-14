@@ -31,6 +31,13 @@ from betting.ranking import sort_cards, value_score, rank_score
 from betting.adaptive import build_profiles as build_adaptive_profiles, priority as adaptive_priority
 
 try:
+    from data.marathon import marathon_odds
+    HAS_MARATHON = True
+except Exception:
+    marathon_odds = None
+    HAS_MARATHON = False
+
+try:
     from context_football import analyze_match_context
     HAS_CONTEXT = True
 except Exception:
@@ -1049,6 +1056,40 @@ def render(min_prob, kelly_frac, matrix_n):
                 if real_odds:
                     odds_source = "market"
                     market_checked += 1
+
+            # Последний fallback — линия Марафона. Запрашиваем только рынок
+            # 1X2 и передаём дату/лигу, чтобы не брать цену чужого матча.
+            if (
+                not real_odds
+                and HAS_MARATHON
+                and (v.get("pick") in ("П1", "X", "П2"))
+            ):
+                try:
+                    marathon_quote = marathon_odds(
+                        h_en,
+                        a_en,
+                        date_iso=str(c.get("date_iso") or ""),
+                        div_code=str(c.get("div") or ""),
+                    )
+                    if marathon_quote and all(
+                        marathon_quote.get(k) and float(marathon_quote[k]) > 1.01
+                        for k in ("П1", "X", "П2")
+                    ):
+                        real_odds = {
+                            k: float(marathon_quote[k])
+                            for k in ("П1", "X", "П2")
+                        }
+                        odds_source = "marathon"
+                        market_checked += 1
+                        logs.append(
+                            f"Marathon odds: {h_en} — {a_en} "
+                            f"({c.get('date_iso') or 'date n/a'})"
+                        )
+                except Exception as exc:
+                    logs.append(
+                        f"⚠️ Marathon odds error {h_en} — {a_en}: "
+                        f"{type(exc).__name__}"
+                    )
 
             if real_odds:
                 try:
