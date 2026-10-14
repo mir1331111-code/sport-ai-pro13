@@ -49,3 +49,24 @@ print(ledger.metrics())
 `metrics()` returns sample size, multiclass Brier score (sum of squared errors across the three outcomes), log loss, top-class accuracy and a mean odds-movement diagnostic where both entry and closing prices are available. The odds diagnostic averages entry/closing-price ratios across matched 1X2 selections; it is **not** bet-level CLV unless the caller separately identifies and evaluates the actual selection placed.
 
 This module does not yet auto-connect to every live prediction or odds polling path. Until that integration is explicitly added and deployed, it records only forecasts passed to it by the caller. Metrics need enough settled, representative matches to be meaningful; they are not a guarantee of profitability.
+
+## Learning from past errors
+
+`model.error_learner.OnlineErrorLearner` adds an opt-in probability calibration layer. It looks at prior forecasts grouped into probability bins, compares predicted frequencies with observed outcomes, applies shrinkage toward the original probabilities, caps the size of corrections, and renormalizes H/D/A to sum to 1.
+
+```python
+from model.error_learner import OnlineErrorLearner
+
+learner = OnlineErrorLearner(ledger, min_bin_samples=30)
+report = learner.calibrate(
+    {"H": 0.50, "D": 0.28, "A": 0.22},
+    as_of=prediction_time,
+    league="Example League",
+)
+calibrated_probabilities = report["probabilities"]
+print(report["history_n"], report["bin_counts"], report["correction_applied"])
+```
+
+The `as_of` cutoff is mandatory. Both the historical prediction and its settlement must be earlier than the cutoff, preventing future-result leakage. With too few observations in a probability bin, the layer leaves that outcome's probability unchanged. The optional `evaluate()` method compares raw and calibrated Brier/log-loss scores in an expanding-window chronological diagnostic.
+
+This is a first step toward learning from mistakes, not automatic retraining of the full model. It should remain opt-in until it improves metrics on an untouched, chronological holdout and is connected to the live prediction path. Never use the same matches both to tune the correction and to claim unbiased final performance.
