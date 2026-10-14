@@ -26,8 +26,10 @@ class ForecastLedgerTests(unittest.TestCase):
 
     def test_record_is_idempotent_and_prediction_is_immutable(self):
         first = self.record()
-        second = self.record(probs={"H": 0.2, "D": 0.3, "A": 0.5})
+        second = self.record()
         self.assertEqual(first, second)
+        with self.assertRaises(ValueError):
+            self.record(probs={"H": 0.2, "D": 0.3, "A": 0.5})
         rows = self.ledger.rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["probabilities"]["H"], 0.6)
@@ -54,6 +56,12 @@ class ForecastLedgerTests(unittest.TestCase):
         self.ledger.settle("fx-1", "H")
         with self.assertRaises(ValueError):
             self.ledger.settle("fx-1", "A")
+
+    def test_settlement_scores_cannot_be_rewritten(self):
+        self.record()
+        self.ledger.settle("fx-1", "H", home_score=2, away_score=0)
+        with self.assertRaises(ValueError):
+            self.ledger.settle("fx-1", "H", home_score=1, away_score=0)
 
     def test_invalid_probability_and_timezone_rejected(self):
         with self.assertRaises(ValueError):

@@ -668,6 +668,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                     "competition": comp,
                     "Date": _msk_date(utc_date),
                     "Time": _msk_time(utc_date),
+                    "kickoff_utc": utc_date,
                     "HomeTeam": home,
                     "AwayTeam": away,
                     "fixture_id": m.get("id"),
