@@ -68,6 +68,8 @@ class ForecastLearningServiceTests(unittest.TestCase):
             settled_at=self.start + timedelta(days=21),
         )
         retry = self.forecast("stable")
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(retry["idempotent_replay"])
         self.assertEqual(first["probabilities"], retry["probabilities"])
         self.assertEqual(first["raw_probabilities"], retry["raw_probabilities"])
 
