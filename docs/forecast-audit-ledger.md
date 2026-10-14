@@ -89,7 +89,7 @@ from model.forecast_ledger import ForecastLedger
 from model.learning_service import ForecastLearningService
 
 ledger = ForecastLedger("data/forecast_audit.sqlite")
-learning = ForecastLearningService(ledger, enabled=True, min_history=100)
+learning = ForecastLearningService(ledger, enabled=False, min_history=100)
 decision = learning.forecast(
     forecast_key="provider:fixture-id:model-v1",
     fixture_id="provider:fixture-id",
@@ -119,3 +119,20 @@ Important operating rules:
 - Use a persistent file-backed SQLite database, not `:memory:`, for this
   multi-connection workflow. Back up the audit database and keep forecast keys
   stable and unique per fixture/model snapshot.
+
+
+## Live scanner integration
+
+The scanner now creates a persistent ledger at `DB_FILE + ".forecast-ledger.sqlite"`
+and sends raw 1X2 model probabilities to `ForecastLearningService` in shadow
+mode. The source UTC kickoff timestamp is retained from football-data.org.
+When the scanner runs again, it attempts to settle old ledger entries only
+after kickoff + 2 hours and only when football-data.org reports status `FT`
+with a final regular-time score. The original model probabilities used by the
+scanner remain unchanged; the calibration service records what it would have
+served, together with the available history and its report.
+
+This is intentionally a shadow deployment: results and reports accumulate
+without changing picks or stakes. Before enabling corrected probabilities,
+compare raw and calibrated Brier/log-loss on a chronological holdout and
+confirm the improvement is stable across time and leagues.
