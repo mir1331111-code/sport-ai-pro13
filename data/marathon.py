@@ -322,6 +322,16 @@ def _event_date_matches(date_iso: str, date_str: str) -> bool:
         except ValueError:
             continue
     if parsed is None:
+        # Некоторые линии показывают день/месяц без года. Год берём
+        # из целевого матча, но сравниваем строго день и месяц.
+        for fmt in ("%d.%m", "%d/%m"):
+            try:
+                partial = datetime.strptime(actual[:5], fmt)
+                expected_date = datetime.strptime(expected, "%Y-%m-%d").date()
+                return (partial.day, partial.month) == (expected_date.day, expected_date.month)
+            except ValueError:
+                continue
+    if parsed is None:
         return False
     try:
         return parsed == datetime.strptime(expected, "%Y-%m-%d").date()
