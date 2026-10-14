@@ -78,7 +78,7 @@ def _reconcile_forecast_results(ledger, token, logs):
 
 def _record_raw_forecast(service, known_keys, row, home, away, league, probabilities, logs):
     """Append one raw 1X2 forecast with source UTC kickoff; never alters served odds."""
-    if ledger is None:
+    if service is None:
         return
     fixture_id = row.get("fixture_id")
     kickoff = row.get("kickoff_utc")
@@ -94,7 +94,7 @@ def _record_raw_forecast(service, known_keys, row, home, away, league, probabili
         for outcome, name in (("H", "П1"), ("D", "X"), ("A", "П2")):
             try:
                 odd = float(prices_raw.get(name))
-                if odd > 1:
+                if odd > 1 and odd < float("inf"):
                     prices[outcome] = odd
             except (TypeError, ValueError):
                 pass
