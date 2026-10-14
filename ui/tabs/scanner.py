@@ -117,6 +117,44 @@ def _record_raw_forecast(service, known_keys, row, home, away, league, probabili
         logs.append(f"📚 Журнал: прогноз не записан ({type(exc).__name__})")
 
 
+def _render_learning_status():
+    """Show audit coverage and scoring metrics without changing picks."""
+    try:
+        service = _forecast_learning_service()
+        if service is None:
+            st.info("Журнал обучения пока недоступен.")
+            return
+        with st.expander("🧠 Обучение на ошибках и аудит прогнозов", expanded=False):
+            all_rows = service.ledger.rows()
+            metrics = service.ledger.metrics()
+            total = len(all_rows)
+            settled = metrics.get("n", 0)
+            a, b, c, d = st.columns(4)
+            a.metric("Прогнозов в журнале", total)
+            b.metric("Матчей с итогом", settled)
+            brier, loss, accuracy = metrics.get("brier"), metrics.get("log_loss"), metrics.get("accuracy")
+            c.metric("Brier (ниже лучше)", f"{brier:.4f}" if brier is not None else "—")
+            d.metric("Log loss (ниже лучше)", f"{loss:.4f}" if loss is not None else "—")
+            st.caption(
+                f"Точность top-1: {accuracy:.1%}" if accuracy is not None
+                else "Точность top-1 появится после подтверждённых результатов."
+            )
+            st.warning(
+                "Калибровка работает в теневом режиме: текущие вероятности, ставки "
+                "и размеры ставок не изменяются. Это защищает от включения обучения "
+                "до проверки на отдельной хронологической выборке."
+            )
+            if settled < 100:
+                st.info(f"Для первичного порога нужно больше истории: сейчас {settled}/100 завершённых прогнозов.")
+            else:
+                st.caption(
+                    "Порог истории достигнут. Это не доказательство улучшения: "
+                    "сначала сравни Brier и log loss на отдельном holdout."
+                )
+    except Exception as exc:
+        st.info(f"Диагностика обучения временно недоступна: {type(exc).__name__}")
+
+
 def _safe_filter(rows):
     if not isinstance(rows, list):
         return []
@@ -211,6 +249,7 @@ def render(min_prob, kelly_frac, matrix_n):
                      disabled=st.session_state.get("_scan_in_progress", False))
 
     if not scan:
+        _render_learning_status()
         fn = D.get("funnel")
         if fn:
             st.success(
