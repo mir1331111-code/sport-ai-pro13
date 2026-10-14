@@ -1,4 +1,4 @@
-"""ui/tabs/scanner.py — Сканер v13.5: TSDB + fdorg + ESPN + Grok + счётчики воронки."""
+"""ui/tabs/scanner.py — Сканер v13.6: TSDB + fdorg + ESPN + Marathon + Grok."""
 from __future__ import annotations
 
 import time
@@ -27,7 +27,10 @@ from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from ui.cards import render_verdict_card, translate_team
 from betting.ranking import sort_cards, value_score, rank_score
-from betting.adaptive import build_profiles as build_adaptive_profiles, priority as adaptive_priority
+from betting.adaptive import (
+    build_profiles as build_adaptive_profiles,
+    priority as adaptive_priority,
+)
 
 try:
     from context_football import analyze_match_context
@@ -216,6 +219,7 @@ def render(min_prob, kelly_frac, matrix_n):
     national_bet_count = 0
     ctx_count = 0
     llm_done = 0
+    marathon_found = 0
 
     c1, c2 = st.columns([4, 1])
     days = c1.slider("Горизонт, дней", 1, 14, 7)
@@ -240,7 +244,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 f"🛡️ Risk Guard: {fn.get('risk_rejected', 0)} · "
                 f"♻️ Дубли: {fn.get('duplicate_rejected', 0)} · "
                 f"🤖 LLM {fn.get('llm', 0)} · "
-                f"🔍 контекст {fn.get('ctx', 0)}"
+                f"🔍 контекст {fn.get('ctx', 0)} · "
+                f"🏁 Марафон: {fn.get('marathon', 0)}"
             )
         if HAS_CONTEXT:
             st.caption("🟢 Context Engine: подключён")
@@ -266,7 +271,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 f"**BANK RISK · <span style='color:{risk_color}'>{risk_label}</span>**",
                 unsafe_allow_html=True,
             )
-            st.progress(min(risk_ratio, 1.0), text=f"Заморожено {risk_pct:.1f}% банка")
+            st.progress(min(risk_ratio, 1.0),
+                        text=f"Заморожено {risk_pct:.1f}% банка")
         with rr2:
             st.metric("Pending exposure", f"{pending_stake:.0f}")
         with rr3:
@@ -288,7 +294,8 @@ def render(min_prob, kelly_frac, matrix_n):
         real_value_cards = [
             c for c in cards_view
             if c.get("best")
-            and (c.get("odds_source") in ("market", "grok_web", "manual", "fdorg"))
+            and (c.get("odds_source") in ("market", "grok_web", "manual",
+                                           "fdorg", "marathon"))
             and (c.get("verdict") or {}).get("real_odds", False)
         ]
         real_value_cards.sort(
@@ -336,15 +343,18 @@ def render(min_prob, kelly_frac, matrix_n):
 
         bet_cards = [
             c for c in cards_view
-            if str(c.get("decision") or (c.get("verdict") or {}).get("decision") or "").upper() == "BET"
+            if str(c.get("decision")
+                   or (c.get("verdict") or {}).get("decision") or "").upper() == "BET"
         ]
         watch_cards = [
             c for c in cards_view
-            if str(c.get("decision") or (c.get("verdict") or {}).get("decision") or "").upper() == "WATCH"
+            if str(c.get("decision")
+                   or (c.get("verdict") or {}).get("decision") or "").upper() == "WATCH"
         ]
         skip_cards = [
             c for c in cards_view
-            if str(c.get("decision") or (c.get("verdict") or {}).get("decision") or "").upper() == "SKIP"
+            if str(c.get("decision")
+                   or (c.get("verdict") or {}).get("decision") or "").upper() == "SKIP"
         ]
 
         st.markdown("### 🎯 DECISION BOARD")
@@ -384,7 +394,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 with watch_cols[wi % len(watch_cols)]:
                     st.markdown(f"**🟡 {wc.get('match_ru', wc.get('match', '—'))}**")
                     st.caption(
-                        f"{wv.get('label', '—')} · @ {float(wv.get('odd') or 0.0):.2f} · "
+                        f"{wv.get('label', '—')} · "
+                        f"@ {float(wv.get('odd') or 0.0):.2f} · "
                         f"Fair {float(wv.get('fair_odd') or 0.0):.2f}"
                     )
                     st.markdown(
@@ -393,7 +404,9 @@ def render(min_prob, kelly_frac, matrix_n):
                         f"Kelly **{float(wv.get('kelly_pct') or 0.0):.1%}**"
                     )
                     st.caption("Причина: " + str(
-                        wc.get('decision_reason') or wv.get('decision_reason') or "Цена ждёт улучшения."
+                        wc.get('decision_reason')
+                        or wv.get('decision_reason')
+                        or "Цена ждёт улучшения."
                     ))
 
         if skip_cards:
@@ -409,7 +422,9 @@ def render(min_prob, kelly_frac, matrix_n):
                         f"Kelly {float(sv.get('kelly_pct') or 0.0):.1%}"
                     )
                     st.caption("Причина: " + str(
-                        sc_.get('decision_reason') or sv.get('decision_reason') or "Цена не проходит фильтр."
+                        sc_.get('decision_reason')
+                        or sv.get('decision_reason')
+                        or "Цена не проходит фильтр."
                     ))
 
         waiting = [
@@ -452,7 +467,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 fair = float(v.get("fair_odd") or 0.0)
                 prob = float(v.get("prob") or 0.0)
                 min_entry = float(c.get("min_entry_odd") or 0.0)
-                key_base = str(c.get("fixture_id") or c.get("match")) + "_" + str(v.get("pick") or "pick")
+                key_base = (str(c.get("fixture_id") or c.get("match"))
+                            + "_" + str(v.get("pick") or "pick"))
                 st.markdown("**🎯 Ввести кэф букмекера вручную**")
                 q1, q2, q3 = st.columns([1.2, 1.2, 1])
                 manual_odd = q1.number_input(
@@ -701,11 +717,12 @@ def render(min_prob, kelly_frac, matrix_n):
         )
         if grok_enabled:
             logs.append(
-                f"🌐 GROK WEB: ON · лимит LLM {grok_remaining} · "
-                "источник кэфов: Web Search"
+                f"🌐 GROK WEB: ON · лимит LLM {grok_remaining}"
             )
         elif llm_provider_now != "Grok (x.ai)":
-            logs.append(f"🌐 GROK WEB: OFF · выбран провайдер {llm_provider_now or 'не задан'}")
+            logs.append(
+                f"🌐 GROK WEB: OFF · провайдер {llm_provider_now or 'не задан'}"
+            )
         elif not grok_key:
             logs.append("🌐 GROK WEB: OFF · не задан LLM key")
         else:
@@ -833,12 +850,14 @@ def render(min_prob, kelly_frac, matrix_n):
                 "adaptive_reason": adaptive_reason,
             })
 
+        # РЫНОК ДЛЯ ЛУЧШИХ
         market_candidates = [
             c for c in cards
             if (c.get("verdict") or {}).get("is_action", False)
         ]
         market_candidates.sort(
-            key=lambda c: -float(rank_score(c) or 0.0) * float(c.get("adaptive_factor") or 1.0)
+            key=lambda c: (-float(rank_score(c) or 0.0)
+                           * float(c.get("adaptive_factor") or 1.0))
         )
         top_external_candidates = market_candidates[:ODDS_SCAN_TOP_N]
         grok_candidates = market_candidates[:GROK_ODDS_TOP_N]
@@ -874,6 +893,8 @@ def render(min_prob, kelly_frac, matrix_n):
             f"final {len(market_candidates_final)}"
         )
 
+        update_loader("💱 Запрос реальных кэфов...", 0.65, logs)
+
         for c in market_candidates_final:
             v = c.get("verdict") or {}
             match_str = c.get("match", "")
@@ -885,17 +906,44 @@ def render(min_prob, kelly_frac, matrix_n):
             odds_source = "fdorg" if real_odds else "estimated"
             grok_quote = {}
 
-            if real_odds:
-                market_checked += 1
-                market_received += 1
+            # 1. МАРАФОН fallback
+            if not real_odds:
+                try:
+                    from data.marathon import marathon_odds
+                    marathon = marathon_odds(
+                        h_en, a_en,
+                        c.get("date_iso") or "",
+                        c.get("div") or "",
+                    )
+                    if marathon:
+                        real_odds = marathon
+                        odds_source = "marathon"
+                        marathon_found += 1
+                except Exception as exc:
+                    logs.append(
+                        f"⚠️ Marathon error {h_en} — {a_en}: {exc}"
+                    )
 
+            # 2. The Odds API
+            if (not real_odds and sport_key and odds_key
+                    and usage.odds_remaining() > 0):
+                try:
+                    real_odds = odds_api_fixture(sport_key, h_en, a_en, odds_key)
+                    if real_odds:
+                        odds_source = "market"
+                except Exception as exc:
+                    logs.append(
+                        f"⚠️ Odds API error {h_en} — {a_en}: {exc}"
+                    )
+
+            # 3. Grok Web
             candidate_key = (
                 str(c.get("fixture_id") or ""),
                 str(c.get("match") or ""),
                 str(c.get("date_iso") or ""),
             )
-
-            if not real_odds and grok_enabled and candidate_key in grok_keys:
+            if (not real_odds and grok_enabled
+                    and candidate_key in grok_keys):
                 try:
                     grok_quote = grok_web_odds(
                         h_en, a_en, c.get("league") or "Football",
@@ -904,22 +952,14 @@ def render(min_prob, kelly_frac, matrix_n):
                     if grok_quote.get("odds"):
                         real_odds = grok_quote["odds"]
                         odds_source = "grok_web"
-                        market_checked += 1
-                        market_received += 1
                 except Exception as exc:
-                    logs.append(f"⚠️ Grok odds error {h_en} — {a_en}: {exc}")
+                    logs.append(
+                        f"⚠️ Grok odds error {h_en} — {a_en}: {exc}"
+                    )
 
-            if (not real_odds and sport_key and odds_key
-                    and usage.odds_remaining() > 0):
-                try:
-                    real_odds = odds_api_fixture(sport_key, h_en, a_en, odds_key)
-                except Exception as exc:
-                    logs.append(f"⚠️ Odds API error {h_en} — {a_en}: {exc}")
-                    real_odds = None
-                if real_odds:
-                    odds_source = "market"
-                    market_checked += 1
-                    market_received += 1
+            if real_odds:
+                market_checked += 1
+                market_received += 1
 
             if real_odds:
                 try:
@@ -988,7 +1028,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 except Exception as exc:
                     logs.append(f"⚠️ Ошибка odds {h_en} — {a_en}: {exc}")
 
-            if c.get("best") is None and not (c.get("verdict") or {}).get("real_odds", False):
+            if (c.get("best") is None
+                    and not (c.get("verdict") or {}).get("real_odds", False)):
                 c["odds_source"] = "estimated" if v.get("fair_odd") else "unavailable"
                 c["grok_comment"] = ""
                 c["grok_bookmaker"] = ""
@@ -997,14 +1038,16 @@ def render(min_prob, kelly_frac, matrix_n):
 
         cards.sort(
             key=lambda c: (
-                -float(rank_score(c) or 0.0) * float(c.get("adaptive_factor") or 1.0),
+                -float(rank_score(c) or 0.0)
+                * float(c.get("adaptive_factor") or 1.0),
                 -float(value_score(c) or 0.0),
                 -float((c.get("verdict") or {}).get("ev") or 0.0),
                 -float((c.get("verdict") or {}).get("edge") or 0.0),
             )
         )
 
-        if skipped_started or skipped_bad_time or skipped_bad_date or skipped_missing_teams or skipped_model_error:
+        if (skipped_started or skipped_bad_time or skipped_bad_date
+                or skipped_missing_teams or skipped_model_error):
             logs.append(
                 f"⏱️ Scanner пропуски: начавшиеся/завершённые {skipped_started}"
                 f" · без времени сегодня {skipped_bad_time}"
@@ -1013,10 +1056,14 @@ def render(min_prob, kelly_frac, matrix_n):
                 f" · ошибка модели {skipped_model_error}"
             )
         else:
-            logs.append("⏱️ Scanner: все события прошли базовые фильтры и модель")
+            logs.append("⏱️ Scanner: все события прошли базовые фильтры")
 
-        adaptive_up = sum(1 for c in cards if float(c.get("adaptive_factor") or 1.0) > 1.0)
-        adaptive_down = sum(1 for c in cards if float(c.get("adaptive_factor") or 1.0) < 1.0)
+        adaptive_up = sum(
+            1 for c in cards if float(c.get("adaptive_factor") or 1.0) > 1.0
+        )
+        adaptive_down = sum(
+            1 for c in cards if float(c.get("adaptive_factor") or 1.0) < 1.0
+        )
         logs.append(
             f"🧠 Adaptive: ↑ {adaptive_up} · ↓ {adaptive_down} · "
             f"нейтральных {max(0, len(cards) - adaptive_up - adaptive_down)}"
@@ -1025,13 +1072,15 @@ def render(min_prob, kelly_frac, matrix_n):
         logs.append(
             f"🎯 Воронка: модель {model_candidates} · "
             f"рынок запрошен {market_checked} · получено {market_received} · "
-            f"BET {decision_bet} · WATCH {decision_watch} · SKIP {decision_skip} · "
-            f"MODEL_ONLY {decision_model_only} · "
-            f"estimated {quality_missing_market} · real {quality_real_market}"
+            f"BET {decision_bet} · WATCH {decision_watch} · "
+            f"SKIP {decision_skip} · MODEL_ONLY {decision_model_only} · "
+            f"estimated {quality_missing_market} · real {quality_real_market} · "
+            f"Марафон {marathon_found}"
         )
 
         llm_key = D.get("meta", {}).get("llm_api_key", "")
-        llm_prov = D.get("meta", {}).get("llm_provider", "Groq (бесплатно, быстро)")
+        llm_prov = D.get("meta", {}).get(
+            "llm_provider", "Groq (бесплатно, быстро)")
         llm_model = D.get("meta", {}).get("llm_model", "")
 
         action_cards = [c for c in cards if c.get("best") is not None]
@@ -1051,7 +1100,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     break
                 update_loader(
                     f"🤖 ИИ [{i_ + 1}/{min(LLM_TOP_N, len(action_cards))}]",
-                    0.70 + 0.10 * (i_ + 1) / max(1, LLM_TOP_N),
+                    0.75 + 0.10 * (i_ + 1) / max(1, LLM_TOP_N),
                     logs,
                 )
                 v_ = card.get("verdict", {})
@@ -1115,7 +1164,8 @@ def render(min_prob, kelly_frac, matrix_n):
         league_exposure = {}
 
         for c in cards:
-            if (c.get("decision") or (c.get("verdict") or {}).get("decision")) != "BET":
+            if (c.get("decision")
+                    or (c.get("verdict") or {}).get("decision")) != "BET":
                 continue
             b = c.get("best")
             if not b:
@@ -1142,7 +1192,9 @@ def render(min_prob, kelly_frac, matrix_n):
 
             bk = f"{c['match']}|{mkt}|{pick}"
             if bk in existing:
-                risk_reasons.append(f"duplicate: {c['match']} · {mkt} · {pick}")
+                risk_reasons.append(
+                    f"duplicate: {c['match']} · {mkt} · {pick}"
+                )
                 continue
 
             if c.get("women"):
@@ -1150,7 +1202,10 @@ def render(min_prob, kelly_frac, matrix_n):
             if c.get("national"):
                 national_bet_count += 1
 
-            mode = "real" if c.get("odds_source") in ("market", "grok_web", "fdorg", "manual") else "paper"
+            mode = ("real"
+                    if c.get("odds_source") in ("market", "grok_web",
+                                                 "fdorg", "manual", "marathon")
+                    else "paper")
 
             new_bets.append({
                 "match": c["match"], "match_ru": c["match_ru"],
@@ -1178,7 +1233,8 @@ def render(min_prob, kelly_frac, matrix_n):
                     "value_score": float(value_score(c) or 0.0),
                     "market": mkt,
                     "league": c.get("league"),
-                    "decision_reason": c.get("decision_reason") or c.get("verdict", {}).get("decision_reason"),
+                    "decision_reason": (c.get("decision_reason")
+                                        or c.get("verdict", {}).get("decision_reason")),
                 },
                 "women": c.get("women", False),
                 "national": c.get("national", False),
@@ -1190,8 +1246,10 @@ def render(min_prob, kelly_frac, matrix_n):
         decision_snapshots = []
         for dc in cards:
             dv = dc.get("verdict") or {}
-            decision = str(dc.get("decision") or dv.get("decision") or "").upper().strip()
-            has_real_odds = bool(dv.get("real_odds", False)) and float(dv.get("odd") or 0.0) > 1.01
+            decision = str(dc.get("decision")
+                           or dv.get("decision") or "").upper().strip()
+            has_real_odds = (bool(dv.get("real_odds", False))
+                             and float(dv.get("odd") or 0.0) > 1.01)
 
             probs = {
                 "П1": float(dc.get("p1") or 0.0),
@@ -1235,9 +1293,9 @@ def render(min_prob, kelly_frac, matrix_n):
                 "market": market, "pick": pick,
                 "decision": snapshot_decision,
                 "decision_reason": (
-                    "MODEL ONLY — прогноз сохранён без букмекерского коэффициента."
-                    if snapshot_decision == "MODEL_ONLY" else
-                    dc.get("decision_reason") or dv.get("decision_reason")
+                    "MODEL ONLY — прогноз без кэфа."
+                    if snapshot_decision == "MODEL_ONLY"
+                    else dc.get("decision_reason") or dv.get("decision_reason")
                 ),
                 "model_prob": model_prob,
                 "fair_odd": dv.get("fair_odd"),
@@ -1281,6 +1339,7 @@ def render(min_prob, kelly_frac, matrix_n):
             "decision_watch": decision_watch,
             "decision_skip": decision_skip,
             "decision_model_only": decision_model_only,
+            "marathon": marathon_found,
         }
         st.session_state.data = D2
         usage.set_local_data(D2)
@@ -1293,7 +1352,7 @@ def render(min_prob, kelly_frac, matrix_n):
 
         update_loader(
             f"✅ Готово! +{len(new_bets)} ставок · "
-            f"📡 {len(rows)} матчей · 🤖 {llm_done} LLM",
+            f"📡 {len(rows)} матчей · 🤖 {llm_done} LLM · 🏁 Марафон {marathon_found}",
             1.0, logs,
         )
         time.sleep(1.5)
