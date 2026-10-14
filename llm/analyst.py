@@ -164,19 +164,19 @@ def analyze_match(ctx: dict) -> Optional[str]:
     try:
         r = _sess.post(url, headers=headers, json=body,
                        timeout=30, proxies=NO_PROXY)
-        usage.llm_increment(1)
         _log(f"RESPONSE: HTTP {r.status_code}, len={len(r.text)}")
 
         if r.status_code != 200:
-            _log(f"ERROR HTTP {r.status_code}: {r.text[:300]}")
-            cache_put(ck, None)
+            # Не расходуем квоту на запрос, который провайдер отклонил,
+            # и не кэшируем временную ошибку как результат анализа.
+            _log(f"ERROR HTTP {r.status_code}: {r.text[:500]}")
             return None
+        usage.llm_increment(1)
 
         data = r.json()
         choices = data.get("choices") or []
         if not choices:
             _log(f"ERROR: нет choices: {str(data)[:300]}")
-            cache_put(ck, None)
             return None
 
         content = (choices[0].get("message") or {}).get("content", "")
