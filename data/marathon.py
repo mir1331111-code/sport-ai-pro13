@@ -291,6 +291,9 @@ RU_TO_EN_TEAM = {
 }
 
 
+_RU_TO_EN_NORMALIZED = {_norm(k): v for k, v in RU_TO_EN_TEAM.items()}
+
+
 def _find_team_match(team_en: str, team_ru: str) -> bool:
     """Консервативное сопоставление без опасного совпадения по подстроке."""
     te = _norm(team_en)
@@ -299,7 +302,7 @@ def _find_team_match(team_en: str, team_ru: str) -> bool:
         return False
     if te == tr:
         return True
-    en_from_ru = RU_TO_EN_TEAM.get(tr, "")
+    en_from_ru = _RU_TO_EN_NORMALIZED.get(tr, "")
     return bool(en_from_ru and te == _norm(en_from_ru))
 
 
