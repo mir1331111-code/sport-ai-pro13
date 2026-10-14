@@ -17,6 +17,10 @@ class MarathonMatchingTests(unittest.TestCase):
         self.assertTrue(_event_date_matches("2026-10-14", "14.10.2026"))
         self.assertFalse(_event_date_matches("2026-10-14", "15.10.2026"))
 
+    def test_date_without_year_matches_day_and_month(self):
+        self.assertTrue(_event_date_matches("2026-10-14", "14.10 19:30"))
+        self.assertFalse(_event_date_matches("2026-10-14", "15.10 19:30"))
+
     def test_unknown_event_date_is_rejected_when_date_required(self):
         self.assertFalse(_event_date_matches("2026-10-14", "сегодня"))
 
