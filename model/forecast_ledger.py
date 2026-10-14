@@ -131,8 +131,23 @@ class ForecastLedger:
                  odds_source, _timestamp(None)),
             )
             row = conn.execute(
-                "SELECT id FROM forecasts WHERE forecast_key=?", (forecast_key,)
+                """SELECT id,fixture_id,forecast_at,model_version,home_team,away_team,
+                league,probabilities_json,entry_odds_json,odds_source
+                FROM forecasts WHERE forecast_key=?""", (forecast_key,)
             ).fetchone()
+            expected = (
+                fixture_id, stamp, model_version, home_team, away_team, league,
+                json.dumps(probs, sort_keys=True),
+                json.dumps(prices, sort_keys=True) if prices is not None else None,
+                odds_source,
+            )
+            actual = (
+                row["fixture_id"], row["forecast_at"], row["model_version"],
+                row["home_team"], row["away_team"], row["league"],
+                row["probabilities_json"], row["entry_odds_json"], row["odds_source"],
+            )
+            if actual != expected:
+                raise ValueError("forecast_key already exists with a different payload")
             return int(row["id"])
 
     def settle(
@@ -160,14 +175,20 @@ class ForecastLedger:
         prices = _odds(closing_odds)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT result FROM forecasts WHERE forecast_key=?", (forecast_key,)
+                "SELECT result,home_score,away_score FROM forecasts WHERE forecast_key=?",
+                (forecast_key,),
             ).fetchone()
             if row is None:
                 raise KeyError(f"unknown forecast_key: {forecast_key}")
             if row["result"] is not None and row["result"] != result:
                 raise ValueError("conflicting settlement: result is immutable once set")
+            if row["home_score"] is not None and home_score is not None and (
+                row["home_score"] != home_score or row["away_score"] != away_score
+            ):
+                raise ValueError("conflicting settlement: scores are immutable once set")
             conn.execute(
-                """UPDATE forecasts SET result=?,home_score=?,away_score=?,
+                """UPDATE forecasts SET result=?,home_score=COALESCE(home_score,?),
+                away_score=COALESCE(away_score,?),
                 settled_at=COALESCE(settled_at,?),closing_odds_json=COALESCE(closing_odds_json,?),
                 closing_odds_source=COALESCE(closing_odds_source,?)
                 WHERE forecast_key=?""",
