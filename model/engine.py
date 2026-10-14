@@ -33,25 +33,10 @@ def _norm(name: str) -> str:
     if not name:
         return ""
 
+    # Remove punctuation/spacing only. Club words such as "City" and
+    # "United" are identity-bearing: stripping them merges distinct teams.
     s = str(name).lower().strip()
-
-    for suf in [
-        " fc",
-        " cf",
-        " afc",
-        " sc",
-        " ac",
-        " united",
-        " utd",
-        " city",
-        " town",
-        " rovers",
-        " county",
-    ]:
-        s = s.replace(suf, "")
-
-    s = re.sub(r"[^a-z0-9]", "", s)
-    return s
+    return re.sub(r"[^a-z0-9]", "", s)
 
 
 class Engine:
