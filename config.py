@@ -28,11 +28,11 @@ CACHE_TTL = {
 }
 
 LLM_PROVIDERS = {
-    "Groq (бесплатно, быстро)": {
-        "base": "https://api.groq.com/openai/v1",
-        "model": "openai/gpt-oss-120b",
-        "key_url": "https://console.groq.com/keys",
-    },
+   "Groq (бесплатно, быстро)": {
+    "base": "https://groq-proxy13.mir1331111.workers.dev/openai/v1",
+    "model": "llama-3.3-70b-versatile",
+    "key_url": "https://console.groq.com/keys",
+},
     "Gemini (Google, бесплатно)": {
         "base": "https://generativelanguage.googleapis.com/v1beta",
         "model": "gemini-2.5-flash",
