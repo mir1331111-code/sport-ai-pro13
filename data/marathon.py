@@ -59,8 +59,7 @@ DIV_TO_CATEGORY = {
 }
 
 
-# ============ СЛОВАРЬ РУССКИХ НАЗВАНИЙ КОМАНД МАРАФОНА ============
-# Из HTML берём реальные названия: "Эвертон", "Челси", "Тоттенхэм Хотспур" и т.д.
+# ============ СЛОВАРЬ РУССКИХ НАЗВАНИЙ КОМАНД ============
 RU_TO_EN_TEAM = {
     # ===== Англия. АПЛ =====
     "эвертон": "everton",
@@ -102,37 +101,24 @@ RU_TO_EN_TEAM = {
     "ковентри": "coventry",
     "сандерленд": "sunderland",
     "брентфорд": "brentford",
-    "стока": "stoke",
     "сток сити": "stoke",
-    "стoke сити": "stoke",
     "престон норт энд": "preston",
-    "престон": "preston",
     "миллуолл": "millwall",
-    "миллуол": "millwall",
     "кардифф сити": "cardiff",
-    "кардифф": "cardiff",
     "суонси сити": "swansea",
-    "суонси": "swansea",
     "линкольн сити": "lincoln",
-    "линкольн": "lincoln",
     "куинз парк рейнджерс": "qpr",
-    "кп": "qpr",
     "блекберн роверс": "blackburn",
-    "блекберн": "blackburn",
     "портсмут": "portsmouth",
-    "портсмout": "portsmouth",
     "дерби каунти": "derby",
-    "дерби": "derby",
     "рейксем": "wrexham",
     "чарльтон атлетик": "charlton",
-    "чарльтон": "charlton",
     "шеффилд юнайтед": "sheffield united",
     "шеффилд уэнсдей": "sheffield wednesday",
     "бирмингем сити": "birmingham",
-    "бирмингем": "birmingham",
     "мидлсбро": "middlesbrough",
-    "астон вилла": "aston villa",
-    "бернли": "burnley",
+    "стoke сити": "stoke",
+    "стoke": "stoke",
 
     # ===== Испания. Ла Лига =====
     "реал мадрид": "real madrid",
@@ -164,8 +150,6 @@ RU_TO_EN_TEAM = {
     "эспаньол": "espanyol",
     "лас пальмас": "las palmas",
     "реал вальядолид": "valladolid",
-    "сельта де виго": "celta vigo",
-    "райо": "rayo vallecano",
 
     # ===== Италия. Серия A =====
     "интер": "inter",
@@ -188,7 +172,6 @@ RU_TO_EN_TEAM = {
     "болонья 1909": "bologna",
     "bologna fc 1909": "bologna",
     "торino": "torino",
-    "торіно": "torino",
     "торіно": "torino",
     "венеция": "venezia",
     "венеция fc": "venezia",
@@ -233,11 +216,9 @@ RU_TO_EN_TEAM = {
     "майнц 05": "mainz 05",
     "1 fsv mainz 05": "mainz 05",
     "1 fsv майнц 05": "mainz 05",
-    "хoffenheim": "hoffenheim",
     "хоффенхайм": "hoffenheim",
     "унион берлин": "union berlin",
     "унион": "union berlin",
-    "бochum": "bochum",
     "бохум": "bochum",
     "хольштайн киль": "holstein kiel",
     "хольштайн": "holstein kiel",
@@ -246,7 +227,6 @@ RU_TO_EN_TEAM = {
     "st pauli": "st pauli",
     "гамбург": "hamburger sv",
     "гамбургер св": "hamburger sv",
-    "гамбургер сv": "hamburger sv",
     "hamburger sv": "hamburger sv",
     "1 fc köln": "fc koln",
     "1 fc кельн": "fc koln",
@@ -273,7 +253,6 @@ RU_TO_EN_TEAM = {
     "никола": "nice",
     "нисса": "nice",
     "nice": "nice",
-    "лans": "lens",
     "ланс": "lens",
     "rc ланс": "lens",
     "rc lens": "lens",
@@ -283,10 +262,8 @@ RU_TO_EN_TEAM = {
     "нат": "nantes",
     "нант": "nantes",
     "fc нант": "nantes",
-    "рeims": "reims",
     "реймс": "reims",
     "stade de reims": "reims",
-    "brest": "brest",
     "брест": "brest",
     "stade brestois": "brest",
     "монпелье": "montpellier",
@@ -294,11 +271,9 @@ RU_TO_EN_TEAM = {
     "toulouse fc": "toulouse",
     "гавр": "le havre",
     "le havre ac": "le havre",
-    "le гавр ac": "le havre",
     "анжe": "angers",
     "анжер": "angers",
     "angers sco": "angers",
-    "анжер sco": "angers",
     "труа": "troyes",
     "es труа ac": "troyes",
     "es troyes ac": "troyes",
@@ -337,7 +312,6 @@ RU_TO_EN_TEAM = {
     "акрон": "akron togliatti",
     "акрон тольятти": "akron togliatti",
     "динамо махачкала": "dynamo makhachkala",
-    "хімки": "khimki",
     "химки": "khimki",
 
     # ===== Португалия. Примейра =====
@@ -351,18 +325,15 @@ RU_TO_EN_TEAM = {
     "sc braga": "braga",
     "витория": "vitoria guimaraes",
     "витория гимарайнш": "vitoria guimaraes",
-    "бoавишта": "boavista",
     "боавишта": "boavista",
     "nacional": "cd nacional",
     "cd nacional": "cd nacional",
     "cd насьональ": "cd nacional",
     "насьональ": "cd nacional",
-    "фamalican": "fc famalicao",
     "фамаликан": "fc famalicao",
     "fc фамаликан": "fc famalicao",
     "fc famalicão": "fc famalicao",
     "жил vicente": "gil vicente",
-    "жил виcente": "gil vicente",
     "gil vicente fc": "gil vicente",
     "gil vicente": "gil vicente",
     "cs маритиму": "cs maritimo",
@@ -376,8 +347,6 @@ RU_TO_EN_TEAM = {
     "rio ave fc": "rio ave fc",
     "риу аве": "rio ave fc",
     "риу аве fc": "rio ave fc",
-    "sporting clube de portugal": "sporting cp",
-    "sporting cp": "sporting cp",
     "fc arouca": "fc arouca",
     "ароука": "fc arouca",
 
@@ -391,7 +360,6 @@ RU_TO_EN_TEAM = {
     "az alkmaar": "az alkmaar",
     "az алкмар": "az alkmaar",
     "az": "az alkmaar",
-    "utrecht": "fc utrecht",
     "fc utrecht": "fc utrecht",
     "утрехт": "fc utrecht",
     "твенте": "fc twente",
@@ -402,14 +370,11 @@ RU_TO_EN_TEAM = {
     "sc heerenveen": "sc heerenveen",
     "хееренвен": "sc heerenveen",
     "херенвен": "sc heerenveen",
-    "sc херенвен": "sc heerenveen",
     "ado den haag": "ado den haag",
     "адо ден хааг": "ado den haag",
     "sc cambuur-leeuwarden": "sc cambuur",
     "sc cambuur": "sc cambuur",
     "камбюр": "sc cambuur",
-    "sc камбюр": "sc cambuur",
-    "sc камбюр-леуварден": "sc cambuur",
     "willem ii tilburg": "willem ii",
     "willem ii": "willem ii",
     "виллем ii": "willem ii",
@@ -458,12 +423,10 @@ def _norm(s: str) -> str:
 
 
 def _norm_team_ru(s: str) -> str:
-    """Нормализация русских названий команд."""
     return re.sub(r"[^а-я0-9]", "", (s or "").lower())
 
 
 def _parse_events(html: str) -> list:
-    """Парсит HTML страницы category → список матчей."""
     events = []
     blocks = re.split(r'<tbody\s+data-event-treeid="(\d+)"', html)
 
@@ -534,7 +497,6 @@ def _parse_events(html: str) -> list:
 
 
 def fetch_league_events(div_code: str) -> list:
-    """Загружает и парсит события одной лиги."""
     cat_id = DIV_TO_CATEGORY.get(div_code)
     if not cat_id:
         return []
@@ -568,19 +530,18 @@ def _translate_ru_to_en(team_ru: str) -> str:
     key = _norm_team_ru(team_ru)
     if key in RU_TO_EN_TEAM:
         return RU_TO_EN_TEAM[key]
-    # Поиск по подстроке
     for ru, en in RU_TO_EN_TEAM.items():
         if ru in key or key in ru:
+            _log(f"  TRANSLATE (partial): '{team_ru}' → '{ru}' → '{en}'")
             return en
+    _log(f"  TRANSLATE FAILED: '{team_ru}' (norm: '{key}')")
     return key
 
 
 def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
                   div_code: str = "") -> Optional[dict]:
     """
-    Ищет кэфы Марафона для матча.
-    home_en, away_en — английские названия из нашей базы.
-    div_code — код лиги (E0, SP1, ...).
+    Ищет кэфы Марафона. Исправленная версия с нормализацией.
     """
     if not home_en or not away_en:
         return None
@@ -597,23 +558,20 @@ def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
             ev_home_ru = ev["home"]
             ev_away_ru = ev["away"]
 
-            ev_home_en = _translate_ru_to_en(ev_home_ru)
-            ev_away_en = _translate_ru_to_en(ev_away_ru)
+            # ФИКС: сначала перевод, потом нормализация
+            ev_home_en = _norm(_translate_ru_to_en(ev_home_ru))
+            ev_away_en = _norm(_translate_ru_to_en(ev_away_ru))
 
-            # Если словарь не нашёл — используем нормализованное русское
-            if not ev_home_en:
-                ev_home_en = _norm(ev_home_ru)
-            if not ev_away_en:
-                ev_away_en = _norm(ev_away_ru)
-
-            home_match = (hn == ev_home_en or hn in ev_home_en
+            home_match = (hn == ev_home_en
+                          or hn in ev_home_en
                           or ev_home_en in hn)
-            away_match = (an == ev_away_en or an in ev_away_en
+            away_match = (an == ev_away_en
+                          or an in ev_away_en
                           or ev_away_en in an)
 
             if home_match and away_match:
-                _log(f"FOUND: {ev_home_ru} ({ev_home_en}) vs "
-                     f"{ev_away_ru} ({ev_away_en}) = "
+                _log(f"FOUND: {ev_home_ru} → {ev_home_en} | "
+                     f"{ev_away_ru} → {ev_away_en} | "
                      f"П1 {ev['odds'].get('П1')} / "
                      f"X {ev['odds'].get('X')} / "
                      f"П2 {ev['odds'].get('П2')}")
@@ -627,5 +585,5 @@ def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
                     "source": "marathon",
                 }
 
-    _log(f"NOT FOUND: {home_en} vs {away_en} @ {date_iso}")
+    _log(f"NOT FOUND: {home_en} ({hn}) vs {away_en} ({an})")
     return None
