@@ -419,12 +419,15 @@ class Engine:
         lg="G",
         match_date=None,
         cup=False,
+        features=None,
     ) -> dict:
         """
         Строит прогноз до добавления результата текущего матча.
 
-        match_date и cup оставлены в интерфейсе для совместимости
-        с остальной системой.
+        match_date and cup remain backward-compatible. Optional features
+        may include timestamp-filtered xG as {"xg": {"home": float, "away": float}}.
+        Callers must obtain them via FeatureStore.features_as_of(fixture_id, cutoff)
+        so post-cutoff lineup/xG data cannot leak into historical predictions.
         """
 
         P0 = self.lp[lg]
@@ -515,6 +518,21 @@ class Engine:
                 * (0.85 + 0.30 * fa),
             ),
         )
+
+        # Optional xG blend. This is deliberately conservative and only
+        # activates when both sides have finite, plausible xG values.
+        xg_used = False
+        xg = features.get("xg") if isinstance(features, dict) else None
+        if isinstance(xg, dict):
+            try:
+                xg_home, xg_away = float(xg["home"]), float(xg["away"])
+                if (math.isfinite(xg_home) and math.isfinite(xg_away)
+                        and 0.0 <= xg_home <= 6.0 and 0.0 <= xg_away <= 6.0):
+                    lam_g_h = max(0.3, min(5.0, 0.70 * lam_g_h + 0.30 * xg_home))
+                    lam_g_a = max(0.25, min(4.5, 0.70 * lam_g_a + 0.30 * xg_away))
+                    xg_used = True
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass
 
         # ---------------------------------------------------------
         # H2H
@@ -654,6 +672,7 @@ class Engine:
             "games": games,
             "rest_days_home": rest_days_home,
             "rest_days_away": rest_days_away,
+            "xg_used": xg_used,
             "h2h_n": h2h_n,
 
             "e": elo_home,
