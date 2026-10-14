@@ -20,6 +20,7 @@ from data.sources import (
     parse_date,
 )
 from model.engine import Engine
+from model.training_data import completed_training_row
 from betting.verdict import (
     build_verdict, refine_with_real_odds, refine_with_manual_odd,
 )
@@ -137,31 +138,78 @@ def _train_engine(matrix_n, logs, update_loader):
     total = sum(
         len(dp.get(dv, [])) + len(dc.get(dv, [])) for dv in train_divs
     )
-    processed = 0
-    trained = 0
+    # Merge every league/season into one timeline. The engine has shared
+    # league/global state, so training league-by-league can expose future
+    # results from one league to earlier matches in another.
+    all_rows = []
+    skipped = 0
     for dv in train_divs:
         for src in (dp.get(dv, []), dc.get(dv, [])):
-            for r in src:
-                try:
-                    hg = float(r.get("FTHG", 0))
-                    ag = float(r.get("FTAG", 0))
-                    engine.learn_step(
-                        r["HomeTeam"], r["AwayTeam"], hg, ag, r,
-                        lg=dv, match_num=processed, total=total,
-                        match_date=parse_date(r.get("Date", "")),
-                    )
-                    trained += 1
-                except Exception:
-                    pass
-                processed += 1
-                if processed % 50 == 0:
-                    update_loader(
-                        f"Обучение [{processed}/{total}]",
-                        0.5 + processed / max(1, total) * 0.3,
-                        logs,
-                    )
+            for row in src:
+                date = parse_date(row.get("Date", "")) if isinstance(row, dict) else None
+                validated = completed_training_row(row, date, today.date())
+                if validated is None:
+                    skipped += 1
+                    continue
+                date, home, away, hg, ag = validated
+                all_rows.append((date, dv, row, home, away, hg, ag))
+
+    # Stable sort means same-day order is deterministic, though exact kickoff
+    # times are unavailable in many historical sources.
+    all_rows.sort(key=lambda item: (item[0], item[1], item[3], item[4]))
+    total_valid = len(all_rows)
+    trained = 0
+    # Historical sources often have a date but no reliable kickoff time.
+    # Freeze every prediction for a calendar day before learning any result
+    # from that day, preventing same-day outcome leakage across leagues too.
+    cursor = 0
+    while cursor < total_valid:
+        day = all_rows[cursor][0]
+        day_end = cursor + 1
+        while day_end < total_valid and all_rows[day_end][0] == day:
+            day_end += 1
+
+        frozen_day = []
+        for processed_idx in range(cursor, day_end):
+            date, dv, row, home, away, hg, ag = all_rows[processed_idx]
+            try:
+                prediction = engine.predict(
+                    home, away, dv, match_date=date,
+                    cup=dv in ("C1", "EL", "EC"),
+                )
+                frozen_day.append(
+                    (processed_idx, date, dv, row, home, away, hg, ag, prediction)
+                )
+            except Exception as exc:
+                logs.append(
+                    f"⚠️ Пропуск прогноза {home} — {away}: {type(exc).__name__}"
+                )
+                skipped += 1
+
+        for processed_idx, date, dv, row, home, away, hg, ag, prediction in frozen_day:
+            try:
+                engine.learn_step(
+                    home, away, hg, ag, row,
+                    lg=dv, match_num=processed_idx, total=total_valid,
+                    match_date=date, prediction=prediction,
+                )
+                trained += 1
+            except Exception as exc:
+                logs.append(
+                    f"⚠️ Пропуск обучающего матча {home} — {away}: {type(exc).__name__}"
+                )
+                skipped += 1
+
+        processed = day_end
+        if processed % 50 == 0 or processed == total_valid:
+            update_loader(
+                f"Обучение [{processed}/{total_valid}]",
+                0.5 + processed / max(1, total_valid) * 0.3,
+                logs,
+            )
+        cursor = day_end
     engine.trained_n = trained
-    logs.append(f"Обучено: {trained}")
+    logs.append(f"Обучено: {trained}; пропущено невалидных/будущих: {skipped}")
     return engine
 
 

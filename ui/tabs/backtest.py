@@ -1,12 +1,18 @@
 """ui/tabs/backtest.py — walk-forward бэктест."""
 from __future__ import annotations
 
+from datetime import date
+import math
+
 import streamlit as st
 
 from config import DIV_NAMES
 from data.sources import load_seasonal, parse_date
 from model.engine import Engine
 from betting.kelly import edge, expected_value, kelly
+from model.training_data import completed_training_row
+from model.evaluation import reliability_table, expected_calibration_error, temporal_calibration_comparison, paired_score_uncertainty
+from betting.historical_odds import pick_historical_odds as _pick_historical_odds
 
 
 def _f(value):
@@ -56,43 +62,6 @@ def _max_drawdown(equity_curve):
                 max_dd = dd
 
     return max_dd
-
-
-def _pick_historical_odds(row):
-    """
-    Берём реальные исторические букмекерские odds.
-
-    Приоритет:
-    Pinnacle -> Bet365.
-
-    Возвращаем:
-        {
-            "П1": ...,
-            "X": ...,
-            "П2": ...
-        }
-    """
-
-    p1 = (
-        _f(row.get("PSH"))
-        or _f(row.get("B365H"))
-    )
-
-    draw = (
-        _f(row.get("PSD"))
-        or _f(row.get("B365D"))
-    )
-
-    p2 = (
-        _f(row.get("PSA"))
-        or _f(row.get("B365A"))
-    )
-
-    return {
-        "П1": p1,
-        "X": draw,
-        "П2": p2,
-    }
 
 
 def _best_signal(P, odds, min_edge, min_ev):
@@ -173,6 +142,12 @@ def render(matrix_n):
         "Исторические букмекерские коэффициенты. "
         "Модель не видит результат матча до формирования сигнала."
     )
+    st.warning(
+        "Ограничение данных: в исторических колонках нет подтверждённого времени "
+        "фиксации коэффициента. Бэктест не доказывает, что цена была доступна "
+        "в момент ставки; виртуальный PnL следует считать оценкой, а не "
+        "гарантируемым исполнимым результатом."
+    )
 
     b1, b2, b3, b4 = st.columns(4)
 
@@ -246,20 +221,40 @@ def render(matrix_n):
     # Загрузка истории
     # ================================================================
 
-    rows_all = load_seasonal(
+    source_rows = load_seasonal(
         bt_div,
         bt_season,
     )
+    source_count = len(source_rows)
 
+    # Use the same strict validation as the main training path: missing,
+    # fractional, non-finite, impossible, and future scores are not results.
     rows_all = [
         r
-        for r in rows_all
-        if r.get("FTHG") not in (None, "")
-        and r.get("FTAG") not in (None, "")
-        and parse_date(
-            r.get("Date", "")
-        )
+        for r in source_rows
+        if completed_training_row(
+            r,
+            parse_date(r.get("Date", "")),
+            date.today(),
+        ) is not None
     ]
+    st.caption(
+        f"Источник: {source_count} строк · "
+        f"валидных завершённых матчей: {len(rows_all)} · "
+        f"лига {bt_div}, сезон {bt_season}"
+    )
+    if not source_rows:
+        st.error(
+            "Источник не вернул исторические данные. Проверь доступность "
+            "football-data.co.uk и повтори запуск позже."
+        )
+        return
+    if not rows_all:
+        st.error(
+            "Данные загружены, но ни одна строка не прошла проверку даты и счёта. "
+            "Бэктест остановлен, чтобы не показывать ложные результаты."
+        )
+        return
 
     rows_all.sort(
         key=lambda r: parse_date(
@@ -304,6 +299,29 @@ def render(matrix_n):
     # WALK-FORWARD
     # ================================================================
 
+    # Do not let one fixture's result influence another fixture on the
+    # same calendar day when the source has no kickoff timestamps.
+    pending_day = None
+    pending_rows = []
+
+    def _learn_pending(day_rows):
+        for pending_index, pending, pending_prediction in day_rows:
+            ph = (pending.get("HomeTeam") or "").strip()
+            pa = (pending.get("AwayTeam") or "").strip()
+            pdate = parse_date(pending.get("Date", ""))
+            try:
+                phg, pag = float(pending["FTHG"]), float(pending["FTAG"])
+                engine.learn_step(
+                    ph, pa, phg, pag, pending, lg=bt_div,
+                    match_num=pending_index, total=total,
+                    match_date=pdate, prediction=pending_prediction,
+                )
+            except (TypeError, ValueError, KeyError):
+                continue
+
+    scored_predictions = []
+    matches_with_historical_odds = 0
+
     for j, r in enumerate(rows_all):
         h = (
             r.get("HomeTeam")
@@ -340,6 +358,13 @@ def render(matrix_n):
         if not md:
             continue
 
+        if pending_day is None:
+            pending_day = md
+        elif md != pending_day:
+            _learn_pending(pending_rows)
+            pending_rows = []
+            pending_day = md
+
         # ------------------------------------------------------------
         # После начального training window начинаем тестировать.
         #
@@ -348,27 +373,30 @@ def render(matrix_n):
         # Значит результат текущего матча не попадает в модель.
         # ------------------------------------------------------------
 
-        if j >= MIN_TRAIN_MATCHES:
-            try:
-                P = engine.predict(
-                    h,
-                    a,
-                    bt_div,
-                    match_date=md,
-                    cup=bt_div in (
-                        "C1",
-                        "EL",
-                        "EC",
-                    ),
-                )
+        # Freeze the prediction before any result from this date is learned.
+        try:
+            P = engine.predict(
+                h, a, bt_div, match_date=md,
+                cup=bt_div in ("C1", "EL", "EC"),
+            )
+        except Exception:
+            P = None
 
-            except Exception:
-                P = None
-
-            if P:
-                historical_odds = (
-                    _pick_historical_odds(r)
-                )
+        if j >= MIN_TRAIN_MATCHES and P:
+                outcome_index = 0 if hg > ag else (1 if hg == ag else 2)
+                historical_odds = _pick_historical_odds(r)
+                if all(historical_odds.get(k) is not None for k in ("П1", "X", "П2")):
+                    matches_with_historical_odds += 1
+                market_probs = None
+                if all(historical_odds.get(k) is not None for k in ("П1", "X", "П2")):
+                    implied = [1.0 / historical_odds[k] for k in ("П1", "X", "П2")]
+                    implied_total = sum(implied)
+                    if implied_total > 0:
+                        market_probs = tuple(p / implied_total for p in implied)
+                scored_predictions.append((
+                    P["p1"], P["x"], P["p2"], outcome_index, market_probs,
+                    P.get("p1_raw"), P.get("x_raw"), P.get("p2_raw"),
+                ))
 
                 signal = _best_signal(
                     P,
@@ -490,25 +518,10 @@ def render(matrix_n):
                             }
                         )
 
-        # ------------------------------------------------------------
-        # После прогноза текущий матч добавляется в модель.
-        # ------------------------------------------------------------
-
-        try:
-            engine.learn_step(
-                h,
-                a,
-                hg,
-                ag,
-                r,
-                lg=bt_div,
-                match_num=j,
-                total=total,
-                match_date=md,
-            )
-
-        except Exception:
-            pass
+        # If prediction failed, skip this row rather than recomputing it later
+        # after same-day results have been applied.
+        if P is not None:
+            pending_rows.append((j, r, P))
 
         if j % 25 == 0:
             progress.progress(
@@ -521,16 +534,146 @@ def render(matrix_n):
                 )
             )
 
+    if pending_rows:
+        _learn_pending(pending_rows)
+
     progress.progress(1.0)
 
     # ================================================================
     # Результаты
     # ================================================================
 
+    # Probability metrics over the held-out walk-forward matches, not just
+    # selected bets. Multiclass Brier and log loss use pre-result predictions.
+    if scored_predictions:
+        eps = 1e-12
+        brier = 0.0
+        logloss = 0.0
+        market_brier = 0.0
+        market_logloss = 0.0
+        market_count = 0
+        model_market_brier = 0.0
+        model_market_logloss = 0.0
+        raw_brier = 0.0
+        raw_logloss = 0.0
+        paired_cal_brier = 0.0
+        paired_cal_logloss = 0.0
+        raw_scored_count = 0
+        for prediction_row in scored_predictions:
+            p1, px, p2, actual, market_probs = prediction_row[:5]
+            probs = [max(eps, min(1.0, p1)), max(eps, min(1.0, px)), max(eps, min(1.0, p2))]
+            total_p = sum(probs) or 1.0
+            probs = [p / total_p for p in probs]
+            row_brier = sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(probs))
+            row_logloss = -math.log(probs[actual])
+            brier += row_brier
+            logloss += row_logloss
+            if len(prediction_row) >= 8 and all(v is not None for v in prediction_row[5:8]):
+                raw_probs = [max(eps, min(1.0, float(v))) for v in prediction_row[5:8]]
+                raw_total = sum(raw_probs) or 1.0
+                raw_probs = [v / raw_total for v in raw_probs]
+                raw_brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(raw_probs))
+                raw_logloss += -math.log(raw_probs[actual])
+                paired_cal_brier += row_brier
+                paired_cal_logloss += row_logloss
+                raw_scored_count += 1
+            if market_probs is not None:
+                market_count += 1
+                market_brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(market_probs))
+                market_logloss += -math.log(max(eps, market_probs[actual]))
+                model_market_brier += row_brier
+                model_market_logloss += row_logloss
+        brier /= len(scored_predictions)
+        logloss /= len(scored_predictions)
+        st.caption(
+            f"Out-of-sample matches: {len(scored_predictions)} · "
+            f"Calibrated Brier: {brier:.4f} · Calibrated log loss: {logloss:.4f}"
+        )
+        if raw_scored_count:
+            st.caption(
+                f"Сравнение на тех же {raw_scored_count} матчах — "
+                f"до калибровки: Brier {raw_brier / raw_scored_count:.4f}, "
+                f"log loss {raw_logloss / raw_scored_count:.4f}; "
+                f"после текущей калибровки: Brier {paired_cal_brier / raw_scored_count:.4f}, "
+                f"log loss {paired_cal_logloss / raw_scored_count:.4f}. "
+                "Меньше — лучше. Это диагностическое сравнение, калибратор автоматически не переключается."
+            )
+        uncertainty = paired_score_uncertainty(scored_predictions, n_bootstrap=1000)
+        if uncertainty:
+            st.markdown("#### Статистическая неопределённость")
+            uncertainty_display = []
+            for item in uncertainty:
+                uncertainty_display.append({
+                    "Сравнение": item["Сравнение"],
+                    "Матчей": item["Матчей"],
+                    "Δ Brier": f'{item["Δ Brier"]:+.4f}',
+                    "95% CI Δ Brier": f'[{item["Brier CI 2.5%"]:+.4f}; {item["Brier CI 97.5%"]:+.4f}]',
+                    "Δ Log Loss": f'{item["Δ Log Loss"]:+.4f}',
+                    "95% CI Δ Log Loss": f'[{item["Log Loss CI 2.5%"]:+.4f}; {item["Log Loss CI 97.5%"]:+.4f}]',
+                })
+            st.dataframe(uncertainty_display, use_container_width=True, hide_index=True)
+            st.caption(
+                "Разница = первая модель/метод минус второй; отрицательное значение лучше. "
+                "Если 95% интервал включает ноль, данные не показывают ясного преимущества по этой метрике. "
+                "Это парный bootstrap по матчам, он не устраняет временную зависимость матчей и смещение данных."
+            )
+        temporal = temporal_calibration_comparison(scored_predictions)
+        if temporal:
+            st.markdown("#### Устойчивость калибровки во времени")
+            st.dataframe(temporal, use_container_width=True, hide_index=True)
+            st.caption(
+                "Сравнение ранней и поздней половин показывает, сохраняется ли эффект калибровки. "
+                "Это диагностический срез, а не независимый тест, если результаты уже использовались "
+                "для выбора модели."
+            )
+        # Reliability is measured only on pre-result walk-forward predictions.
+        # It is a diagnostic, not a guarantee that future probabilities calibrate.
+        reliability = reliability_table(scored_predictions, n_bins=10)
+        ece = expected_calibration_error(reliability)
+        st.markdown("#### Проверка калибровки вероятностей")
+        q1, q2 = st.columns(2)
+        q1.metric("Expected Calibration Error", f"{ece:.4f}" if ece is not None else "—")
+        q2.metric("Матчей вне обучения", len(scored_predictions))
+        st.caption(
+            "Таблица сравнивает среднюю заявленную вероятность с фактической частотой "
+            "для П1, X и П2 по диапазонам вероятности. Чем меньше разрыв, тем лучше; "
+            "редкие диапазоны с малым N ненадёжны. ECE зависит от разбиения на интервалы."
+        )
+        if reliability:
+            display_reliability = []
+            for item in reliability:
+                display_reliability.append({
+                    **item,
+                    "Средняя P": f"{item['Средняя P']:.1%}",
+                    "Фактическая частота": f"{item['Фактическая частота']:.1%}",
+                })
+            st.dataframe(display_reliability, use_container_width=True, hide_index=True)
+        else:
+            st.info("Недостаточно корректных out-of-sample прогнозов для таблицы калибровки.")
+        if market_count:
+            st.caption(
+                f"На {market_count} матчах с полными коэффициентами "
+                f"(сравнение на одной и той же выборке): "
+                f"модель Brier {model_market_brier / market_count:.4f} "
+                f"vs рынок {market_brier / market_count:.4f}; "
+                f"модель log loss {model_market_logloss / market_count:.4f} "
+                f"vs рынок {market_logloss / market_count:.4f}. "
+                "Для рынка использованы нормализованные обратные коэффициенты."
+            )
+
+
     if not log:
         st.warning(
-            "Сигналов нет. "
-            "Попробуй уменьшить min edge / min EV."
+            "Ставок по заданным порогам не найдено. Это не означает, "
+            "что сам бэктест не запускался."
+        )
+        st.caption(
+            f"Диагностика: валидных матчей — {len(rows_all)}; "
+            f"out-of-sample прогнозов — {len(scored_predictions)}; "
+            f"матчей с полными историческими коэффициентами — "
+            f"{matches_with_historical_odds}; ставок после фильтров — 0. "
+            "Если прогнозов 0, проверь обучение/предсказания; если нет полных "
+            "коэффициентов, сравнение ставок ограничено доступной историей."
         )
         return
 

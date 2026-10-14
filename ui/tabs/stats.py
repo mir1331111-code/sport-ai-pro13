@@ -2011,14 +2011,19 @@ def _render_watch_lab(D):
         for k, v in sorted(reason_counts.items(), key=lambda kv: -kv[1])
     ]
     st.markdown("**Почему WATCH**")
-    df_reason = pd.DataFrame(reason_rows)
-    st.dataframe(
-        df_reason.assign(
-            **{"%": df_reason["%"].map(lambda x: f"{x:.1f}%")}
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
+    # Явно задаём колонки: при пустом WATCH DataFrame без схемы не
+    # содержит "%", и обращение df_reason["%"] вызывает KeyError.
+    df_reason = pd.DataFrame(reason_rows, columns=["Причина", "N", "%"])
+    if df_reason.empty:
+        st.info("Пока нет WATCH-записей для распределения причин.")
+    else:
+        st.dataframe(
+            df_reason.assign(
+                **{"%": df_reason["%"].map(lambda x: f"{x:.1f}%")}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 
     # Разрез по Edge/EV показывает, где находится WATCH относительно порога.
     grouped = defaultdict(list)

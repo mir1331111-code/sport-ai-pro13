@@ -32,14 +32,23 @@ class PlattCalibrator:
     def fit(self, logits: Sequence[float], outcomes: Sequence[float]) -> None:
         L = np.asarray(logits, dtype=float)
         O = np.asarray(outcomes, dtype=float)
-        if L.size < 240 or L.size != O.size:
+        # Calibration inputs are flattened in triplets: home/draw/away.
+        # Reject malformed data instead of silently truncating or fitting NaNs.
+        if L.size < 240 or L.size != O.size or L.size % 3 != 0:
+            return
+        if not (np.isfinite(L).all() and np.isfinite(O).all()):
             return
         n_matches = L.size // 3
-        L = L[:n_matches * 3].reshape(n_matches, 3)
-        O = O[:n_matches * 3].reshape(n_matches, 3)
+        L = L.reshape(n_matches, 3)
+        O = O.reshape(n_matches, 3)
+        if not np.isin(O, (0.0, 1.0)).all() or not np.allclose(O.sum(axis=1), 1.0):
+            return
         n_val = max(20, int(n_matches * self.val_frac))
+        if n_val >= n_matches:
+            return
         tr = slice(0, n_matches - n_val)
         va = slice(n_matches - n_val, n_matches)
+        class_val_nll = []
 
         for c in range(3):
             z, y = L[:, c], O[:, c]
@@ -67,8 +76,10 @@ class PlattCalibrator:
                         break
             self.a[c] = best_a / z_sd
             self.b[c] = best_b - best_a * z_mu / z_sd
+            class_val_nll.append(best_val)
         self.trained = True
-        self.val_nll = best_val
+        # Report the mean validation loss across all three outcomes.
+        self.val_nll = float(np.mean(class_val_nll))
 
     def calibrate(self, p: float, ci: int = 0) -> float:
         if not self.trained:

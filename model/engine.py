@@ -645,6 +645,7 @@ class Engine:
         match_num=None,
         total=None,
         match_date=None,
+        prediction=None,
     ) -> dict:
         """
         Walk-forward learning step.
@@ -658,7 +659,7 @@ class Engine:
         Поэтому текущий матч не обучает сам себя до prediction.
         """
 
-        P = self.predict(
+        P = prediction if prediction is not None else self.predict(
             h,
             a,
             lg,
