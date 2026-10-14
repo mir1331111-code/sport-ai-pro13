@@ -73,6 +73,7 @@ class Engine:
 
         self.match_count = 0
         self.last_match_date: dict = {}
+        self.team_history: dict = defaultdict(list)
 
         self.trained_n = 0
 
@@ -98,6 +99,40 @@ class Engine:
             if values
             else default
         )
+
+    @staticmethod
+    def _as_day(value):
+        if value is None:
+            return None
+        if hasattr(value, "date") and not isinstance(value, str):
+            try:
+                return value.date()
+            except (TypeError, ValueError):
+                return None
+        return value if hasattr(value, "toordinal") else None
+
+    def _time_weighted_mean(self, team, field, as_of, fallback, half_life=55.0):
+        """Exponential time-decayed mean; excludes observations after as_of."""
+        day = self._as_day(as_of)
+        weighted_sum = 0.0
+        weight_sum = 0.0
+        for observed_day, record in self.team_history.get(team, []):
+            if field not in record:
+                continue
+            if day is not None and observed_day is not None and observed_day > day:
+                continue
+            age = max(0, (day - observed_day).days) if day is not None and observed_day is not None else 0
+            weight = 0.5 ** (age / half_life)
+            weighted_sum += float(record[field]) * weight
+            weight_sum += weight
+        return weighted_sum / weight_sum if weight_sum else fallback
+
+    def _rest_days(self, team, match_date):
+        current = self._as_day(match_date)
+        previous = self._as_day(self.last_match_date.get(team))
+        if current is None or previous is None:
+            return None
+        return max(0, (current - previous).days)
 
     def _p(self, lam, k):
         try:
@@ -268,6 +303,18 @@ class Engine:
             else (1 if hg == ag else 0)
         )
 
+        observed_day = self._as_day(match_date)
+        self.team_history[h].append((observed_day, {
+            "home_scored": hg, "home_conceded": ag,
+            "form": 3 if hg > ag else (1 if hg == ag else 0),
+        }))
+        self.team_history[a].append((observed_day, {
+            "away_scored": ag, "away_conceded": hg,
+            "form": 3 if ag > hg else (1 if ag == hg else 0),
+        }))
+        self.team_history[h] = self.team_history[h][-500:]
+        self.team_history[a] = self.team_history[a][-500:]
+
         self.hg.append(hg)
         self.ag.append(ag)
 
@@ -421,33 +468,25 @@ class Engine:
 
         sh = self.st[h]
         sa = self.st[a]
+        rest_days_home = self._rest_days(h, match_date)
+        rest_days_away = self._rest_days(a, match_date)
 
         # ---------------------------------------------------------
         # Силы атаки / защиты
         # ---------------------------------------------------------
 
-        attack_home = (
-            self._m(sh["hs"], lh_g)
-            / lh_g
-        )
+        home_scored = self._time_weighted_mean(h, "home_scored", match_date, self._m(sh["hs"], lh_g))
+        home_conceded = self._time_weighted_mean(h, "home_conceded", match_date, self._m(sh["hc"], la_g))
+        away_scored = self._time_weighted_mean(a, "away_scored", match_date, self._m(sa["as"], la_g))
+        away_conceded = self._time_weighted_mean(a, "away_conceded", match_date, self._m(sa["ac"], lh_g))
 
-        defense_home = (
-            self._m(sh["hc"], la_g)
-            / la_g
-        )
+        attack_home = home_scored / lh_g
+        defense_home = home_conceded / la_g
+        attack_away = away_scored / la_g
+        defense_away = away_conceded / lh_g
 
-        attack_away = (
-            self._m(sa["as"], la_g)
-            / la_g
-        )
-
-        defense_away = (
-            self._m(sa["ac"], lh_g)
-            / lh_g
-        )
-
-        fh = self._form(h)
-        fa = self._form(a)
+        fh = self._time_weighted_mean(h, "form", match_date, self._form(h) * 3.0) / 3.0
+        fa = self._time_weighted_mean(a, "form", match_date, self._form(a) * 3.0) / 3.0
 
         # ---------------------------------------------------------
         # Ожидаемые голы
@@ -613,6 +652,8 @@ class Engine:
             ),
 
             "games": games,
+            "rest_days_home": rest_days_home,
+            "rest_days_away": rest_days_away,
             "h2h_n": h2h_n,
 
             "e": elo_home,
