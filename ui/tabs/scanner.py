@@ -1,4 +1,4 @@
-"""ui/tabs/scanner.py — Сканер v13.6: TSDB + fdorg + ESPN + Marathon + Grok."""
+"""ui/tabs/scanner.py — Сканер v13.7: TSDB + fdorg + ESPN + Marathon + Grok."""
 from __future__ import annotations
 
 import time
@@ -716,13 +716,9 @@ def render(min_prob, kelly_frac, matrix_n):
             and grok_remaining > 0
         )
         if grok_enabled:
-            logs.append(
-                f"🌐 GROK WEB: ON · лимит LLM {grok_remaining}"
-            )
+            logs.append(f"🌐 GROK WEB: ON · лимит LLM {grok_remaining}")
         elif llm_provider_now != "Grok (x.ai)":
-            logs.append(
-                f"🌐 GROK WEB: OFF · провайдер {llm_provider_now or 'не задан'}"
-            )
+            logs.append(f"🌐 GROK WEB: OFF · провайдер {llm_provider_now or 'не задан'}")
         elif not grok_key:
             logs.append("🌐 GROK WEB: OFF · не задан LLM key")
         else:
@@ -895,7 +891,7 @@ def render(min_prob, kelly_frac, matrix_n):
 
         update_loader("💱 Запрос реальных кэфов...", 0.65, logs)
 
-        # МАРАФОН: загружаем все лиги ОДИН РАЗ заранее
+        # МАРАФОН: загружаем все лиги заранее ОДИН РАЗ
         marathon_cache = {}
         try:
             from data.marathon import fetch_league_events, DIV_TO_CATEGORY
@@ -908,6 +904,15 @@ def render(min_prob, kelly_frac, matrix_n):
             )
         except Exception as exc:
             logs.append(f"⚠️ Marathon import error: {exc}")
+            marathon_cache = {}
+
+        # ИМПОРТИРУЕМ ПАРСЕР ОДИН РАЗ
+        try:
+            from data.marathon import _norm as _mar_norm
+            from data.marathon import RU_TO_EN_TEAM as _MAR_RU_EN
+        except Exception:
+            _mar_norm = None
+            _MAR_RU_EN = {}
 
         for c in market_candidates_final:
             v = c.get("verdict") or {}
@@ -921,23 +926,26 @@ def render(min_prob, kelly_frac, matrix_n):
             grok_quote = {}
 
             # 1. МАРАФОН fallback
-            if not real_odds:
+            if not real_odds and _mar_norm is not None:
                 try:
-                    from data.marathon import _norm, RU_TO_EN_TEAM
-                    hn = _norm(h_en)
-                    an = _norm(a_en)
+                    hn = _mar_norm(h_en)
+                    an = _mar_norm(a_en)
                     dv = c.get("div") or ""
-                    events = marathon_cache.get(dv, []) if dv else []
+                    events = marathon_cache.get(dv, [])
                     if not events:
+                        # Если в этой лиге нет — пробуем ВСЕ лиги
                         for _dv, _evs in marathon_cache.items():
-                            events = _evs
-                            if events:
+                            if _evs:
+                                events = _evs
                                 break
+                    found = False
                     for ev in events:
-                        ev_home_en = RU_TO_EN_TEAM.get(_norm(ev["home"]),
-                                                        _norm(ev["home"]))
-                        ev_away_en = RU_TO_EN_TEAM.get(_norm(ev["away"]),
-                                                        _norm(ev["away"]))
+                        ev_home_en = _MAR_RU_EN.get(
+                            _mar_norm(ev["home"]),
+                            _mar_norm(ev["home"]))
+                        ev_away_en = _MAR_RU_EN.get(
+                            _mar_norm(ev["away"]),
+                            _mar_norm(ev["away"]))
                         if ((hn in ev_home_en or ev_home_en in hn)
                                 and (an in ev_away_en or ev_away_en in an)):
                             real_odds = {
@@ -954,11 +962,10 @@ def render(min_prob, kelly_frac, matrix_n):
                                 f"X {ev['odds'].get('X')} / "
                                 f"П2 {ev['odds'].get('П2')}"
                             )
+                            found = True
                             break
                 except Exception as exc:
-                    logs.append(
-                        f"⚠️ Marathon error {h_en} — {a_en}: {exc}"
-                    )
+                    logs.append(f"⚠️ Marathon error {h_en} — {a_en}: {exc}")
 
             # 2. The Odds API
             if (not real_odds and sport_key and odds_key
@@ -968,9 +975,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     if real_odds:
                         odds_source = "market"
                 except Exception as exc:
-                    logs.append(
-                        f"⚠️ Odds API error {h_en} — {a_en}: {exc}"
-                    )
+                    logs.append(f"⚠️ Odds API error {h_en} — {a_en}: {exc}")
 
             # 3. Grok Web
             candidate_key = (
@@ -989,9 +994,7 @@ def render(min_prob, kelly_frac, matrix_n):
                         real_odds = grok_quote["odds"]
                         odds_source = "grok_web"
                 except Exception as exc:
-                    logs.append(
-                        f"⚠️ Grok odds error {h_en} — {a_en}: {exc}"
-                    )
+                    logs.append(f"⚠️ Grok odds error {h_en} — {a_en}: {exc}")
 
             if real_odds:
                 market_checked += 1
