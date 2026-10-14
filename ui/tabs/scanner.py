@@ -647,4 +647,680 @@ def render(min_prob, kelly_frac, matrix_n):
         for r in tsdb_rows + fdorg_rows + espn_rows:
             fid = str(r.get("fixture_id", "")).strip()
             home_key = "".join(
-                ch for ch in str(r.get("HomeTeam", "")).lower
+                ch for ch in str(r.get("HomeTeam", "")).lower()
+                if ch.isalnum()
+            )
+            away_key = "".join(
+                ch for ch in str(r.get("AwayTeam", "")).lower()
+                if ch.isalnum()
+            )
+            date_key = str(r.get("Date", ""))[:10]
+            match_key = (date_key, home_key, away_key)
+            key = ("id", fid) if fid else ("match",) + match_key
+
+            if key not in rows_by_key:
+                rows_by_key[key] = dict(r)
+                key_order.append(key)
+                continue
+
+            existing = rows_by_key[key]
+            for field, value in r.items():
+                if value in (None, "", [], {}):
+                    continue
+                if field == "odds":
+                    merged_odds = dict(existing.get("odds") or {})
+                    merged_odds.update({
+                        k: v for k, v in (value or {}).items()
+                        if v not in (None, "", 0)
+                    })
+                    if merged_odds:
+                        existing["odds"] = merged_odds
+                    continue
+                if not existing.get(field):
+                    existing[field] = value
+
+        rows_raw = [rows_by_key[k] for k in key_order]
+        rows = _safe_filter(rows_raw)
+
+        w_count = sum(1 for r in rows if r.get("women"))
+        n_count = sum(1 for r in rows if r.get("national"))
+        c_count = len(rows) - w_count - n_count
+        logs.append(
+            f"📡 ИСТОЧНИКИ: TSDB {len(tsdb_rows)} · "
+            f"fdorg {len(fdorg_rows)} · ESPN {len(espn_rows)}"
+        )
+        logs.append(
+            f"📡 ИТОГО: {len(rows)} · "
+            f"🏟 клубные {c_count} · 👩 женские {w_count} · "
+            f"🌍 сборные {n_count}"
+        )
+
+        # ============ 4. ENGINE ============
+        update_loader("🧠 Загрузка модели...", 0.20, logs)
+        engine = _load_engine(matrix_n, logs, update_loader)
+
+        # ============ 5. АНАЛИЗ ============
+        update_loader("🧠 Анализ матчей...", 0.50, logs)
+        cards = []
+        odds_key = D.get("meta", {}).get("odds_api_key", "")
+        llm_provider_now = D.get("meta", {}).get("llm_provider", "")
+        grok_key = str(D.get("meta", {}).get("llm_api_key", "") or "").strip()
+        grok_remaining = usage.llm_remaining()
+        grok_enabled = (
+            llm_provider_now == "Grok (x.ai)"
+            and bool(grok_key)
+            and grok_remaining > 0
+        )
+        if grok_enabled:
+            logs.append(
+                f"🌐 GROK WEB: ON · лимит LLM {grok_remaining} · "
+                "источник кэфов: Web Search"
+            )
+        elif llm_provider_now != "Grok (x.ai)":
+            logs.append(f"🌐 GROK WEB: OFF · выбран провайдер {llm_provider_now or 'не задан'}")
+        elif not grok_key:
+            logs.append("🌐 GROK WEB: OFF · не задан LLM key")
+        else:
+            logs.append("🌐 GROK WEB: OFF · дневной лимит LLM исчерпан")
+
+        skipped_started = 0
+        skipped_bad_time = 0
+        skipped_bad_date = 0
+        skipped_missing_teams = 0
+        skipped_model_error = 0
+
+        for r in rows:
+            d = parse_date(r.get("Date", ""))
+            if not d:
+                skipped_bad_date += 1
+                continue
+            if not (today <= d <= today + timedelta(days=days)):
+                continue
+
+            start_dt = _match_start_dt(r)
+            if start_dt is None:
+                if d.date() <= now.date():
+                    skipped_bad_time += 1
+                    continue
+            elif start_dt <= now:
+                skipped_started += 1
+                continue
+
+            h_en = (r.get("HomeTeam") or "").strip()
+            a_en = (r.get("AwayTeam") or "").strip()
+            if not h_en or not a_en:
+                skipped_missing_teams += 1
+                continue
+            h_ru = translate_team(h_en)
+            a_ru = translate_team(a_en)
+            lg = r.get("Div") or "G"
+            try:
+                P = engine.predict(
+                    h_en, a_en, lg,
+                    match_date=d,
+                    cup=lg in (
+                        "C1", "EL", "EC", "W_C1",
+                        "NT_WC", "NT_EURO", "NT_CA",
+                        "NT_ACN", "NT_ASC",
+                    ),
+                )
+            except Exception:
+                skipped_model_error += 1
+                continue
+            fh = engine.form_str(h_en)
+            fa = engine.form_str(a_en)
+            verdict, rows_, _ = build_verdict(
+                P, min_prob, D["bank"], kelly_frac,
+                h_ru, a_ru, fh, fa, P.get("h2h_n", 0),
+            )
+
+            best = None
+            odds_source = "estimated"
+
+            if verdict.get("is_action"):
+                model_candidates += 1
+            else:
+                verdict["real_odds"] = False
+                verdict["odd"] = None
+                verdict["ev"] = None
+                verdict["edge"] = None
+                verdict["stake"] = 0.0
+                verdict["is_bet"] = False
+
+            if verdict.get("is_action"):
+                verdict["real_odds"] = False
+                verdict["odd"] = verdict.get("fair_odd")
+                verdict["ev"] = None
+                verdict["edge"] = None
+                verdict["stake"] = 0.0
+                verdict["kelly_pct"] = 0.0
+                verdict["is_bet"] = False
+                odds_source = "estimated" if verdict.get("fair_odd") else "unavailable"
+            else:
+                verdict["real_odds"] = False
+                verdict["odd"] = None
+                verdict["ev"] = None
+                verdict["edge"] = None
+                verdict["stake"] = 0.0
+                verdict["is_bet"] = False
+
+            p_top = float(verdict.get("prob") or 0.0)
+            min_edge_price = 1.0 / (p_top - 0.03) if p_top > 0.03 else 0.0
+            min_ev_price = 1.03 / p_top if p_top > 0 else 0.0
+            min_entry_odd = max(min_edge_price, min_ev_price, 0.0)
+            adaptive_factor, adaptive_reason = adaptive_priority(
+                adaptive_profile, {
+                    "date_iso": d.strftime("%Y-%m-%d"),
+                    "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                    "div": lg,
+                    "verdict": verdict,
+                },
+            )
+
+            cards.append({
+                "div": lg,
+                "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                "match": f"{h_en} vs {a_en}",
+                "match_ru": f"{h_ru} — {a_ru}",
+                "date": (
+                    d.strftime("%d.%m")
+                    + (f" {r.get('Time', '')}" if r.get("Time") else "")
+                ),
+                "verdict": verdict,
+                "best": best,
+                "games": P["games"],
+                "fh": fh, "fa": fa,
+                "fixture_id": r.get("fixture_id"),
+                "date_iso": d.strftime("%Y-%m-%d"),
+                "lam_h": P["lams"][0],
+                "lam_a": P["lams"][1],
+                "p1": P["p1"], "px": P["x"], "p2": P["p2"],
+                "over": P["over"], "btts": P["btts"],
+                "odds_source": odds_source,
+                "fdorg_odds": {
+                    k: float(v) for k, v in (r.get("odds") or {}).items()
+                    if v is not None and float(v) > 1.01
+                },
+                "grok_comment": "",
+                "grok_bookmaker": "",
+                "min_entry_odd": round(min_entry_odd, 2) if min_entry_odd > 0 else None,
+                "women": r.get("women", False),
+                "national": r.get("national", False),
+                "kind": r.get("kind", "club"),
+                "home_badge": r.get("home_badge") or "",
+                "away_badge": r.get("away_badge") or "",
+                "league_badge": r.get("league_badge") or "",
+                "adaptive_factor": adaptive_factor,
+                "adaptive_reason": adaptive_reason,
+            })
+
+        # ============ 6. РЫНОК ДЛЯ ЛУЧШИХ ============
+        market_candidates = [
+            c for c in cards
+            if (c.get("verdict") or {}).get("is_action", False)
+        ]
+        market_candidates.sort(
+            key=lambda c: -float(rank_score(c) or 0.0) * float(c.get("adaptive_factor") or 1.0)
+        )
+        top_external_candidates = market_candidates[:ODDS_SCAN_TOP_N]
+        grok_candidates = market_candidates[:GROK_ODDS_TOP_N]
+        grok_keys = {
+            (
+                str(c.get("fixture_id") or ""),
+                str(c.get("match") or ""),
+                str(c.get("date_iso") or ""),
+            )
+            for c in grok_candidates
+        }
+        fdorg_candidates = [
+            c for c in market_candidates
+            if isinstance(c.get("fdorg_odds"), dict) and c.get("fdorg_odds")
+        ]
+        market_candidates_final = []
+        seen_market = set()
+        for candidate in fdorg_candidates + top_external_candidates:
+            key = (
+                str(candidate.get("fixture_id") or ""),
+                str(candidate.get("match") or ""),
+                str(candidate.get("date_iso") or ""),
+            )
+            if key in seen_market:
+                continue
+            seen_market.add(key)
+            market_candidates_final.append(candidate)
+
+        for c in market_candidates_final:
+            v = c.get("verdict") or {}
+            h_en, a_en = c.get("match", "").split(" vs ", 1)
+            sport_key = DIV_TO_ODDS.get(c.get("div"))
+            real_odds = c.get("fdorg_odds") or None
+            odds_source = "fdorg" if real_odds else "estimated"
+            grok_quote = {}
+
+            if real_odds:
+                market_checked += 1
+                market_received += 1
+
+            candidate_key = (
+                str(c.get("fixture_id") or ""),
+                str(c.get("match") or ""),
+                str(c.get("date_iso") or ""),
+            )
+
+            # Grok Web Search
+            if not real_odds and grok_enabled and candidate_key in grok_keys:
+                try:
+                    grok_quote = grok_web_odds(
+                        h_en, a_en, c.get("league") or "Football",
+                        grok_key, logs,
+                    )
+                    if grok_quote.get("odds"):
+                        real_odds = grok_quote["odds"]
+                        odds_source = "grok_web"
+                        market_checked += 1
+                        market_received += 1
+                except Exception as exc:
+                    logs.append(f"⚠️ Grok odds error {h_en} — {a_en}: {exc}")
+
+            # Odds API
+            if (not real_odds and sport_key and odds_key
+                    and usage.odds_remaining() > 0):
+                try:
+                    real_odds = odds_api_fixture(sport_key, h_en, a_en, odds_key)
+                except Exception as exc:
+                    logs.append(f"⚠️ Odds API error {h_en} — {a_en}: {exc}")
+                    real_odds = None
+                if real_odds:
+                    odds_source = "market"
+                    market_checked += 1
+                    market_received += 1
+
+            if real_odds:
+                try:
+                    refined_v, best = refine_with_real_odds(
+                        dict(v), [], real_odds,
+                        D["bank"], kelly_frac,
+                    )
+                    c["verdict"] = refined_v
+                    c["best"] = best
+                    c["odds_source"] = odds_source
+
+                    edge_now = refined_v.get("edge")
+                    ev_now = refined_v.get("ev")
+                    kelly_now = refined_v.get("kelly_pct")
+                    try:
+                        edge_f = float(edge_now) if edge_now is not None else 0.0
+                    except (TypeError, ValueError):
+                        edge_f = 0.0
+                    try:
+                        ev_f = float(ev_now) if ev_now is not None else 0.0
+                    except (TypeError, ValueError):
+                        ev_f = 0.0
+                    try:
+                        kelly_f = float(kelly_now) if kelly_now is not None else 0.0
+                    except (TypeError, ValueError):
+                        kelly_f = 0.0
+
+                    if (refined_v.get("real_odds", False)
+                            and best is not None
+                            and kelly_f > 0
+                            and edge_f >= 0.03
+                            and ev_f >= 0.03):
+                        decision = "BET"
+                        matches_with_best += 1
+                        quality_real_market += 1
+                        decision_bet += 1
+                    elif (refined_v.get("real_odds", False)
+                          and kelly_f > 0
+                          and (edge_f > 0 or ev_f > 0)):
+                        decision = "WATCH"
+                        quality_real_market += 1
+                        decision_watch += 1
+                    else:
+                        decision = "SKIP"
+                        quality_real_market += 1
+                        decision_skip += 1
+                        value_rejected += 1
+
+                    refined_v["decision"] = decision
+                    refined_v["is_bet"] = decision == "BET"
+                    refined_v["decision_reason"] = _decision_reason(
+                        decision, edge_f, ev_f, kelly_f, True
+                    )
+                    c["best"] = best if decision == "BET" else None
+                    c["decision"] = decision
+                    c["decision_reason"] = refined_v["decision_reason"]
+
+                    c["grok_comment"] = (
+                        str(grok_quote.get("comment") or "").strip()
+                        if odds_source == "grok_web" else ""
+                    )
+                    c["grok_bookmaker"] = (
+                        str(grok_quote.get("bookmaker") or "").strip()
+                        if odds_source == "grok_web" else ""
+                    )
+                except Exception as exc:
+                    logs.append(f"⚠️ Ошибка odds {h_en} — {a_en}: {exc}")
+
+            if c.get("best") is None and not (c.get("verdict") or {}).get("real_odds", False):
+                c["odds_source"] = "estimated" if v.get("fair_odd") else "unavailable"
+                c["grok_comment"] = ""
+                c["grok_bookmaker"] = ""
+                quality_missing_market += 1
+                decision_model_only += 1
+
+        # Финальный рейтинг
+        cards.sort(
+            key=lambda c: (
+                -float(rank_score(c) or 0.0) * float(c.get("adaptive_factor") or 1.0),
+                -float(value_score(c) or 0.0),
+                -float((c.get("verdict") or {}).get("ev") or 0.0),
+                -float((c.get("verdict") or {}).get("edge") or 0.0),
+            )
+        )
+
+        if skipped_started or skipped_bad_time or skipped_bad_date or skipped_missing_teams or skipped_model_error:
+            logs.append(
+                f"⏱️ Scanner пропуски: начавшиеся/завершённые {skipped_started}"
+                f" · без времени сегодня {skipped_bad_time}"
+                f" · битая дата {skipped_bad_date}"
+                f" · без команд {skipped_missing_teams}"
+                f" · ошибка модели {skipped_model_error}"
+            )
+        else:
+            logs.append("⏱️ Scanner: все события прошли базовые фильтры и модель")
+
+        adaptive_up = sum(1 for c in cards if float(c.get("adaptive_factor") or 1.0) > 1.0)
+        adaptive_down = sum(1 for c in cards if float(c.get("adaptive_factor") or 1.0) < 1.0)
+        logs.append(
+            f"🧠 Adaptive: ↑ {adaptive_up} · ↓ {adaptive_down} · "
+            f"нейтральных {max(0, len(cards) - adaptive_up - adaptive_down)}"
+        )
+
+        logs.append(
+            f"🎯 Воронка: модель {model_candidates} · "
+            f"рынок запрошен {market_checked} · получено {market_received} · "
+            f"BET {decision_bet} · WATCH {decision_watch} · SKIP {decision_skip} · "
+            f"MODEL_ONLY {decision_model_only} · "
+            f"estimated {quality_missing_market} · real {quality_real_market}"
+        )
+
+        # ============ 7. LLM ============
+        llm_key = D.get("meta", {}).get("llm_api_key", "")
+        llm_prov = D.get("meta", {}).get("llm_provider", "Groq (бесплатно, быстро)")
+        llm_model = D.get("meta", {}).get("llm_model", "")
+
+        action_cards = [c for c in cards if c.get("best") is not None]
+        action_cards.sort(
+            key=lambda c: -(c.get("verdict", {}).get("prob") or 0)
+        )
+
+        logs.append(
+            f"🤖 LLM подготовка: key={'есть' if llm_key else 'НЕТ'} · "
+            f"provider={llm_prov} · action_cards={len(action_cards)} · "
+            f"remaining={usage.llm_remaining()}"
+        )
+
+        if llm_key and usage.llm_remaining() > 0:
+            for i_, card in enumerate(action_cards[:LLM_TOP_N]):
+                if usage.llm_remaining() <= 0:
+                    break
+                update_loader(
+                    f"🤖 ИИ [{i_ + 1}/{min(LLM_TOP_N, len(action_cards))}]",
+                    0.70 + 0.10 * (i_ + 1) / max(1, LLM_TOP_N),
+                    logs,
+                )
+                v_ = card.get("verdict", {})
+                ctx = {
+                    "api_key": llm_key, "provider": llm_prov,
+                    "model": llm_model,
+                    "home": card.get("match_ru", "").split(" — ")[0],
+                    "away": card.get("match_ru", "").split(" — ")[-1],
+                    "league": card.get("league", ""),
+                    "date": card.get("date", ""),
+                    "lam_h": card.get("lam_h", 0),
+                    "lam_a": card.get("lam_a", 0),
+                    "p1": card.get("p1", 0), "px": card.get("px", 0),
+                    "p2": card.get("p2", 0),
+                    "over": card.get("over", 0),
+                    "btts": card.get("btts", 0),
+                    "fh": card.get("fh", "—"), "fa": card.get("fa", "—"),
+                    "pick": v_.get("label", ""),
+                    "prob": v_.get("prob", 0),
+                    "confidence": v_.get("confidence", ""),
+                    "ev": v_.get("ev", 0),
+                }
+                opinion = analyze_match(ctx)
+                if opinion:
+                    card["llm_opinion"] = opinion
+                    llm_done += 1
+            logs.append(f"🤖 LLM: {llm_done} мнений")
+
+        # ============ 8. CONTEXT ============
+        if HAS_CONTEXT:
+            update_loader("🔍 Контекст...", 0.85, logs)
+            cur_y = today.year if today.month >= 7 else today.year - 1
+            s_ctx = season_str(cur_y)
+            for c in cards:
+                if not c.get("verdict", {}).get("is_action"):
+                    continue
+                if c.get("national"):
+                    continue
+                try:
+                    parts_m = c["match"].split(" vs ")
+                    if len(parts_m) == 2:
+                        c["context"] = analyze_match_context(
+                            parts_m[0], parts_m[1],
+                            c.get("div", ""), s_ctx,
+                        )
+                        ctx_count += 1
+                except Exception:
+                    pass
+            logs.append(f"🔍 Контекст: {ctx_count}")
+
+        # ============ 9. СТАВКИ ============
+        update_loader("💼 Портфель...", 0.95, logs)
+        new_bets = []
+        existing = {
+            f"{b.get('match')}|{b.get('market')}|{b.get('pick')}"
+            for b in D["bets"]
+            if isinstance(b, dict) and b.get("status") == "pending"
+        }
+
+        max_new_exposure = float(D.get("bank") or 0) * 0.20
+        max_league_exposure = float(D.get("bank") or 0) * 0.10
+        new_exposure = 0.0
+        league_exposure = {}
+
+        for c in cards:
+            if (c.get("decision") or (c.get("verdict") or {}).get("decision")) != "BET":
+                continue
+            b = c.get("best")
+            if not b:
+                continue
+            mkt, pick, odd, ev, prob, stake = b
+            stake = round(min(max(float(stake), 0.0), D["bank"] * 0.05), 2)
+            if stake <= 0:
+                continue
+
+            if new_exposure + stake > max_new_exposure + 1e-9:
+                risk_rejected += 1
+                continue
+
+            league_key = str(c.get("league") or c.get("div") or "OTHER")
+            current_league = float(league_exposure.get(league_key, 0.0))
+            if current_league + stake > max_league_exposure + 1e-9:
+                risk_rejected += 1
+                continue
+
+            if odd is None or odd <= 1.0:
+                continue
+            if ev is None:
+                continue
+
+            bk = f"{c['match']}|{mkt}|{pick}"
+            if bk in existing:
+                risk_reasons.append(f"duplicate: {c['match']} · {mkt} · {pick}")
+                continue
+
+            if c.get("women"):
+                women_bet_count += 1
+            if c.get("national"):
+                national_bet_count += 1
+
+            mode = "real" if c.get("odds_source") in ("market", "grok_web", "fdorg", "manual") else "paper"
+
+            new_bets.append({
+                "match": c["match"], "match_ru": c["match_ru"],
+                "div": c["div"], "league": c["league"],
+                "market": mkt, "pick": pick,
+                "odds": odd, "stake": stake, "prob": prob,
+                "status": "pending", "strat": "value",
+                "odds_source": c.get("odds_source", "estimated"),
+                "mode": mode,
+                "date": datetime.now().strftime("%d.%m.%Y"),
+                "date_iso": c.get("date_iso"),
+                "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "fixture_id": c.get("fixture_id"),
+                "score": None, "ev": ev,
+                "decision": "BET",
+                "decision_at": datetime.now().isoformat(),
+                "decision_snapshot": {
+                    "model_prob": float(c.get("verdict", {}).get("prob") or prob or 0.0),
+                    "fair_odd": float(c.get("verdict", {}).get("fair_odd") or 0.0),
+                    "market_odd": float(odd or 0.0),
+                    "edge": c.get("verdict", {}).get("edge"),
+                    "ev": ev,
+                    "kelly_pct": float(c.get("verdict", {}).get("kelly_pct") or 0.0),
+                    "confidence": c.get("verdict", {}).get("confidence"),
+                    "value_score": float(value_score(c) or 0.0),
+                    "market": mkt,
+                    "league": c.get("league"),
+                    "decision_reason": c.get("decision_reason") or c.get("verdict", {}).get("decision_reason"),
+                },
+                "women": c.get("women", False),
+                "national": c.get("national", False),
+            })
+            existing.add(bk)
+            new_exposure += stake
+            league_exposure[league_key] = current_league + stake
+
+        # ============ 10. DECISION SNAPSHOTS ============
+        decision_snapshots = []
+        for dc in cards:
+            dv = dc.get("verdict") or {}
+            decision = str(dc.get("decision") or dv.get("decision") or "").upper().strip()
+            has_real_odds = bool(dv.get("real_odds", False)) and float(dv.get("odd") or 0.0) > 1.01
+
+            probs = {
+                "П1": float(dc.get("p1") or 0.0),
+                "X": float(dc.get("px") or 0.0),
+                "П2": float(dc.get("p2") or 0.0),
+            }
+            fallback_pick = max(probs, key=probs.get)
+            verdict_pick = str(dv.get("pick") or "").strip()
+            if has_real_odds and verdict_pick:
+                market = str(dv.get("market") or dv.get("market_type") or "1X2")
+                pick = verdict_pick
+                model_prob = dv.get("prob")
+                if model_prob is None:
+                    model_prob = probs.get(pick)
+            else:
+                market = "1X2"
+                pick = fallback_pick
+                model_prob = probs.get(fallback_pick)
+
+            if not has_real_odds:
+                snapshot_decision = "MODEL_ONLY"
+            elif decision in ("BET", "WATCH", "SKIP"):
+                snapshot_decision = decision
+            else:
+                snapshot_decision = "MODEL_ONLY"
+
+            fixture_id = str(dc.get("fixture_id") or "")
+            match = str(dc.get("match") or "")
+            market_odd = dv.get("odd") if has_real_odds and verdict_pick else None
+            snapshot_key = "|".join([
+                fixture_id or match,
+                market, pick, snapshot_decision,
+                str(dc.get("date_iso") or dc.get("date") or ""),
+            ])
+            decision_snapshots.append({
+                "snapshot_key": snapshot_key,
+                "fixture_id": fixture_id,
+                "match": match,
+                "match_ru": dc.get("match_ru"),
+                "league": dc.get("league") or dc.get("div"),
+                "market": market, "pick": pick,
+                "decision": snapshot_decision,
+                "decision_reason": (
+                    "MODEL ONLY — прогноз сохранён без букмекерского коэффициента."
+                    if snapshot_decision == "MODEL_ONLY" else
+                    dc.get("decision_reason") or dv.get("decision_reason")
+                ),
+                "model_prob": model_prob,
+                "fair_odd": dv.get("fair_odd"),
+                "market_odd": market_odd,
+                "edge": dv.get("edge") if has_real_odds else None,
+                "ev": dv.get("ev") if has_real_odds else None,
+                "kelly_pct": dv.get("kelly_pct") if has_real_odds else None,
+                "confidence": dv.get("confidence"),
+                "value_score": value_score(dc),
+                "odds_source": dc.get("odds_source") if has_real_odds else "model_only",
+                "date_iso": dc.get("date_iso") or dc.get("date"),
+            })
+
+        # ============ 11. СОХРАНЕНИЕ ============
+        D2 = dict(D)
+        D2["cards"] = cards
+        D2["report"] = logs
+        D2["bets"] = D["bets"] + new_bets
+        total_stake = sum(b["stake"] for b in new_bets)
+        D2["bank"] = max(0.0, D["bank"] - total_stake)
+        D2["funnel"] = {
+            "model_candidates": model_candidates,
+            "market_checked": market_checked,
+            "market_received": market_received,
+            "value_rejected": value_rejected,
+            "trained": getattr(engine, "trained_n", 0),
+            "src": len(rows),
+            "found": matches_with_best,
+            "added": len(new_bets),
+            "frozen": total_stake,
+            "llm": llm_done,
+            "ctx": ctx_count,
+            "women": women_bet_count,
+            "national": national_bet_count,
+            "risk_rejected": risk_rejected,
+            "duplicate_rejected": sum(
+                1 for rr in risk_reasons if str(rr).startswith("duplicate:")
+            ),
+            "quality_real_market": quality_real_market,
+            "quality_missing_market": quality_missing_market,
+            "decision_bet": decision_bet,
+            "decision_watch": decision_watch,
+            "decision_skip": decision_skip,
+            "decision_model_only": decision_model_only,
+        }
+        st.session_state.data = D2
+        usage.set_local_data(D2)
+
+        if db.SQLITE_BOOT_OK:
+            db.insert_bets_batch(new_bets)
+            db.insert_decision_snapshots(decision_snapshots)
+            db.log_bank(D2["bank"], event="scan")
+            db.invalidate_caches()
+
+        update_loader(
+            f"✅ Готово! +{len(new_bets)} ставок · "
+            f"📡 {len(rows)} матчей · 🤖 {llm_done} LLM",
+            1.0, logs,
+        )
+        time.sleep(1.5)
+        loader_ph.empty()
+        log_ph.empty()
+
+    finally:
+        st.session_state["_scan_in_progress"] = False
+
+    st.rerun()
