@@ -77,7 +77,7 @@ class ForecastLearningService:
                 (forecast_key,),
             ).fetchone()
             if existing is not None:
-                return self._decision(existing, forecast_id)
+                return self._decision(existing, forecast_id, replay=True)
 
         learned = self.learner.calibrate(raw, as_of=forecast_stamp, league=league)
         enough_history = learned["history_n"] >= self.min_history
@@ -107,10 +107,10 @@ class ForecastLearningService:
                 "SELECT * FROM forecast_learning_decisions WHERE forecast_key=?",
                 (forecast_key,),
             ).fetchone()
-        return self._decision(saved, forecast_id)
+        return self._decision(saved, forecast_id, replay=False)
 
     @staticmethod
-    def _decision(row: sqlite3.Row, forecast_id: int) -> dict[str, Any]:
+    def _decision(row: sqlite3.Row, forecast_id: int, *, replay: bool = False) -> dict[str, Any]:
         report = json.loads(row["report_json"])
         return {
             "forecast_id": forecast_id,
@@ -120,7 +120,7 @@ class ForecastLearningService:
             "correction_enabled": bool(row["correction_enabled"]),
             "history_n": int(row["history_n"]),
             "learning_report": report,
-            "idempotent_replay": True,
+            "idempotent_replay": replay,
         }
 
     def settle_verified(self, forecast_key: str, result: str, *,
