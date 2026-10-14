@@ -535,6 +535,8 @@ def render(matrix_n):
         model_market_logloss = 0.0
         raw_brier = 0.0
         raw_logloss = 0.0
+        paired_cal_brier = 0.0
+        paired_cal_logloss = 0.0
         raw_scored_count = 0
         for prediction_row in scored_predictions:
             p1, px, p2, actual, market_probs = prediction_row[:5]
@@ -551,6 +553,8 @@ def render(matrix_n):
                 raw_probs = [v / raw_total for v in raw_probs]
                 raw_brier += sum((p - (1.0 if i == actual else 0.0)) ** 2 for i, p in enumerate(raw_probs))
                 raw_logloss += -math.log(raw_probs[actual])
+                paired_cal_brier += row_brier
+                paired_cal_logloss += row_logloss
                 raw_scored_count += 1
             if market_probs is not None:
                 market_count += 1
@@ -569,7 +573,8 @@ def render(matrix_n):
                 f"Сравнение на тех же {raw_scored_count} матчах — "
                 f"до калибровки: Brier {raw_brier / raw_scored_count:.4f}, "
                 f"log loss {raw_logloss / raw_scored_count:.4f}; "
-                f"после текущей калибровки: Brier {brier:.4f}, log loss {logloss:.4f}. "
+                f"после текущей калибровки: Brier {paired_cal_brier / raw_scored_count:.4f}, "
+                f"log loss {paired_cal_logloss / raw_scored_count:.4f}. "
                 "Меньше — лучше. Это диагностическое сравнение, калибратор автоматически не переключается."
             )
         uncertainty = paired_score_uncertainty(scored_predictions, n_bootstrap=1000)
