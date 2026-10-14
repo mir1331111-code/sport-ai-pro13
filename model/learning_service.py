@@ -21,7 +21,7 @@ class ForecastLearningService:
     """Record a raw forecast, calibrate from past settled errors, and audit output."""
 
     def __init__(self, ledger: ForecastLedger, learner: OnlineErrorLearner | None = None,
-                 *, enabled: bool = True, min_history: int = 100):
+                 *, enabled: bool = False, min_history: int = 100):
         if isinstance(min_history, bool) or not isinstance(min_history, int) or min_history < 0:
             raise ValueError("min_history must be a non-negative integer")
         self.ledger = ledger
