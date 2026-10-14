@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "13.3.0"
+APP_VERSION = "13.3.1"
 DATA_VERSION = 17
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,7 +30,12 @@ CACHE_TTL = {
 LLM_PROVIDERS = {
     "Groq (бесплатно, быстро)": {
         "base": "https://groq-proxy13.mir1331111.workers.dev/openai/v1",
-        "model": "model": "llama-3.1-8b-instant",
+        "model": "llama-3.1-8b-instant",
+        "key_url": "https://console.groq.com/keys",
+    },
+    "Groq 70B (бесплатно, мощнее)": {
+        "base": "https://groq-proxy13.mir1331111.workers.dev/openai/v1",
+        "model": "llama-3.1-70b-versatile",
         "key_url": "https://console.groq.com/keys",
     },
     "Gemini (Google, бесплатно)": {
@@ -65,7 +70,6 @@ LLM_PROVIDERS = {
     },
 }
 
-# ============ МУЖСКИЕ КЛУБНЫЕ ЛИГИ (TheSportsDB ID) ============
 DIV_TO_TSDB = {
     "E0": "4328", "E1": "4329", "D1": "4331", "D2": "4389",
     "I1": "4332", "I2": "4388", "SP1": "4335", "SP2": "4340",
@@ -78,7 +82,6 @@ DIV_TO_TSDB = {
     "C1": "4480", "EL": "4481", "EC": "4482",
 }
 
-# ============ ЖЕНСКИЕ ЛИГИ ============
 WOMEN_LEAGUE_IDS = {
     "4424": ("W_E0", "WSL"),
     "4483": ("W_SP1", "Liga F"),
@@ -88,7 +91,6 @@ WOMEN_LEAGUE_IDS = {
     "4487": ("W_C1", "UWCL"),
 }
 
-# ============ МАТЧИ СБОРНЫХ ============
 NATIONAL_TEAM_LEAGUES = {
     "4502": ("NT_UNL", "🏆 Лига Наций УЕФА"),
     "4498": ("NT_WCE", "⚽ Отбор ЧМ Европа"),
