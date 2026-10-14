@@ -1,6 +1,5 @@
-"""ui/tabs/scanner.py — Сканер v13.7: TSDB + fdorg + ESPN + Marathon + Grok."""
+"""ui/tabs/scanner.py — Сканер с правильной логикой best + LLM."""
 from __future__ import annotations
-
 import time
 from datetime import datetime, timedelta
 
@@ -9,135 +8,59 @@ import streamlit as st
 from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS
 from storage import usage
 from storage import sqlite_store as db
-from data.sources import (
-    load_seasonal,
-    season_str,
-    fdorg_matches,
-    espn_matches,
-    tsdb_matches,
-    odds_api_fixture,
-    grok_web_odds,
-    parse_date,
-)
+from data.sources import (load_seasonal, season_str,
+                          fdorg_matches, odds_api_fixture, parse_date)
 from model.engine import Engine
-from betting.verdict import (
-    build_verdict, refine_with_real_odds, refine_with_manual_odd,
-)
+from betting.verdict import build_verdict, refine_with_real_odds
 from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
-from ui.cards import render_verdict_card, translate_team
-from betting.ranking import sort_cards, value_score, rank_score
-from betting.adaptive import (
-    build_profiles as build_adaptive_profiles,
-    priority as adaptive_priority,
-)
-
-try:
-    from context_football import analyze_match_context
-    HAS_CONTEXT = True
-except Exception:
-    HAS_CONTEXT = False
+from ui.cards import (render_verdict_card, translate_team,
+                      parse_card_date, day_label)
 
 
 LLM_TOP_N = 8
-GROK_ODDS_TOP_N = 8
-ODDS_SCAN_TOP_N = 30
+MIN_STAKE_PCT = 0.005   # 0.5% от банка — минимальный стейк
+MAX_STAKE_PCT = 0.05    # 5% от банка — максимальный
 
 
 def _safe_filter(rows):
     if not isinstance(rows, list):
         return []
-    return [
-        r for r in rows
-        if isinstance(r, dict)
-        and r.get("HomeTeam")
-        and r.get("AwayTeam")
-    ]
-
-
-def _decision_reason(decision, edge, ev, kelly_pct, real_odds=True):
-    if not real_odds:
-        return "Нет реального кэфа — ждём цену букмекера."
-    try:
-        edge_f = float(edge or 0.0)
-    except (TypeError, ValueError):
-        edge_f = 0.0
-    try:
-        ev_f = float(ev or 0.0)
-    except (TypeError, ValueError):
-        ev_f = 0.0
-    try:
-        kelly_f = float(kelly_pct or 0.0)
-    except (TypeError, ValueError):
-        kelly_f = 0.0
-
-    if decision == "BET":
-        return "Edge >= 3%, EV >= 3% и Kelly > 0 — цена подтверждена."
-    if decision == "WATCH":
-        if kelly_f <= 0:
-            return "Kelly <= 0 — ждём более высокий кэф."
-        if edge_f < 0.03 and ev_f < 0.03:
-            return "Edge и EV ниже 3% — нужен более выгодный кэф."
-        if edge_f < 0.03:
-            return "Edge ниже 3% — нужен более выгодный кэф."
-        if ev_f < 0.03:
-            return "EV ниже 3% — нужен более выгодный кэф."
-        return "Value положительный, но цена пока не проходит полный фильтр."
-    if kelly_f <= 0:
-        return "Kelly <= 0 — ставка не оправдывает риск."
-    if edge_f <= 0 and ev_f <= 0:
-        return "Edge и EV <= 0 — положительного преимущества нет."
-    if edge_f <= 0:
-        return "Edge <= 0 — рыночная цена хуже fair."
-    if ev_f <= 0:
-        return "EV <= 0 — математического преимущества нет."
-    return "Цена не проходит строгий фильтр BET."
-
-
-def _match_start_dt(row):
-    d = parse_date(row.get("Date", ""))
-    if not d:
-        return None
-    raw_time = str(row.get("Time", "") or "").strip()
-    if not raw_time:
-        return None
-    for fmt in ("%H:%M", "%H:%M:%S"):
-        try:
-            return datetime.combine(
-                d.date(),
-                datetime.strptime(raw_time[:8], fmt).time(),
-            )
-        except Exception:
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
             continue
-    return None
+        if not r.get("HomeTeam") or not r.get("AwayTeam"):
+            continue
+        out.append(r)
+    return out
+
+
+def _print_log(msg: str):
+    try:
+        import sys
+        print(f"[SCAN] {msg}", file=sys.stdout, flush=True)
+    except Exception:
+        pass
 
 
 def _train_engine(matrix_n, logs, update_loader):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     prev_year = cur_year - 1
-    train_divs = [
-        "E0", "SP1", "I1", "D1", "F1",
-        "E1", "SP2", "I2", "D2", "F2",
-        "N1", "B1", "P1", "T1", "R1",
-    ]
+    train_divs = ["E0", "SP1", "I1", "D1", "F1", "E1", "SP2", "I2",
+                  "D2", "F2", "N1", "B1", "P1", "T1", "R1"]
     engine = Engine(matrix_n=matrix_n)
-    dp = {}
-    dc = {}
+    dp, dc = {}, {}
     for i, dv in enumerate(train_divs):
         pct = 0.1 + (i + 1) / len(train_divs) * 0.4
         update_loader(
-            f"История [{i + 1}/{len(train_divs)}] — {DIV_NAMES.get(dv, dv)}",
-            pct, logs,
-        )
+            f"История [{i+1}/{len(train_divs)}] — {DIV_NAMES.get(dv, dv)}",
+            pct, logs)
         dp[dv] = load_seasonal(dv, season_str(prev_year))
         dc[dv] = load_seasonal(dv, season_str(cur_year))
-        logs.append(
-            f"OK {DIV_NAMES.get(dv, dv)}: {len(dp[dv]) + len(dc[dv])}"
-        )
-    total = sum(
-        len(dp.get(dv, [])) + len(dc.get(dv, [])) for dv in train_divs
-    )
+        logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(dp[dv])+len(dc[dv])}")
+    total = sum(len(dp.get(dv, [])) + len(dc.get(dv, [])) for dv in train_divs)
     processed = 0
     trained = 0
     for dv in train_divs:
@@ -149,8 +72,7 @@ def _train_engine(matrix_n, logs, update_loader):
                     engine.learn_step(
                         r["HomeTeam"], r["AwayTeam"], hg, ag, r,
                         lg=dv, match_num=processed, total=total,
-                        match_date=parse_date(r.get("Date", "")),
-                    )
+                        match_date=parse_date(r.get("Date", "")))
                     trained += 1
                 except Exception:
                     pass
@@ -158,16 +80,14 @@ def _train_engine(matrix_n, logs, update_loader):
                 if processed % 50 == 0:
                     update_loader(
                         f"Обучение [{processed}/{total}]",
-                        0.5 + processed / max(1, total) * 0.3,
-                        logs,
-                    )
+                        0.5 + processed / max(1, total) * 0.3, logs)
     engine.trained_n = trained
     logs.append(f"Обучено: {trained}")
     return engine
 
 
 def _load_engine(matrix_n, logs, update_loader):
-    import gzip, os, pickle
+    import pickle, gzip, os
     from config import DISK_CACHE_DIR
     p = os.path.join(DISK_CACHE_DIR, f"engine_{matrix_n}.pkl.gz")
     if os.path.exists(p):
@@ -183,8 +103,7 @@ def _load_engine(matrix_n, logs, update_loader):
     try:
         with open(p, "wb") as f:
             f.write(gzip.compress(pickle.dumps(
-                {"fp": APP_VERSION, "engine": engine}
-            )))
+                {"fp": APP_VERSION, "engine": engine})))
     except Exception:
         pass
     return engine
@@ -192,1161 +111,351 @@ def _load_engine(matrix_n, logs, update_loader):
 
 def render(min_prob, kelly_frac, matrix_n):
     D = st.session_state.data
-
-    adaptive_profile = {}
-    if db.SQLITE_BOOT_OK:
-        try:
-            adaptive_profile = build_adaptive_profiles(
-                db.fetch_decision_snapshots(limit=100000)
-            )
-        except Exception:
-            adaptive_profile = {}
-
-    model_candidates = 0
-    market_checked = 0
-    market_received = 0
-    value_rejected = 0
-    matches_with_best = 0
-    quality_real_market = 0
-    quality_missing_market = 0
-    decision_bet = 0
-    decision_watch = 0
-    decision_skip = 0
-    decision_model_only = 0
-    risk_rejected = 0
-    risk_reasons = []
-    women_bet_count = 0
-    national_bet_count = 0
-    ctx_count = 0
-    llm_done = 0
-    marathon_found = 0
-
     c1, c2 = st.columns([4, 1])
     days = c1.slider("Горизонт, дней", 1, 14, 7)
-    scan = c2.button(
-        "⚡ СКАН",
-        type="primary",
-        disabled=st.session_state.get("_scan_in_progress", False),
-    )
+    scan = c2.button("⚡ СКАН", type="primary",
+                     disabled=st.session_state.get("_scan_in_progress", False))
 
     if not scan:
         fn = D.get("funnel")
         if fn:
-            st.markdown("#### Последний скан · воронка сигналов")
-            f1, f2, f3, f4 = st.columns(4)
-            f1.metric("Модель", fn.get("model_candidates", 0))
-            f2.metric("Рынок проверен", fn.get("market_checked", 0))
-            f3.metric("Value прошло", fn.get("found", 0))
-            f4.metric("В портфель", fn.get("added", 0))
-            st.caption(
-                f"📡 {fn.get('src', 0)} матчей · "
-                f"💰 заморожено {fn.get('frozen', 0):.0f} · "
-                f"🛡️ Risk Guard: {fn.get('risk_rejected', 0)} · "
-                f"♻️ Дубли: {fn.get('duplicate_rejected', 0)} · "
-                f"🤖 LLM {fn.get('llm', 0)} · "
-                f"🔍 контекст {fn.get('ctx', 0)} · "
-                f"🏁 Марафон: {fn.get('marathon', 0)}"
+            st.success(
+                f"🧠 Обучено {fn.get('trained', 0)} · "
+                f"📡 Источников {fn.get('src', 0)} · "
+                f"🎯 Найдено {fn.get('found', 0)} · "
+                f"➕ В портфель {fn.get('added', 0)} · "
+                f"💰 Заморожено {fn.get('frozen', 0):.0f} · "
+                f"🤖 LLM: {fn.get('llm', 0)}"
             )
-        if HAS_CONTEXT:
-            st.caption("🟢 Context Engine: подключён")
-
-        pending_stake = sum(
-            float(b.get("stake", 0) or 0)
-            for b in D.get("bets", [])
-            if isinstance(b, dict) and b.get("status") == "pending"
-        )
-        current_bank = float(D.get("bank") or 0.0)
-        initial_bank = float(
-            (D.get("meta") or {}).get("initial_bank")
-            or (current_bank + pending_stake)
-            or 1.0
-        )
-        risk_ratio = pending_stake / max(initial_bank, 1.0)
-        risk_pct = risk_ratio * 100
-        risk_color = "#34d399" if risk_pct <= 10 else ("#fbbf24" if risk_pct <= 20 else "#f87171")
-        risk_label = "LOW" if risk_pct <= 10 else ("WATCH" if risk_pct <= 20 else "HIGH")
-        rr1, rr2, rr3 = st.columns([2.2, 1, 1])
-        with rr1:
-            st.markdown(
-                f"**BANK RISK · <span style='color:{risk_color}'>{risk_label}</span>**",
-                unsafe_allow_html=True,
-            )
-            st.progress(min(risk_ratio, 1.0),
-                        text=f"Заморожено {risk_pct:.1f}% банка")
-        with rr2:
-            st.metric("Pending exposure", f"{pending_stake:.0f}")
-        with rr3:
-            st.metric("Свободный банк", f"{current_bank:.0f}")
-        st.caption("Риск = сумма незакрытых ставок / начальный банк. Ориентир: до 20%.")
-
         with st.expander("🔌 Диагностика"):
             for line in D.get("report", []):
                 st.text(line)
 
-        all_cards = D.get("cards", [])
-        cards_view = sort_cards(
-            [c for c in all_cards if isinstance(c, dict)],
-            mode="rank",
-        )
-        shown = 0
-        hidden = 0
-
-        real_value_cards = [
-            c for c in cards_view
-            if c.get("best")
-            and (c.get("odds_source") in ("market", "grok_web", "manual",
-                                           "fdorg", "marathon"))
-            and (c.get("verdict") or {}).get("real_odds", False)
-        ]
-        real_value_cards.sort(
-            key=lambda c: (
-                -float(value_score(c) or 0.0),
-                -float((c.get("verdict") or {}).get("ev") or 0.0),
-                -float((c.get("verdict") or {}).get("edge") or 0.0),
-            )
-        )
-        if real_value_cards:
-            st.markdown("### 🏆 TOP VALUE")
-            st.caption("Лучшие реальные цены по Value Score · максимум 5.")
-            tv_cols = st.columns(min(5, len(real_value_cards)))
-            for ti, tc in enumerate(real_value_cards[:5]):
-                tv = tc.get("verdict") or {}
-                tb = tc.get("best") or ()
-                odd = float(tb[2] or 0.0) if len(tb) > 2 else float(tv.get("odd") or 0.0)
-                ev = tv.get("ev")
-                edge = tv.get("edge")
-                stake = float(tb[5] or 0.0) if len(tb) > 5 else float(tv.get("stake") or 0.0)
-                fair = float(tv.get("fair_odd") or 0.0)
-                vs = float(value_score(tc) or 0.0)
-                status = (
-                    "🟢" if ev is not None and edge is not None
-                    and float(ev) >= 0.03 and float(edge) >= 0.03
-                    else "🟡" if ev is not None and edge is not None
-                    and float(ev) >= 0 and float(edge) >= 0
-                    else "🔴"
-                )
-                with tv_cols[ti % len(tv_cols)]:
-                    st.markdown(
-                        f"**{status} {tc.get('match_ru', tc.get('match', '—'))}**"
-                    )
-                    st.caption(
-                        f"{tv.get('pick', '—')} · **@ {odd:.2f}** · Fair {fair:.2f}"
-                    )
-                    st.markdown(
-                        f"Edge **{float(edge):.1%}** · EV **{float(ev):.1%}**"
-                        if ev is not None and edge is not None
-                        else "Edge / EV —"
-                    )
-                    st.caption(f"Value Score {vs:.2f} · ставка {stake:.0f}")
-        else:
-            st.info("🏆 TOP VALUE появится после получения реальных кэфов.")
-
-        bet_cards = [
-            c for c in cards_view
-            if str(c.get("decision")
-                   or (c.get("verdict") or {}).get("decision") or "").upper() == "BET"
-        ]
-        watch_cards = [
-            c for c in cards_view
-            if str(c.get("decision")
-                   or (c.get("verdict") or {}).get("decision") or "").upper() == "WATCH"
-        ]
-        skip_cards = [
-            c for c in cards_view
-            if str(c.get("decision")
-                   or (c.get("verdict") or {}).get("decision") or "").upper() == "SKIP"
-        ]
-
-        st.markdown("### 🎯 DECISION BOARD")
-        db1, db2, db3 = st.columns(3)
-        with db1:
-            st.metric("BET · в портфель", len(bet_cards))
-        with db2:
-            st.metric("WATCH · ждать цену", len(watch_cards))
-        with db3:
-            st.metric("SKIP · не входить", len(skip_cards))
-
-        if bet_cards:
-            st.markdown("#### 🟢 BEST BETS TODAY")
-            st.caption("Реальные цены · Edge >= 3% · EV >= 3% · Kelly > 0.")
-            best_cols = st.columns(min(3, len(bet_cards)))
-            for bi, bc in enumerate(bet_cards):
-                bv = bc.get("verdict") or {}
-                odd_b = float(bv.get("odd") or 0.0)
-                ev_b = float(bv.get("ev") or 0.0)
-                edge_b = float(bv.get("edge") or 0.0)
-                with best_cols[bi % len(best_cols)]:
-                    st.markdown(f"**🟢 {bc.get('match_ru', bc.get('match', '—'))}**")
-                    st.caption(
-                        f"{bv.get('label', '—')} · @ {odd_b:.2f} · "
-                        f"Fair {float(bv.get('fair_odd') or 0.0):.2f}"
-                    )
-                    st.markdown(
-                        f"Edge **{edge_b:.1%}** · EV **{ev_b:.1%}** · "
-                        f"Kelly **{float(bv.get('kelly_pct') or 0.0):.1%}**"
-                    )
-
-        if watch_cards:
-            st.markdown("#### 🟡 WATCHLIST · ЖДЁМ ЛУЧШУЮ ЦЕНУ")
-            watch_cols = st.columns(min(3, len(watch_cards)))
-            for wi, wc in enumerate(watch_cards):
-                wv = wc.get("verdict") or {}
-                with watch_cols[wi % len(watch_cols)]:
-                    st.markdown(f"**🟡 {wc.get('match_ru', wc.get('match', '—'))}**")
-                    st.caption(
-                        f"{wv.get('label', '—')} · "
-                        f"@ {float(wv.get('odd') or 0.0):.2f} · "
-                        f"Fair {float(wv.get('fair_odd') or 0.0):.2f}"
-                    )
-                    st.markdown(
-                        f"Edge **{float(wv.get('edge') or 0.0):.1%}** · "
-                        f"EV **{float(wv.get('ev') or 0.0):.1%}** · "
-                        f"Kelly **{float(wv.get('kelly_pct') or 0.0):.1%}**"
-                    )
-                    st.caption("Причина: " + str(
-                        wc.get('decision_reason')
-                        or wv.get('decision_reason')
-                        or "Цена ждёт улучшения."
-                    ))
-
-        if skip_cards:
-            with st.expander(f"🔴 SKIP · {len(skip_cards)} цен не проходят"):
-                for sc_ in skip_cards:
-                    sv = sc_.get("verdict") or {}
-                    st.markdown(
-                        f"**{sc_.get('match_ru', sc_.get('match', '—'))}** · "
-                        f"{sv.get('label', '—')} · "
-                        f"@ {float(sv.get('odd') or 0.0):.2f} · "
-                        f"Edge {float(sv.get('edge') or 0.0):.1%} · "
-                        f"EV {float(sv.get('ev') or 0.0):.1%} · "
-                        f"Kelly {float(sv.get('kelly_pct') or 0.0):.1%}"
-                    )
-                    st.caption("Причина: " + str(
-                        sc_.get('decision_reason')
-                        or sv.get('decision_reason')
-                        or "Цена не проходит фильтр."
-                    ))
-
-        waiting = [
-            c for c in cards_view
-            if (c.get("verdict") or {}).get("is_action", False)
-            and not (c.get("verdict") or {}).get("real_odds", False)
-            and not c.get("best")
-        ]
-        if waiting:
-            st.markdown("### ⏳ WAITING FOR ODDS")
-            st.caption(
-                f"{len(waiting)} модельных сигналов ждут подходящей цены."
-            )
-            wait_cols = st.columns(min(3, len(waiting)))
-            for wi, wc in enumerate(waiting):
-                wv = wc.get("verdict") or {}
-                fair_w = float(wv.get("fair_odd") or 0.0)
-                entry_w = float(wc.get("min_entry_odd") or 0.0)
-                with wait_cols[wi % len(wait_cols)]:
-                    st.markdown(
-                        f"**{wc.get('match_ru', wc.get('match', '—'))}**  \n"
-                        f"{wv.get('pick', '—')} · "
-                        f"**{wv.get('prob', 0) * 100:.1f}%**  \n"
-                        f"Fair **{fair_w:.2f}** → вход **{entry_w:.2f}+**"
-                    )
-
-        for idx, c in enumerate(cards_view):
-            v = c.get("verdict") or {}
-            if not v.get("is_action", False):
-                hidden += 1
-                continue
-
-            st.markdown(
-                render_verdict_card(c, min_prob),
-                unsafe_allow_html=True,
-            )
-            shown += 1
-
-            if not v.get("real_odds", False) and not c.get("best"):
-                fair = float(v.get("fair_odd") or 0.0)
-                prob = float(v.get("prob") or 0.0)
-                min_entry = float(c.get("min_entry_odd") or 0.0)
-                key_base = (str(c.get("fixture_id") or c.get("match"))
-                            + "_" + str(v.get("pick") or "pick"))
-                st.markdown("**🎯 Ввести кэф букмекера вручную**")
-                q1, q2, q3 = st.columns([1.2, 1.2, 1])
-                manual_odd = q1.number_input(
-                    "Кэф",
-                    min_value=1.01,
-                    max_value=100.0,
-                    value=1.50,
-                    step=0.01,
-                    format="%.2f",
-                    key=f"manual_odd_{key_base}",
-                )
-                q2.caption(f"Fair: **{fair:.2f}** · мин. вход: **{min_entry:.2f}**")
-                q3.caption("EV / Edge / Kelly")
-                if st.button(
-                    "Проверить кэф → добавить",
-                    key=f"manual_add_{key_base}",
-                    type="secondary",
-                ):
-                    try:
-                        manual_v, manual_best = refine_with_manual_odd(
-                            dict(v), [], manual_odd,
-                            float(D.get("bank") or 0.0), kelly_frac,
-                        )
-                    except Exception as exc:
-                        manual_v, manual_best = dict(v), None
-                        st.error(f"Ошибка расчёта кэфа: {exc}")
-
-                    edge_v = manual_v.get("edge")
-                    ev_v = manual_v.get("ev")
-                    try:
-                        edge_f = float(edge_v) if edge_v is not None else 0.0
-                    except (TypeError, ValueError):
-                        edge_f = 0.0
-                    try:
-                        ev_f = float(ev_v) if ev_v is not None else 0.0
-                    except (TypeError, ValueError):
-                        ev_f = 0.0
-                    try:
-                        kelly_f = float(manual_v.get("kelly_pct") or 0.0)
-                    except (TypeError, ValueError):
-                        kelly_f = 0.0
-
-                    if (manual_best is None or kelly_f <= 0
-                            or edge_f < 0.03 or ev_f < 0.03):
-                        st.warning(
-                            f"Кэф не стал BET: Edge {edge_f:.1%} · "
-                            f"EV {ev_f:.1%} · Kelly {kelly_f:.1%}. "
-                            "Нужно Edge >= 3%, EV >= 3%, Kelly > 0."
-                        )
-                    else:
-                        mkt, pick, odd, ev, prob, stake = manual_best
-                        stake = round(min(max(float(stake), 0.0),
-                                          float(D.get("bank") or 0.0) * 0.05), 2)
-                        existing_keys = {
-                            f"{b.get('match')}|{b.get('pick')}"
-                            for b in D.get("bets", [])
-                            if isinstance(b, dict) and b.get("status") == "pending"
-                        }
-                        bk = f"{c['match']}|{pick}"
-                        if bk in existing_keys:
-                            st.info("Такая ставка уже есть в pending.")
-                        elif stake <= 0:
-                            st.warning("Kelly дал нулевую ставку.")
-                        elif stake > float(D.get("bank") or 0.0):
-                            st.warning("Недостаточно свободного банка.")
-                        else:
-                            manual_v["decision"] = "BET"
-                            manual_v["is_bet"] = True
-                            c["verdict"] = manual_v
-                            c["best"] = (mkt, pick, odd, ev, prob, stake)
-                            c["decision"] = "BET"
-                            c["odds_source"] = "manual"
-                            bet = {
-                                "match": c["match"],
-                                "match_ru": c["match_ru"],
-                                "div": c["div"], "league": c["league"],
-                                "market": mkt, "pick": pick,
-                                "odds": odd, "stake": stake, "prob": prob,
-                                "status": "pending", "strat": "value",
-                                "odds_source": "manual", "mode": "real",
-                                "date": datetime.now().strftime("%d.%m.%Y"),
-                                "date_iso": c.get("date_iso"),
-                                "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                "fixture_id": c.get("fixture_id"),
-                                "score": None, "ev": ev,
-                                "decision": "BET",
-                                "decision_at": datetime.now().isoformat(),
-                                "women": c.get("women", False),
-                                "national": c.get("national", False),
-                            }
-                            D2 = dict(D)
-                            D2["cards"] = cards_view
-                            D2["bets"] = list(D.get("bets", [])) + [bet]
-                            D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - stake)
-                            st.session_state.data = D2
-                            usage.set_local_data(D2)
-                            if db.SQLITE_BOOT_OK:
-                                db.insert_bets_batch([bet])
-                                db.log_bank(D2["bank"], event="manual_odds")
-                                db.invalidate_caches()
-                            st.success(
-                                f"Добавлено: {pick} @ {odd:.2f} · "
-                                f"EV {ev:.1%} · ставка {stake:.2f}"
-                            )
-                            st.rerun()
-
-        if shown == 0 and hidden == 0:
+        all_cards = [c for c in D.get("cards", []) if isinstance(c, dict)]
+        if not all_cards:
             st.info("Нажми ⚡ СКАН.")
-        elif shown == 0 and hidden > 0:
-            st.warning(
-                f"⚠️ Ни один матч не прошёл порог "
-                f"**{min_prob * 100:.0f}%**. Скрыто **{hidden}**."
-            )
-        elif hidden > 0:
-            st.caption(f"✅ Показано **{shown}** · скрыто **{hidden}**")
+            return
+
+        c1, c2, c3 = st.columns([2, 2, 2])
+        sort_mode = c1.selectbox(
+            "Сортировка",
+            ["По дате (ближайшие сначала)",
+             "По вероятности (высокие сначала)",
+             "По EV (высокие сначала)"],
+            key="scanner_sort")
+        show_hidden = c2.checkbox("Показывать слабые", False,
+                                   key="scanner_show_hidden")
+        group_by_day = c3.checkbox("Группировать по дням", True,
+                                    key="scanner_group_by_day")
+
+        if show_hidden:
+            cards_view = all_cards
+        else:
+            cards_view = [c for c in all_cards
+                          if (c.get("verdict") or {}).get("is_action")]
+
+        if sort_mode.startswith("По дате"):
+            cards_view.sort(key=lambda c: parse_card_date(c))
+        elif sort_mode.startswith("По вероятности"):
+            cards_view.sort(
+                key=lambda c: -(c.get("verdict", {}).get("prob") or 0))
+        elif sort_mode.startswith("По EV"):
+            cards_view.sort(
+                key=lambda c: -(c.get("verdict", {}).get("ev") or 0))
+
+        if not cards_view:
+            st.warning("Ничего не найдено.")
+            return
+
+        if group_by_day:
+            grouped = {}
+            for c in cards_view:
+                dt = parse_card_date(c)
+                label = day_label(dt)
+                grouped.setdefault(label, []).append(c)
+
+            sorted_groups = sorted(
+                grouped.items(),
+                key=lambda kv: parse_card_date(kv[1][0]))
+
+            for label, items in sorted_groups:
+                st.markdown(
+                    "<div style='margin-top:20px;margin-bottom:12px;"
+                    "padding:8px 16px;background:rgba(34,211,238,.08);"
+                    "border-left:3px solid #22d3ee;border-radius:8px;"
+                    "color:#a5f3fc;font-weight:800;font-size:1.05rem;"
+                    "letter-spacing:1px;'>" + label + " · "
+                    "<span style='color:#8b93a7;font-weight:500;'>"
+                    + str(len(items)) + " матч.</span></div>",
+                    unsafe_allow_html=True)
+                for c in items:
+                    st.markdown(render_verdict_card(c, min_prob),
+                                unsafe_allow_html=True)
+        else:
+            for c in cards_view:
+                st.markdown(render_verdict_card(c, min_prob),
+                            unsafe_allow_html=True)
+
+        st.caption("✅ Показано " + str(len(cards_view)) + " из "
+                   + str(len(all_cards)))
         return
 
+    # ==================== СКАН ====================
     st.session_state["_scan_in_progress"] = True
-
     try:
         loader_ph = st.empty()
         log_ph = st.empty()
 
         def update_loader(text, pct, logs=None):
             loader_ph.markdown(
-                f"""
-                <div class='nbr-loader'>
-                    <div class='nbr-ring'></div>
-                    <div class='nbr-text'>
-                        <b>{text}</b>
-                        <div class='nbr-bar'>
-                            <div class='nbr-bar-fill'
-                                 style='width:{pct * 100:.0f}%'></div>
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                f"<div class='nbr-loader'><div class='nbr-ring'></div>"
+                f"<div class='nbr-text'><b>{text}</b>"
+                f"<div class='nbr-bar'><div class='nbr-bar-fill' "
+                f"style='width:{pct*100:.0f}%'></div></div></div></div>",
+                unsafe_allow_html=True)
             if logs:
                 log_ph.markdown(
                     "<div style='color:#8b93a7;font-size:.8rem;"
                     "background:rgba(10,14,24,.6);padding:10px;"
-                    "border-radius:10px;max-height:200px;"
-                    "overflow-y:auto'>"
-                    + "<br>".join(logs[-15:]) + "</div>",
-                    unsafe_allow_html=True,
-                )
+                    "border-radius:10px;max-height:180px;overflow-y:auto'>"
+                    + "<br>".join(logs[-12:]) + "</div>",
+                    unsafe_allow_html=True)
 
-        now = datetime.now()
-        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
 
-        update_loader("📡 TheSportsDB: сбор всех лиг...", 0.05, logs)
-        try:
-            tsdb_rows = tsdb_matches(days, logs)
-        except Exception as e:
-            logs.append(f"⚠️ TSDB ошибка: {e}")
-            tsdb_rows = []
-
         token = D.get("meta", {}).get("fdorg_token", "").strip()
-        fdorg_rows = []
-        if token:
-            update_loader("📡 football-data.org: дополнение...", 0.10, logs)
-            try:
-                fdorg_rows = fdorg_matches(days, token, logs)
-            except Exception as e:
-                logs.append(f"⚠️ fdorg ошибка: {e}")
-        else:
-            logs.append("📡 football-data.org: токен не задан")
+        if not token:
+            st.error("⚠️ Введи **football-data.org token** в сайдбаре.")
+            return
 
-        espn_rows = []
-        update_loader("📡 ESPN: дополнение покрытия...", 0.15, logs)
-        try:
-            espn_rows = espn_matches(days, logs)
-        except Exception as e:
-            logs.append(f"⚠️ ESPN ошибка: {e}")
+        logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
 
-        rows_by_key = {}
-        key_order = []
-
-        for r in tsdb_rows + fdorg_rows + espn_rows:
-            fid = str(r.get("fixture_id", "")).strip()
-            home_key = "".join(
-                ch for ch in str(r.get("HomeTeam", "")).lower()
-                if ch.isalnum()
-            )
-            away_key = "".join(
-                ch for ch in str(r.get("AwayTeam", "")).lower()
-                if ch.isalnum()
-            )
-            date_key = str(r.get("Date", ""))[:10]
-            match_key = (date_key, home_key, away_key)
-            key = ("id", fid) if fid else ("match",) + match_key
-
-            if key not in rows_by_key:
-                rows_by_key[key] = dict(r)
-                key_order.append(key)
-                continue
-
-            existing = rows_by_key[key]
-            for field, value in r.items():
-                if value in (None, "", [], {}):
-                    continue
-                if field == "odds":
-                    merged_odds = dict(existing.get("odds") or {})
-                    merged_odds.update({
-                        k: v for k, v in (value or {}).items()
-                        if v not in (None, "", 0)
-                    })
-                    if merged_odds:
-                        existing["odds"] = merged_odds
-                    continue
-                if not existing.get(field):
-                    existing[field] = value
-
-        rows_raw = [rows_by_key[k] for k in key_order]
+        update_loader("📡 Сбор матчей...", 0.05, logs)
+        rows_raw = fdorg_matches(days, token, logs)
         rows = _safe_filter(rows_raw)
-
-        w_count = sum(1 for r in rows if r.get("women"))
-        n_count = sum(1 for r in rows if r.get("national"))
-        c_count = len(rows) - w_count - n_count
-        logs.append(
-            f"📡 ИСТОЧНИКИ: TSDB {len(tsdb_rows)} · "
-            f"fdorg {len(fdorg_rows)} · ESPN {len(espn_rows)}"
-        )
-        logs.append(
-            f"📡 ИТОГО: {len(rows)} · "
-            f"🏟 клубные {c_count} · 👩 женские {w_count} · "
-            f"🌍 сборные {n_count}"
-        )
+        logs.append(f"📡 Всего: {len(rows)} матчей")
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
 
-        update_loader("🧠 Анализ матчей...", 0.50, logs)
+        update_loader("🧠 Анализ матчей...", 0.80, logs)
         cards = []
+        matches_with_best = 0
         odds_key = D.get("meta", {}).get("odds_api_key", "")
-        llm_provider_now = D.get("meta", {}).get("llm_provider", "")
-        grok_key = str(D.get("meta", {}).get("llm_api_key", "") or "").strip()
-        grok_remaining = usage.llm_remaining()
-        grok_enabled = (
-            llm_provider_now == "Grok (x.ai)"
-            and bool(grok_key)
-            and grok_remaining > 0
-        )
-        if grok_enabled:
-            logs.append(f"🌐 GROK WEB: ON · лимит LLM {grok_remaining}")
-        elif llm_provider_now != "Grok (x.ai)":
-            logs.append(f"🌐 GROK WEB: OFF · провайдер {llm_provider_now or 'не задан'}")
-        elif not grok_key:
-            logs.append("🌐 GROK WEB: OFF · не задан LLM key")
-        else:
-            logs.append("🌐 GROK WEB: OFF · дневной лимит LLM исчерпан")
 
-        skipped_started = 0
-        skipped_bad_time = 0
-        skipped_bad_date = 0
-        skipped_missing_teams = 0
-        skipped_model_error = 0
+        # Счётчики воронки
+        funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
+                          "bet": 0, "watch": 0, "skip": 0,
+                          "model_only": 0, "estimated": 0, "real": 0}
 
         for r in rows:
             d = parse_date(r.get("Date", ""))
-            if not d:
-                skipped_bad_date += 1
+            if not d or not (today <= d <= today + timedelta(days=days)):
                 continue
-            if not (today <= d <= today + timedelta(days=days)):
-                continue
-
-            start_dt = _match_start_dt(r)
-            if start_dt is None:
-                if d.date() <= now.date():
-                    skipped_bad_time += 1
-                    continue
-            elif start_dt <= now:
-                skipped_started += 1
-                continue
-
             h_en = (r.get("HomeTeam") or "").strip()
             a_en = (r.get("AwayTeam") or "").strip()
             if not h_en or not a_en:
-                skipped_missing_teams += 1
                 continue
             h_ru = translate_team(h_en)
             a_ru = translate_team(a_en)
             lg = r.get("Div") or "G"
+
+            funnel_counts["model"] += 1
+
             try:
-                P = engine.predict(
-                    h_en, a_en, lg,
-                    match_date=d,
-                    cup=lg in (
-                        "C1", "EL", "EC", "W_C1",
-                        "NT_WC", "NT_EURO", "NT_CA",
-                        "NT_ACN", "NT_ASC",
-                    ),
-                )
+                P = engine.predict(h_en, a_en, lg, match_date=d,
+                                   cup=lg in ("C1", "EL", "EC"))
             except Exception:
-                skipped_model_error += 1
+                funnel_counts["skip"] += 1
                 continue
+
             fh = engine.form_str(h_en)
             fa = engine.form_str(a_en)
             verdict, rows_, _ = build_verdict(
                 P, min_prob, D["bank"], kelly_frac,
-                h_ru, a_ru, fh, fa, P.get("h2h_n", 0),
-            )
+                h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
 
             best = None
-            odds_source = "estimated"
+            odds_source = "model_only"
 
+            # Пробуем реальный кэф
             if verdict.get("is_action"):
-                model_candidates += 1
-                verdict["real_odds"] = False
-                verdict["odd"] = verdict.get("fair_odd")
-                verdict["ev"] = None
-                verdict["edge"] = None
-                verdict["stake"] = 0.0
-                verdict["kelly_pct"] = 0.0
-                verdict["is_bet"] = False
-                odds_source = "estimated" if verdict.get("fair_odd") else "unavailable"
-            else:
-                verdict["real_odds"] = False
-                verdict["odd"] = None
-                verdict["ev"] = None
-                verdict["edge"] = None
-                verdict["stake"] = 0.0
-                verdict["is_bet"] = False
+                sport_key = DIV_TO_ODDS.get(lg)
+                real_odds = None
+                if sport_key and odds_key and usage.odds_remaining() > 0 \
+                   and matches_with_best < 15:
+                    funnel_counts["market_req"] += 1
+                    real_odds = odds_api_fixture(sport_key, h_en, a_en, odds_key)
+                    if real_odds:
+                        funnel_counts["market_got"] += 1
 
-            p_top = float(verdict.get("prob") or 0.0)
-            min_edge_price = 1.0 / (p_top - 0.03) if p_top > 0.03 else 0.0
-            min_ev_price = 1.03 / p_top if p_top > 0 else 0.0
-            min_entry_odd = max(min_edge_price, min_ev_price, 0.0)
-            adaptive_factor, adaptive_reason = adaptive_priority(
-                adaptive_profile, {
-                    "date_iso": d.strftime("%Y-%m-%d"),
-                    "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
-                    "div": lg,
-                    "verdict": verdict,
-                },
-            )
+                if real_odds:
+                    verdict, best = refine_with_real_odds(
+                        verdict, rows_, real_odds, D["bank"], kelly_frac)
+                    odds_source = "real"
+                    funnel_counts["real"] += 1
+
+                # Fallback: если кэф не пришёл — используем estimated
+                if best is None:
+                    est_odd = verdict.get("fair_odd")
+                    if est_odd and est_odd > 1.01:
+                        prob_ = verdict["prob"]
+                        ev_ = prob_ * est_odd - 1
+                        min_stake = round(D["bank"] * MIN_STAKE_PCT, 2)
+                        stake_ = max(
+                            kelly(prob_, est_odd, D["bank"], kelly_frac),
+                            min_stake)
+                        verdict["real_odds"] = False
+                        verdict["odd"] = est_odd
+                        verdict["ev"] = ev_
+                        best = (market_type(verdict["pick"]),
+                                verdict["pick"], est_odd, ev_, prob_, stake_)
+                        odds_source = "estimated"
+                        funnel_counts["estimated"] += 1
+                elif best is None:
+                    funnel_counts["model_only"] += 1
+            else:
+                funnel_counts["model_only"] += 1
+
+            # Отладка
+            if best:
+                matches_with_best += 1
+                funnel_counts["bet"] += 1
+                logs.append(
+                    f"✅ BET: {h_ru} — {a_ru} | "
+                    f"{best[1]} @ {best[2]:.2f} ({odds_source})")
+            else:
+                logs.append(
+                    f"❌ NO BEST: {h_ru} — {a_ru} | "
+                    f"is_action={verdict.get('is_action')}")
+
+            # Контекст
+            context = {}
+            try:
+                from context_football import analyze_match_context
+                context = analyze_match_context(
+                    engine,
+                    home_en=h_en, away_en=a_en,
+                    home_ru=h_ru, away_ru=a_ru,
+                    match_date=d,
+                    referee=r.get("referee", "") or ""
+                )
+            except Exception:
+                context = {}
 
             cards.append({
                 "div": lg,
                 "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
                 "match": f"{h_en} vs {a_en}",
                 "match_ru": f"{h_ru} — {a_ru}",
-                "date": (
-                    d.strftime("%d.%m")
-                    + (f" {r.get('Time', '')}" if r.get("Time") else "")
-                ),
-                "verdict": verdict,
-                "best": best,
-                "games": P["games"],
-                "fh": fh, "fa": fa,
+                "date": d.strftime("%d.%m") +
+                        (f" {r.get('Time','')}" if r.get("Time") else ""),
+                "verdict": verdict, "best": best,
+                "games": P["games"], "fh": fh, "fa": fa,
                 "fixture_id": r.get("fixture_id"),
                 "date_iso": d.strftime("%Y-%m-%d"),
-                "lam_h": P["lams"][0],
-                "lam_a": P["lams"][1],
+                "time": r.get("Time") or "",
+                "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
-                "fdorg_odds": {
-                    k: float(v) for k, v in (r.get("odds") or {}).items()
-                    if v is not None and float(v) > 1.01
-                },
-                "grok_comment": "",
-                "grok_bookmaker": "",
-                "min_entry_odd": round(min_entry_odd, 2) if min_entry_odd > 0 else None,
-                "women": r.get("women", False),
-                "national": r.get("national", False),
-                "kind": r.get("kind", "club"),
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
-                "adaptive_factor": adaptive_factor,
-                "adaptive_reason": adaptive_reason,
+                "context": context,
             })
 
-        # РЫНОК ДЛЯ ЛУЧШИХ
-        market_candidates = [
-            c for c in cards
-            if (c.get("verdict") or {}).get("is_action", False)
-        ]
-        market_candidates.sort(
-            key=lambda c: (-float(rank_score(c) or 0.0)
-                           * float(c.get("adaptive_factor") or 1.0))
-        )
-        top_external_candidates = market_candidates[:ODDS_SCAN_TOP_N]
-        grok_candidates = market_candidates[:GROK_ODDS_TOP_N]
-        grok_keys = {
-            (
-                str(c.get("fixture_id") or ""),
-                str(c.get("match") or ""),
-                str(c.get("date_iso") or ""),
-            )
-            for c in grok_candidates
-        }
-        fdorg_candidates = [
-            c for c in market_candidates
-            if isinstance(c.get("fdorg_odds"), dict) and c.get("fdorg_odds")
-        ]
-        market_candidates_final = []
-        seen_market = set()
-        for candidate in fdorg_candidates + top_external_candidates:
-            key = (
-                str(candidate.get("fixture_id") or ""),
-                str(candidate.get("match") or ""),
-                str(candidate.get("date_iso") or ""),
-            )
-            if key in seen_market:
-                continue
-            seen_market.add(key)
-            market_candidates_final.append(candidate)
+        logs.append(f"🎯 BET: {matches_with_best}")
 
-        logs.append(
-            f"🎯 Market pool: {len(market_candidates)} кандидатов · "
-            f"fdorg_candidates {len(fdorg_candidates)} · "
-            f"top_external {len(top_external_candidates)} · "
-            f"final {len(market_candidates_final)}"
-        )
-
-        update_loader("💱 Запрос реальных кэфов...", 0.65, logs)
-
-        # МАРАФОН: загружаем все лиги заранее ОДИН РАЗ
-        marathon_cache = {}
-        try:
-            from data.marathon import fetch_league_events, DIV_TO_CATEGORY
-            for dv in DIV_TO_CATEGORY.keys():
-                marathon_cache[dv] = fetch_league_events(dv)
-            total_events = sum(len(v) for v in marathon_cache.values())
-            logs.append(
-                f"🏁 Марафон загружен: {len(DIV_TO_CATEGORY)} лиг · "
-                f"{total_events} событий"
-            )
-        except Exception as exc:
-            logs.append(f"⚠️ Marathon import error: {exc}")
-            marathon_cache = {}
-
-        # ИМПОРТИРУЕМ ПАРСЕР ОДИН РАЗ
-        try:
-            from data.marathon import _norm as _mar_norm
-            from data.marathon import RU_TO_EN_TEAM as _MAR_RU_EN
-        except Exception:
-            _mar_norm = None
-            _MAR_RU_EN = {}
-
-        for c in market_candidates_final:
-            v = c.get("verdict") or {}
-            match_str = c.get("match", "")
-            if " vs " not in match_str:
-                continue
-            h_en, a_en = match_str.split(" vs ", 1)
-            sport_key = DIV_TO_ODDS.get(c.get("div"))
-            real_odds = c.get("fdorg_odds") or None
-            odds_source = "fdorg" if real_odds else "estimated"
-            grok_quote = {}
-
-            # 1. МАРАФОН fallback
-            if not real_odds and _mar_norm is not None:
-                try:
-                    hn = _mar_norm(h_en)
-                    an = _mar_norm(a_en)
-                    dv = c.get("div") or ""
-                    events = marathon_cache.get(dv, [])
-                    if not events:
-                        # Если в этой лиге нет — пробуем ВСЕ лиги
-                        for _dv, _evs in marathon_cache.items():
-                            if _evs:
-                                events = _evs
-                                break
-                    found = False
-                    for ev in events:
-                        ev_home_en = _MAR_RU_EN.get(
-                            _mar_norm(ev["home"]),
-                            _mar_norm(ev["home"]))
-                        ev_away_en = _MAR_RU_EN.get(
-                            _mar_norm(ev["away"]),
-                            _mar_norm(ev["away"]))
-                        if ((hn in ev_home_en or ev_home_en in hn)
-                                and (an in ev_away_en or ev_away_en in an)):
-                            real_odds = {
-                                "П1": ev["odds"].get("П1"),
-                                "X": ev["odds"].get("X"),
-                                "П2": ev["odds"].get("П2"),
-                                "source": "marathon",
-                            }
-                            odds_source = "marathon"
-                            marathon_found += 1
-                            logs.append(
-                                f"🏁 Марафон: {ev['home']} vs {ev['away']} = "
-                                f"П1 {ev['odds'].get('П1')} / "
-                                f"X {ev['odds'].get('X')} / "
-                                f"П2 {ev['odds'].get('П2')}"
-                            )
-                            found = True
-                            break
-                except Exception as exc:
-                    logs.append(f"⚠️ Marathon error {h_en} — {a_en}: {exc}")
-
-            # 2. The Odds API
-            if (not real_odds and sport_key and odds_key
-                    and usage.odds_remaining() > 0):
-                try:
-                    real_odds = odds_api_fixture(sport_key, h_en, a_en, odds_key)
-                    if real_odds:
-                        odds_source = "market"
-                except Exception as exc:
-                    logs.append(f"⚠️ Odds API error {h_en} — {a_en}: {exc}")
-
-            # 3. Grok Web
-            candidate_key = (
-                str(c.get("fixture_id") or ""),
-                str(c.get("match") or ""),
-                str(c.get("date_iso") or ""),
-            )
-            if (not real_odds and grok_enabled
-                    and candidate_key in grok_keys):
-                try:
-                    grok_quote = grok_web_odds(
-                        h_en, a_en, c.get("league") or "Football",
-                        grok_key, logs,
-                    )
-                    if grok_quote.get("odds"):
-                        real_odds = grok_quote["odds"]
-                        odds_source = "grok_web"
-                except Exception as exc:
-                    logs.append(f"⚠️ Grok odds error {h_en} — {a_en}: {exc}")
-
-            if real_odds:
-                market_checked += 1
-                market_received += 1
-
-            if real_odds:
-                try:
-                    refined_v, best = refine_with_real_odds(
-                        dict(v), [], real_odds,
-                        D["bank"], kelly_frac,
-                    )
-                    c["verdict"] = refined_v
-                    c["best"] = best
-                    c["odds_source"] = odds_source
-
-                    edge_now = refined_v.get("edge")
-                    ev_now = refined_v.get("ev")
-                    kelly_now = refined_v.get("kelly_pct")
-                    try:
-                        edge_f = float(edge_now) if edge_now is not None else 0.0
-                    except (TypeError, ValueError):
-                        edge_f = 0.0
-                    try:
-                        ev_f = float(ev_now) if ev_now is not None else 0.0
-                    except (TypeError, ValueError):
-                        ev_f = 0.0
-                    try:
-                        kelly_f = float(kelly_now) if kelly_now is not None else 0.0
-                    except (TypeError, ValueError):
-                        kelly_f = 0.0
-
-                    if (refined_v.get("real_odds", False)
-                            and best is not None
-                            and kelly_f > 0
-                            and edge_f >= 0.03
-                            and ev_f >= 0.03):
-                        decision = "BET"
-                        matches_with_best += 1
-                        quality_real_market += 1
-                        decision_bet += 1
-                    elif (refined_v.get("real_odds", False)
-                          and kelly_f > 0
-                          and (edge_f > 0 or ev_f > 0)):
-                        decision = "WATCH"
-                        quality_real_market += 1
-                        decision_watch += 1
-                    else:
-                        decision = "SKIP"
-                        quality_real_market += 1
-                        decision_skip += 1
-                        value_rejected += 1
-
-                    refined_v["decision"] = decision
-                    refined_v["is_bet"] = decision == "BET"
-                    refined_v["decision_reason"] = _decision_reason(
-                        decision, edge_f, ev_f, kelly_f, True
-                    )
-                    c["best"] = best if decision == "BET" else None
-                    c["decision"] = decision
-                    c["decision_reason"] = refined_v["decision_reason"]
-
-                    c["grok_comment"] = (
-                        str(grok_quote.get("comment") or "").strip()
-                        if odds_source == "grok_web" else ""
-                    )
-                    c["grok_bookmaker"] = (
-                        str(grok_quote.get("bookmaker") or "").strip()
-                        if odds_source == "grok_web" else ""
-                    )
-                except Exception as exc:
-                    logs.append(f"⚠️ Ошибка odds {h_en} — {a_en}: {exc}")
-
-            if (c.get("best") is None
-                    and not (c.get("verdict") or {}).get("real_odds", False)):
-                c["odds_source"] = "estimated" if v.get("fair_odd") else "unavailable"
-                c["grok_comment"] = ""
-                c["grok_bookmaker"] = ""
-                quality_missing_market += 1
-                decision_model_only += 1
-
-        cards.sort(
-            key=lambda c: (
-                -float(rank_score(c) or 0.0)
-                * float(c.get("adaptive_factor") or 1.0),
-                -float(value_score(c) or 0.0),
-                -float((c.get("verdict") or {}).get("ev") or 0.0),
-                -float((c.get("verdict") or {}).get("edge") or 0.0),
-            )
-        )
-
-        if (skipped_started or skipped_bad_time or skipped_bad_date
-                or skipped_missing_teams or skipped_model_error):
-            logs.append(
-                f"⏱️ Scanner пропуски: начавшиеся/завершённые {skipped_started}"
-                f" · без времени сегодня {skipped_bad_time}"
-                f" · битая дата {skipped_bad_date}"
-                f" · без команд {skipped_missing_teams}"
-                f" · ошибка модели {skipped_model_error}"
-            )
-        else:
-            logs.append("⏱️ Scanner: все события прошли базовые фильтры")
-
-        adaptive_up = sum(
-            1 for c in cards if float(c.get("adaptive_factor") or 1.0) > 1.0
-        )
-        adaptive_down = sum(
-            1 for c in cards if float(c.get("adaptive_factor") or 1.0) < 1.0
-        )
-        logs.append(
-            f"🧠 Adaptive: ↑ {adaptive_up} · ↓ {adaptive_down} · "
-            f"нейтральных {max(0, len(cards) - adaptive_up - adaptive_down)}"
-        )
-
-        logs.append(
-            f"🎯 Воронка: модель {model_candidates} · "
-            f"рынок запрошен {market_checked} · получено {market_received} · "
-            f"BET {decision_bet} · WATCH {decision_watch} · "
-            f"SKIP {decision_skip} · MODEL_ONLY {decision_model_only} · "
-            f"estimated {quality_missing_market} · real {quality_real_market} · "
-            f"Марафон {marathon_found}"
-        )
-
+        # ============ LLM ============
         llm_key = D.get("meta", {}).get("llm_api_key", "")
-        llm_prov = D.get("meta", {}).get(
-            "llm_provider", "Groq (бесплатно, быстро)")
+        llm_prov = D.get("meta", {}).get("llm_provider",
+                                          "Groq (бесплатно, быстро)")
         llm_model = D.get("meta", {}).get("llm_model", "")
 
         action_cards = [c for c in cards if c.get("best") is not None]
-        action_cards.sort(
-            key=lambda c: -(c.get("verdict", {}).get("prob") or 0)
-        )
+        action_cards.sort(key=lambda c: -(c.get("verdict", {}).get("prob") or 0))
+        llm_done = 0
 
         logs.append(
-            f"🤖 LLM подготовка: key={'есть' if llm_key else 'НЕТ'} · "
-            f"provider={llm_prov} · action_cards={len(action_cards)} · "
-            f"remaining={usage.llm_remaining()}"
-        )
+            f"🤖 LLM подготовка: key={'есть' if llm_key else 'НЕТ'} | "
+            f"provider={llm_prov} | "
+            f"action_cards={len(action_cards)} | "
+            f"remaining={usage.llm_remaining()}")
+
+        _print_log(f"LLM: {len(action_cards)} cards, "
+                   f"key={'ok' if llm_key else 'none'}")
 
         if llm_key and usage.llm_remaining() > 0:
             for i_, card in enumerate(action_cards[:LLM_TOP_N]):
                 if usage.llm_remaining() <= 0:
+                    logs.append("🤖 LLM: лимит")
                     break
+                if i_ > 0:
+                    time.sleep(2)   # обход rate limit Groq
                 update_loader(
-                    f"🤖 ИИ [{i_ + 1}/{min(LLM_TOP_N, len(action_cards))}]",
-                    0.75 + 0.10 * (i_ + 1) / max(1, LLM_TOP_N),
-                    logs,
-                )
+                    f"🤖 ИИ-анализ [{i_+1}/{min(LLM_TOP_N, len(action_cards))}]",
+                    0.90 + 0.08 * (i_+1) / LLM_TOP_N, logs)
                 v_ = card.get("verdict", {})
-                ctx = {
-                    "api_key": llm_key, "provider": llm_prov,
-                    "model": llm_model,
+                ctx_llm = {
+                    "api_key": llm_key, "provider": llm_prov, "model": llm_model,
                     "home": card.get("match_ru", "").split(" — ")[0],
                     "away": card.get("match_ru", "").split(" — ")[-1],
                     "league": card.get("league", ""),
                     "date": card.get("date", ""),
-                    "lam_h": card.get("lam_h", 0),
-                    "lam_a": card.get("lam_a", 0),
+                    "lam_h": card.get("lam_h", 0), "lam_a": card.get("lam_a", 0),
                     "p1": card.get("p1", 0), "px": card.get("px", 0),
-                    "p2": card.get("p2", 0),
-                    "over": card.get("over", 0),
+                    "p2": card.get("p2", 0), "over": card.get("over", 0),
                     "btts": card.get("btts", 0),
                     "fh": card.get("fh", "—"), "fa": card.get("fa", "—"),
-                    "pick": v_.get("label", ""),
-                    "prob": v_.get("prob", 0),
-                    "confidence": v_.get("confidence", ""),
-                    "ev": v_.get("ev", 0),
+                    "pick": v_.get("label", ""), "prob": v_.get("prob", 0),
+                    "confidence": v_.get("confidence", ""), "ev": v_.get("ev", 0),
                 }
-                opinion = analyze_match(ctx)
+                opinion = analyze_match(ctx_llm)
                 if opinion:
                     card["llm_opinion"] = opinion
                     llm_done += 1
-            logs.append(f"🤖 LLM: {llm_done} мнений")
+                    logs.append(f"🤖 OK [{i_+1}]: {opinion[:60]}")
+                else:
+                    logs.append(f"🤖 FAIL [{i_+1}]: None")
+            logs.append(f"🤖 LLM итог: {llm_done} мнений")
+        elif not llm_key:
+            logs.append("🤖 LLM: ключ не задан")
 
-        if HAS_CONTEXT:
-            update_loader("🔍 Контекст...", 0.85, logs)
-            cur_y = today.year if today.month >= 7 else today.year - 1
-            s_ctx = season_str(cur_y)
-            for c in cards:
-                if not c.get("verdict", {}).get("is_action"):
-                    continue
-                if c.get("national"):
-                    continue
-                try:
-                    parts_m = c["match"].split(" vs ")
-                    if len(parts_m) == 2:
-                        c["context"] = analyze_match_context(
-                            parts_m[0], parts_m[1],
-                            c.get("div", ""), s_ctx,
-                        )
-                        ctx_count += 1
-                except Exception:
-                    pass
-            logs.append(f"🔍 Контекст: {ctx_count}")
-
-        update_loader("💼 Портфель...", 0.95, logs)
+        # ============ СТАВКИ ============
         new_bets = []
         existing = {
-            f"{b.get('match')}|{b.get('market')}|{b.get('pick')}"
+            f"{b['match']}|{b['pick']}"
             for b in D["bets"]
             if isinstance(b, dict) and b.get("status") == "pending"
         }
-
-        max_new_exposure = float(D.get("bank") or 0) * 0.20
-        max_league_exposure = float(D.get("bank") or 0) * 0.10
-        new_exposure = 0.0
-        league_exposure = {}
-
         for c in cards:
-            if (c.get("decision")
-                    or (c.get("verdict") or {}).get("decision")) != "BET":
-                continue
             b = c.get("best")
             if not b:
                 continue
             mkt, pick, odd, ev, prob, stake = b
-            stake = round(min(max(float(stake), 0.0), D["bank"] * 0.05), 2)
+            stake = round(min(max(stake, D["bank"] * MIN_STAKE_PCT),
+                              D["bank"] * MAX_STAKE_PCT), 2)
             if stake <= 0:
                 continue
-
-            if new_exposure + stake > max_new_exposure + 1e-9:
-                risk_rejected += 1
-                continue
-
-            league_key = str(c.get("league") or c.get("div") or "OTHER")
-            current_league = float(league_exposure.get(league_key, 0.0))
-            if current_league + stake > max_league_exposure + 1e-9:
-                risk_rejected += 1
-                continue
-
-            if odd is None or odd <= 1.0:
-                continue
-            if ev is None:
-                continue
-
-            bk = f"{c['match']}|{mkt}|{pick}"
+            bk = f"{c['match']}|{pick}"
             if bk in existing:
-                risk_reasons.append(
-                    f"duplicate: {c['match']} · {mkt} · {pick}"
-                )
                 continue
-
-            if c.get("women"):
-                women_bet_count += 1
-            if c.get("national"):
-                national_bet_count += 1
-
-            mode = ("real"
-                    if c.get("odds_source") in ("market", "grok_web",
-                                                 "fdorg", "manual", "marathon")
-                    else "paper")
-
             new_bets.append({
                 "match": c["match"], "match_ru": c["match_ru"],
                 "div": c["div"], "league": c["league"],
-                "market": mkt, "pick": pick,
-                "odds": odd, "stake": stake, "prob": prob,
-                "status": "pending", "strat": "value",
+                "market": mkt, "pick": pick, "odds": odd, "stake": stake,
+                "prob": prob, "status": "pending", "strat": "value",
                 "odds_source": c.get("odds_source", "estimated"),
-                "mode": mode,
+                "mode": "real" if c.get("odds_source") == "real" else "paper",
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
+                "match_time": c.get("time", ""),
                 "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "fixture_id": c.get("fixture_id"),
-                "score": None, "ev": ev,
-                "decision": "BET",
-                "decision_at": datetime.now().isoformat(),
-                "decision_snapshot": {
-                    "model_prob": float(c.get("verdict", {}).get("prob") or prob or 0.0),
-                    "fair_odd": float(c.get("verdict", {}).get("fair_odd") or 0.0),
-                    "market_odd": float(odd or 0.0),
-                    "edge": c.get("verdict", {}).get("edge"),
-                    "ev": ev,
-                    "kelly_pct": float(c.get("verdict", {}).get("kelly_pct") or 0.0),
-                    "confidence": c.get("verdict", {}).get("confidence"),
-                    "value_score": float(value_score(c) or 0.0),
-                    "market": mkt,
-                    "league": c.get("league"),
-                    "decision_reason": (c.get("decision_reason")
-                                        or c.get("verdict", {}).get("decision_reason")),
-                },
-                "women": c.get("women", False),
-                "national": c.get("national", False),
+                "fixture_id": c.get("fixture_id"), "score": None, "ev": ev,
             })
             existing.add(bk)
-            new_exposure += stake
-            league_exposure[league_key] = current_league + stake
-
-        decision_snapshots = []
-        for dc in cards:
-            dv = dc.get("verdict") or {}
-            decision = str(dc.get("decision")
-                           or dv.get("decision") or "").upper().strip()
-            has_real_odds = (bool(dv.get("real_odds", False))
-                             and float(dv.get("odd") or 0.0) > 1.01)
-
-            probs = {
-                "П1": float(dc.get("p1") or 0.0),
-                "X": float(dc.get("px") or 0.0),
-                "П2": float(dc.get("p2") or 0.0),
-            }
-            fallback_pick = max(probs, key=probs.get)
-            verdict_pick = str(dv.get("pick") or "").strip()
-            if has_real_odds and verdict_pick:
-                market = str(dv.get("market") or dv.get("market_type") or "1X2")
-                pick = verdict_pick
-                model_prob = dv.get("prob")
-                if model_prob is None:
-                    model_prob = probs.get(pick)
-            else:
-                market = "1X2"
-                pick = fallback_pick
-                model_prob = probs.get(fallback_pick)
-
-            if not has_real_odds:
-                snapshot_decision = "MODEL_ONLY"
-            elif decision in ("BET", "WATCH", "SKIP"):
-                snapshot_decision = decision
-            else:
-                snapshot_decision = "MODEL_ONLY"
-
-            fixture_id = str(dc.get("fixture_id") or "")
-            match = str(dc.get("match") or "")
-            market_odd = dv.get("odd") if has_real_odds and verdict_pick else None
-            snapshot_key = "|".join([
-                fixture_id or match,
-                market, pick, snapshot_decision,
-                str(dc.get("date_iso") or dc.get("date") or ""),
-            ])
-            decision_snapshots.append({
-                "snapshot_key": snapshot_key,
-                "fixture_id": fixture_id,
-                "match": match,
-                "match_ru": dc.get("match_ru"),
-                "league": dc.get("league") or dc.get("div"),
-                "market": market, "pick": pick,
-                "decision": snapshot_decision,
-                "decision_reason": (
-                    "MODEL ONLY — прогноз без кэфа."
-                    if snapshot_decision == "MODEL_ONLY"
-                    else dc.get("decision_reason") or dv.get("decision_reason")
-                ),
-                "model_prob": model_prob,
-                "fair_odd": dv.get("fair_odd"),
-                "market_odd": market_odd,
-                "edge": dv.get("edge") if has_real_odds else None,
-                "ev": dv.get("ev") if has_real_odds else None,
-                "kelly_pct": dv.get("kelly_pct") if has_real_odds else None,
-                "confidence": dv.get("confidence"),
-                "value_score": value_score(dc),
-                "odds_source": dc.get("odds_source") if has_real_odds else "model_only",
-                "date_iso": dc.get("date_iso") or dc.get("date"),
-            })
 
         D2 = dict(D)
         D2["cards"] = cards
@@ -1355,50 +464,26 @@ def render(min_prob, kelly_frac, matrix_n):
         total_stake = sum(b["stake"] for b in new_bets)
         D2["bank"] = max(0.0, D["bank"] - total_stake)
         D2["funnel"] = {
-            "model_candidates": model_candidates,
-            "market_checked": market_checked,
-            "market_received": market_received,
-            "value_rejected": value_rejected,
             "trained": getattr(engine, "trained_n", 0),
-            "src": len(rows),
-            "found": matches_with_best,
-            "added": len(new_bets),
-            "frozen": total_stake,
-            "llm": llm_done,
-            "ctx": ctx_count,
-            "women": women_bet_count,
-            "national": national_bet_count,
-            "risk_rejected": risk_rejected,
-            "duplicate_rejected": sum(
-                1 for rr in risk_reasons if str(rr).startswith("duplicate:")
-            ),
-            "quality_real_market": quality_real_market,
-            "quality_missing_market": quality_missing_market,
-            "decision_bet": decision_bet,
-            "decision_watch": decision_watch,
-            "decision_skip": decision_skip,
-            "decision_model_only": decision_model_only,
-            "marathon": marathon_found,
+            "src": len(rows), "found": matches_with_best,
+            "added": len(new_bets), "frozen": total_stake, "llm": llm_done,
         }
         st.session_state.data = D2
         usage.set_local_data(D2)
-
         if db.SQLITE_BOOT_OK:
             db.insert_bets_batch(new_bets)
-            db.insert_decision_snapshots(decision_snapshots)
             db.log_bank(D2["bank"], event="scan")
             db.invalidate_caches()
 
+        # Логи воронки
+        _print_log(f"FUNNEL: {funnel_counts}")
+
         update_loader(
-            f"✅ Готово! +{len(new_bets)} ставок · "
-            f"📡 {len(rows)} матчей · 🤖 {llm_done} LLM · 🏁 Марафон {marathon_found}",
-            1.0, logs,
-        )
-        time.sleep(1.5)
+            f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM",
+            1.0, logs)
+        time.sleep(1.2)
         loader_ph.empty()
         log_ph.empty()
-
     finally:
         st.session_state["_scan_in_progress"] = False
-
     st.rerun()
