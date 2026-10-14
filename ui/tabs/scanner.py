@@ -69,10 +69,10 @@ def _decision_reason(decision, edge, ev, kelly_pct, real_odds=True):
         kelly_f = 0.0
 
     if decision == "BET":
-        return "Edge ≥ 3%, EV ≥ 3% и Kelly > 0 — цена подтверждена."
+        return "Edge >= 3%, EV >= 3% и Kelly > 0 — цена подтверждена."
     if decision == "WATCH":
         if kelly_f <= 0:
-            return "Kelly ≤ 0 — ждём более высокий кэф."
+            return "Kelly <= 0 — ждём более высокий кэф."
         if edge_f < 0.03 and ev_f < 0.03:
             return "Edge и EV ниже 3% — нужен более выгодный кэф."
         if edge_f < 0.03:
@@ -81,13 +81,13 @@ def _decision_reason(decision, edge, ev, kelly_pct, real_odds=True):
             return "EV ниже 3% — нужен более выгодный кэф."
         return "Value положительный, но цена пока не проходит полный фильтр."
     if kelly_f <= 0:
-        return "Kelly ≤ 0 — ставка не оправдывает риск."
+        return "Kelly <= 0 — ставка не оправдывает риск."
     if edge_f <= 0 and ev_f <= 0:
-        return "Edge и EV ≤ 0 — положительного преимущества нет."
+        return "Edge и EV <= 0 — положительного преимущества нет."
     if edge_f <= 0:
-        return "Edge ≤ 0 — рыночная цена хуже fair."
+        return "Edge <= 0 — рыночная цена хуже fair."
     if ev_f <= 0:
-        return "EV ≤ 0 — математического преимущества нет."
+        return "EV <= 0 — математического преимущества нет."
     return "Цена не проходит строгий фильтр BET."
 
 
@@ -190,7 +190,6 @@ def _load_engine(matrix_n, logs, update_loader):
 def render(min_prob, kelly_frac, matrix_n):
     D = st.session_state.data
 
-    # Adaptive Rules Engine
     adaptive_profile = {}
     if db.SQLITE_BOOT_OK:
         try:
@@ -200,14 +199,13 @@ def render(min_prob, kelly_frac, matrix_n):
         except Exception:
             adaptive_profile = {}
 
-    # ============ СЧЁТЧИКИ ВОРОНКИ ============
-    model_candidates = 0        # is_action = True
-    market_checked = 0          # сколько раз пробовали запросить кэф
-    market_received = 0         # сколько раз получили реальный кэф
-    value_rejected = 0          # реальный кэф есть, но value не прошло
-    matches_with_best = 0       # best создан (BET)
-    quality_real_market = 0     # реальный кэф
-    quality_missing_market = 0  # только estimated
+    model_candidates = 0
+    market_checked = 0
+    market_received = 0
+    value_rejected = 0
+    matches_with_best = 0
+    quality_real_market = 0
+    quality_missing_market = 0
     decision_bet = 0
     decision_watch = 0
     decision_skip = 0
@@ -247,7 +245,6 @@ def render(min_prob, kelly_frac, matrix_n):
         if HAS_CONTEXT:
             st.caption("🟢 Context Engine: подключён")
 
-        # ============ PORTFOLIO RISK ============
         pending_stake = sum(
             float(b.get("stake", 0) or 0)
             for b in D.get("bets", [])
@@ -288,7 +285,6 @@ def render(min_prob, kelly_frac, matrix_n):
         shown = 0
         hidden = 0
 
-        # ============ TOP VALUE ============
         real_value_cards = [
             c for c in cards_view
             if c.get("best")
@@ -338,7 +334,6 @@ def render(min_prob, kelly_frac, matrix_n):
         else:
             st.info("🏆 TOP VALUE появится после получения реальных кэфов.")
 
-        # ============ DECISION BOARD ============
         bet_cards = [
             c for c in cards_view
             if str(c.get("decision") or (c.get("verdict") or {}).get("decision") or "").upper() == "BET"
@@ -363,7 +358,7 @@ def render(min_prob, kelly_frac, matrix_n):
 
         if bet_cards:
             st.markdown("#### 🟢 BEST BETS TODAY")
-            st.caption("Реальные цены · Edge ≥ 3% · EV ≥ 3% · Kelly > 0.")
+            st.caption("Реальные цены · Edge >= 3% · EV >= 3% · Kelly > 0.")
             best_cols = st.columns(min(3, len(bet_cards)))
             for bi, bc in enumerate(bet_cards):
                 bv = bc.get("verdict") or {}
@@ -453,7 +448,6 @@ def render(min_prob, kelly_frac, matrix_n):
             )
             shown += 1
 
-            # Ручная котировка букмекера
             if not v.get("real_odds", False) and not c.get("best"):
                 fair = float(v.get("fair_odd") or 0.0)
                 prob = float(v.get("prob") or 0.0)
@@ -506,7 +500,7 @@ def render(min_prob, kelly_frac, matrix_n):
                         st.warning(
                             f"Кэф не стал BET: Edge {edge_f:.1%} · "
                             f"EV {ev_f:.1%} · Kelly {kelly_f:.1%}. "
-                            "Нужно Edge ≥ 3%, EV ≥ 3%, Kelly > 0."
+                            "Нужно Edge >= 3%, EV >= 3%, Kelly > 0."
                         )
                     else:
                         mkt, pick, odd, ev, prob, stake = manual_best
@@ -612,7 +606,6 @@ def render(min_prob, kelly_frac, matrix_n):
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
 
-        # ============ 1. THESPORTSDB ============
         update_loader("📡 TheSportsDB: сбор всех лиг...", 0.05, logs)
         try:
             tsdb_rows = tsdb_matches(days, logs)
@@ -620,7 +613,6 @@ def render(min_prob, kelly_frac, matrix_n):
             logs.append(f"⚠️ TSDB ошибка: {e}")
             tsdb_rows = []
 
-        # ============ 2. FOOTBALL-DATA.ORG ============
         token = D.get("meta", {}).get("fdorg_token", "").strip()
         fdorg_rows = []
         if token:
@@ -632,7 +624,6 @@ def render(min_prob, kelly_frac, matrix_n):
         else:
             logs.append("📡 football-data.org: токен не задан")
 
-        # ============ 3. ESPN ============
         espn_rows = []
         update_loader("📡 ESPN: дополнение покрытия...", 0.15, logs)
         try:
@@ -640,7 +631,6 @@ def render(min_prob, kelly_frac, matrix_n):
         except Exception as e:
             logs.append(f"⚠️ ESPN ошибка: {e}")
 
-        # ============ ОБЪЕДИНЕНИЕ ============
         rows_by_key = {}
         key_order = []
 
@@ -695,11 +685,9 @@ def render(min_prob, kelly_frac, matrix_n):
             f"🌍 сборные {n_count}"
         )
 
-        # ============ 4. ENGINE ============
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
 
-        # ============ 5. АНАЛИЗ ============
         update_loader("🧠 Анализ матчей...", 0.50, logs)
         cards = []
         odds_key = D.get("meta", {}).get("odds_api_key", "")
@@ -779,15 +767,6 @@ def render(min_prob, kelly_frac, matrix_n):
 
             if verdict.get("is_action"):
                 model_candidates += 1
-            else:
-                verdict["real_odds"] = False
-                verdict["odd"] = None
-                verdict["ev"] = None
-                verdict["edge"] = None
-                verdict["stake"] = 0.0
-                verdict["is_bet"] = False
-
-            if verdict.get("is_action"):
                 verdict["real_odds"] = False
                 verdict["odd"] = verdict.get("fair_odd")
                 verdict["ev"] = None
@@ -854,7 +833,6 @@ def render(min_prob, kelly_frac, matrix_n):
                 "adaptive_reason": adaptive_reason,
             })
 
-        # ============ 6. РЫНОК ДЛЯ ЛУЧШИХ ============
         market_candidates = [
             c for c in cards
             if (c.get("verdict") or {}).get("is_action", False)
@@ -889,9 +867,19 @@ def render(min_prob, kelly_frac, matrix_n):
             seen_market.add(key)
             market_candidates_final.append(candidate)
 
+        logs.append(
+            f"🎯 Market pool: {len(market_candidates)} кандидатов · "
+            f"fdorg_candidates {len(fdorg_candidates)} · "
+            f"top_external {len(top_external_candidates)} · "
+            f"final {len(market_candidates_final)}"
+        )
+
         for c in market_candidates_final:
             v = c.get("verdict") or {}
-            h_en, a_en = c.get("match", "").split(" vs ", 1)
+            match_str = c.get("match", "")
+            if " vs " not in match_str:
+                continue
+            h_en, a_en = match_str.split(" vs ", 1)
             sport_key = DIV_TO_ODDS.get(c.get("div"))
             real_odds = c.get("fdorg_odds") or None
             odds_source = "fdorg" if real_odds else "estimated"
@@ -907,7 +895,6 @@ def render(min_prob, kelly_frac, matrix_n):
                 str(c.get("date_iso") or ""),
             )
 
-            # Grok Web Search
             if not real_odds and grok_enabled and candidate_key in grok_keys:
                 try:
                     grok_quote = grok_web_odds(
@@ -922,7 +909,6 @@ def render(min_prob, kelly_frac, matrix_n):
                 except Exception as exc:
                     logs.append(f"⚠️ Grok odds error {h_en} — {a_en}: {exc}")
 
-            # Odds API
             if (not real_odds and sport_key and odds_key
                     and usage.odds_remaining() > 0):
                 try:
@@ -1009,7 +995,6 @@ def render(min_prob, kelly_frac, matrix_n):
                 quality_missing_market += 1
                 decision_model_only += 1
 
-        # Финальный рейтинг
         cards.sort(
             key=lambda c: (
                 -float(rank_score(c) or 0.0) * float(c.get("adaptive_factor") or 1.0),
@@ -1045,7 +1030,6 @@ def render(min_prob, kelly_frac, matrix_n):
             f"estimated {quality_missing_market} · real {quality_real_market}"
         )
 
-        # ============ 7. LLM ============
         llm_key = D.get("meta", {}).get("llm_api_key", "")
         llm_prov = D.get("meta", {}).get("llm_provider", "Groq (бесплатно, быстро)")
         llm_model = D.get("meta", {}).get("llm_model", "")
@@ -1096,7 +1080,6 @@ def render(min_prob, kelly_frac, matrix_n):
                     llm_done += 1
             logs.append(f"🤖 LLM: {llm_done} мнений")
 
-        # ============ 8. CONTEXT ============
         if HAS_CONTEXT:
             update_loader("🔍 Контекст...", 0.85, logs)
             cur_y = today.year if today.month >= 7 else today.year - 1
@@ -1118,7 +1101,6 @@ def render(min_prob, kelly_frac, matrix_n):
                     pass
             logs.append(f"🔍 Контекст: {ctx_count}")
 
-        # ============ 9. СТАВКИ ============
         update_loader("💼 Портфель...", 0.95, logs)
         new_bets = []
         existing = {
@@ -1205,7 +1187,6 @@ def render(min_prob, kelly_frac, matrix_n):
             new_exposure += stake
             league_exposure[league_key] = current_league + stake
 
-        # ============ 10. DECISION SNAPSHOTS ============
         decision_snapshots = []
         for dc in cards:
             dv = dc.get("verdict") or {}
@@ -1270,7 +1251,6 @@ def render(min_prob, kelly_frac, matrix_n):
                 "date_iso": dc.get("date_iso") or dc.get("date"),
             })
 
-        # ============ 11. СОХРАНЕНИЕ ============
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
