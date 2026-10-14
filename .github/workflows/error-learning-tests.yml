@@ -3,7 +3,7 @@ on:
   push:
     branches: ["feat/online-error-learning"]
   pull_request:
-    branches: [main]
+    branches: [main, "feat/forecast-audit-ledger"]
 jobs:
   error-learning:
     runs-on: ubuntu-latest
