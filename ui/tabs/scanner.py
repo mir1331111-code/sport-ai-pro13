@@ -1,15 +1,15 @@
 """ui/tabs/scanner.py — Сканер с правильной логикой best + LLM."""
 from __future__ import annotations
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 
-from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS
+from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DB_FILE
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
-                          fdorg_matches, odds_api_fixture, parse_date)
+                          fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date)
 from model.engine import Engine
 from betting.verdict import build_verdict, refine_with_real_odds
 from betting.kelly import kelly, market_type
@@ -21,6 +21,83 @@ from ui.cards import (render_verdict_card, translate_team,
 LLM_TOP_N = 8
 MIN_STAKE_PCT = 0.005   # 0.5% от банка — минимальный стейк
 MAX_STAKE_PCT = 0.05    # 5% от банка — максимальный
+
+
+def _forecast_ledger():
+    """Open the persistent audit ledger; failure must never stop match scanning."""
+    try:
+        from model.forecast_ledger import ForecastLedger
+        return ForecastLedger(str(DB_FILE) + ".forecast-ledger.sqlite")
+    except Exception as exc:
+        _print_log(f"forecast ledger unavailable: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _reconcile_forecast_results(ledger, token, logs):
+    """Settle only provider-confirmed regular-time final scores."""
+    if ledger is None or not token:
+        return 0
+    settled = 0
+    try:
+        pending = [row for row in ledger.rows() if row.get("result") is None]
+        for row in pending:
+            fixture_id = row.get("fixture_id")
+            if not fixture_id or not str(fixture_id).isdigit():
+                continue
+            try:
+                result = fdorg_match_result(str(fixture_id), token)
+                if not result or result.get("status") != "FT":
+                    continue
+                hg, ag = int(result["home"]), int(result["away"])
+                outcome = "H" if hg > ag else "A" if hg < ag else "D"
+                ledger.settle(
+                    row["forecast_key"], outcome, home_score=hg, away_score=ag,
+                    settled_at=datetime.now(timezone.utc),
+                    closing_odds_source="football-data.org:verified-FT",
+                )
+                settled += 1
+            except Exception as exc:
+                logs.append(f"Журнал: не удалось закрыть {fixture_id}: {type(exc).__name__}")
+        if settled:
+            logs.append(f"📚 Журнал: подтверждено итогов FT — {settled}")
+    except Exception as exc:
+        logs.append(f"📚 Журнал результатов недоступен: {type(exc).__name__}")
+    return settled
+
+
+def _record_raw_forecast(ledger, row, home, away, league, probabilities, logs):
+    """Append one raw 1X2 forecast with source UTC kickoff; never alters served odds."""
+    if ledger is None:
+        return
+    fixture_id = row.get("fixture_id")
+    kickoff = row.get("kickoff_utc")
+    if fixture_id in (None, "") or not kickoff:
+        return
+    key = f"fdorg:{fixture_id}:{APP_VERSION}"
+    try:
+        # The scan can run repeatedly; do not rewrite the original forecast timestamp.
+        if any(item.get("forecast_key") == key for item in ledger.rows()):
+            return
+        prices_raw = row.get("odds") or {}
+        prices = {}
+        for outcome, name in (("H", "П1"), ("D", "X"), ("A", "П2")):
+            try:
+                odd = float(prices_raw.get(name))
+                if odd > 1:
+                    prices[outcome] = odd
+            except (TypeError, ValueError):
+                pass
+        ledger.record_prediction(
+            forecast_key=key, fixture_id=str(fixture_id),
+            home_team=home, away_team=away, model_version=str(APP_VERSION),
+            probabilities=probabilities,
+            forecast_at=datetime.now(timezone.utc),
+            kickoff_at=kickoff, league=str(league or ""),
+            entry_odds=prices or None,
+            odds_source=row.get("odds_source") or None,
+        )
+    except Exception as exc:
+        logs.append(f"📚 Журнал: прогноз не записан ({type(exc).__name__})")
 
 
 def _safe_filter(rows):
@@ -231,6 +308,11 @@ def render(min_prob, kelly_frac, matrix_n):
 
         logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
 
+        # Persistent learning audit: settle previous fixtures before new predictions.
+        audit_ledger = _forecast_ledger()
+        if audit_ledger is not None:
+            _reconcile_forecast_results(audit_ledger, token, logs)
+
         update_loader("📡 Сбор матчей...", 0.05, logs)
         rows_raw = fdorg_matches(days, token, logs)
         rows = _safe_filter(rows_raw)
@@ -269,6 +351,17 @@ def render(min_prob, kelly_frac, matrix_n):
             except Exception:
                 funnel_counts["skip"] += 1
                 continue
+
+            # Audit raw model probabilities before any verdict/market refinement.
+            # Calibration remains shadow-only until chronological holdout validation.
+            try:
+                _record_raw_forecast(
+                    audit_ledger, r, h_en, a_en, lg,
+                    {"H": float(P["p1"]), "D": float(P["x"]), "A": float(P["p2"])},
+                    logs,
+                )
+            except Exception as exc:
+                logs.append(f"📚 Журнал: ошибка записи ({type(exc).__name__})")
 
             fh = engine.form_str(h_en)
             fa = engine.form_str(a_en)
