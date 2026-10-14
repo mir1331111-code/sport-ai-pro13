@@ -67,7 +67,7 @@ class ForecastLearningService:
         forecast_id = self.ledger.record_prediction(
             forecast_key=forecast_key, fixture_id=fixture_id,
             home_team=home_team, away_team=away_team, model_version=model_version,
-            probabilities=raw, raw_probabilities=raw, forecast_at=forecast_stamp,
+            probabilities=raw, forecast_at=forecast_stamp,
             kickoff_at=kickoff_stamp, league=league, entry_odds=entry_odds,
             odds_source=odds_source,
         )
