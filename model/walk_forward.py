@@ -67,17 +67,30 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     baseline_records, candidate_records = [], []
-    for index, (stamp, league, home, away, hg, ag, row) in enumerate(prepared):
-        baseline_prediction = baseline.predict(home, away, league, match_date=stamp.isoformat())
-        candidate_prediction = candidate.predict(home, away, league, match_date=stamp.isoformat())
-        outcome = "H" if hg > ag else "A" if hg < ag else "D"
-        baseline_records.append(({"H": baseline_prediction["p1"], "D": baseline_prediction["x"], "A": baseline_prediction["p2"]}, outcome))
-        candidate_records.append(({"H": candidate_prediction["p1"], "D": candidate_prediction["x"], "A": candidate_prediction["p2"]}, outcome))
-        row_copy = dict(row) if isinstance(row, dict) else {}
-        row_copy["Div"] = league
-        # Strict walk-forward: update only after both predictions were recorded.
-        baseline.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=stamp.isoformat())
-        candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=stamp.isoformat())
+    index = 0
+    cursor = 0
+    while cursor < len(prepared):
+        # If historical data only has calendar dates, predict every fixture on
+        # the same date before adding any result from that date.
+        stamp = prepared[cursor][0]
+        group = []
+        while cursor < len(prepared) and prepared[cursor][0] == stamp:
+            group.append(prepared[cursor])
+            cursor += 1
+        pending = []
+        for _, league, home, away, hg, ag, row in group:
+            baseline_prediction = baseline.predict(home, away, league, match_date=stamp.isoformat())
+            candidate_prediction = candidate.predict(home, away, league, match_date=stamp.isoformat())
+            outcome = "H" if hg > ag else "A" if hg < ag else "D"
+            baseline_records.append(({"H": baseline_prediction["p1"], "D": baseline_prediction["x"], "A": baseline_prediction["p2"]}, outcome))
+            candidate_records.append(({"H": candidate_prediction["p1"], "D": candidate_prediction["x"], "A": candidate_prediction["p2"]}, outcome))
+            row_copy = dict(row) if isinstance(row, dict) else {}
+            row_copy["Div"] = league
+            pending.append((home, away, hg, ag, row_copy, stamp))
+        for home, away, hg, ag, row_copy, match_stamp in pending:
+            baseline.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            index += 1
     base_metrics, candidate_metrics = _metrics(baseline_records), _metrics(candidate_records)
     return {
         "n": len(prepared),
