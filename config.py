@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "13.3.1"
+APP_VERSION = "13.4.0"
 DATA_VERSION = 17
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,13 +29,13 @@ CACHE_TTL = {
 
 LLM_PROVIDERS = {
     "Groq (бесплатно, быстро)": {
-    "base": "https://groq-proxy13.mir1331111.workers.dev/openai/v1",
+    "base": "https://api.groq.com/openai/v1",
     "model": "openai/gpt-oss-20b",
     "key_url": "https://console.groq.com/keys",
 },
     "Groq 70B (бесплатно, мощнее)": {
-        "base": "https://groq-proxy13.mir1331111.workers.dev/openai/v1",
-        "model": "llama-3.1-70b-versatile",
+        "base": "https://api.groq.com/openai/v1",
+        "model": "llama-3.3-70b-versatile",
         "key_url": "https://console.groq.com/keys",
     },
     "Gemini (Google, бесплатно)": {

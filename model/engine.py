@@ -7,6 +7,7 @@ import unicodedata
 from collections import defaultdict
 
 from model.calibration import PlattCalibrator
+from model.temporal import days_since_last_match, estimate_dixon_coles_rho, weighted_mean
 
 
 def _new_team():
@@ -16,6 +17,10 @@ def _new_team():
         "as": [],
         "ac": [],
         "form": [],
+        "hs_dates": [],
+        "hc_dates": [],
+        "as_dates": [],
+        "ac_dates": [],
     }
 
 
@@ -44,17 +49,24 @@ def _norm(name: str) -> str:
 
 
 class Engine:
-    def __init__(self, matrix_n: int = 12):
+    def __init__(self, matrix_n: int = 12, *, temporal_weighting: bool = True, league_rho_fitting: bool = True):
         self.matrix_n = int(matrix_n)
+        self.temporal_weighting = bool(temporal_weighting)
+        self.league_rho_fitting = bool(league_rho_fitting)
 
         self.elo: dict = {}
         self.st = defaultdict(_new_team)
 
         self.hg: list = []
         self.ag: list = []
+        self.hg_dates: list = []
+        self.ag_dates: list = []
 
         self.lg_hg = defaultdict(list)
         self.lg_ag = defaultdict(list)
+        self.lg_hg_dates = defaultdict(list)
+        self.lg_ag_dates = defaultdict(list)
+        self.league_scores = defaultdict(list)
 
         # H2H хранится в перспективе команды, указанной первой.
         #
@@ -96,12 +108,12 @@ class Engine:
         p = min(max(p, 1e-6), 1 - 1e-6)
         return math.log(p / (1 - p))
 
-    def _m(self, values, default=1.0):
-        return (
-            sum(values) / len(values)
-            if values
-            else default
-        )
+    def _m(self, values, default=1.0, dates=None, as_of=None):
+        if not values:
+            return float(default)
+        if not self.temporal_weighting:
+            return sum(values) / len(values)
+        return weighted_mean(values, dates, as_of, default=default, half_life_days=180.0)
 
     def _p(self, lam, k):
         try:
@@ -265,6 +277,12 @@ class Engine:
         teams[a]["as"].append(ag)
         teams[a]["ac"].append(hg)
 
+        stamp = match_date.isoformat() if hasattr(match_date, "isoformat") else match_date
+        teams[h]["hs_dates"].append(stamp)
+        teams[h]["hc_dates"].append(stamp)
+        teams[a]["as_dates"].append(stamp)
+        teams[a]["ac_dates"].append(stamp)
+
         teams[h]["form"].append(
             3 if hg > ag
             else (1 if hg == ag else 0)
@@ -277,6 +295,8 @@ class Engine:
 
         self.hg.append(hg)
         self.ag.append(ag)
+        self.hg_dates.append(stamp)
+        self.ag_dates.append(stamp)
 
         if isinstance(row, dict):
             div = row.get("Div") or "G"
@@ -285,6 +305,10 @@ class Engine:
 
         self.lg_hg[div].append(hg)
         self.lg_ag[div].append(ag)
+        self.lg_hg_dates[div].append(stamp)
+        self.lg_ag_dates[div].append(stamp)
+        self.league_scores[div].append((stamp, hg, ag))
+        self.league_scores[div] = self.league_scores[div][-500:]
 
         # ---------------------------------------------------------
         # H2H
@@ -401,6 +425,8 @@ class Engine:
                 self._m(
                     self.lg_hg[lg],
                     1.5,
+                    self.lg_hg_dates[lg],
+                    match_date,
                 ),
             )
 
@@ -409,6 +435,8 @@ class Engine:
                 self._m(
                     self.lg_ag[lg],
                     1.2,
+                    self.lg_ag_dates[lg],
+                    match_date,
                 ),
             )
         else:
@@ -417,6 +445,8 @@ class Engine:
                 self._m(
                     self.hg,
                     1.5,
+                    self.hg_dates,
+                    match_date,
                 ),
             )
 
@@ -425,6 +455,8 @@ class Engine:
                 self._m(
                     self.ag,
                     1.2,
+                    self.ag_dates,
+                    match_date,
                 ),
             )
 
@@ -436,22 +468,22 @@ class Engine:
         # ---------------------------------------------------------
 
         attack_home = (
-            self._m(sh["hs"], lh_g)
+            self._m(sh["hs"], lh_g, sh["hs_dates"], match_date)
             / lh_g
         )
 
         defense_home = (
-            self._m(sh["hc"], la_g)
+            self._m(sh["hc"], la_g, sh["hc_dates"], match_date)
             / la_g
         )
 
         attack_away = (
-            self._m(sa["as"], la_g)
+            self._m(sa["as"], la_g, sa["as_dates"], match_date)
             / la_g
         )
 
         defense_away = (
-            self._m(sa["ac"], lh_g)
+            self._m(sa["ac"], lh_g, sa["ac_dates"], match_date)
             / lh_g
         )
 
@@ -540,10 +572,22 @@ class Engine:
         # Dixon-Coles / Poisson
         # ---------------------------------------------------------
 
+        rho = (
+            estimate_dixon_coles_rho(
+                self.league_scores.get(lg, []),
+                lh_g,
+                la_g,
+                prior_rho=P0["rho"],
+                min_matches=80,
+                prior_strength=40.0,
+                as_of=match_date,
+            )
+            if self.league_rho_fitting else P0["rho"]
+        )
         p1, px, matrix = self._p1px(
             lam_h,
             lam_a,
-            P0["rho"],
+            rho,
         )
 
         # ---------------------------------------------------------
@@ -628,6 +672,9 @@ class Engine:
 
             "e": elo_home,
             "pde": pde,
+            "rho": rho,
+            "home_rest_days": days_since_last_match(self.last_match_date.get(h), match_date),
+            "away_rest_days": days_since_last_match(self.last_match_date.get(a), match_date),
         }
 
     def learn_step(
