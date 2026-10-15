@@ -1,7 +1,7 @@
 name: Forecast error learning tests
 on:
   push:
-    branches: ["feat/online-error-learning"]
+    branches: ["feat/online-error-learning", "feat/dixon-coles-ab-audit"]
   pull_request:
     branches: [main, "feat/forecast-audit-ledger"]
 jobs:
