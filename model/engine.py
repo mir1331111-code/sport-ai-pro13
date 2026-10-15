@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections import defaultdict
 
 from model.calibration import PlattCalibrator
@@ -30,28 +31,16 @@ def is_cup(div: str) -> bool:
 
 
 def _norm(name: str) -> str:
+    """Normalize club suffixes without deleting meaningful name words."""
     if not name:
         return ""
 
-    s = str(name).lower().strip()
-
-    for suf in [
-        " fc",
-        " cf",
-        " afc",
-        " sc",
-        " ac",
-        " united",
-        " utd",
-        " city",
-        " town",
-        " rovers",
-        " county",
-    ]:
-        s = s.replace(suf, "")
-
-    s = re.sub(r"[^a-z0-9]", "", s)
-    return s
+    s = unicodedata.normalize("NFKD", str(name).casefold())
+    s = "".join(ch for ch in s if not unicodedata.combining(ch)).strip()
+    # Club designators are only removable at the end. Words such as City,
+    # United and County are part of many real club names and must be retained.
+    s = re.sub(r"(?:\\s+(?:football club|fc|afc|cf|sc|ac))+$", "", s)
+    return re.sub(r"[^a-z0-9]", "", s)
 
 
 class Engine:
@@ -180,11 +169,14 @@ class Engine:
             for i in range(N)
         ]
 
+        # Dixon-Coles low-score correction (standard rho convention).
+        # Reference: tau(0,0)=1-lh*la*rho; tau(0,1)=1+lh*rho;
+        # tau(1,0)=1+la*rho; tau(1,1)=1-rho.
         tau = {
-            (0, 0): 1 + lh * la * rho,
-            (1, 0): 1 - la * rho,
-            (0, 1): 1 - lh * rho,
-            (1, 1): 1 + rho,
+            (0, 0): 1 - lh * la * rho,
+            (1, 0): 1 + la * rho,
+            (0, 1): 1 + lh * rho,
+            (1, 1): 1 - rho,
         }
 
         for i in range(N):
@@ -387,6 +379,8 @@ class Engine:
         lg="G",
         match_date=None,
         cup=False,
+        *,
+        apply_h2h=True,
     ) -> dict:
         """
         Строит прогноз до добавления результата текущего матча.
@@ -496,12 +490,14 @@ class Engine:
         # H2H
         # ---------------------------------------------------------
 
-        lam_h, lam_a, h2h_n = self.h2h_adjust(
-            h,
-            a,
-            lam_g_h,
-            lam_g_a,
-        )
+        if apply_h2h:
+            lam_h, lam_a, h2h_n = self.h2h_adjust(
+                h, a, lam_g_h, lam_g_a,
+            )
+        else:
+            # Counterfactual path for live A/B auditing; do not mutate state.
+            lam_h, lam_a = lam_g_h, lam_g_a
+            h2h_n = len(self.h2h.get((h, a), []))
 
         # ---------------------------------------------------------
         # Elo
