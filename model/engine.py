@@ -49,8 +49,10 @@ def _norm(name: str) -> str:
 
 
 class Engine:
-    def __init__(self, matrix_n: int = 12):
+    def __init__(self, matrix_n: int = 12, *, temporal_weighting: bool = True, league_rho_fitting: bool = True):
         self.matrix_n = int(matrix_n)
+        self.temporal_weighting = bool(temporal_weighting)
+        self.league_rho_fitting = bool(league_rho_fitting)
 
         self.elo: dict = {}
         self.st = defaultdict(_new_team)
@@ -107,6 +109,10 @@ class Engine:
         return math.log(p / (1 - p))
 
     def _m(self, values, default=1.0, dates=None, as_of=None):
+        if not values:
+            return float(default)
+        if not self.temporal_weighting:
+            return sum(values) / len(values)
         return weighted_mean(values, dates, as_of, default=default, half_life_days=180.0)
 
     def _p(self, lam, k):
@@ -566,14 +572,17 @@ class Engine:
         # Dixon-Coles / Poisson
         # ---------------------------------------------------------
 
-        rho = estimate_dixon_coles_rho(
-            self.league_scores.get(lg, []),
-            lh_g,
-            la_g,
-            prior_rho=P0["rho"],
-            min_matches=80,
-            prior_strength=40.0,
-            as_of=match_date,
+        rho = (
+            estimate_dixon_coles_rho(
+                self.league_scores.get(lg, []),
+                lh_g,
+                la_g,
+                prior_rho=P0["rho"],
+                min_matches=80,
+                prior_strength=40.0,
+                as_of=match_date,
+            )
+            if self.league_rho_fitting else P0["rho"]
         )
         p1, px, matrix = self._p1px(
             lam_h,
