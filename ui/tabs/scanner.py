@@ -143,6 +143,37 @@ def _render_learning_status():
                 f"Точность top-1: {accuracy:.1%}" if accuracy is not None
                 else "Точность top-1 появится после подтверждённых результатов."
             )
+
+            # Compare settled outcomes for the same live fixtures by variant.
+            h2h_version = f"{APP_VERSION}-h2h-v1"
+            no_h2h_version = f"{APP_VERSION}-no-h2h-v1"
+            h2h_metrics = service.ledger.metrics(model_version=h2h_version)
+            no_h2h_metrics = service.ledger.metrics(model_version=no_h2h_version)
+            h2h_rows = service.ledger.rows(model_version=h2h_version)
+            no_h2h_rows = service.ledger.rows(model_version=no_h2h_version)
+            left, right = st.columns(2)
+            with left:
+                st.markdown("**A · С H2H**")
+                st.metric("Прогнозов / результатов",
+                          f"{len(h2h_rows)} / {h2h_metrics.get('n', 0)}")
+                bm = h2h_metrics.get("brier")
+                lm = h2h_metrics.get("log_loss")
+                st.caption(f"Brier: {bm:.4f}" if bm is not None else "Brier: ждём результаты")
+                st.caption(f"Log loss: {lm:.4f}" if lm is not None else "Log loss: ждём результаты")
+            with right:
+                st.markdown("**B · Без H2H**")
+                st.metric("Прогнозов / результатов",
+                          f"{len(no_h2h_rows)} / {no_h2h_metrics.get('n', 0)}")
+                bm = no_h2h_metrics.get("brier")
+                lm = no_h2h_metrics.get("log_loss")
+                st.caption(f"Brier: {bm:.4f}" if bm is not None else "Brier: ждём результаты")
+                st.caption(f"Log loss: {lm:.4f}" if lm is not None else "Log loss: ждём результаты")
+            pair_n = min(h2h_metrics.get("n", 0), no_h2h_metrics.get("n", 0))
+            st.caption(
+                f"Парных завершённых прогнозов: {pair_n}. Сравнивать качество имеет смысл "
+                "по совпадающим fixture_id и только после достаточной выборки; "
+                "меньшие Brier и log loss лучше."
+            )
             st.warning(
                 "Калибровка работает в теневом режиме: текущие вероятности, ставки "
                 "и размеры ставок не изменяются. Это защищает от включения обучения "
