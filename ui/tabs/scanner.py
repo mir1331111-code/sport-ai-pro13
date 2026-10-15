@@ -5,11 +5,13 @@ from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 
-from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DB_FILE
+from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
-                          fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date)
+                          fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
+                          tsdb_matches, espn_matches)
+from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict, refine_with_real_odds
 from betting.kelly import kelly, market_type
@@ -240,8 +242,13 @@ def _train_engine(matrix_n, logs, update_loader):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     prev_year = cur_year - 1
-    train_divs = ["E0", "SP1", "I1", "D1", "F1", "E1", "SP2", "I2",
-                  "D2", "F2", "N1", "B1", "P1", "T1", "R1"]
+    # Keep the familiar top leagues first, then train on every historical
+    # division configured for seasonal CSV data. Empty/unavailable league CSVs
+    # are harmless; this list must not silently cap coverage at 15 leagues.
+    priority_divs = ["E0", "SP1", "I1", "D1", "F1", "E1", "SP2", "I2",
+                     "D2", "F2", "N1", "B1", "P1", "T1", "R1"]
+    supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
+    train_divs = list(dict.fromkeys(priority_divs + supported_divs))
     engine = Engine(matrix_n=matrix_n)
     dp, dc = {}, {}
     for i, dv in enumerate(train_divs):
@@ -418,11 +425,10 @@ def render(min_prob, kelly_frac, matrix_n):
         logs = []
 
         token = D.get("meta", {}).get("fdorg_token", "").strip()
-        if not token:
-            st.error("⚠️ Введи **football-data.org token** в сайдбаре.")
-            return
-
-        logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
+        if token:
+            logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
+        else:
+            logs.append("ℹ️ football-data.org token не задан: использую доступные публичные источники TSDB/ESPN.")
 
         # Persistent learning audit: settle previous fixtures before new predictions.
         learning_service = _forecast_learning_service()
@@ -435,10 +441,27 @@ def render(min_prob, kelly_frac, matrix_n):
             except Exception:
                 audit_keys = set()
 
-        update_loader("📡 Сбор матчей...", 0.05, logs)
-        rows_raw = fdorg_matches(days, token, logs)
-        rows = _safe_filter(rows_raw)
-        logs.append(f"📡 Всего: {len(rows)} матчей")
+        update_loader("📡 Сбор матчей из всех доступных источников...", 0.05, logs)
+        source_rows = {}
+        # Providers are independent: one outage or quota limit must not hide
+        # matches from the other feeds.
+        for source_name, source_fn in (
+            ("football-data.org", lambda: fdorg_matches(days, token, logs) if token else []),
+            ("TheSportsDB", lambda: tsdb_matches(days, logs)),
+            ("ESPN", lambda: espn_matches(days, logs)),
+        ):
+            try:
+                source_rows[source_name] = source_fn() or []
+                logs.append(f"📡 {source_name}: {len(source_rows[source_name])} матчей")
+            except Exception as exc:
+                source_rows[source_name] = []
+                logs.append(f"⚠️ {source_name}: источник недоступен ({type(exc).__name__})")
+        rows = _safe_filter(merge_fixture_sources(
+            source_rows.get("football-data.org", []),
+            source_rows.get("TheSportsDB", []),
+            source_rows.get("ESPN", []),
+        ))
+        logs.append(f"📡 Всего после объединения источников: {len(rows)} уникальных матчей")
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
