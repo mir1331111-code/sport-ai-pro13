@@ -567,13 +567,20 @@ def render(min_prob, kelly_frac, matrix_n):
                     "pick": v_.get("label", ""), "prob": v_.get("prob", 0),
                     "confidence": v_.get("confidence", ""), "ev": v_.get("ev", 0),
                 }
-                opinion = analyze_match(ctx_llm)
+                # An optional LLM provider must never abort the whole scan.
+                try:
+                    opinion = analyze_match(ctx_llm)
+                except Exception as exc:
+                    opinion = None
+                    logs.append(
+                        f"🤖 LLM ошибка [{i_+1}]: {type(exc).__name__}: {str(exc)[:160]}"
+                    )
                 if opinion:
                     card["llm_opinion"] = opinion
                     llm_done += 1
                     logs.append(f"🤖 OK [{i_+1}]: {opinion[:60]}")
                 else:
-                    logs.append(f"🤖 FAIL [{i_+1}]: None")
+                    logs.append(f"🤖 FAIL [{i_+1}]: ответ не получен")
             logs.append(f"🤖 LLM итог: {llm_done} мнений")
         elif not llm_key:
             logs.append("🤖 LLM: ключ не задан")
@@ -639,6 +646,23 @@ def render(min_prob, kelly_frac, matrix_n):
         time.sleep(1.2)
         loader_ph.empty()
         log_ph.empty()
+    except Exception as exc:
+        # Keep the previous portfolio/cards intact and expose the real failure
+        # instead of leaving the user with a silently broken scanner.
+        message = f"Сканирование прервано: {type(exc).__name__}: {str(exc)[:240]}"
+        _print_log(message)
+        try:
+            D2 = dict(st.session_state.get("data") or D)
+            report = list(D2.get("report") or [])
+            report.append(message)
+            D2["report"] = report[-100:]
+            st.session_state.data = D2
+            usage.set_local_data(D2)
+        except Exception:
+            pass
+        st.error(message)
+        st.info("Проверь раздел «Диагностика» и последние строки журнала. Старые карточки и портфель сохранены.")
+        return
     finally:
         st.session_state["_scan_in_progress"] = False
     st.rerun()

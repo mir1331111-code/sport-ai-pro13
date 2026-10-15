@@ -712,11 +712,12 @@ def fdorg_match_result(match_id, token: str) -> Optional[dict]:
         return cached or None
     data = _fdorg_get(f"matches/{match_id}", {}, token)
     if not data or not data.get("match"):
-        cache_put(ck, None)
+        # Do not cache transient failures: a later retry may succeed.
         return None
     m = data["match"]
     if m.get("status") != "FINISHED":
-        cache_put(ck, None)
+        # A live/scheduled fixture can become final later the same day.
+        # Caching None for 24 hours prevented forecast reconciliation.
         return None
     score = m.get("score") or {}
     if (score.get("duration") or "REGULAR") != "REGULAR":
