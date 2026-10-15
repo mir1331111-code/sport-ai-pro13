@@ -34,7 +34,7 @@ LLM_PROVIDERS = {
     "key_url": "https://console.groq.com/keys",
 },
     "Groq 70B (бесплатно, мощнее)": {
-        "base": "https://groq-proxy13.mir1331111.workers.dev/openai/v1",
+        "base": "https://api.groq.com/openai/v1",
         "model": "llama-3.3-70b-versatile",
         "key_url": "https://console.groq.com/keys",
     },
