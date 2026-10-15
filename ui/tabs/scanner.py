@@ -76,15 +76,19 @@ def _reconcile_forecast_results(ledger, token, logs):
     return settled
 
 
-def _record_raw_forecast(service, known_keys, row, home, away, league, probabilities, logs):
-    """Append one raw 1X2 forecast with source UTC kickoff; never alters served odds."""
+def _record_raw_forecast(service, known_keys, row, home, away, league,
+                         probabilities, logs, *, variant="h2h"):
+    """Append one immutable A/B forecast variant; never changes live picks."""
     if service is None:
         return
     fixture_id = row.get("fixture_id")
     kickoff = row.get("kickoff_utc")
     if fixture_id in (None, "") or not kickoff:
         return
-    key = f"fdorg:{fixture_id}:{APP_VERSION}"
+    if variant not in ("h2h", "no-h2h"):
+        raise ValueError("unknown forecast audit variant")
+    model_version = f"{APP_VERSION}-{variant}-v1"
+    key = f"fdorg:{fixture_id}:{model_version}"
     try:
         # The scan can run repeatedly; do not rewrite the original forecast timestamp.
         if key in known_keys:
@@ -100,7 +104,7 @@ def _record_raw_forecast(service, known_keys, row, home, away, league, probabili
                 pass
         decision = service.forecast(
             forecast_key=key, fixture_id=str(fixture_id),
-            home_team=home, away_team=away, model_version=str(APP_VERSION),
+            home_team=home, away_team=away, model_version=model_version,
             probabilities=probabilities,
             forecast_at=datetime.now(timezone.utc),
             kickoff_at=kickoff, league=str(league or ""),
@@ -414,16 +418,26 @@ def render(min_prob, kelly_frac, matrix_n):
                 funnel_counts["skip"] += 1
                 continue
 
-            # Audit raw model probabilities before any verdict/market refinement.
-            # Calibration remains shadow-only until chronological holdout validation.
+            # Live A/B audit: identical fixture/model state, with and without
+            # H2H. Both variants are shadow-only; picks still use P (with H2H).
             try:
                 _record_raw_forecast(
                     learning_service, audit_keys, r, h_en, a_en, lg,
                     {"H": float(P["p1"]), "D": float(P["x"]), "A": float(P["p2"])},
-                    logs,
+                    logs, variant="h2h",
+                )
+                P_no_h2h = engine.predict(
+                    h_en, a_en, lg, match_date=d,
+                    cup=lg in ("C1", "EL", "EC"), apply_h2h=False,
+                )
+                _record_raw_forecast(
+                    learning_service, audit_keys, r, h_en, a_en, lg,
+                    {"H": float(P_no_h2h["p1"]), "D": float(P_no_h2h["x"]),
+                     "A": float(P_no_h2h["p2"])},
+                    logs, variant="no-h2h",
                 )
             except Exception as exc:
-                logs.append(f"📚 Журнал: ошибка записи ({type(exc).__name__})")
+                logs.append(f"📚 Журнал A/B: ошибка записи ({type(exc).__name__})")
 
             fh = engine.form_str(h_en)
             fa = engine.form_str(a_en)
