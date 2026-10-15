@@ -1,3 +1,5 @@
+import unittest
+
 from betting.best_picks import best_value_market
 
 
@@ -18,41 +20,43 @@ def _rows():
     ]
 
 
-def test_selects_best_qualified_market_not_just_highest_probability():
-    # Home win has no value at 1.30; over 2.5 is a real positive-value price.
-    chosen, best = best_value_market(
-        _verdict(), _rows(), {"П1": 1.30, "ТБ 2.5": 1.90},
-        bank=1000, kelly_frac=0.25, min_prob=0.55,
-    )
-    assert chosen is not None
-    assert chosen["pick"] == "ТБ 2.5"
-    assert chosen["real_odds"] is True
-    assert chosen["value_passed"] is True
-    assert best[1] == "ТБ 2.5"
-    assert best[2] == 1.90
+class BestValueMarketTests(unittest.TestCase):
+    def test_selects_best_qualified_market_not_just_highest_probability(self):
+        # Home win has no value at 1.30; over 2.5 is a real positive-value price.
+        chosen, best = best_value_market(
+            _verdict(), _rows(), {"П1": 1.30, "ТБ 2.5": 1.90},
+            bank=1000, kelly_frac=0.25, min_prob=0.55,
+        )
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen["pick"], "ТБ 2.5")
+        self.assertTrue(chosen["real_odds"])
+        self.assertTrue(chosen["value_passed"])
+        self.assertEqual(best[1], "ТБ 2.5")
+        self.assertEqual(best[2], 1.90)
+
+    def test_never_creates_bet_from_fair_odds_or_missing_market(self):
+        chosen, best = best_value_market(
+            _verdict(), _rows(), None, bank=1000, kelly_frac=0.25, min_prob=0.55,
+        )
+        self.assertIsNone(chosen)
+        self.assertIsNone(best)
+
+    def test_rejects_price_without_edge_and_ev_thresholds(self):
+        chosen, best = best_value_market(
+            _verdict(), _rows(), {"П1": 1.35, "ТБ 2.5": 1.55},
+            bank=1000, kelly_frac=0.25, min_prob=0.55,
+        )
+        self.assertIsNone(chosen)
+        self.assertIsNone(best)
+
+    def test_probability_threshold_is_respected(self):
+        chosen, best = best_value_market(
+            _verdict(), _rows(), {"П1": 1.30, "ТБ 2.5": 1.90},
+            bank=1000, kelly_frac=0.25, min_prob=0.65,
+        )
+        self.assertIsNone(chosen)
+        self.assertIsNone(best)
 
 
-def test_never_creates_bet_from_fair_odds_or_missing_market():
-    chosen, best = best_value_market(
-        _verdict(), _rows(), None, bank=1000, kelly_frac=0.25, min_prob=0.55,
-    )
-    assert chosen is None
-    assert best is None
-
-
-def test_rejects_price_without_edge_and_ev_thresholds():
-    chosen, best = best_value_market(
-        _verdict(), _rows(), {"П1": 1.35, "ТБ 2.5": 1.55},
-        bank=1000, kelly_frac=0.25, min_prob=0.55,
-    )
-    assert chosen is None
-    assert best is None
-
-
-def test_probability_threshold_is_respected():
-    chosen, best = best_value_market(
-        _verdict(), _rows(), {"П1": 1.30, "ТБ 2.5": 1.90},
-        bank=1000, kelly_frac=0.25, min_prob=0.65,
-    )
-    assert chosen is None
-    assert best is None
+if __name__ == "__main__":
+    unittest.main()
