@@ -39,7 +39,7 @@ def _norm(name: str) -> str:
     s = "".join(ch for ch in s if not unicodedata.combining(ch)).strip()
     # Club designators are only removable at the end. Words such as City,
     # United and County are part of many real club names and must be retained.
-    s = re.sub(r"(?:\\s+(?:football club|fc|afc|cf|sc|ac))+$", "", s)
+    s = re.sub(r"(?:\s+(?:football club|fc|afc|cf|sc|ac))+$", "", s)
     return re.sub(r"[^a-z0-9]", "", s)
 
 
