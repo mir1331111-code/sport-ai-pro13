@@ -55,6 +55,7 @@ class DixonColesReferenceTests(unittest.TestCase):
         self.assertEqual(without_h2h["h2h_n"], len(engine.h2h[("Home FC", "Away FC")]))
         self.assertEqual(len(with_h2h["lams"]), 2)
         self.assertEqual(len(without_h2h["lams"]), 2)
+        self.assertNotEqual(with_h2h["lams"], without_h2h["lams"])
 
     def test_normalization_only_removes_terminal_club_designators(self):
         self.assertEqual(_norm("Paris Saint-Germain FC"), _norm("Paris Saint-Germain"))
