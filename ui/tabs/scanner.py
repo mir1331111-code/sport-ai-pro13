@@ -76,15 +76,19 @@ def _reconcile_forecast_results(ledger, token, logs):
     return settled
 
 
-def _record_raw_forecast(service, known_keys, row, home, away, league, probabilities, logs):
-    """Append one raw 1X2 forecast with source UTC kickoff; never alters served odds."""
+def _record_raw_forecast(service, known_keys, row, home, away, league,
+                         probabilities, logs, *, variant="h2h"):
+    """Append one immutable A/B forecast variant; never changes live picks."""
     if service is None:
         return
     fixture_id = row.get("fixture_id")
     kickoff = row.get("kickoff_utc")
     if fixture_id in (None, "") or not kickoff:
         return
-    key = f"fdorg:{fixture_id}:{APP_VERSION}"
+    if variant not in ("h2h", "no-h2h"):
+        raise ValueError("unknown forecast audit variant")
+    model_version = f"{APP_VERSION}-{variant}-v1"
+    key = f"fdorg:{fixture_id}:{model_version}"
     try:
         # The scan can run repeatedly; do not rewrite the original forecast timestamp.
         if key in known_keys:
@@ -100,7 +104,7 @@ def _record_raw_forecast(service, known_keys, row, home, away, league, probabili
                 pass
         decision = service.forecast(
             forecast_key=key, fixture_id=str(fixture_id),
-            home_team=home, away_team=away, model_version=str(APP_VERSION),
+            home_team=home, away_team=away, model_version=model_version,
             probabilities=probabilities,
             forecast_at=datetime.now(timezone.utc),
             kickoff_at=kickoff, league=str(league or ""),
@@ -115,6 +119,34 @@ def _record_raw_forecast(service, known_keys, row, home, away, league, probabili
             )
     except Exception as exc:
         logs.append(f"📚 Журнал: прогноз не записан ({type(exc).__name__})")
+
+
+def _paired_ab_metrics(rows_a, rows_b):
+    """Score A/B variants only on fixture IDs settled in both arms."""
+    a = {row["fixture_id"]: row for row in rows_a
+         if row.get("result") is not None and row.get("fixture_id")}
+    b = {row["fixture_id"]: row for row in rows_b
+         if row.get("result") is not None and row.get("fixture_id")}
+    ids = sorted(set(a) & set(b))
+    if not ids:
+        return {"n": 0, "a_brier": None, "b_brier": None,
+                "a_log_loss": None, "b_log_loss": None}
+    def scores(row):
+        probs, actual = row["probabilities"], row["result"]
+        brier = sum((probs[k] - float(k == actual)) ** 2 for k in ("H", "D", "A"))
+        loss = -math.log(max(probs[actual], 1e-15))
+        return brier, loss
+    import math
+    sa = [scores(a[key]) for key in ids]
+    sb = [scores(b[key]) for key in ids]
+    n = len(ids)
+    return {
+        "n": n,
+        "a_brier": sum(x[0] for x in sa) / n,
+        "a_log_loss": sum(x[1] for x in sa) / n,
+        "b_brier": sum(x[0] for x in sb) / n,
+        "b_log_loss": sum(x[1] for x in sb) / n,
+    }
 
 
 def _render_learning_status():
@@ -138,6 +170,34 @@ def _render_learning_status():
             st.caption(
                 f"Точность top-1: {accuracy:.1%}" if accuracy is not None
                 else "Точность top-1 появится после подтверждённых результатов."
+            )
+
+            # Compare settled outcomes for the same live fixtures by variant.
+            h2h_version = f"{APP_VERSION}-h2h-v1"
+            no_h2h_version = f"{APP_VERSION}-no-h2h-v1"
+            h2h_metrics = service.ledger.metrics(model_version=h2h_version)
+            no_h2h_metrics = service.ledger.metrics(model_version=no_h2h_version)
+            h2h_rows = service.ledger.rows(model_version=h2h_version)
+            no_h2h_rows = service.ledger.rows(model_version=no_h2h_version)
+            paired = _paired_ab_metrics(h2h_rows, no_h2h_rows)
+            left, right = st.columns(2)
+            with left:
+                st.markdown("**A · С H2H**")
+                st.metric("Прогнозов / результатов",
+                          f"{len(h2h_rows)} / {h2h_metrics.get('n', 0)}")
+                bm, lm = paired["a_brier"], paired["a_log_loss"]
+                st.caption(f"Парный Brier: {bm:.4f}" if bm is not None else "Парный Brier: ждём общие результаты")
+                st.caption(f"Парный Log loss: {lm:.4f}" if lm is not None else "Парный Log loss: ждём общие результаты")
+            with right:
+                st.markdown("**B · Без H2H**")
+                st.metric("Прогнозов / результатов",
+                          f"{len(no_h2h_rows)} / {no_h2h_metrics.get('n', 0)}")
+                bm, lm = paired["b_brier"], paired["b_log_loss"]
+                st.caption(f"Парный Brier: {bm:.4f}" if bm is not None else "Парный Brier: ждём общие результаты")
+                st.caption(f"Парный Log loss: {lm:.4f}" if lm is not None else "Парный Log loss: ждём общие результаты")
+            st.caption(
+                f"Парных завершённых прогнозов: {paired['n']}. Метрики рассчитаны "
+                "только на одинаковых fixture_id; меньшие Brier и log loss лучше."
             )
             st.warning(
                 "Калибровка работает в теневом режиме: текущие вероятности, ставки "
@@ -414,16 +474,26 @@ def render(min_prob, kelly_frac, matrix_n):
                 funnel_counts["skip"] += 1
                 continue
 
-            # Audit raw model probabilities before any verdict/market refinement.
-            # Calibration remains shadow-only until chronological holdout validation.
+            # Live A/B audit: identical fixture/model state, with and without
+            # H2H. Both variants are shadow-only; picks still use P (with H2H).
             try:
                 _record_raw_forecast(
                     learning_service, audit_keys, r, h_en, a_en, lg,
                     {"H": float(P["p1"]), "D": float(P["x"]), "A": float(P["p2"])},
-                    logs,
+                    logs, variant="h2h",
+                )
+                P_no_h2h = engine.predict(
+                    h_en, a_en, lg, match_date=d,
+                    cup=lg in ("C1", "EL", "EC"), apply_h2h=False,
+                )
+                _record_raw_forecast(
+                    learning_service, audit_keys, r, h_en, a_en, lg,
+                    {"H": float(P_no_h2h["p1"]), "D": float(P_no_h2h["x"]),
+                     "A": float(P_no_h2h["p2"])},
+                    logs, variant="no-h2h",
                 )
             except Exception as exc:
-                logs.append(f"📚 Журнал: ошибка записи ({type(exc).__name__})")
+                logs.append(f"📚 Журнал A/B: ошибка записи ({type(exc).__name__})")
 
             fh = engine.form_str(h_en)
             fa = engine.form_str(a_en)
