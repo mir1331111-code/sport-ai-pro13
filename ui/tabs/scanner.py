@@ -121,6 +121,34 @@ def _record_raw_forecast(service, known_keys, row, home, away, league,
         logs.append(f"📚 Журнал: прогноз не записан ({type(exc).__name__})")
 
 
+def _paired_ab_metrics(rows_a, rows_b):
+    """Score A/B variants only on fixture IDs settled in both arms."""
+    a = {row["fixture_id"]: row for row in rows_a
+         if row.get("result") is not None and row.get("fixture_id")}
+    b = {row["fixture_id"]: row for row in rows_b
+         if row.get("result") is not None and row.get("fixture_id")}
+    ids = sorted(set(a) & set(b))
+    if not ids:
+        return {"n": 0, "a_brier": None, "b_brier": None,
+                "a_log_loss": None, "b_log_loss": None}
+    def scores(row):
+        probs, actual = row["probabilities"], row["result"]
+        brier = sum((probs[k] - float(k == actual)) ** 2 for k in ("H", "D", "A"))
+        loss = -math.log(max(probs[actual], 1e-15))
+        return brier, loss
+    import math
+    sa = [scores(a[key]) for key in ids]
+    sb = [scores(b[key]) for key in ids]
+    n = len(ids)
+    return {
+        "n": n,
+        "a_brier": sum(x[0] for x in sa) / n,
+        "a_log_loss": sum(x[1] for x in sa) / n,
+        "b_brier": sum(x[0] for x in sb) / n,
+        "b_log_loss": sum(x[1] for x in sb) / n,
+    }
+
+
 def _render_learning_status():
     """Show audit coverage and scoring metrics without changing picks."""
     try:
@@ -151,28 +179,25 @@ def _render_learning_status():
             no_h2h_metrics = service.ledger.metrics(model_version=no_h2h_version)
             h2h_rows = service.ledger.rows(model_version=h2h_version)
             no_h2h_rows = service.ledger.rows(model_version=no_h2h_version)
+            paired = _paired_ab_metrics(h2h_rows, no_h2h_rows)
             left, right = st.columns(2)
             with left:
                 st.markdown("**A · С H2H**")
                 st.metric("Прогнозов / результатов",
                           f"{len(h2h_rows)} / {h2h_metrics.get('n', 0)}")
-                bm = h2h_metrics.get("brier")
-                lm = h2h_metrics.get("log_loss")
-                st.caption(f"Brier: {bm:.4f}" if bm is not None else "Brier: ждём результаты")
-                st.caption(f"Log loss: {lm:.4f}" if lm is not None else "Log loss: ждём результаты")
+                bm, lm = paired["a_brier"], paired["a_log_loss"]
+                st.caption(f"Парный Brier: {bm:.4f}" if bm is not None else "Парный Brier: ждём общие результаты")
+                st.caption(f"Парный Log loss: {lm:.4f}" if lm is not None else "Парный Log loss: ждём общие результаты")
             with right:
                 st.markdown("**B · Без H2H**")
                 st.metric("Прогнозов / результатов",
                           f"{len(no_h2h_rows)} / {no_h2h_metrics.get('n', 0)}")
-                bm = no_h2h_metrics.get("brier")
-                lm = no_h2h_metrics.get("log_loss")
-                st.caption(f"Brier: {bm:.4f}" if bm is not None else "Brier: ждём результаты")
-                st.caption(f"Log loss: {lm:.4f}" if lm is not None else "Log loss: ждём результаты")
-            pair_n = min(h2h_metrics.get("n", 0), no_h2h_metrics.get("n", 0))
+                bm, lm = paired["b_brier"], paired["b_log_loss"]
+                st.caption(f"Парный Brier: {bm:.4f}" if bm is not None else "Парный Brier: ждём общие результаты")
+                st.caption(f"Парный Log loss: {lm:.4f}" if lm is not None else "Парный Log loss: ждём общие результаты")
             st.caption(
-                f"Парных завершённых прогнозов: {pair_n}. Сравнивать качество имеет смысл "
-                "по совпадающим fixture_id и только после достаточной выборки; "
-                "меньшие Brier и log loss лучше."
+                f"Парных завершённых прогнозов: {paired['n']}. Метрики рассчитаны "
+                "только на одинаковых fixture_id; меньшие Brier и log loss лучше."
             )
             st.warning(
                 "Калибровка работает в теневом режиме: текущие вероятности, ставки "
