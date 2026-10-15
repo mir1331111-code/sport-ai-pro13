@@ -13,7 +13,8 @@ from data.sources import (load_seasonal, season_str,
                           tsdb_matches, espn_matches)
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
-from betting.verdict import build_verdict, refine_with_real_odds
+from betting.verdict import build_verdict
+from betting.best_picks import best_value_market
 from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from ui.cards import (render_verdict_card, translate_team,
@@ -336,12 +337,47 @@ def render(min_prob, kelly_frac, matrix_n):
             st.info("Нажми ⚡ СКАН.")
             return
 
+        # Cross-league shortlist: only picks backed by a real bookmaker price
+        # and passing the minimum edge/EV checks. Never rank fair odds as bets.
+        qualified = [c for c in all_cards
+                     if c.get("best") is not None
+                     and (c.get("verdict") or {}).get("real_odds")
+                     and (c.get("verdict") or {}).get("value_passed")]
+        try:
+            from betting.ranking import rank_score
+            qualified.sort(key=lambda c: (
+                -rank_score(c),
+                -float((c.get("verdict") or {}).get("ev") or -1),
+                -float((c.get("verdict") or {}).get("prob") or 0),
+            ))
+        except Exception:
+            qualified.sort(key=lambda c: -float(
+                (c.get("verdict") or {}).get("ev") or -1))
+
+        with st.expander("🏆 Лучшие варианты дня · все лиги", expanded=True):
+            st.caption(
+                "Единый рейтинг матчей по вероятности, реальному коэффициенту, "
+                "EV и преимуществу над рынком. В список попадают только варианты "
+                "с подтверждённым коэффициентом и положительным value."
+            )
+            if not qualified:
+                st.info(
+                    "Пока нет подтверждённых value-вариантов. Это лучше, чем "
+                    "выбирать ставку по одному лишь модельному коэффициенту."
+                )
+            else:
+                for rank, card in enumerate(qualified[:5], start=1):
+                    st.markdown(f"### #{rank} · {card.get('league', 'Лига')}")
+                    st.markdown(render_verdict_card(card, min_prob),
+                                unsafe_allow_html=True)
+
         c1, c2, c3 = st.columns([2, 2, 2])
         sort_mode = c1.selectbox(
             "Сортировка",
-            ["По дате (ближайшие сначала)",
+            ["По общему рейтингу",
+             "По EV (высокие сначала)",
              "По вероятности (высокие сначала)",
-             "По EV (высокие сначала)"],
+             "По дате (ближайшие сначала)"],
             key="scanner_sort")
         show_hidden = c2.checkbox("Показывать слабые", False,
                                    key="scanner_show_hidden")
@@ -361,7 +397,14 @@ def render(min_prob, kelly_frac, matrix_n):
                 key=lambda c: -(c.get("verdict", {}).get("prob") or 0))
         elif sort_mode.startswith("По EV"):
             cards_view.sort(
-                key=lambda c: -(c.get("verdict", {}).get("ev") or 0))
+                key=lambda c: -(c.get("verdict", {}).get("ev") or -1))
+        else:
+            try:
+                from betting.ranking import rank_score
+                cards_view.sort(key=lambda c: -rank_score(c))
+            except Exception:
+                cards_view.sort(key=lambda c: -float(
+                    (c.get("verdict", {}).get("prob") or 0)))
 
         if not cards_view:
             st.warning("Ничего не найдено.")
@@ -527,41 +570,36 @@ def render(min_prob, kelly_frac, matrix_n):
             best = None
             odds_source = "model_only"
 
-            # Пробуем реальный кэф
-            if verdict.get("is_action"):
-                sport_key = DIV_TO_ODDS.get(lg)
-                real_odds = None
-                if sport_key and odds_key and usage.odds_remaining() > 0 \
-                   and matches_with_best < 15:
-                    funnel_counts["market_req"] += 1
-                    real_odds = odds_api_fixture(sport_key, h_en, a_en, odds_key)
-                    if real_odds:
-                        funnel_counts["market_got"] += 1
+            # Begin with any real prices already supplied by a fixture source,
+            # then fill/refresh them from the bookmaker odds API when available.
+            market_odds = dict(r.get("odds") or {})
+            if market_odds:
+                odds_source = r.get("odds_source") or "fixture_source"
 
-                if real_odds:
-                    verdict, best = refine_with_real_odds(
-                        verdict, rows_, real_odds, D["bank"], kelly_frac)
-                    odds_source = "real"
+            sport_key = DIV_TO_ODDS.get(lg)
+            has_model_candidate = any(
+                float(item.get("prob") or 0) >= float(min_prob)
+                for item in rows_
+            )
+            if (has_model_candidate and sport_key and odds_key
+                    and usage.odds_remaining() > 0
+                    and funnel_counts["market_req"] < 15):
+                funnel_counts["market_req"] += 1
+                api_odds = odds_api_fixture(sport_key, h_en, a_en, odds_key)
+                if api_odds:
+                    market_odds.update(api_odds)
+                    odds_source = "market"
+                    funnel_counts["market_got"] += 1
+
+            if market_odds:
+                chosen_verdict, best = best_value_market(
+                    verdict, rows_, market_odds, D["bank"], kelly_frac,
+                    min_prob, min_edge=0.03, min_ev=0.03,
+                )
+                if best is not None:
+                    verdict = chosen_verdict
                     funnel_counts["real"] += 1
-
-                # Fallback: если кэф не пришёл — используем estimated
-                if best is None:
-                    est_odd = verdict.get("fair_odd")
-                    if est_odd and est_odd > 1.01:
-                        prob_ = verdict["prob"]
-                        ev_ = prob_ * est_odd - 1
-                        min_stake = round(D["bank"] * MIN_STAKE_PCT, 2)
-                        stake_ = max(
-                            kelly(prob_, est_odd, D["bank"], kelly_frac),
-                            min_stake)
-                        verdict["real_odds"] = False
-                        verdict["odd"] = est_odd
-                        verdict["ev"] = ev_
-                        best = (market_type(verdict["pick"]),
-                                verdict["pick"], est_odd, ev_, prob_, stake_)
-                        odds_source = "estimated"
-                        funnel_counts["estimated"] += 1
-                elif best is None:
+                else:
                     funnel_counts["model_only"] += 1
             else:
                 funnel_counts["model_only"] += 1
