@@ -32,3 +32,11 @@ python -m unittest discover -s tests -v
 ```
 
 The Streamlit app entry point is `App.py`.
+
+## Broad league coverage and fixture scanning
+
+The scanner merges fixtures from football-data.org (when a token is configured), TheSportsDB, and ESPN. Each source is isolated: a timeout, missing token, or quota exhaustion on one provider does not prevent the other available sources from contributing matches. Cross-provider duplicates are merged by local match date and normalized home/away names, preserving the preferred provider's official fixture ID and odds while filling missing badges/metadata from other feeds.
+
+Historical engine training keeps the original priority leagues first and then includes every configured seasonal CSV division, plus English League One/Two and German 3. Liga codes. A configured division with no current CSV data is skipped naturally by the source; it no longer disappears merely because it was omitted from a hard-coded 15-league list.
+
+The engine cache fingerprint is bumped to v13.4.1 so deployments rebuild the model with the expanded training coverage. The scanner still ranks candidates using the existing verdict/EV logic; broader source coverage increases the pool from which it can select, but does not mean every discovered fixture is automatically a recommended bet.
