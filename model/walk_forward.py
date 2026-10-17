@@ -1,10 +1,17 @@
-"""Chronological out-of-sample comparison of the legacy and temporal engines."""
+"""Leakage-safe chronological model and xG ablation evaluation."""
 from __future__ import annotations
 
 import math
 from datetime import date, datetime
 
-from model.engine import Engine
+from model.engine import Engine, _row_xg_pair
+
+
+_XG_KEYS = {
+    "hxg", "axg", "home_xg", "away_xg", "homexg", "awayxg",
+    "xg_home", "xg_away", "xg", "xga", "home_expected_goals",
+    "away_expected_goals",
+}
 
 
 def _get(row, *names):
@@ -29,6 +36,14 @@ def _parse_date(value):
         return None
 
 
+def _without_xg(row):
+    """Copy a historical row without xG fields for a matched ablation arm."""
+    if not isinstance(row, dict):
+        return {}
+    return {key: value for key, value in row.items()
+            if str(key).strip().casefold() not in _XG_KEYS}
+
+
 def _metrics(records):
     if not records:
         return {"n": 0, "brier": None, "log_loss": None, "accuracy": None}
@@ -41,12 +56,17 @@ def _metrics(records):
     return {"n": n, "brier": sum(brier) / n, "log_loss": sum(losses) / n, "accuracy": correct / n}
 
 
-def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
-    """Compare equal-weight baseline against temporal weighting + fitted league rho.
+def _probs(prediction):
+    return {"H": prediction["p1"], "D": prediction["x"], "A": prediction["p2"]}
 
-    Rows are sorted by kickoff date. Each match is predicted before its score is
-    added to either engine, so the match cannot train its own forecast. This is
-    an evaluation utility, not a guarantee that the candidate will win.
+
+def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
+    """Compare goals-only and xG engines on identical chronological fixtures.
+
+    All fixtures on the same calendar date are predicted before any result from
+    that date is added. The xG ablation pair uses identical temporal weighting
+    and rho settings; only historical xG ingestion differs. The overall
+    baseline-vs-candidate comparison remains available for backwards compatibility.
     """
     prepared, skipped = [], 0
     for row in rows:
@@ -64,14 +84,15 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
         except (TypeError, ValueError):
             skipped += 1
     prepared.sort(key=lambda item: item[0])
+
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
-    baseline_records, candidate_records = [], []
+    temporal_goals = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    records = {"baseline": [], "candidate": [], "temporal_goals_only": []}
+    xg_forecasts = xg_eligible_rows = 0
     index = 0
     cursor = 0
     while cursor < len(prepared):
-        # If historical data only has calendar dates, predict every fixture on
-        # the same date before adding any result from that date.
         stamp = prepared[cursor][0]
         group = []
         while cursor < len(prepared) and prepared[cursor][0] == stamp:
@@ -79,28 +100,55 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
             cursor += 1
         pending = []
         for _, league, home, away, hg, ag, row in group:
-            baseline_prediction = baseline.predict(home, away, league, match_date=stamp.isoformat())
-            candidate_prediction = candidate.predict(home, away, league, match_date=stamp.isoformat())
-            outcome = "H" if hg > ag else "A" if hg < ag else "D"
-            baseline_records.append(({"H": baseline_prediction["p1"], "D": baseline_prediction["x"], "A": baseline_prediction["p2"]}, outcome))
-            candidate_records.append(({"H": candidate_prediction["p1"], "D": candidate_prediction["x"], "A": candidate_prediction["p2"]}, outcome))
             row_copy = dict(row) if isinstance(row, dict) else {}
             row_copy["Div"] = league
-            pending.append((home, away, hg, ag, row_copy, stamp))
-        for home, away, hg, ag, row_copy, match_stamp in pending:
-            baseline.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            no_xg_row = _without_xg(row_copy)
+            if _row_xg_pair(row_copy)[0] is not None:
+                xg_eligible_rows += 1
+
+            pred_base = baseline.predict(home, away, league, match_date=stamp.isoformat())
+            pred_candidate = candidate.predict(home, away, league, match_date=stamp.isoformat())
+            pred_temporal_goals = temporal_goals.predict(home, away, league, match_date=stamp.isoformat())
+            if pred_candidate.get("xg_used"):
+                xg_forecasts += 1
+            outcome = "H" if hg > ag else "A" if hg < ag else "D"
+            records["baseline"].append((_probs(pred_base), outcome))
+            records["candidate"].append((_probs(pred_candidate), outcome))
+            records["temporal_goals_only"].append((_probs(pred_temporal_goals), outcome))
+            pending.append((home, away, hg, ag, row_copy, no_xg_row, stamp))
+
+        # Ingest outcomes only after every forecast for this date has been made.
+        for home, away, hg, ag, row_copy, no_xg_row, match_stamp in pending:
+            baseline.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             index += 1
-    base_metrics, candidate_metrics = _metrics(baseline_records), _metrics(candidate_records)
+
+    metrics = {name: _metrics(value) for name, value in records.items()}
+    base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
+    temporal_metrics = metrics["temporal_goals_only"]
+    delta = lambda left, right, key: (
+        left[key] - right[key] if left[key] is not None and right[key] is not None else None
+    )
     return {
         "n": len(prepared),
         "skipped": skipped,
+        "xg_rows_available": xg_eligible_rows,
+        "xg_forecasts_used": xg_forecasts,
         "baseline": base_metrics,
         "candidate": candidate_metrics,
+        "temporal_goals_only": temporal_metrics,
         "delta_candidate_minus_baseline": {
-            key: (candidate_metrics[key] - base_metrics[key])
-            if candidate_metrics[key] is not None and base_metrics[key] is not None else None
+            key: delta(candidate_metrics, base_metrics, key)
             for key in ("brier", "log_loss", "accuracy")
         },
-        "interpretation": "Lower Brier/log_loss is better; higher accuracy is better. Promote the candidate only after a separate untouched chronological holdout confirms the gain.",
+        "xg_delta_vs_same_temporal_model": {
+            key: delta(candidate_metrics, temporal_metrics, key)
+            for key in ("brier", "log_loss", "accuracy")
+        },
+        "interpretation": (
+            "xG effect is isolated by comparing candidate against temporal_goals_only on identical fixtures. "
+            "Lower Brier/log_loss and higher accuracy are better. Do not claim a gain unless it persists "
+            "on a separate untouched chronological holdout with adequate xG coverage."
+        ),
     }
