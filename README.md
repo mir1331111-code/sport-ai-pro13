@@ -2,11 +2,9 @@
 
 Football match probability forecasting with a Poisson/Dixon–Coles score model, Elo, team form, head-to-head adjustments, probability calibration, and an append-only forecast ledger.
 
-## Model evaluation
+## Model evaluation and xG ablation
 
-The engine now supports a temporal candidate using exponential decay (180-day half-life) for dated scoring history and a conservative, league-specific Dixon–Coles rho estimate after at least 80 dated league matches. Rest days are exposed as audit features but **do not directly change probabilities yet**: that adjustment should only be enabled after an out-of-sample test shows a benefit.
-
-Run the chronological comparison on historical CSV-like records from Python:
+Run a leakage-safe chronological evaluation on historical CSV-like records:
 
 ```python
 import csv
@@ -17,19 +15,20 @@ with open("matches.csv", newline="", encoding="utf-8-sig") as f:
 print(report)
 ```
 
-Expected fields are `Date`, `Div`, `HomeTeam`, `AwayTeam`, `FTHG`, and `FTAG` (common alternative names are also accepted). Rows are sorted by date. All fixtures on the same calendar date are forecast before any results from that date are added, preventing same-day result leakage.
+Required match fields are `Date`, `Div`, `HomeTeam`, `AwayTeam`, `FTHG`, and `FTAG` (common aliases are accepted). The evaluator sorts by date and forecasts all matches on a calendar date before adding any result from that date.
 
-## Expected goals (xG)
+The report has three arms:
+- `baseline`: goals-only, equal-weight history, fixed league rho.
+- `temporal_goals_only`: goals-only with temporal weighting and league-specific rho.
+- `candidate`: the same temporal model plus historical xG where enough data exists.
 
-The engine can use historical home/away expected-goals fields when they are supplied by the source (for example, `HxG`/`AxG`, `home_xg`/`away_xg`, or `xG`/`xGA`). Team attack and defensive strengths are blended with xG/xGA using a conservative weight that grows with same-venue sample size. xG is enabled only when the league has at least 30 paired historical xG observations and the relevant team split has at least four observations. Missing, malformed, or implausible values are ignored; the model falls back to goals-only features rather than imputing xG.
+**Use `xg_delta_vs_same_temporal_model` to isolate the xG contribution.** Lower Brier and log loss are better; higher top-class accuracy is better. `xg_rows_available` counts input rows with paired xG, while `xg_forecasts_used` counts forecasts where the engine actually enabled the xG blend after its league/team sample thresholds. If no xG data is present, candidate and temporal-goals-only arms must match.
 
-xG is added only when a historical result is added to the engine, after that fixture's prediction, so the fixture cannot use its own xG as a feature. The scanner reports how many forecasts actually used xG. Coverage depends on the historical feed and league: this implementation does not fetch proprietary live xG data for future fixtures, and adding xG is not proof of better forecasts until the xG and goals-only versions are compared on a chronological holdout.
+The model accepts paired fields such as `HxG`/`AxG`, `home_xg`/`away_xg`, and `xG`/`xGA`. Values outside 0–8 or malformed values are ignored. The blend requires at least 30 paired league xG observations and at least four same-venue team observations; its weight grows conservatively with sample size. xG is ingested only after each match's forecast, never from the fixture being predicted.
 
-The report compares:
-- **Baseline:** equal-weight historical means and fixed league rho.
-- **Candidate:** temporal weighting and bounded, shrunk league-specific rho.
+**Feed limitation:** the seasonal CSV loader preserves source columns, but it does not manufacture xG. Coverage therefore depends on the actual CSV fields; standard football-data.co.uk seasons often provide goals and odds but not a complete xG history. The live fixture providers in this app do not currently supply a verified, consistent pre-match xG history. The report should be run on a dataset with genuine historical xG values before xG is enabled as a claimed improvement. No model gain is claimed by the presence of this feature alone.
 
-Lower Brier score and log loss are better; higher top-class accuracy is better. The report is diagnostic: it does not claim the candidate is superior. Before promoting a model, evaluate on a separate untouched chronological holdout and compare against bookmaker probabilities where historical pre-kickoff odds are available.
+For a model promotion decision, use an untouched later-period holdout and, where available, compare with pre-kickoff bookmaker probabilities. This diagnostic walk-forward is not a profit guarantee.
 
 ## Tests
 
@@ -45,4 +44,4 @@ The scanner merges fixtures from football-data.org (when a token is configured),
 
 Historical engine training keeps the original priority leagues first and then includes every configured seasonal CSV division, plus English League One/Two and German 3. Liga codes. A configured division with no current CSV data is skipped naturally by the source; it no longer disappears merely because it was omitted from a hard-coded 15-league list.
 
-The engine cache fingerprint is bumped to v13.4.2 so deployments rebuild the model with the expanded training coverage. The scanner now builds a cross-league **Best picks of the day** shortlist. It compares all model markets for a fixture against available real bookmaker prices, requires at least 3% model edge and 3% expected value plus positive fractional Kelly, and ranks qualified candidates across leagues. Model fair odds are never treated as bookmaker prices or used to create paper bets. If no priced candidate passes the filters, the shortlist explicitly reports that there are no qualified value picks. The ranking is a decision aid, not a guarantee of profit; probability calibration and walk-forward validation remain necessary.
+The engine cache fingerprint is bumped to v13.4.2 so deployments rebuild the model with the expanded training coverage. The scanner builds a cross-league **Best picks of the day** shortlist using available real bookmaker prices, minimum model edge and expected-value filters, and positive fractional Kelly. Model fair odds are never treated as bookmaker prices or used to create paper bets. If no priced candidate passes the filters, the shortlist reports no qualified value picks. The ranking is a decision aid, not a guarantee of profit.
