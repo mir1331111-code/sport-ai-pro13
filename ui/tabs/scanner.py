@@ -512,6 +512,7 @@ def render(min_prob, kelly_frac, matrix_n):
         update_loader("🧠 Анализ матчей...", 0.80, logs)
         cards = []
         matches_with_best = 0
+        xg_used_count = 0
         odds_key = D.get("meta", {}).get("odds_api_key", "")
 
         # Счётчики воронки
@@ -539,6 +540,8 @@ def render(min_prob, kelly_frac, matrix_n):
             except Exception:
                 funnel_counts["skip"] += 1
                 continue
+            if P.get("xg_used"):
+                xg_used_count += 1
 
             # Live A/B audit: identical fixture/model state, with and without
             # H2H. Both variants are shadow-only; picks still use P (with H2H).
@@ -643,6 +646,10 @@ def render(min_prob, kelly_frac, matrix_n):
                 "date_iso": d.strftime("%Y-%m-%d"),
                 "time": r.get("Time") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
+                "xg_used": bool(P.get("xg_used")),
+                "xg_weight": float(P.get("xg_weight") or 0.0),
+                "xg_home_samples": int(P.get("xg_home_samples") or 0),
+                "xg_away_samples": int(P.get("xg_away_samples") or 0),
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
@@ -652,6 +659,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 "context": context,
             })
 
+        logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов; "
+                    "для остальных сохранён расчёт по голам из-за недостатка xG-истории.")
         logs.append(f"🎯 BET: {matches_with_best}")
 
         # ============ LLM ============
