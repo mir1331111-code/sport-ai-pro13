@@ -113,6 +113,19 @@ class Engine:
         self.lg_ag_dates = defaultdict(list)
         self.league_scores = defaultdict(list)
 
+        # xG-хранилища лиг (инициализация перенесена из ленивого hasattr в add())
+        self.lg_hxg = defaultdict(list)
+        self.lg_axg = defaultdict(list)
+        self.lg_hxg_dates = defaultdict(list)
+        self.lg_axg_dates = defaultdict(list)
+
+        # Параметры, доступные для A/B через forecast ledger
+        self.half_life_days = 180.0
+        self.rest_days_adjustment = True
+
+        # Кэш оценки rho: пересчёт только когда история реально изменилась
+        self._rho_cache = {}
+
         # H2H хранится в перспективе команды, указанной первой.
         #
         # Например:
@@ -158,7 +171,11 @@ class Engine:
             return float(default)
         if not self.temporal_weighting:
             return sum(values) / len(values)
-        return weighted_mean(values, dates, as_of, default=default, half_life_days=180.0)
+        return weighted_mean(
+            values, dates, as_of,
+            default=default,
+            half_life_days=self.half_life_days,
+        )
 
     def _p(self, lam, k):
         try:
@@ -363,11 +380,6 @@ class Engine:
         self.lg_ag[div].append(ag)
         self.lg_hg_dates[div].append(stamp)
         self.lg_ag_dates[div].append(stamp)
-        if not hasattr(self, "lg_hxg"):
-            self.lg_hxg = defaultdict(list)
-            self.lg_axg = defaultdict(list)
-            self.lg_hxg_dates = defaultdict(list)
-            self.lg_axg_dates = defaultdict(list)
         if home_xg is not None and away_xg is not None:
             self.lg_hxg[div].append(home_xg)
             self.lg_axg[div].append(away_xg)
@@ -566,7 +578,7 @@ class Engine:
         xg_away_samples = len(sa["as_xg"])
         league_home_xg = None
         league_away_xg = None
-        league_xg_n = len(getattr(self, "lg_hxg", {}).get(lg, []))
+        league_xg_n = len(self.lg_hxg.get(lg, []))
         if league_xg_n >= 30:
             league_home_xg = self._m(
                 self.lg_hxg[lg], lh_g, self.lg_hxg_dates[lg], match_date)
@@ -625,6 +637,31 @@ class Engine:
         )
 
         # ---------------------------------------------------------
+        # Rest days
+        # ---------------------------------------------------------
+        # Коэффициенты — приор, не истина: гонять A/B через ledger
+        # (self.rest_days_adjustment выключить/включить).
+        home_rest = days_since_last_match(
+            self.last_match_date.get(h), match_date)
+        away_rest = days_since_last_match(
+            self.last_match_date.get(a), match_date)
+
+        def _rest_factor(rest):
+            if rest is None:
+                return 1.0
+            if rest <= 2:
+                return 0.94   # <=2 дней отдыха — заметный минус
+            if rest == 3:
+                return 0.97
+            if rest >= 7:
+                return 1.02   # полная неделя — лёгкий плюс
+            return 1.0
+
+        if self.rest_days_adjustment:
+            lam_g_h = max(0.3, lam_g_h * _rest_factor(home_rest))
+            lam_g_a = max(0.25, lam_g_a * _rest_factor(away_rest))
+
+        # ---------------------------------------------------------
         # H2H
         # ---------------------------------------------------------
 
@@ -678,18 +715,31 @@ class Engine:
         # Dixon-Coles / Poisson
         # ---------------------------------------------------------
 
-        rho = (
-            estimate_dixon_coles_rho(
-                self.league_scores.get(lg, []),
-                lh_g,
-                la_g,
-                prior_rho=P0["rho"],
-                min_matches=80,
-                prior_strength=40.0,
-                as_of=match_date,
-            )
-            if self.league_rho_fitting else P0["rho"]
+        # Мемоизация: история меняется только в add(), поэтому
+        # оценка rho не должна пересчитываться на каждый predict.
+        rho_cache_key = (
+            lg,
+            len(self.league_scores.get(lg, [])),
+            str(match_date)[:10] if match_date is not None else "",
         )
+        rho = self._rho_cache.get(rho_cache_key)
+        if rho is None:
+            rho = (
+                estimate_dixon_coles_rho(
+                    self.league_scores.get(lg, []),
+                    lh_g,
+                    la_g,
+                    prior_rho=P0["rho"],
+                    min_matches=80,
+                    prior_strength=40.0,
+                    as_of=match_date,
+                )
+                if self.league_rho_fitting else P0["rho"]
+            )
+            self._rho_cache[rho_cache_key] = rho
+            if len(self._rho_cache) > 500:
+                self._rho_cache.clear()
+
         p1, px, matrix = self._p1px(
             lam_h,
             lam_a,
@@ -779,8 +829,8 @@ class Engine:
             "e": elo_home,
             "pde": pde,
             "rho": rho,
-            "home_rest_days": days_since_last_match(self.last_match_date.get(h), match_date),
-            "away_rest_days": days_since_last_match(self.last_match_date.get(a), match_date),
+            "home_rest_days": home_rest,
+            "away_rest_days": away_rest,
             "xg_used": xg_used,
             "xg_home_samples": xg_home_samples,
             "xg_away_samples": xg_away_samples,
