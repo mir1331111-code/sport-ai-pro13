@@ -21,7 +21,52 @@ def _new_team():
         "hc_dates": [],
         "as_dates": [],
         "ac_dates": [],
+        "hs_xg": [],
+        "hs_xga": [],
+        "as_xg": [],
+        "as_xga": [],
+        "hs_xg_dates": [],
+        "hs_xga_dates": [],
+        "as_xg_dates": [],
+        "as_xga_dates": [],
     }
+
+
+def _number(value):
+    try:
+        result = float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) and 0.0 <= result <= 8.0 else None
+
+
+def _row_xg_pair(row):
+    """Extract home/away expected goals from common historical-feed schemas."""
+    if not isinstance(row, dict):
+        return None, None
+
+    def first(*keys):
+        for key in keys:
+            value = _number(row.get(key))
+            if value is not None:
+                return value
+        return None
+
+    home_xg = first("HxG", "home_xg", "homeXG", "xG_home", "xg_home",
+                    "HomeXG", "home_expected_goals")
+    away_xg = first("AxG", "away_xg", "awayXG", "xG_away", "xg_away",
+                    "AwayXG", "away_expected_goals")
+    # Some feeds expose the same match pair as xG (home) and xGA (away).
+    if home_xg is None or away_xg is None:
+        fallback_home = first("xG", "xg")
+        fallback_away = first("xGA", "xga")
+        if home_xg is None:
+            home_xg = fallback_home
+        if away_xg is None:
+            away_xg = fallback_away
+    if home_xg is None or away_xg is None:
+        return None, None
+    return home_xg, away_xg
 
 
 def _new_lp():
@@ -283,6 +328,17 @@ class Engine:
         teams[a]["as_dates"].append(stamp)
         teams[a]["ac_dates"].append(stamp)
 
+        home_xg, away_xg = _row_xg_pair(row)
+        if home_xg is not None and away_xg is not None:
+            teams[h]["hs_xg"].append(home_xg)
+            teams[h]["hs_xga"].append(away_xg)
+            teams[h]["hs_xg_dates"].append(stamp)
+            teams[h]["hs_xga_dates"].append(stamp)
+            teams[a]["as_xg"].append(away_xg)
+            teams[a]["as_xga"].append(home_xg)
+            teams[a]["as_xg_dates"].append(stamp)
+            teams[a]["as_xga_dates"].append(stamp)
+
         teams[h]["form"].append(
             3 if hg > ag
             else (1 if hg == ag else 0)
@@ -307,6 +363,20 @@ class Engine:
         self.lg_ag[div].append(ag)
         self.lg_hg_dates[div].append(stamp)
         self.lg_ag_dates[div].append(stamp)
+        if not hasattr(self, "lg_hxg"):
+            self.lg_hxg = defaultdict(list)
+            self.lg_axg = defaultdict(list)
+            self.lg_hxg_dates = defaultdict(list)
+            self.lg_axg_dates = defaultdict(list)
+        if home_xg is not None and away_xg is not None:
+            self.lg_hxg[div].append(home_xg)
+            self.lg_axg[div].append(away_xg)
+            self.lg_hxg_dates[div].append(stamp)
+            self.lg_axg_dates[div].append(stamp)
+            self.lg_hxg[div] = self.lg_hxg[div][-500:]
+            self.lg_axg[div] = self.lg_axg[div][-500:]
+            self.lg_hxg_dates[div] = self.lg_hxg_dates[div][-500:]
+            self.lg_axg_dates[div] = self.lg_axg_dates[div][-500:]
         self.league_scores[div].append((stamp, hg, ag))
         self.league_scores[div] = self.league_scores[div][-500:]
 
@@ -486,6 +556,42 @@ class Engine:
             self._m(sa["ac"], lh_g, sa["ac_dates"], match_date)
             / lh_g
         )
+
+        # xG is blended only when this league has a useful dated sample and
+        # the individual team has enough same-venue observations. Missing xG
+        # never becomes zero and never disables the goals-based model.
+        xg_weights = []
+        xg_used = False
+        xg_home_samples = len(sh["hs_xg"])
+        xg_away_samples = len(sa["as_xg"])
+        league_home_xg = None
+        league_away_xg = None
+        league_xg_n = len(getattr(self, "lg_hxg", {}).get(lg, []))
+        if league_xg_n >= 30:
+            league_home_xg = self._m(
+                self.lg_hxg[lg], lh_g, self.lg_hxg_dates[lg], match_date)
+            league_away_xg = self._m(
+                self.lg_axg[lg], la_g, self.lg_axg_dates[lg], match_date)
+
+        def blend_strength(goal_strength, values, dates, league_xg):
+            nonlocal xg_used
+            if league_xg is None or len(values) < 4 or league_xg <= 0:
+                return goal_strength
+            xg_strength = self._m(values, league_xg, dates, match_date) / league_xg
+            weight = 0.35 * min(1.0, len(values) / 8.0)
+            xg_used = True
+            xg_weights.append(weight)
+            return (1.0 - weight) * goal_strength + weight * xg_strength
+
+        if league_home_xg is not None and league_away_xg is not None:
+            attack_home = blend_strength(
+                attack_home, sh["hs_xg"], sh["hs_xg_dates"], league_home_xg)
+            defense_away = blend_strength(
+                defense_away, sa["as_xga"], sa["as_xga_dates"], league_home_xg)
+            attack_away = blend_strength(
+                attack_away, sa["as_xg"], sa["as_xg_dates"], league_away_xg)
+            defense_home = blend_strength(
+                defense_home, sh["hs_xga"], sh["hs_xga_dates"], league_away_xg)
 
         fh = self._form(h)
         fa = self._form(a)
@@ -675,6 +781,11 @@ class Engine:
             "rho": rho,
             "home_rest_days": days_since_last_match(self.last_match_date.get(h), match_date),
             "away_rest_days": days_since_last_match(self.last_match_date.get(a), match_date),
+            "xg_used": xg_used,
+            "xg_home_samples": xg_home_samples,
+            "xg_away_samples": xg_away_samples,
+            "xg_league_samples": league_xg_n,
+            "xg_weight": (sum(xg_weights) / len(xg_weights)) if xg_weights else 0.0,
         }
 
     def learn_step(

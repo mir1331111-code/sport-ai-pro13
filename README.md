@@ -19,6 +19,12 @@ print(report)
 
 Expected fields are `Date`, `Div`, `HomeTeam`, `AwayTeam`, `FTHG`, and `FTAG` (common alternative names are also accepted). Rows are sorted by date. All fixtures on the same calendar date are forecast before any results from that date are added, preventing same-day result leakage.
 
+## Expected goals (xG)
+
+The engine can use historical home/away expected-goals fields when they are supplied by the source (for example, `HxG`/`AxG`, `home_xg`/`away_xg`, or `xG`/`xGA`). Team attack and defensive strengths are blended with xG/xGA using a conservative weight that grows with same-venue sample size. xG is enabled only when the league has at least 30 paired historical xG observations and the relevant team split has at least four observations. Missing, malformed, or implausible values are ignored; the model falls back to goals-only features rather than imputing xG.
+
+xG is added only when a historical result is added to the engine, after that fixture's prediction, so the fixture cannot use its own xG as a feature. The scanner reports how many forecasts actually used xG. Coverage depends on the historical feed and league: this implementation does not fetch proprietary live xG data for future fixtures, and adding xG is not proof of better forecasts until the xG and goals-only versions are compared on a chronological holdout.
+
 The report compares:
 - **Baseline:** equal-weight historical means and fixed league rho.
 - **Candidate:** temporal weighting and bounded, shrunk league-specific rho.
@@ -39,4 +45,4 @@ The scanner merges fixtures from football-data.org (when a token is configured),
 
 Historical engine training keeps the original priority leagues first and then includes every configured seasonal CSV division, plus English League One/Two and German 3. Liga codes. A configured division with no current CSV data is skipped naturally by the source; it no longer disappears merely because it was omitted from a hard-coded 15-league list.
 
-The engine cache fingerprint is bumped to v13.4.1 so deployments rebuild the model with the expanded training coverage. The scanner now builds a cross-league **Best picks of the day** shortlist. It compares all model markets for a fixture against available real bookmaker prices, requires at least 3% model edge and 3% expected value plus positive fractional Kelly, and ranks qualified candidates across leagues. Model fair odds are never treated as bookmaker prices or used to create paper bets. If no priced candidate passes the filters, the shortlist explicitly reports that there are no qualified value picks. The ranking is a decision aid, not a guarantee of profit; probability calibration and walk-forward validation remain necessary.
+The engine cache fingerprint is bumped to v13.4.2 so deployments rebuild the model with the expanded training coverage. The scanner now builds a cross-league **Best picks of the day** shortlist. It compares all model markets for a fixture against available real bookmaker prices, requires at least 3% model edge and 3% expected value plus positive fractional Kelly, and ranks qualified candidates across leagues. Model fair odds are never treated as bookmaker prices or used to create paper bets. If no priced candidate passes the filters, the shortlist explicitly reports that there are no qualified value picks. The ranking is a decision aid, not a guarantee of profit; probability calibration and walk-forward validation remain necessary.

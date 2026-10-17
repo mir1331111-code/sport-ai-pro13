@@ -1,7 +1,7 @@
 name: Forecast error learning tests
 on:
   push:
-    branches: ["feat/online-error-learning", "feat/dixon-coles-ab-audit", "fix/restore-all-leagues-and-best-picks"]
+    branches: ["feat/online-error-learning", "feat/dixon-coles-ab-audit", "fix/restore-all-leagues-and-best-picks", "feat/xg-enhanced-forecasting"]
   pull_request:
     branches: [main, "feat/forecast-audit-ledger"]
 jobs:
@@ -15,11 +15,13 @@ jobs:
       - name: Install model test dependency
         run: python -m pip install "numpy>=1.24,<3"
       - name: Compile learning module and tests
-        run: python -m compileall -q model/forecast_ledger.py model/error_learner.py model/learning_service.py model/engine.py model/temporal.py model/walk_forward.py data/fixture_merge.py data/sources.py betting/best_picks.py ui/tabs/scanner.py tests/test_best_picks.py tests/test_forecast_ledger.py tests/test_error_learner.py tests/test_learning_service.py tests/test_dixon_coles_reference.py tests/test_temporal_model.py tests/test_walk_forward.py tests/test_fixture_merge.py
+        run: python -m compileall -q model/forecast_ledger.py model/error_learner.py model/learning_service.py model/engine.py model/temporal.py model/walk_forward.py data/fixture_merge.py data/sources.py betting/best_picks.py ui/tabs/scanner.py tests/test_best_picks.py tests/test_forecast_ledger.py tests/test_error_learner.py tests/test_learning_service.py tests/test_dixon_coles_reference.py tests/test_temporal_model.py tests/test_xg_model.py tests/test_walk_forward.py tests/test_fixture_merge.py
       - name: Run Dixon-Coles reference and H2H audit regression tests
         run: python -m unittest discover -s tests -p "test_dixon_coles_reference.py" -v
       - name: Run temporal model and league rho tests
         run: python -m unittest discover -s tests -p "test_temporal_model.py" -v
+      - name: Run expected-goals model tests
+        run: python -m unittest discover -s tests -p "test_xg_model.py" -v
       - name: Run chronological walk-forward comparison tests
         run: python -m unittest discover -s tests -p "test_walk_forward.py" -v
       - name: Run multi-source fixture merge tests
