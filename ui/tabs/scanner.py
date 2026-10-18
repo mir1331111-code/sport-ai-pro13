@@ -392,20 +392,45 @@ def render(min_prob, kelly_frac, matrix_n):
             if not isinstance(card, dict):
                 continue
             try:
-                date_value = str(card.get("date_iso") or "")[:10]
-                time_value = str(card.get("time") or "")[:5]
-                if date_value and time_value:
-                    kickoff = datetime.strptime(
-                        f"{date_value} {time_value}", "%Y-%m-%d %H:%M"
-                    ).replace(tzinfo=timezone(timedelta(hours=3))).astimezone(timezone.utc)
-                    if kickoff <= now_utc:
-                        continue
-                elif date_value and datetime.strptime(date_value, "%Y-%m-%d").date() < (
-                    now_utc + timedelta(hours=3)
-                ).date():
+                # Prefer the source's UTC kickoff; older cached cards may only have date/time.
+                kickoff_raw = card.get("kickoff_utc")
+                kickoff = None
+                if kickoff_raw:
+                    kickoff = datetime.fromisoformat(
+                        str(kickoff_raw).replace("Z", "+00:00")
+                    )
+                    if kickoff.tzinfo is None:
+                        kickoff = kickoff.replace(tzinfo=timezone.utc)
+                    kickoff = kickoff.astimezone(timezone.utc)
+                if kickoff is None:
+                    date_value = str(card.get("date_iso") or "")[:10]
+                    time_value = str(card.get("time") or "")[:5]
+                    if not date_value:
+                        # Older saved cards had only DD.MM in the visible date string.
+                        visible = str(card.get("date") or "")
+                        m = re.match(r"^(\d{2})\.(\d{2})(?:\s+(\d{2}:\d{2}))?", visible)
+                        if m:
+                            year = datetime.now(timezone(timedelta(hours=3))).year
+                            date_value = f"{year:04d}-{m.group(2)}-{m.group(1)}"
+                            time_value = m.group(3) or ""
+                    if date_value:
+                        if time_value:
+                            kickoff = datetime.strptime(
+                                f"{date_value} {time_value}", "%Y-%m-%d %H:%M"
+                            ).replace(tzinfo=timezone(timedelta(hours=3))).astimezone(timezone.utc)
+                        else:
+                            match_date = datetime.strptime(date_value, "%Y-%m-%d").date()
+                            today_msk = datetime.now(timezone(timedelta(hours=3))).date()
+                            if match_date < today_msk:
+                                continue
+                            # If kickoff time is unknown, only keep today's/future dates.
+                            if match_date == today_msk:
+                                continue
+                if kickoff is not None and kickoff <= now_utc:
                     continue
-            except (TypeError, ValueError):
-                pass
+            except (TypeError, ValueError, OverflowError):
+                # Do not show an unparseable old card as an upcoming match.
+                continue
             all_cards.append(card)
         if not all_cards:
             st.info("Нажми ⚡ СКАН.")
