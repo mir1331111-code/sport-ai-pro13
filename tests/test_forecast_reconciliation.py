@@ -46,7 +46,30 @@ class ForecastReconciliationTests(unittest.TestCase):
 
     def test_fdorg_legacy_entry_requires_token_and_stays_pending_without_it(self):
         self.record("789", "fdorg:789:test-v1")
-        settled = scanner._reconcile_forecast_results(self.ledger, "", [])
+        with patch.object(scanner, "tsdb_match_result", return_value=None):
+            settled = scanner._reconcile_forecast_results(self.ledger, "", [])
+        self.assertEqual(settled, 0)
+        self.assertIsNone(self.ledger.rows()[0]["result"])
+
+    def test_legacy_numeric_entry_backfills_only_when_tsdb_teams_match(self):
+        self.record("789", "fdorg:789:test-v1")
+        result = {
+            "home": 2, "away": 1, "status": "FT",
+            "home_team": "Home FC", "away_team": "Away FC",
+        }
+        with patch.object(scanner, "tsdb_match_result", return_value=result):
+            settled = scanner._reconcile_forecast_results(self.ledger, "", [])
+        self.assertEqual(settled, 1)
+        self.assertEqual(self.ledger.rows()[0]["result"], "H")
+
+    def test_legacy_numeric_entry_does_not_settle_on_team_mismatch(self):
+        self.record("789", "fdorg:789:test-v1")
+        result = {
+            "home": 2, "away": 1, "status": "FT",
+            "home_team": "Different FC", "away_team": "Other FC",
+        }
+        with patch.object(scanner, "tsdb_match_result", return_value=result):
+            settled = scanner._reconcile_forecast_results(self.ledger, "", [])
         self.assertEqual(settled, 0)
         self.assertIsNone(self.ledger.rows()[0]["result"])
 
