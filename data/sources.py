@@ -439,7 +439,11 @@ def tsdb_match_result(match_id, logs=None) -> Optional[dict]:
         if hg is None or ag is None:
             return None
         if status in ("after extra time", "after penalties"):
-            res = {"home": int(hg), "away": int(ag), "status": "AET"}
+            res = {
+                "home": int(hg), "away": int(ag), "status": "AET",
+                "home_team": event.get("strHomeTeam") or "",
+                "away_team": event.get("strAwayTeam") or "",
+            }
             cache_put(ck, res)
             return res
         if status not in ("match finished", "finished", "ft"):
@@ -448,7 +452,11 @@ def tsdb_match_result(match_id, logs=None) -> Optional[dict]:
                 pass
             else:
                 return None
-        res = {"home": int(hg), "away": int(ag), "status": "FT"}
+        res = {
+            "home": int(hg), "away": int(ag), "status": "FT",
+            "home_team": event.get("strHomeTeam") or "",
+            "away_team": event.get("strAwayTeam") or "",
+        }
         cache_put(ck, res)
         return res
     except Exception as e:
