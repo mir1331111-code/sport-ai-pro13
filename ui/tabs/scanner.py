@@ -101,13 +101,34 @@ def _reconcile_forecast_results(ledger, token, logs):
         logs.append(f"📚 Журнал результатов недоступен: {type(exc).__name__}")
     return settled
 
+def _row_kickoff_utc(row):
+    """Derive an aware kickoff from the app's Moscow-local Date/Time fields."""
+    try:
+        raw = row.get("kickoff_utc")
+        if raw:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc)
+        date_value = str(row.get("Date") or "")[:10]
+        time_value = str(row.get("Time") or "")[:5]
+        if not date_value or not time_value:
+            return None
+        local = datetime.strptime(
+            f"{date_value} {time_value}", "%Y-%m-%d %H:%M"
+        ).replace(tzinfo=timezone(timedelta(hours=3)))
+        return local.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
 def _record_raw_forecast(service, known_keys, row, home, away, league,
                          probabilities, logs, *, variant="h2h"):
     """Append one immutable A/B forecast variant; never changes live picks."""
     if service is None:
         return
     fixture_id = row.get("fixture_id")
-    kickoff = row.get("kickoff_utc")
+    kickoff_dt = _row_kickoff_utc(row)
+    kickoff = kickoff_dt.isoformat() if kickoff_dt else None
     if fixture_id in (None, "") or not kickoff:
         return
     if variant not in ("h2h", "no-h2h"):
@@ -522,9 +543,19 @@ def render(min_prob, kelly_frac, matrix_n):
                           "bet": 0, "watch": 0, "skip": 0,
                           "model_only": 0, "estimated": 0, "real": 0}
 
+        now_utc = datetime.now(timezone.utc)
         for r in rows:
             d = parse_date(r.get("Date", ""))
             if not d or not (today <= d <= today + timedelta(days=days)):
+                continue
+            # Hide matches that have already kicked off / finished from the live scanner.
+            kickoff_dt = _row_kickoff_utc(r)
+            status_text = str(r.get("status") or "").strip().lower()
+            if any(marker in status_text for marker in (
+                "final", "finished", "after extra time", "after penalties", "full time", "status_ft"
+            )):
+                continue
+            if kickoff_dt is not None and kickoff_dt <= now_utc:
                 continue
             h_en = (r.get("HomeTeam") or "").strip()
             a_en = (r.get("AwayTeam") or "").strip()
