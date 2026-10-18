@@ -9,8 +9,8 @@ from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
-                          fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
-                          tsdb_matches, espn_matches)
+                          fdorg_matches, fdorg_match_result, tsdb_match_result, espn_match_result,
+                          odds_api_fixture, parse_date, tsdb_matches, espn_matches)
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict
@@ -37,39 +37,66 @@ def _forecast_learning_service():
         return None
 
 def _reconcile_forecast_results(ledger, token, logs):
-    """Settle only provider-confirmed regular-time final scores."""
-    if ledger is None or not token:
+    """Settle old and provider-qualified forecasts only from confirmed FT scores."""
+    if ledger is None:
         return 0
     settled = 0
+    attempted = 0
+    skipped_recent = 0
     try:
         now = datetime.now(timezone.utc)
         pending = [row for row in ledger.rows() if row.get("result") is None]
         for row in pending:
-            fixture_id = row.get("fixture_id")
-            if not fixture_id or not str(fixture_id).isdigit():
+            raw_id = str(row.get("fixture_id") or "")
+            if not raw_id:
                 continue
+            # New entries carry their provider in fixture_id, preventing ID collisions.
+            # Legacy numeric IDs were written by the old fdorg-only journal.
+            if ":" in raw_id:
+                provider, fixture_id = raw_id.split(":", 1)
+            else:
+                provider, fixture_id = "fdorg", raw_id
             try:
                 kickoff = row.get("kickoff_at")
                 if not kickoff:
                     continue
                 kickoff_dt = datetime.fromisoformat(str(kickoff).replace("Z", "+00:00"))
                 if kickoff_dt.tzinfo is None or kickoff_dt > now - timedelta(hours=2):
+                    skipped_recent += 1
                     continue
-                result = fdorg_match_result(str(fixture_id), token)
+                if provider == "fdorg":
+                    if not token or not fixture_id.isdigit():
+                        continue
+                    result = fdorg_match_result(fixture_id, token)
+                    source = "football-data.org:verified-FT"
+                elif provider == "tsdb":
+                    result = tsdb_match_result(fixture_id, logs)
+                    source = "TheSportsDB:verified-FT"
+                elif provider == "espn":
+                    result = espn_match_result(fixture_id, kickoff_dt.date().isoformat(), logs)
+                    source = "ESPN:verified-FT"
+                else:
+                    continue
                 if not result or result.get("status") != "FT":
                     continue
                 hg, ag = int(result["home"]), int(result["away"])
+                if hg < 0 or ag < 0:
+                    continue
                 outcome = "H" if hg > ag else "A" if hg < ag else "D"
                 ledger.settle(
                     row["forecast_key"], outcome, home_score=hg, away_score=ag,
                     settled_at=datetime.now(timezone.utc),
-                    closing_odds_source="football-data.org:verified-FT",
+                    closing_odds_source=source,
                 )
                 settled += 1
+                attempted += 1
             except Exception as exc:
-                logs.append(f"Журнал: не удалось закрыть {fixture_id}: {type(exc).__name__}")
-        if settled:
-            logs.append(f"📚 Журнал: подтверждено итогов FT — {settled}")
+                logs.append(f"Журнал: не удалось закрыть {raw_id}: {type(exc).__name__}")
+        logs.append(
+            f"📚 Журнал результатов: ожидали {len(pending)}, закрыто {settled}; "
+            f"источник fdorg {'доступен' if token else 'без токена'}, "
+            f"ещё рано для проверки {skipped_recent}."
+        )
     except Exception as exc:
         logs.append(f"📚 Журнал результатов недоступен: {type(exc).__name__}")
     return settled
@@ -86,7 +113,10 @@ def _record_raw_forecast(service, known_keys, row, home, away, league,
     if variant not in ("h2h", "no-h2h"):
         raise ValueError("unknown forecast audit variant")
     model_version = f"{APP_VERSION}-{variant}-v1"
-    key = f"fdorg:{fixture_id}:{model_version}"
+    provider = str(row.get("fixture_provider") or ("espn" if str(fixture_id).startswith("espn:") else "fdorg"))
+    provider_id = str(fixture_id).split(":", 1)[1] if str(fixture_id).startswith("espn:") else str(fixture_id)
+    ledger_fixture_id = f"{provider}:{provider_id}"
+    key = f"{ledger_fixture_id}:{model_version}"
     try:
         if key in known_keys:
             return
@@ -100,7 +130,7 @@ def _record_raw_forecast(service, known_keys, row, home, away, league,
             except (TypeError, ValueError):
                 pass
         decision = service.forecast(
-            forecast_key=key, fixture_id=str(fixture_id),
+            forecast_key=key, fixture_id=ledger_fixture_id,
             home_team=home, away_team=away, model_version=model_version,
             probabilities=probabilities,
             forecast_at=datetime.now(timezone.utc),
