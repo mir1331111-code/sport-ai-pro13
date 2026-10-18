@@ -365,7 +365,27 @@ def render(min_prob, kelly_frac, matrix_n):
             for line in D.get("report", []):
                 st.text(line)
 
-        all_cards = [c for c in D.get("cards", []) if isinstance(c, dict)]
+        now_utc = datetime.now(timezone.utc)
+        all_cards = []
+        for card in D.get("cards", []):
+            if not isinstance(card, dict):
+                continue
+            try:
+                date_value = str(card.get("date_iso") or "")[:10]
+                time_value = str(card.get("time") or "")[:5]
+                if date_value and time_value:
+                    kickoff = datetime.strptime(
+                        f"{date_value} {time_value}", "%Y-%m-%d %H:%M"
+                    ).replace(tzinfo=timezone(timedelta(hours=3))).astimezone(timezone.utc)
+                    if kickoff <= now_utc:
+                        continue
+                elif date_value and datetime.strptime(date_value, "%Y-%m-%d").date() < (
+                    now_utc + timedelta(hours=3)
+                ).date():
+                    continue
+            except (TypeError, ValueError):
+                pass
+            all_cards.append(card)
         if not all_cards:
             st.info("Нажми ⚡ СКАН.")
             return
