@@ -52,7 +52,8 @@ def _reconcile_forecast_results(ledger, token, logs):
                 continue
             # New entries carry their provider in fixture_id, preventing ID collisions.
             # Legacy numeric IDs were written by the old fdorg-only journal.
-            if ":" in raw_id:
+            legacy_id = ":" not in raw_id
+            if not legacy_id:
                 provider, fixture_id = raw_id.split(":", 1)
             else:
                 provider, fixture_id = "fdorg", raw_id
@@ -65,10 +66,30 @@ def _reconcile_forecast_results(ledger, token, logs):
                     skipped_recent += 1
                     continue
                 if provider == "fdorg":
-                    if not token or not fixture_id.isdigit():
+                    if not fixture_id.isdigit():
                         continue
-                    result = fdorg_match_result(fixture_id, token)
-                    source = "football-data.org:verified-FT"
+                    if token:
+                        result = fdorg_match_result(fixture_id, token)
+                        source = "football-data.org:verified-FT"
+                    elif legacy_id:
+                        # Old journal rows may have been written from TSDB with bare numeric IDs.
+                        # Only backfill when both team names also match, avoiding ID collisions.
+                        result = tsdb_match_result(fixture_id, logs)
+                        if not result:
+                            continue
+                        try:
+                            from data.scores import _same_team
+                            same_teams = (
+                                _same_team(row.get("home_team", ""), result.get("home_team", ""))
+                                and _same_team(row.get("away_team", ""), result.get("away_team", ""))
+                            )
+                        except Exception:
+                            same_teams = False
+                        if not same_teams:
+                            continue
+                        source = "TheSportsDB:verified-FT-legacy-team-match"
+                    else:
+                        continue
                 elif provider == "tsdb":
                     result = tsdb_match_result(fixture_id, logs)
                     source = "TheSportsDB:verified-FT"
