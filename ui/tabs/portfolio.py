@@ -11,7 +11,7 @@ from ui.cards import translate_match, day_label
 
 
 def _bet_date(b: dict):
-    """Дата матча; поддерживает новые и старые записи портфеля."""
+    """Дата матча с совместимостью старых записей, где год не сохранялся."""
     for value, fmt in (
         (b.get("date_iso"), "%Y-%m-%d"),
         (b.get("date"), "%d.%m.%Y"),
@@ -22,6 +22,26 @@ def _bet_date(b: dict):
                 return datetime.strptime(str(value)[:10], fmt)
         except (TypeError, ValueError):
             continue
+
+    # Legacy scanner/portfolio records sometimes saved only DD.MM or DD.MM HH:MM.
+    visible = str(b.get("date") or "")
+    m = re.match(r"^(\d{2})\.(\d{2})(?:\s+(\d{2}:\d{2}))?", visible)
+    if m:
+        now = datetime.now()
+        year = now.year
+        try:
+            parsed = datetime.strptime(f"{year}-{m.group(2)}-{m.group(1)}", "%Y-%m-%d")
+            # A December date seen in January belongs to the previous year, and vice versa.
+            if parsed - now > timedelta(days=180):
+                parsed = parsed.replace(year=year - 1)
+            elif now - parsed > timedelta(days=300):
+                parsed = parsed.replace(year=year + 1)
+            if m.group(3):
+                hh, mm = map(int, m.group(3).split(":"))
+                parsed = parsed.replace(hour=hh, minute=mm)
+            return parsed
+        except (TypeError, ValueError):
+            pass
     return datetime.min
 
 
