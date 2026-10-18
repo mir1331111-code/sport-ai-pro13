@@ -11,14 +11,18 @@ from ui.cards import translate_match, day_label
 
 
 def _bet_date(b: dict):
-    """Дата ставки (по date_iso)."""
-    try:
-        iso = b.get("date_iso") or ""
-        if iso:
-            return datetime.strptime(iso, "%Y-%m-%d")
-    except Exception:
-        pass
-    return datetime(2099, 1, 1)
+    """Дата матча; поддерживает новые и старые записи портфеля."""
+    for value, fmt in (
+        (b.get("date_iso"), "%Y-%m-%d"),
+        (b.get("date"), "%d.%m.%Y"),
+        (str(b.get("date_time") or "")[:10], "%Y-%m-%d"),
+    ):
+        try:
+            if value:
+                return datetime.strptime(str(value)[:10], fmt)
+        except (TypeError, ValueError):
+            continue
+    return datetime.min
 
 
 def _bet_pick_label(b: dict) -> str:
@@ -231,8 +235,8 @@ def render():
 
     sort_mode = c2.selectbox(
         "Сортировка",
-        ["По дате матча (сначала ближайшие)",
-         "По дате матча (сначала поздние)",
+        ["По дате матча (сначала поздние)",
+         "По дате матча (сначала ближайшие)",
          "По дате добавления (новые)",
          "По вероятности",
          "По EV",
@@ -366,35 +370,31 @@ def render():
         grouped = {}
         for b, idx in indexed:
             dt = _bet_date(b)
-            label = day_label(dt)
-            grouped.setdefault(label, []).append((b, idx))
+            day_key = dt.strftime("%Y-%m-%d")
+            grouped.setdefault(day_key, []).append((b, idx))
 
-        sorted_groups = sorted(
-            grouped.items(),
-            key=lambda kv: _bet_date(kv[1][0][0]))
-
-        for label, items in sorted_groups:
+        # Newest match day first; expanding a day shows only that day's matches.
+        for day_key in sorted(grouped, reverse=True):
+            items = grouped[day_key]
+            day_dt = datetime.strptime(day_key, "%Y-%m-%d")
+            label = day_label(day_dt)
             g_pending = sum(1 for b, _ in items if b.get("status") == "pending")
             g_won = sum(1 for b, _ in items if b.get("status") == "won")
             g_lost = sum(1 for b, _ in items if b.get("status") == "lost")
             g_stake = sum(float(b.get("stake") or 0) for b, _ in items)
 
-            st.markdown(
-                f"<div style='margin-top:24px;margin-bottom:14px;"
-                f"padding:12px 20px;"
-                f"background:linear-gradient(90deg,"
-                f"rgba(34,211,238,.14),rgba(139,92,246,.08));"
-                f"border-left:4px solid #22d3ee;border-radius:10px;'>"
-                f"<span style='color:#fff;font-weight:900;font-size:1.1rem;"
-                f"letter-spacing:1px;'>{label}</span>"
-                f"<span style='color:#8b93a7;font-size:.85rem;margin-left:12px;'>"
-                f"{len(items)} ставок · ⏳ {g_pending} · "
-                f"🟢 {g_won} · 🔴 {g_lost} · 💰 {g_stake:.0f} у.е."
-                f"</span></div>",
-                unsafe_allow_html=True)
-
-            for b, original_idx in items:
-                _render_bet(b, D, original_idx)
+            with st.expander(
+                f"📅 {label} · {len(items)} ставок · ⏳ {g_pending} · "
+                f"🟢 {g_won} · 🔴 {g_lost} · 💰 {g_stake:.0f} у.е.",
+                expanded=False,
+            ):
+                for b, original_idx in sorted(
+                    items, key=lambda pair: (
+                        str(pair[0].get("match_time") or ""),
+                        str(pair[0].get("match_ru") or pair[0].get("match") or ""),
+                    )
+                ):
+                    _render_bet(b, D, original_idx)
     else:
         for b, original_idx in indexed:
             _render_bet(b, D, original_idx)
