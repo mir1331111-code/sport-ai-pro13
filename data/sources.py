@@ -15,7 +15,7 @@
 from __future__ import annotations
 import csv, io, re, logging
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -55,6 +55,17 @@ def _msk_time(utc_iso: str) -> str:
         return msk.strftime("%H:%M")
     except Exception:
         return utc_iso[11:16] if len(utc_iso) >= 16 else ""
+
+
+def _kickoff_utc(date_value: str, time_value: str) -> Optional[str]:
+    """Convert provider date/time displayed in Moscow time to an aware UTC ISO timestamp."""
+    try:
+        local = datetime.strptime(
+            f"{str(date_value)[:10]} {str(time_value)[:5]}", "%Y-%m-%d %H:%M"
+        ).replace(tzinfo=timezone(timedelta(hours=MSK_OFFSET_HOURS)))
+        return local.astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_date(s) -> Optional[datetime]:
@@ -306,9 +317,11 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "League": league,
                     "Date": (e.get("dateEvent") or "")[:10],
                     "Time": (e.get("strTime") or "")[:5],
+                    "kickoff_utc": _kickoff_utc(e.get("dateEvent") or "", e.get("strTime") or ""),
                     "HomeTeam": h,
                     "AwayTeam": a,
                     "fixture_id": e.get("idEvent"),
+                    "fixture_provider": "tsdb",
                     "home_badge": e.get("strHomeTeamBadge"),
                     "away_badge": e.get("strAwayTeamBadge"),
                     "league_badge": e.get("strLeagueBadge"),
@@ -380,8 +393,14 @@ def espn_matches(days: int, logs=None) -> list:
                     "League": league, "competition": slug,
                     "Date": _msk_date(event.get("date") or ""),
                     "Time": _msk_time(event.get("date") or ""),
+                    "kickoff_utc": (
+                        datetime.fromisoformat(str(event.get("date") or "").replace("Z", "+00:00"))
+                        .astimezone(timezone.utc).isoformat()
+                        if event.get("date") else None
+                    ),
                     "HomeTeam": hn, "AwayTeam": an,
                     "fixture_id": f"espn:{event.get('id')}",
+                    "fixture_provider": "espn",
                     "home_badge": (home.get("team") or {}).get("logo") or "",
                     "away_badge": (away.get("team") or {}).get("logo") or "",
                     "league_badge": logos[0].get("href", "") if logos else "",
@@ -401,7 +420,7 @@ def tsdb_match_result(match_id, logs=None) -> Optional[dict]:
     """Финальный счёт TSDB event."""
     if not match_id:
         return None
-    ck = f"tsdb_result_v2_{match_id}"
+    ck = f"tsdb_result_v3_{match_id}"
     cached = cache_get(ck, 86400)
     if cached is not None:
         return cached or None
@@ -419,13 +438,25 @@ def tsdb_match_result(match_id, logs=None) -> Optional[dict]:
         hg, ag = event.get("intHomeScore"), event.get("intAwayScore")
         if hg is None or ag is None:
             return None
-        if status not in ("match finished", "finished", "ft", "after extra time", "after penalties"):
+        if status in ("after extra time", "after penalties"):
+            res = {
+                "home": int(hg), "away": int(ag), "status": "AET",
+                "home_team": event.get("strHomeTeam") or "",
+                "away_team": event.get("strAwayTeam") or "",
+            }
+            cache_put(ck, res)
+            return res
+        if status not in ("match finished", "finished", "ft"):
             # TSDB sometimes leaves status empty but has final scores.
             if not event.get("strStatus") and event.get("strResult"):
                 pass
-            elif status and "finish" not in status and status not in ("ft",):
+            else:
                 return None
-        res = {"home": int(hg), "away": int(ag), "status": "FT"}
+        res = {
+            "home": int(hg), "away": int(ag), "status": "FT",
+            "home_team": event.get("strHomeTeam") or "",
+            "away_team": event.get("strAwayTeam") or "",
+        }
         cache_put(ck, res)
         return res
     except Exception as e:
@@ -441,7 +472,7 @@ def espn_match_result(fixture_id, date_iso="", logs=None) -> Optional[dict]:
         event_id = event_id.split(":", 1)[1]
     if not event_id:
         return None
-    ck = f"espn_result_v2_{event_id}"
+    ck = f"espn_result_v3_{event_id}"
     cached = cache_get(ck, 86400)
     if cached is not None:
         return cached or None
@@ -477,7 +508,16 @@ def espn_match_result(fixture_id, date_iso="", logs=None) -> Optional[dict]:
                 hs, aws = home.get("score"), away.get("score")
                 if hs is None or aws is None:
                     return None
-                res = {"home": int(float(hs)), "away": int(float(aws)), "status": "FT"}
+                status_name = str(status.get("name") or "").upper()
+                status_detail = str(status.get("description") or "").upper()
+                is_extra_time = any(
+                    marker in status_name or marker in status_detail
+                    for marker in ("AET", "PEN", "EXTRA TIME", "PENALT")
+                )
+                res = {
+                    "home": int(float(hs)), "away": int(float(aws)),
+                    "status": "AET" if is_extra_time else "FT",
+                }
                 cache_put(ck, res)
                 return res
     except Exception as e:
@@ -672,6 +712,7 @@ def fdorg_matches(days: int, token: str, logs=None) -> list:
                     "HomeTeam": home,
                     "AwayTeam": away,
                     "fixture_id": m.get("id"),
+                    "fixture_provider": "fdorg",
                     "home_badge": (m.get("homeTeam") or {}).get("crest") or "",
                     "away_badge": (m.get("awayTeam") or {}).get("crest") or "",
                     "league_badge": (m.get("competition") or {}).get("emblem") or "",

@@ -9,8 +9,8 @@ from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
-                          fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
-                          tsdb_matches, espn_matches)
+                          fdorg_matches, fdorg_match_result, tsdb_match_result, espn_match_result,
+                          odds_api_fixture, parse_date, tsdb_matches, espn_matches)
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict
@@ -37,42 +37,110 @@ def _forecast_learning_service():
         return None
 
 def _reconcile_forecast_results(ledger, token, logs):
-    """Settle only provider-confirmed regular-time final scores."""
-    if ledger is None or not token:
+    """Settle old and provider-qualified forecasts only from confirmed FT scores."""
+    if ledger is None:
         return 0
     settled = 0
+    attempted = 0
+    skipped_recent = 0
     try:
         now = datetime.now(timezone.utc)
         pending = [row for row in ledger.rows() if row.get("result") is None]
         for row in pending:
-            fixture_id = row.get("fixture_id")
-            if not fixture_id or not str(fixture_id).isdigit():
+            raw_id = str(row.get("fixture_id") or "")
+            if not raw_id:
                 continue
+            # New entries carry their provider in fixture_id, preventing ID collisions.
+            # Legacy numeric IDs were written by the old fdorg-only journal.
+            legacy_id = ":" not in raw_id
+            if not legacy_id:
+                provider, fixture_id = raw_id.split(":", 1)
+            else:
+                provider, fixture_id = "fdorg", raw_id
             try:
                 kickoff = row.get("kickoff_at")
                 if not kickoff:
                     continue
                 kickoff_dt = datetime.fromisoformat(str(kickoff).replace("Z", "+00:00"))
                 if kickoff_dt.tzinfo is None or kickoff_dt > now - timedelta(hours=2):
+                    skipped_recent += 1
                     continue
-                result = fdorg_match_result(str(fixture_id), token)
+                if provider == "fdorg":
+                    if not fixture_id.isdigit():
+                        continue
+                    if token:
+                        result = fdorg_match_result(fixture_id, token)
+                        source = "football-data.org:verified-FT"
+                    elif legacy_id:
+                        # Old journal rows may have been written from TSDB with bare numeric IDs.
+                        # Only backfill when both team names also match, avoiding ID collisions.
+                        result = tsdb_match_result(fixture_id, logs)
+                        if not result:
+                            continue
+                        try:
+                            from data.scores import _same_team
+                            same_teams = (
+                                _same_team(row.get("home_team", ""), result.get("home_team", ""))
+                                and _same_team(row.get("away_team", ""), result.get("away_team", ""))
+                            )
+                        except Exception:
+                            same_teams = False
+                        if not same_teams:
+                            continue
+                        source = "TheSportsDB:verified-FT-legacy-team-match"
+                    else:
+                        continue
+                elif provider == "tsdb":
+                    result = tsdb_match_result(fixture_id, logs)
+                    source = "TheSportsDB:verified-FT"
+                elif provider == "espn":
+                    result = espn_match_result(fixture_id, kickoff_dt.date().isoformat(), logs)
+                    source = "ESPN:verified-FT"
+                else:
+                    continue
                 if not result or result.get("status") != "FT":
                     continue
                 hg, ag = int(result["home"]), int(result["away"])
+                if hg < 0 or ag < 0:
+                    continue
                 outcome = "H" if hg > ag else "A" if hg < ag else "D"
                 ledger.settle(
                     row["forecast_key"], outcome, home_score=hg, away_score=ag,
                     settled_at=datetime.now(timezone.utc),
-                    closing_odds_source="football-data.org:verified-FT",
+                    closing_odds_source=source,
                 )
                 settled += 1
+                attempted += 1
             except Exception as exc:
-                logs.append(f"Журнал: не удалось закрыть {fixture_id}: {type(exc).__name__}")
-        if settled:
-            logs.append(f"📚 Журнал: подтверждено итогов FT — {settled}")
+                logs.append(f"Журнал: не удалось закрыть {raw_id}: {type(exc).__name__}")
+        logs.append(
+            f"📚 Журнал результатов: ожидали {len(pending)}, закрыто {settled}; "
+            f"источник fdorg {'доступен' if token else 'без токена'}, "
+            f"ещё рано для проверки {skipped_recent}."
+        )
     except Exception as exc:
         logs.append(f"📚 Журнал результатов недоступен: {type(exc).__name__}")
     return settled
+
+def _row_kickoff_utc(row):
+    """Derive an aware kickoff from the app's Moscow-local Date/Time fields."""
+    try:
+        raw = row.get("kickoff_utc")
+        if raw:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc)
+        date_value = str(row.get("Date") or "")[:10]
+        time_value = str(row.get("Time") or "")[:5]
+        if not date_value or not time_value:
+            return None
+        local = datetime.strptime(
+            f"{date_value} {time_value}", "%Y-%m-%d %H:%M"
+        ).replace(tzinfo=timezone(timedelta(hours=3)))
+        return local.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
 
 def _record_raw_forecast(service, known_keys, row, home, away, league,
                          probabilities, logs, *, variant="h2h"):
@@ -80,13 +148,17 @@ def _record_raw_forecast(service, known_keys, row, home, away, league,
     if service is None:
         return
     fixture_id = row.get("fixture_id")
-    kickoff = row.get("kickoff_utc")
+    kickoff_dt = _row_kickoff_utc(row)
+    kickoff = kickoff_dt.isoformat() if kickoff_dt else None
     if fixture_id in (None, "") or not kickoff:
         return
     if variant not in ("h2h", "no-h2h"):
         raise ValueError("unknown forecast audit variant")
     model_version = f"{APP_VERSION}-{variant}-v1"
-    key = f"fdorg:{fixture_id}:{model_version}"
+    provider = str(row.get("fixture_provider") or ("espn" if str(fixture_id).startswith("espn:") else "fdorg"))
+    provider_id = str(fixture_id).split(":", 1)[1] if str(fixture_id).startswith("espn:") else str(fixture_id)
+    ledger_fixture_id = f"{provider}:{provider_id}"
+    key = f"{ledger_fixture_id}:{model_version}"
     try:
         if key in known_keys:
             return
@@ -100,7 +172,7 @@ def _record_raw_forecast(service, known_keys, row, home, away, league,
             except (TypeError, ValueError):
                 pass
         decision = service.forecast(
-            forecast_key=key, fixture_id=str(fixture_id),
+            forecast_key=key, fixture_id=ledger_fixture_id,
             home_team=home, away_team=away, model_version=model_version,
             probabilities=probabilities,
             forecast_at=datetime.now(timezone.utc),
@@ -314,7 +386,52 @@ def render(min_prob, kelly_frac, matrix_n):
             for line in D.get("report", []):
                 st.text(line)
 
-        all_cards = [c for c in D.get("cards", []) if isinstance(c, dict)]
+        now_utc = datetime.now(timezone.utc)
+        all_cards = []
+        for card in D.get("cards", []):
+            if not isinstance(card, dict):
+                continue
+            try:
+                # Prefer the source's UTC kickoff; older cached cards may only have date/time.
+                kickoff_raw = card.get("kickoff_utc")
+                kickoff = None
+                if kickoff_raw:
+                    kickoff = datetime.fromisoformat(
+                        str(kickoff_raw).replace("Z", "+00:00")
+                    )
+                    if kickoff.tzinfo is None:
+                        kickoff = kickoff.replace(tzinfo=timezone.utc)
+                    kickoff = kickoff.astimezone(timezone.utc)
+                if kickoff is None:
+                    date_value = str(card.get("date_iso") or "")[:10]
+                    time_value = str(card.get("time") or "")[:5]
+                    if not date_value:
+                        # Older saved cards had only DD.MM in the visible date string.
+                        visible = str(card.get("date") or "")
+                        m = re.match(r"^(\d{2})\.(\d{2})(?:\s+(\d{2}:\d{2}))?", visible)
+                        if m:
+                            year = datetime.now(timezone(timedelta(hours=3))).year
+                            date_value = f"{year:04d}-{m.group(2)}-{m.group(1)}"
+                            time_value = m.group(3) or ""
+                    if date_value:
+                        if time_value:
+                            kickoff = datetime.strptime(
+                                f"{date_value} {time_value}", "%Y-%m-%d %H:%M"
+                            ).replace(tzinfo=timezone(timedelta(hours=3))).astimezone(timezone.utc)
+                        else:
+                            match_date = datetime.strptime(date_value, "%Y-%m-%d").date()
+                            today_msk = datetime.now(timezone(timedelta(hours=3))).date()
+                            if match_date < today_msk:
+                                continue
+                            # If kickoff time is unknown, only keep today's/future dates.
+                            if match_date == today_msk:
+                                continue
+                if kickoff is not None and kickoff <= now_utc:
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                # Do not show an unparseable old card as an upcoming match.
+                continue
+            all_cards.append(card)
         if not all_cards:
             st.info("Нажми ⚡ СКАН.")
             return
@@ -492,9 +609,19 @@ def render(min_prob, kelly_frac, matrix_n):
                           "bet": 0, "watch": 0, "skip": 0,
                           "model_only": 0, "estimated": 0, "real": 0}
 
+        now_utc = datetime.now(timezone.utc)
         for r in rows:
             d = parse_date(r.get("Date", ""))
             if not d or not (today <= d <= today + timedelta(days=days)):
+                continue
+            # Hide matches that have already kicked off / finished from the live scanner.
+            kickoff_dt = _row_kickoff_utc(r)
+            status_text = str(r.get("status") or "").strip().lower()
+            if any(marker in status_text for marker in (
+                "final", "finished", "after extra time", "after penalties", "full time", "status_ft"
+            )):
+                continue
+            if kickoff_dt is not None and kickoff_dt <= now_utc:
                 continue
             h_en = (r.get("HomeTeam") or "").strip()
             a_en = (r.get("AwayTeam") or "").strip()
