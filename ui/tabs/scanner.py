@@ -20,11 +20,9 @@ from llm.analyst import analyze_match
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label)
 
-
 LLM_TOP_N = 8
 MIN_STAKE_PCT = 0.005   # 0.5% от банка — минимальный стейк
 MAX_STAKE_PCT = 0.05    # 5% от банка — максимальный
-
 
 def _forecast_learning_service():
     """Open persistent audit + shadow calibration; never block the live scanner."""
@@ -38,7 +36,6 @@ def _forecast_learning_service():
         _print_log(f"forecast learning service unavailable: {type(exc).__name__}: {exc}")
         return None
 
-
 def _reconcile_forecast_results(ledger, token, logs):
     """Settle only provider-confirmed regular-time final scores."""
     if ledger is None or not token:
@@ -51,7 +48,6 @@ def _reconcile_forecast_results(ledger, token, logs):
             fixture_id = row.get("fixture_id")
             if not fixture_id or not str(fixture_id).isdigit():
                 continue
-            # Avoid spending API quota on fixtures that have not finished yet.
             try:
                 kickoff = row.get("kickoff_at")
                 if not kickoff:
@@ -78,7 +74,6 @@ def _reconcile_forecast_results(ledger, token, logs):
         logs.append(f"📚 Журнал результатов недоступен: {type(exc).__name__}")
     return settled
 
-
 def _record_raw_forecast(service, known_keys, row, home, away, league,
                          probabilities, logs, *, variant="h2h"):
     """Append one immutable A/B forecast variant; never changes live picks."""
@@ -93,7 +88,6 @@ def _record_raw_forecast(service, known_keys, row, home, away, league,
     model_version = f"{APP_VERSION}-{variant}-v1"
     key = f"fdorg:{fixture_id}:{model_version}"
     try:
-        # The scan can run repeatedly; do not rewrite the original forecast timestamp.
         if key in known_keys:
             return
         prices_raw = row.get("odds") or {}
@@ -101,7 +95,7 @@ def _record_raw_forecast(service, known_keys, row, home, away, league,
         for outcome, name in (("H", "П1"), ("D", "X"), ("A", "П2")):
             try:
                 odd = float(prices_raw.get(name))
-                if odd > 1 and odd < float("inf"):
+                if 1 < odd < float("inf"):
                     prices[outcome] = odd
             except (TypeError, ValueError):
                 pass
@@ -122,7 +116,6 @@ def _record_raw_forecast(service, known_keys, row, home, away, league,
             )
     except Exception as exc:
         logs.append(f"📚 Журнал: прогноз не записан ({type(exc).__name__})")
-
 
 def _paired_ab_metrics(rows_a, rows_b):
     """Score A/B variants only on fixture IDs settled in both arms."""
@@ -151,7 +144,6 @@ def _paired_ab_metrics(rows_a, rows_b):
         "b_log_loss": sum(x[1] for x in sb) / n,
     }
 
-
 def _render_learning_status():
     """Show audit coverage and scoring metrics without changing picks."""
     try:
@@ -174,8 +166,6 @@ def _render_learning_status():
                 f"Точность top-1: {accuracy:.1%}" if accuracy is not None
                 else "Точность top-1 появится после подтверждённых результатов."
             )
-
-            # Compare settled outcomes for the same live fixtures by variant.
             h2h_version = f"{APP_VERSION}-h2h-v1"
             no_h2h_version = f"{APP_VERSION}-no-h2h-v1"
             h2h_metrics = service.ledger.metrics(model_version=h2h_version)
@@ -217,7 +207,6 @@ def _render_learning_status():
     except Exception as exc:
         st.info(f"Диагностика обучения временно недоступна: {type(exc).__name__}")
 
-
 def _safe_filter(rows):
     if not isinstance(rows, list):
         return []
@@ -230,7 +219,6 @@ def _safe_filter(rows):
         out.append(r)
     return out
 
-
 def _print_log(msg: str):
     try:
         import sys
@@ -238,14 +226,10 @@ def _print_log(msg: str):
     except Exception:
         pass
 
-
 def _train_engine(matrix_n, logs, update_loader):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     prev_year = cur_year - 1
-    # Keep the familiar top leagues first, then train on every historical
-    # division configured for seasonal CSV data. Empty/unavailable league CSVs
-    # are harmless; this list must not silently cap coverage at 15 leagues.
     priority_divs = ["E0", "SP1", "I1", "D1", "F1", "E1", "SP2", "I2",
                      "D2", "F2", "N1", "B1", "P1", "T1", "R1"]
     supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
@@ -285,7 +269,6 @@ def _train_engine(matrix_n, logs, update_loader):
     logs.append(f"Обучено: {trained}")
     return engine
 
-
 def _load_engine(matrix_n, logs, update_loader):
     import pickle, gzip, os
     from config import DISK_CACHE_DIR
@@ -307,7 +290,6 @@ def _load_engine(matrix_n, logs, update_loader):
     except Exception:
         pass
     return engine
-
 
 def render(min_prob, kelly_frac, matrix_n):
     D = st.session_state.data
@@ -337,8 +319,6 @@ def render(min_prob, kelly_frac, matrix_n):
             st.info("Нажми ⚡ СКАН.")
             return
 
-        # Cross-league shortlist: only picks backed by a real bookmaker price
-        # and passing the minimum edge/EV checks. Never rank fair odds as bets.
         qualified = [c for c in all_cards
                      if c.get("best") is not None
                      and (c.get("verdict") or {}).get("real_odds")
@@ -357,14 +337,10 @@ def render(min_prob, kelly_frac, matrix_n):
         with st.expander("🏆 Лучшие варианты дня · все лиги", expanded=True):
             st.caption(
                 "Единый рейтинг матчей по вероятности, реальному коэффициенту, "
-                "EV и преимуществу над рынком. В список попадают только варианты "
-                "с подтверждённым коэффициентом и положительным value."
+                "EV и преимуществу над рынком."
             )
             if not qualified:
-                st.info(
-                    "Пока нет подтверждённых value-вариантов. Это лучше, чем "
-                    "выбирать ставку по одному лишь модельному коэффициенту."
-                )
+                st.info("Пока нет подтверждённых value-вариантов.")
             else:
                 for rank, card in enumerate(qualified[:5], start=1):
                     st.markdown(f"### #{rank} · {card.get('league', 'Лига')}")
@@ -473,7 +449,6 @@ def render(min_prob, kelly_frac, matrix_n):
         else:
             logs.append("ℹ️ football-data.org token не задан: использую доступные публичные источники TSDB/ESPN.")
 
-        # Persistent learning audit: settle previous fixtures before new predictions.
         learning_service = _forecast_learning_service()
         audit_ledger = learning_service.ledger if learning_service is not None else None
         audit_keys = set()
@@ -486,8 +461,6 @@ def render(min_prob, kelly_frac, matrix_n):
 
         update_loader("📡 Сбор матчей из всех доступных источников...", 0.05, logs)
         source_rows = {}
-        # Providers are independent: one outage or quota limit must not hide
-        # matches from the other feeds.
         for source_name, source_fn in (
             ("football-data.org", lambda: fdorg_matches(days, token, logs) if token else []),
             ("TheSportsDB", lambda: tsdb_matches(days, logs)),
@@ -515,7 +488,6 @@ def render(min_prob, kelly_frac, matrix_n):
         xg_used_count = 0
         odds_key = D.get("meta", {}).get("odds_api_key", "")
 
-        # Счётчики воронки
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
                           "model_only": 0, "estimated": 0, "real": 0}
@@ -543,8 +515,7 @@ def render(min_prob, kelly_frac, matrix_n):
             if P.get("xg_used"):
                 xg_used_count += 1
 
-            # Live A/B audit: identical fixture/model state, with and without
-            # H2H. Both variants are shadow-only; picks still use P (with H2H).
+            # Live A/B audit (shadow only, не влияет на picks)
             try:
                 _record_raw_forecast(
                     learning_service, audit_keys, r, h_en, a_en, lg,
@@ -573,8 +544,7 @@ def render(min_prob, kelly_frac, matrix_n):
             best = None
             odds_source = "model_only"
 
-            # Begin with any real prices already supplied by a fixture source,
-            # then fill/refresh them from the bookmaker odds API when available.
+            # Пробуем взять кэфы: сначала из источника, потом из API
             market_odds = dict(r.get("odds") or {})
             if market_odds:
                 odds_source = r.get("odds_source") or "fixture_source"
@@ -594,6 +564,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     odds_source = "market"
                     funnel_counts["market_got"] += 1
 
+            # Если есть реальные кэфы — используем best_value_market
             if market_odds:
                 chosen_verdict, best = best_value_market(
                     verdict, rows_, market_odds, D["bank"], kelly_frac,
@@ -606,6 +577,31 @@ def render(min_prob, kelly_frac, matrix_n):
                     funnel_counts["model_only"] += 1
             else:
                 funnel_counts["model_only"] += 1
+
+            # ============ FALLBACK: ЕСЛИ НЕТ РЕАЛЬНЫХ КЭФОВ, БЕРЁМ МОДЕЛЬНЫЙ ============
+            if best is None and verdict.get("is_action"):
+                est_odd = verdict.get("fair_odd")
+                if not est_odd:
+                    prob_fallback = float(verdict.get("prob") or 0)
+                    if prob_fallback > 0:
+                        est_odd = 1.0 / prob_fallback
+                if est_odd and est_odd > 1.01:
+                    prob_ = float(verdict.get("prob") or 0)
+                    ev_ = prob_ * est_odd - 1
+                    min_stake = round(D["bank"] * MIN_STAKE_PCT, 2)
+                    stake_ = max(kelly(prob_, est_odd, D["bank"], kelly_frac), min_stake)
+                    verdict["real_odds"] = False
+                    verdict["odd"] = est_odd
+                    verdict["ev"] = ev_
+                    verdict["odds_source"] = "estimated"
+                    best = (market_type(verdict["pick"]),
+                            verdict["pick"], est_odd, ev_, prob_, stake_)
+                    odds_source = "estimated"
+                    funnel_counts["estimated"] += 1
+                    logs.append(
+                        f"⚠️ ESTIMATED: {h_ru} — {a_ru} | "
+                        f"{best[1]} @ {est_odd:.2f} (нет реального кэфа)"
+                    )
 
             # Отладка
             if best:
@@ -659,8 +655,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "context": context,
             })
 
-        logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов; "
-                    "для остальных сохранён расчёт по голам из-за недостатка xG-истории.")
+        logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов")
         logs.append(f"🎯 BET: {matches_with_best}")
 
         # ============ LLM ============
@@ -707,7 +702,6 @@ def render(min_prob, kelly_frac, matrix_n):
                     "pick": v_.get("label", ""), "prob": v_.get("prob", 0),
                     "confidence": v_.get("confidence", ""), "ev": v_.get("ev", 0),
                 }
-                # An optional LLM provider must never abort the whole scan.
                 try:
                     opinion = analyze_match(ctx_llm)
                 except Exception as exc:
@@ -777,7 +771,6 @@ def render(min_prob, kelly_frac, matrix_n):
             db.log_bank(D2["bank"], event="scan")
             db.invalidate_caches()
 
-        # Логи воронки
         _print_log(f"FUNNEL: {funnel_counts}")
 
         update_loader(
@@ -787,8 +780,6 @@ def render(min_prob, kelly_frac, matrix_n):
         loader_ph.empty()
         log_ph.empty()
     except Exception as exc:
-        # Keep the previous portfolio/cards intact and expose the real failure
-        # instead of leaving the user with a silently broken scanner.
         message = f"Сканирование прервано: {type(exc).__name__}: {str(exc)[:240]}"
         _print_log(message)
         try:
@@ -801,7 +792,7 @@ def render(min_prob, kelly_frac, matrix_n):
         except Exception:
             pass
         st.error(message)
-        st.info("Проверь раздел «Диагностика» и последние строки журнала. Старые карточки и портфель сохранены.")
+        st.info("Проверь раздел «Диагностика» и последние строки журнала.")
         return
     finally:
         st.session_state["_scan_in_progress"] = False
