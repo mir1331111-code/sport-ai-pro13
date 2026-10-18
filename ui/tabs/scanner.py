@@ -11,6 +11,7 @@ from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
                           fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
                           tsdb_matches, espn_matches)
+from data.marathon import marathon_odds
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict
@@ -578,6 +579,31 @@ def render(min_prob, kelly_frac, matrix_n):
             market_odds = dict(r.get("odds") or {})
             if market_odds:
                 odds_source = r.get("odds_source") or "fixture_source"
+
+            # Prefer the user's requested Marathon line when fixture sources
+            # do not already provide a complete 1X2 market. The provider has
+            # its own short cache, so repeated fixtures in a league do not
+            # trigger a request for every match.
+            has_1x2 = all(
+                isinstance(market_odds.get(k), (int, float))
+                and float(market_odds[k]) > 1.0
+                for k in ("П1", "X", "П2")
+            )
+            if not has_1x2:
+                try:
+                    marathon_prices = marathon_odds(h_en, a_en, div_code=lg)
+                    if marathon_prices:
+                        # Marathon prices take priority for 1X2; preserve any
+                        # other markets supplied by another real source.
+                        for key in ("П1", "X", "П2"):
+                            value = marathon_prices.get(key)
+                            if isinstance(value, (int, float)) and value > 1.0:
+                                market_odds[key] = float(value)
+                        if all(k in market_odds for k in ("П1", "X", "П2")):
+                            odds_source = "marathon"
+                            funnel_counts["market_got"] += 1
+                except Exception as exc:
+                    logs.append(f"Marathon: {type(exc).__name__}")
 
             sport_key = DIV_TO_ODDS.get(lg)
             has_model_candidate = any(
