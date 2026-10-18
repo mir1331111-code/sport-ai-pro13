@@ -11,6 +11,7 @@ from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
                           fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
                           tsdb_matches, espn_matches)
+from data.marathon import marathon_odds
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict
@@ -332,7 +333,24 @@ def render(min_prob, kelly_frac, matrix_n):
             for line in D.get("report", []):
                 st.text(line)
 
-        all_cards = [c for c in D.get("cards", []) if isinstance(c, dict)]
+        # Drop expired fixtures from persisted session-state cards.
+        today_date = datetime.now().date()
+        all_cards = []
+        for c in D.get("cards", []):
+            if not isinstance(c, dict):
+                continue
+            raw_date = c.get("date_iso") or c.get("kickoff") or c.get("date")
+            parsed_date = None
+            if raw_date:
+                try:
+                    parsed_date = parse_date(raw_date)
+                    if hasattr(parsed_date, "date"):
+                        parsed_date = parsed_date.date()
+                except Exception:
+                    parsed_date = None
+            if parsed_date is not None and parsed_date < today_date:
+                continue
+            all_cards.append(c)
         if not all_cards:
             st.info("Нажми ⚡ СКАН.")
             return
@@ -579,12 +597,32 @@ def render(min_prob, kelly_frac, matrix_n):
             if market_odds:
                 odds_source = r.get("odds_source") or "fixture_source"
 
+            has_1x2 = all(
+                isinstance(market_odds.get(k), (int, float))
+                and float(market_odds[k]) > 1.0
+                for k in ("П1", "X", "П2")
+            )
+            if not has_1x2:
+                try:
+                    match_date = d.date().isoformat() if hasattr(d, "date") else str(d)
+                    marathon_prices = marathon_odds(h_en, a_en, date_iso=match_date, div_code=lg)
+                    if marathon_prices:
+                        for key in ("П1", "X", "П2"):
+                            value = marathon_prices.get(key)
+                            if isinstance(value, (int, float)) and value > 1.0:
+                                market_odds[key] = float(value)
+                        if all(k in market_odds for k in ("П1", "X", "П2")):
+                            odds_source = "marathon"
+                            funnel_counts["market_got"] += 1
+                except Exception as exc:
+                    logs.append(f"Marathon: {type(exc).__name__}")
+
             sport_key = DIV_TO_ODDS.get(lg)
             has_model_candidate = any(
                 float(item.get("prob") or 0) >= float(min_prob)
                 for item in rows_
             )
-            if (has_model_candidate and sport_key and odds_key
+            if (not has_1x2 and has_model_candidate and sport_key and odds_key
                     and usage.odds_remaining() > 0
                     and funnel_counts["market_req"] < 15):
                 funnel_counts["market_req"] += 1
