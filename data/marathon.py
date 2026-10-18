@@ -134,11 +134,14 @@ def fetch_league_events(div_code: str) -> list:
         r = _sess.get(url, timeout=20, proxies=NO_PROXY)
         if r.status_code != 200:
             _log(f"{div_code} HTTP {r.status_code}")
-            cache_put(ck, [])
+            # Do not cache provider failures; retry on the next scan.
             return []
         events = _parse_events(r.text)
         _log(f"{div_code} (cat={cat_id}): {len(events)} events")
-        cache_put(ck, events)
+        # Cache only non-empty results. A changed site template or transient
+        # response must not hide the live line for the whole TTL.
+        if events:
+            cache_put(ck, events)
         return events
     except Exception as e:
         _log(f"{div_code} error: {type(e).__name__}: {str(e)[:100]}")
@@ -301,7 +304,11 @@ def _find_team_match(team_en: str, team_ru: str) -> bool:
         return True
 
     # Через словарь: русское → английское
-    en_from_ru = RU_TO_EN_TEAM.get(tr, "")
+    # _norm removes spaces/punctuation, so normalize mapping keys as well.
+    en_from_ru = next(
+        (value for key, value in RU_TO_EN_TEAM.items() if _norm(key) == tr),
+        "",
+    )
     if en_from_ru:
         if te == _norm(en_from_ru):
             return True
