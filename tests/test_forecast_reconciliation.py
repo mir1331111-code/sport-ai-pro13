@@ -58,6 +58,23 @@ class ForecastReconciliationTests(unittest.TestCase):
         self.assertEqual(settled, 0)
         self.assertIsNone(self.ledger.rows()[0]["result"])
 
+    def test_extra_time_result_does_not_settle_regular_time_forecast(self):
+        self.record("tsdb:654", "tsdb:654:test-v1")
+        with patch.object(scanner, "tsdb_match_result",
+                          return_value={"home": 3, "away": 2, "status": "AET"}):
+            settled = scanner._reconcile_forecast_results(self.ledger, "", [])
+        self.assertEqual(settled, 0)
+        self.assertIsNone(self.ledger.rows()[0]["result"])
+
+    def test_public_source_date_time_can_supply_kickoff(self):
+        kickoff = scanner._row_kickoff_utc({"Date": "2026-10-20", "Time": "12:30"})
+        self.assertIsNotNone(kickoff)
+        self.assertEqual(kickoff.isoformat(), "2026-10-20T09:30:00+00:00")
+
+    def test_explicit_kickoff_is_normalized_to_utc(self):
+        kickoff = scanner._row_kickoff_utc({"kickoff_utc": "2026-10-20T12:30:00+03:00"})
+        self.assertEqual(kickoff.isoformat(), "2026-10-20T09:30:00+00:00")
+
 
 if __name__ == "__main__":
     unittest.main()
