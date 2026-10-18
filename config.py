@@ -30,7 +30,7 @@ CACHE_TTL = {
 LLM_PROVIDERS = {
     "Groq (бесплатно, быстро)": {
     "base": "https://groq-proxy13.mir1331111.workers.dev/openai/v1",
-    "model": "llama-3.1-8b-instant",
+    "model": "openai/gpt-oss-20b",
     "key_url": "https://console.groq.com/keys",
 },
     "Groq 70B (бесплатно, мощнее)": {
