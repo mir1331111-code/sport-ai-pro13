@@ -790,7 +790,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "market": mkt, "pick": pick, "odds": odd, "stake": stake,
                 "prob": prob, "status": "pending", "strat": "value",
                 "odds_source": c.get("odds_source", "estimated"),
-                "mode": "real" if c.get("odds_source") in ("real", "market", "prognostiz") else "paper",
+                "mode": "real" if c.get("odds_source") in ("real", "market", "prognostiz", "prognozist_marathon") else "paper",
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
                 "match_time": c.get("time", ""),
