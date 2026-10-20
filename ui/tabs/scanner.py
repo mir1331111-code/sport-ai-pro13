@@ -629,30 +629,13 @@ def render(min_prob, kelly_frac, matrix_n):
             else:
                 funnel_counts["model_only"] += 1
 
-            # ============ FALLBACK: ЕСЛИ НЕТ РЕАЛЬНЫХ КЭФОВ, БЕРЁМ МОДЕЛЬНЫЙ ============
-            if best is None and verdict.get("is_action"):
-                est_odd = verdict.get("fair_odd")
-                if not est_odd:
-                    prob_fallback = float(verdict.get("prob") or 0)
-                    if prob_fallback > 0:
-                        est_odd = 1.0 / prob_fallback
-                if est_odd and est_odd > 1.01:
-                    prob_ = float(verdict.get("prob") or 0)
-                    ev_ = prob_ * est_odd - 1
-                    min_stake = round(D["bank"] * MIN_STAKE_PCT, 2)
-                    stake_ = max(kelly(prob_, est_odd, D["bank"], kelly_frac), min_stake)
-                    verdict["real_odds"] = False
-                    verdict["odd"] = est_odd
-                    verdict["ev"] = ev_
-                    verdict["odds_source"] = "estimated"
-                    best = (market_type(verdict["pick"]),
-                            verdict["pick"], est_odd, ev_, prob_, stake_)
-                    odds_source = "estimated"
-                    funnel_counts["estimated"] += 1
-                    logs.append(
-                        f"⚠️ ESTIMATED: {h_ru} — {a_ru} | "
-                        f"{best[1]} @ {est_odd:.2f} (нет реального кэфа)"
-                    )
+            # Не подменяем рыночные котировки математической оценкой.
+            # Без подтверждённого коэффициента букмекера матч остаётся в аналитике,
+            # но не превращается в ставку с фиктивной ценой.
+            if best is None:
+                verdict["real_odds"] = False
+                verdict["odds_source"] = "unavailable"
+                verdict["price_warning"] = "Нет подтверждённого коэффициента букмекера"
 
             # Отладка
             if best:
@@ -795,7 +778,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "market": mkt, "pick": pick, "odds": odd, "stake": stake,
                 "prob": prob, "status": "pending", "strat": "value",
                 "odds_source": c.get("odds_source", "estimated"),
-                "mode": "real" if c.get("odds_source") == "real" else "paper",
+                "mode": "real" if c.get("odds_source") in ("real", "market", "prognostiz") else "paper",
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
                 "match_time": c.get("time", ""),
