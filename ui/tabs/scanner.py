@@ -37,37 +37,53 @@ def _forecast_learning_service():
         return None
 
 def _reconcile_forecast_results(ledger, token, logs):
-    """Settle only provider-confirmed regular-time final scores."""
-    if ledger is None or not token:
+    """Settle old forecasts only when a score provider confirms regular-time FT."""
+    if ledger is None:
         return 0
     settled = 0
     try:
+        from data.scores import find_match_score
         now = datetime.now(timezone.utc)
         pending = [row for row in ledger.rows() if row.get("result") is None]
         for row in pending:
             fixture_id = row.get("fixture_id")
-            if not fixture_id or not str(fixture_id).isdigit():
+            kickoff = row.get("kickoff_at")
+            if not kickoff:
                 continue
             try:
-                kickoff = row.get("kickoff_at")
-                if not kickoff:
-                    continue
                 kickoff_dt = datetime.fromisoformat(str(kickoff).replace("Z", "+00:00"))
-                if kickoff_dt.tzinfo is None or kickoff_dt > now - timedelta(hours=2):
+                if kickoff_dt.tzinfo is None:
+                    kickoff_dt = kickoff_dt.replace(tzinfo=timezone.utc)
+                if kickoff_dt > now - timedelta(hours=2, minutes=15):
                     continue
-                result = fdorg_match_result(str(fixture_id), token)
-                if not result or result.get("status") != "FT":
-                    continue
+                result, source = None, None
+                if token and fixture_id and str(fixture_id).isdigit():
+                    result = fdorg_match_result(str(fixture_id), token)
+                    if result and result.get("status") == "FT":
+                        source = "football-data.org:verified-FT"
+                    else:
+                        result = None
+                if result is None:
+                    result = find_match_score(
+                        str(row.get("home_team") or ""),
+                        str(row.get("away_team") or ""),
+                        kickoff_dt.date().isoformat(),
+                    )
+                    if not result or result.get("status") != "FT":
+                        continue
+                    source = "score-provider:" + str(result.get("source") or "verified-FT")
                 hg, ag = int(result["home"]), int(result["away"])
+                if hg < 0 or ag < 0:
+                    continue
                 outcome = "H" if hg > ag else "A" if hg < ag else "D"
                 ledger.settle(
                     row["forecast_key"], outcome, home_score=hg, away_score=ag,
                     settled_at=datetime.now(timezone.utc),
-                    closing_odds_source="football-data.org:verified-FT",
+                    closing_odds_source=source or "verified-FT",
                 )
                 settled += 1
             except Exception as exc:
-                logs.append(f"Журнал: не удалось закрыть {fixture_id}: {type(exc).__name__}")
+                logs.append(f"Журнал: не удалось закрыть {fixture_id or row.get('forecast_key')}: {type(exc).__name__}")
         if settled:
             logs.append(f"📚 Журнал: подтверждено итогов FT — {settled}")
     except Exception as exc:
@@ -323,6 +339,41 @@ def render(min_prob, kelly_frac, matrix_n):
                      if c.get("best") is not None
                      and (c.get("verdict") or {}).get("real_odds")
                      and (c.get("verdict") or {}).get("value_passed")]
+        # Daily view and picks use only the latest scan; never fabricate a value pick.
+        today_iso = datetime.now().date().isoformat()
+        todays_cards = [c for c in all_cards if c.get("date_iso") == today_iso]
+        with st.expander(f"📅 Матчи дня · {len(todays_cards)}", expanded=True):
+            if not todays_cards:
+                st.info("Матчи на сегодня не найдены в последнем скане. Нажми ⚡ СКАН, чтобы обновить источники.")
+            else:
+                todays_qualified = [c for c in todays_cards if c in qualified]
+                st.caption(f"Всего матчей: {len(todays_cards)} · value с реальными коэффициентами: {len(todays_qualified)}")
+                for card in sorted(todays_cards, key=lambda c: str(c.get("time") or "99:99")):
+                    v = card.get("verdict") or {}
+                    odds_note = f" · кэф {float(v.get('odd')):.2f}" if v.get("odd") else ""
+                    st.markdown(f"**{card.get('time') or 'Время н/д'} · {card.get('match_ru') or card.get('match')}** — {card.get('league') or 'Лига'}{odds_note}")
+                    if card in todays_qualified:
+                        st.markdown(render_verdict_card(card, min_prob), unsafe_allow_html=True)
+        with st.expander("🎯 Ставка дня / экспресс дня", expanded=True):
+            if not qualified:
+                st.info("Ставка дня не назначается: нет вариантов, прошедших фильтры реального коэффициента, EV и value.")
+            else:
+                daily_ranked = sorted(qualified, key=lambda c: (
+                    -float((c.get("verdict") or {}).get("ev") or -1),
+                    -float((c.get("verdict") or {}).get("edge") or -1),
+                    -float((c.get("verdict") or {}).get("prob") or 0),
+                ))
+                st.markdown("**Ставка дня — лучший одиночный value-вариант**")
+                st.markdown(render_verdict_card(daily_ranked[0], min_prob), unsafe_allow_html=True)
+                express = daily_ranked[:3]
+                if len(express) >= 2:
+                    st.markdown("**Экспресс дня — до 3 вариантов, прошедших фильтры**")
+                    st.warning("Это подборка кандидатов, не гарантия выигрыша; экспресс несёт повышенный риск.")
+                    for card in express:
+                        v = card.get("verdict") or {}
+                        st.markdown(f"- {card.get('match_ru') or card.get('match')} — {v.get('label') or v.get('pick') or 'рынок'}; P {float(v.get('prob') or 0):.0%}; EV {float(v.get('ev') or 0):+.1%}")
+                else:
+                    st.caption("Для экспресса нужно минимум два варианта, прошедших фильтры.")
         try:
             from betting.ranking import rank_score
             qualified.sort(key=lambda c: (
