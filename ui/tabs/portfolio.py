@@ -361,40 +361,106 @@ def render():
 
     st.divider()
 
-    # ==================== РЕНДЕР С ГРУППИРОВКОЙ ====================
-    if group_by_day:
-        grouped = {}
-        for b, idx in indexed:
-            dt = _bet_date(b)
-            label = day_label(dt)
-            grouped.setdefault(label, []).append((b, idx))
+    # ==================== КАЛЕНДАРЬ ПОРТФЕЛЯ ====================
+    # Календарь строится по дате матча, а не по дате добавления ставки.
+    from calendar import Calendar
+    from datetime import date as _date
 
-        sorted_groups = sorted(
-            grouped.items(),
-            key=lambda kv: _bet_date(kv[1][0][0]))
+    dated = []
+    undated = []
+    for b, original_idx in indexed:
+        iso = str(b.get("date_iso") or "").strip()
+        try:
+            day = datetime.strptime(iso[:10], "%Y-%m-%d").date()
+            dated.append((day, b, original_idx))
+        except (TypeError, ValueError):
+            undated.append((b, original_idx))
 
-        for label, items in sorted_groups:
-            g_pending = sum(1 for b, _ in items if b.get("status") == "pending")
-            g_won = sum(1 for b, _ in items if b.get("status") == "won")
-            g_lost = sum(1 for b, _ in items if b.get("status") == "lost")
-            g_stake = sum(float(b.get("stake") or 0) for b, _ in items)
+    if "pf_calendar_month" not in st.session_state:
+        today = _date.today()
+        st.session_state.pf_calendar_month = (today.year, today.month)
+    year, month = st.session_state.pf_calendar_month
 
-            st.markdown(
-                f"<div style='margin-top:24px;margin-bottom:14px;"
-                f"padding:12px 20px;"
-                f"background:linear-gradient(90deg,"
-                f"rgba(34,211,238,.14),rgba(139,92,246,.08));"
-                f"border-left:4px solid #22d3ee;border-radius:10px;'>"
-                f"<span style='color:#fff;font-weight:900;font-size:1.1rem;"
-                f"letter-spacing:1px;'>{label}</span>"
-                f"<span style='color:#8b93a7;font-size:.85rem;margin-left:12px;'>"
-                f"{len(items)} ставок · ⏳ {g_pending} · "
-                f"🟢 {g_won} · 🔴 {g_lost} · 💰 {g_stake:.0f} у.е."
-                f"</span></div>",
-                unsafe_allow_html=True)
+    nav_l, nav_title, nav_r = st.columns([1, 4, 1])
+    if nav_l.button("◀ Предыдущий", key="pf_cal_prev"):
+        month -= 1
+        if month < 1:
+            year, month = year - 1, 12
+        st.session_state.pf_calendar_month = (year, month)
+        st.rerun()
+    nav_title.markdown(f"### 🗓️ {['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'][month-1]} {year}")
+    if nav_r.button("Следующий ▶", key="pf_cal_next"):
+        month += 1
+        if month > 12:
+            year, month = year + 1, 1
+        st.session_state.pf_calendar_month = (year, month)
+        st.rerun()
 
-            for b, original_idx in items:
-                _render_bet(b, D, original_idx)
+    by_day = {}
+    for day, b, original_idx in dated:
+        by_day.setdefault(day, []).append((b, original_idx))
+    weekdays = st.columns(7)
+    for col, name in zip(weekdays, ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]):
+        col.markdown(f"**{name}**")
+
+    cal = Calendar(firstweekday=0)
+    for week in cal.monthdayscalendar(year, month):
+        cols = st.columns(7)
+        for col, day_num in zip(cols, week):
+            if not day_num:
+                col.markdown("&nbsp;", unsafe_allow_html=True)
+                continue
+            day = _date(year, month, day_num)
+            day_items = by_day.get(day, [])
+            if day_items:
+                pending = sum(1 for b, _ in day_items if b.get("status") == "pending")
+                won = sum(1 for b, _ in day_items if b.get("status") == "won")
+                lost = sum(1 for b, _ in day_items if b.get("status") == "lost")
+                label = f"{day_num} · {len(day_items)}\n⏳{pending} 🟢{won} 🔴{lost}"
+            else:
+                label = str(day_num)
+            if col.button(label, key=f"pf_cal_day_{year}_{month}_{day_num}", use_container_width=True,
+                           type="primary" if st.session_state.get("pf_selected_day") == day.isoformat() else "secondary"):
+                st.session_state.pf_selected_day = day.isoformat()
+                st.rerun()
+
+    selected = st.session_state.get("pf_selected_day")
+    if selected:
+        try:
+            selected_day = datetime.strptime(selected, "%Y-%m-%d").date()
+        except ValueError:
+            selected_day = _date.today()
     else:
-        for b, original_idx in indexed:
+        # По умолчанию выбираем сегодня, если есть ставки, иначе ближайший день с событиями.
+        today = _date.today()
+        selected_day = today if today in by_day else (min(by_day) if by_day else today)
+        st.session_state.pf_selected_day = selected_day.isoformat()
+
+    st.divider()
+    st.subheader(f"📌 События за {selected_day.strftime('%d.%m.%Y')}")
+    day_items = by_day.get(selected_day, [])
+    if day_items:
+        day_items = sorted(day_items, key=lambda item: str(item[0].get("match_time") or "99:99"))
+        d_pending = sum(1 for b, _ in day_items if b.get("status") == "pending")
+        d_won = sum(1 for b, _ in day_items if b.get("status") == "won")
+        d_lost = sum(1 for b, _ in day_items if b.get("status") == "lost")
+        d_stake = sum(_safe_float(b.get("stake")) for b, _ in day_items)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Событий", len(day_items))
+        m2.metric("В работе", d_pending)
+        m3.metric("Выигрыш / проигрыш", f"{d_won} / {d_lost}")
+        m4.metric("Сумма ставок", f"{d_stake:.2f}")
+        for b, original_idx in day_items:
+            _render_bet(b, D, original_idx)
+    else:
+        st.info("На выбранную дату ставок нет. Нажми на другой день в календаре.")
+
+    if undated:
+        with st.expander(f"⚠️ Ставки без корректной даты ({len(undated)})", expanded=False):
+            st.caption("Эти записи нельзя разместить в календаре, пока у них нет даты матча.")
+            for b, original_idx in undated:
+                _render_bet(b, D, original_idx)
+
+    with st.expander("📋 Все ставки по выбранным фильтрам", expanded=False):
+        for b, original_idx in sorted(indexed, key=lambda t: _bet_date(t[0])):
             _render_bet(b, D, original_idx)
