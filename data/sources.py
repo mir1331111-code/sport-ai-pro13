@@ -743,22 +743,30 @@ def fdorg_match_result(match_id, token: str) -> Optional[dict]:
 
 # ============ PROGNOZIST / MARATHON LINE ============
 _PROGNOZIST_URL = "https://prognozist.ru/line/marathon/out.php"
+_PROGNOZIST_MATCH_CENTRE = "https://prognozist.ru/mc/football/"
+
 
 class _PrognozistHTMLParser(__import__("html.parser", fromlist=["HTMLParser"]).HTMLParser):
-    """Extract table rows without requiring BeautifulSoup."""
+    """Collect table rows and links from Prognozist pages."""
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.rows, self.row, self.cell = [], None, None
+        self.links, self.link = [], None
 
     def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
         if tag == "tr":
             self.row = []
         elif tag in ("td", "th") and self.row is not None:
             self.cell = []
+        if tag == "a":
+            self.link = {"href": attrs.get("href", ""), "text": []}
 
     def handle_data(self, data):
         if self.cell is not None:
             self.cell.append(data)
+        if self.link is not None:
+            self.link["text"].append(data)
 
     def handle_endtag(self, tag):
         if tag in ("td", "th") and self.cell is not None:
@@ -768,6 +776,10 @@ class _PrognozistHTMLParser(__import__("html.parser", fromlist=["HTMLParser"]).H
             if self.row:
                 self.rows.append(self.row)
             self.row = None
+        elif tag == "a" and self.link is not None:
+            self.link["text"] = " ".join(" ".join(self.link["text"]).split())
+            self.links.append(self.link)
+            self.link = None
 
 
 def _prognozist_num(value):
@@ -781,78 +793,113 @@ def _prognozist_num(value):
         return None
 
 
-def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
-    """Fetch real Marathon prices from Prognozist's public line export.
+def _prognozist_rows(body):
+    body = (body or "").lstrip("\ufeff")
+    rows = []
+    try:
+        payload = __import__("json").loads(body)
+        if isinstance(payload, dict):
+            payload = payload.get("matches") or payload.get("events") or payload.get("data") or []
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    rows.append([str(v) for v in item.values() if v is not None])
+    except Exception:
+        pass
+    if not rows and ("<tr" in body.lower() or "<a" in body.lower()):
+        parser = _PrognozistHTMLParser()
+        parser.feed(body)
+        rows.extend(parser.rows)
+        rows.extend([[x.get("href", ""), x.get("text", "")] for x in parser.links])
+    if not rows:
+        try:
+            rows = list(csv.reader(io.StringIO(body), delimiter=";"))
+            if not any(len(row) > 1 for row in rows):
+                rows = list(csv.reader(io.StringIO(body)))
+        except Exception:
+            rows = []
+    return rows
 
-    Fail closed: only return 1X2 prices when a single row clearly identifies
-    both teams and contains three valid decimal odds. Never manufacture odds.
-    """
+
+def _prognozist_extract_1x2(text):
+    """Extract only explicitly labelled P1/X/P2 decimal prices."""
+    patterns = (
+        r"П1\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)\s*X\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)\s*П2\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)",
+        r"П1\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?).{0,12}?X\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?).{0,12}?П2\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)",
+    )
+    for pattern in patterns:
+        m = re.search(pattern, text or "", flags=re.I | re.S)
+        if m:
+            vals = [_prognozist_num(x) for x in m.groups()]
+            if all(v is not None for v in vals):
+                return {"П1": vals[0], "X": vals[1], "П2": vals[2]}
+    return None
+
+
+def _prognozist_match(row, home, away):
+    joined = " ".join(str(x) for x in row)
+    normalized = _norm_name(joined)
+    hn, an = _norm_name(home), _norm_name(away)
+    # Compare both full row and URL slug; tolerate transliteration and
+    # common short/long team-name variants without matching single letters.
+    if not hn or not an:
+        return False
+    home_ok = hn in normalized or (len(hn) >= 5 and hn in normalized)
+    away_ok = an in normalized or (len(an) >= 5 and an in normalized)
+    if home_ok and away_ok:
+        return True
+    # Token overlap handles source names such as "Man United" vs "Manchester United".
+    ht = {x for x in hn.split() if len(x) >= 4}
+    at = {x for x in an.split() if len(x) >= 4}
+    return bool(ht and at and any(x in normalized for x in ht) and any(x in normalized for x in at))
+
+
+def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
+    """Return real Marathon 1X2 prices from Prognozist; fail closed on ambiguity."""
     if not home or not away:
         return None
     cache_key = f"prognozist_marathon_{_norm_name(home)}_{_norm_name(away)}"
-    cached = cache_get(cache_key, min(CACHE_TTL.get("odds", 300), 300))
+    cached = cache_get(cache_key, 180)
     if cached is not None:
         return cached or None
-    try:
-        response = _sess.get(
-            _PROGNOZIST_URL,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; SportAIPro/1.0)",
-                     "Accept": "text/html,application/json,text/plain,*/*"},
-            timeout=12, proxies=NO_PROXY)
-        if response.status_code != 200 or not response.text:
-            cache_put(cache_key, None)
-            return None
-        body = response.text.lstrip("\\ufeff")
-        hn, an = _norm_name(home), _norm_name(away)
-        candidate_rows = []
-        # JSON/CSV exports are handled before HTML.
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Accept": "text/html,application/json,text/plain,*/*",
+        "Referer": "https://prognozist.ru/mc/football/",
+    }
+    # The export endpoint may be blocked or return a non-tabular response.
+    # The public match centre visibly publishes Marathon 1X2 prices, so use
+    # it as the primary fallback rather than silently returning synthetic odds.
+    for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE):
         try:
-            payload = response.json()
-            if isinstance(payload, dict):
-                payload = payload.get("matches") or payload.get("events") or payload.get("data") or []
-            if isinstance(payload, list):
-                for item in payload:
-                    if isinstance(item, dict):
-                        vals = [str(v) for v in item.values() if v is not None]
-                        candidate_rows.append(vals)
-        except Exception:
-            pass
-        if not candidate_rows and ("<tr" in body.lower()):
+            response = _sess.get(url, headers=headers, timeout=18, proxies=NO_PROXY)
+            if response.status_code != 200 or not response.text:
+                continue
+            body = response.text
+            rows = _prognozist_rows(body)
+            for row in rows:
+                if not _prognozist_match(row, home, away):
+                    continue
+                prices = _prognozist_extract_1x2(" ".join(str(x) for x in row))
+                if prices:
+                    cache_put(cache_key, prices)
+                    return prices
+            # In some pages team labels are separated from the odds in nearby
+            # markup; search full anchor text and href as a single event record.
             parser = _PrognozistHTMLParser()
             parser.feed(body)
-            candidate_rows = parser.rows
-        if not candidate_rows:
-            try:
-                candidate_rows = list(csv.reader(io.StringIO(body), delimiter=";"))
-                if not any(len(row) > 1 for row in candidate_rows):
-                    candidate_rows = list(csv.reader(io.StringIO(body)))
-            except Exception:
-                candidate_rows = []
-        for row in candidate_rows:
-            joined = " ".join(str(x) for x in row)
-            normalized = _norm_name(joined)
-            # Avoid fuzzy matching short team names against unrelated rows.
-            home_match = hn and (hn in normalized or normalized in hn)
-            away_match = an and (an in normalized or normalized in an)
-            if not (home_match and away_match):
-                continue
-            odds = []
-            for value in row:
-                odd = _prognozist_num(value)
-                if odd is not None:
-                    odds.append(odd)
-            # Three consecutive 1X2 prices are the minimum reliable market.
-            for i in range(max(0, len(odds) - 2)):
-                triple = odds[i:i + 3]
-                if len(triple) == 3:
-                    result = {"П1": triple[0], "X": triple[1], "П2": triple[2]}
-                    cache_put(cache_key, result)
-                    return result
-        cache_put(cache_key, None)
-        return None
-    except Exception as exc:
-        log.debug("Prognozist odds unavailable: %s", type(exc).__name__)
-        return None
+            for link in parser.links:
+                record = [link.get("href", ""), link.get("text", "")]
+                if _prognozist_match(record, home, away):
+                    prices = _prognozist_extract_1x2(" ".join(record))
+                    if prices:
+                        cache_put(cache_key, prices)
+                        return prices
+        except Exception as exc:
+            log.debug("Prognozist request failed (%s): %s", url, type(exc).__name__)
+    cache_put(cache_key, None)
+    return None
 
 
 # ============ THE ODDS API ============
