@@ -30,8 +30,8 @@ def _forecast_learning_service():
         from model.forecast_ledger import ForecastLedger
         from model.learning_service import ForecastLearningService
         ledger = ForecastLedger(str(DB_FILE) + ".forecast-ledger.sqlite")
-        # Shadow mode: learn/evaluate, but do not change probabilities used for picks.
-        return ForecastLearningService(ledger, enabled=False, min_history=100)
+        # Guarded online calibration: requires 100 settled results and eligible bins.
+        return ForecastLearningService(ledger, enabled=True, min_history=100)
     except Exception as exc:
         _print_log(f"forecast learning service unavailable: {type(exc).__name__}: {exc}")
         return None
