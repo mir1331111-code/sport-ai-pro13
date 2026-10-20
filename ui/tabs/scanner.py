@@ -9,7 +9,7 @@ from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
-                          fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
+                          fdorg_matches, fdorg_match_result, odds_api_fixture, prognozist_marathon_odds, parse_date,
                           tsdb_matches, espn_matches)
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
@@ -595,17 +595,29 @@ def render(min_prob, kelly_frac, matrix_n):
             best = None
             odds_source = "model_only"
 
-            # Пробуем взять кэфы: сначала из источника, потом из API
-            market_odds = dict(r.get("odds") or {})
-            if market_odds:
-                odds_source = r.get("odds_source") or "fixture_source"
+            # Приоритет: опубликованная линия Marathon через Prognozist,
+            # затем котировки, пришедшие вместе с матчем, затем The Odds API.
+            market_odds = {}
+            prognozist_odds = None
+            try:
+                prognozist_odds = prognozist_marathon_odds(h_en, a_en)
+            except Exception as exc:
+                logs.append(f"⚠️ Prognozist: источник недоступен ({type(exc).__name__})")
+            if prognozist_odds:
+                market_odds = dict(prognozist_odds)
+                odds_source = "prognozist_marathon"
+                funnel_counts["market_got"] += 1
+            else:
+                market_odds = dict(r.get("odds") or {})
+                if market_odds:
+                    odds_source = r.get("odds_source") or "fixture_source"
 
             sport_key = DIV_TO_ODDS.get(lg)
             has_model_candidate = any(
                 float(item.get("prob") or 0) >= float(min_prob)
                 for item in rows_
             )
-            if (has_model_candidate and sport_key and odds_key
+            if (not market_odds and has_model_candidate and sport_key and odds_key
                     and usage.odds_remaining() > 0
                     and funnel_counts["market_req"] < 15):
                 funnel_counts["market_req"] += 1
