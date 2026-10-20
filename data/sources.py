@@ -854,6 +854,44 @@ def _prognozist_match(row, home, away):
     return bool(ht and at and any(x in normalized for x in ht) and any(x in normalized for x in at))
 
 
+def _prognozist_line_index():
+    """Download and parse the public line once per short cache window."""
+    key = "prognozist_marathon_line_index_v1"
+    cached = cache_get(key, 180)
+    if isinstance(cached, list):
+        return cached
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Accept": "text/html,application/json,text/plain,*/*",
+        "Referer": "https://prognozist.ru/mc/football/",
+    }
+    indexed = []
+    for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE):
+        try:
+            response = _sess.get(url, headers=headers, timeout=18, proxies=NO_PROXY)
+            if response.status_code != 200 or not response.text:
+                continue
+            body = response.text
+            parser = _PrognozistHTMLParser()
+            if "<" in body:
+                parser.feed(body)
+            candidates = _prognozist_rows(body)
+            candidates.extend([[x.get("href", ""), x.get("text", "")] for x in parser.links])
+            for row in candidates:
+                text = " ".join(str(x) for x in row)
+                odds = _prognozist_extract_1x2(text)
+                if odds:
+                    indexed.append({"text": text, "odds": odds})
+            # The match centre is the authoritative fallback and usually
+            # contains hundreds of fixtures; don't request it repeatedly.
+            if indexed:
+                break
+        except Exception as exc:
+            log.debug("Prognozist request failed (%s): %s", url, type(exc).__name__)
+    cache_put(key, indexed)
+    return indexed
+
+
 def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
     """Return real Marathon 1X2 prices from Prognozist; fail closed on ambiguity."""
     if not home or not away:
@@ -862,42 +900,27 @@ def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
     cached = cache_get(cache_key, 180)
     if cached is not None:
         return cached or None
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
-        "Accept": "text/html,application/json,text/plain,*/*",
-        "Referer": "https://prognozist.ru/mc/football/",
-    }
-    # The export endpoint may be blocked or return a non-tabular response.
-    # The public match centre visibly publishes Marathon 1X2 prices, so use
-    # it as the primary fallback rather than silently returning synthetic odds.
-    for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE):
-        try:
-            response = _sess.get(url, headers=headers, timeout=18, proxies=NO_PROXY)
-            if response.status_code != 200 or not response.text:
-                continue
-            body = response.text
-            rows = _prognozist_rows(body)
-            for row in rows:
-                if not _prognozist_match(row, home, away):
-                    continue
-                prices = _prognozist_extract_1x2(" ".join(str(x) for x in row))
-                if prices:
-                    cache_put(cache_key, prices)
-                    return prices
-            # In some pages team labels are separated from the odds in nearby
-            # markup; search full anchor text and href as a single event record.
-            parser = _PrognozistHTMLParser()
-            parser.feed(body)
-            for link in parser.links:
-                record = [link.get("href", ""), link.get("text", "")]
-                if _prognozist_match(record, home, away):
-                    prices = _prognozist_extract_1x2(" ".join(record))
-                    if prices:
-                        cache_put(cache_key, prices)
-                        return prices
-        except Exception as exc:
-            log.debug("Prognozist request failed (%s): %s", url, type(exc).__name__)
+    hn, an = _norm_name(home), _norm_name(away)
+    if not hn or not an:
+        return None
+    try:
+        for item in _prognozist_line_index():
+            text = item.get("text", "")
+            normalized = _norm_name(text)
+            # Full-name matching first; token matching handles shortened names.
+            home_ok = hn in normalized
+            away_ok = an in normalized
+            if not home_ok and len(hn) >= 5:
+                home_ok = any(token in normalized for token in hn.split() if len(token) >= 5)
+            if not away_ok and len(an) >= 5:
+                away_ok = any(token in normalized for token in an.split() if len(token) >= 5)
+            if home_ok and away_ok:
+                odds = item.get("odds")
+                if isinstance(odds, dict) and all(k in odds for k in ("П1", "X", "П2")):
+                    cache_put(cache_key, odds)
+                    return odds
+    except Exception as exc:
+        log.debug("Prognozist lookup failed: %s", type(exc).__name__)
     cache_put(cache_key, None)
     return None
 
