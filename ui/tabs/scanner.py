@@ -336,40 +336,42 @@ def render(min_prob, kelly_frac, matrix_n):
             best = None
             odds_source = "model_only"
 
-            # Пробуем взять кэфы: сначала из источника, потом Marathon, потом API
-            market_odds = dict(r.get("odds") or {})
-            if market_odds:
-                odds_source = r.get("odds_source") or "fixture_source"
+            # Только реальные коэффициенты с Prognozist/Marathon.
+            # Не используем коэффициенты из fixture, The Odds API или fair_odd.
+            market_odds = {}
+            odds_source = "no_market"
 
             has_model_candidate = any(
                 float(item.get("prob") or 0) >= float(min_prob)
                 for item in rows_
             )
 
-            # 1) Marathon (наш новый парсер)
-            if has_model_candidate and not market_odds:
+            if has_model_candidate:
                 try:
                     marathon = marathon_odds(h_en, a_en, r.get("Date", ""), lg)
-                    if marathon:
-                        market_odds.update(marathon)
-                        odds_source = "marathon"
-                        funnel_counts["market_got"] += 1
-                        logs.append(f"🏁 Marathon: {h_en} vs {a_en}")
+                    if isinstance(marathon, dict):
+                        valid = {
+                            key: float(value)
+                            for key, value in marathon.items()
+                            if key in ("П1", "X", "П2")
+                            and value is not None
+                            and float(value) > 1.0
+                        }
+                        if all(key in valid for key in ("П1", "X", "П2")):
+                            market_odds = valid
+                            odds_source = "prognozist_marathon"
+                            funnel_counts["market_got"] += 1
+                            logs.append(
+                                f"🏁 Prognozist: {h_ru} — {a_ru} | "
+                                f"П1 {valid['П1']:.2f} / X {valid['X']:.2f} / "
+                                f"П2 {valid['П2']:.2f}"
+                            )
+                        else:
+                            logs.append(f"⚠️ Prognozist: неполная линия {h_ru} — {a_ru}")
+                    else:
+                        logs.append(f"⚠️ Prognozist: кэфы не найдены {h_ru} — {a_ru}")
                 except Exception as exc:
-                    logs.append(f"⚠️ Marathon: {type(exc).__name__}")
-
-            # 2) The Odds API (fallback)
-            sport_key = DIV_TO_ODDS.get(lg)
-            if (has_model_candidate and not market_odds
-                    and sport_key and odds_key
-                    and usage.odds_remaining() > 0
-                    and funnel_counts["market_req"] < 15):
-                funnel_counts["market_req"] += 1
-                api_odds = odds_api_fixture(sport_key, h_en, a_en, odds_key)
-                if api_odds:
-                    market_odds.update(api_odds)
-                    odds_source = "market"
-                    funnel_counts["market_got"] += 1
+                    logs.append(f"⚠️ Prognozist ошибка: {type(exc).__name__}: {str(exc)[:100]}")
 
             # Если есть реальные кэфы — используем best_value_market
             if market_odds:
@@ -385,26 +387,7 @@ def render(min_prob, kelly_frac, matrix_n):
             else:
                 funnel_counts["model_only"] += 1
 
-            # FALLBACK: если нет реальных кэфов, берём модельный
-            if best is None and verdict.get("is_action"):
-                est_odd = verdict.get("fair_odd")
-                if not est_odd:
-                    prob_fallback = float(verdict.get("prob") or 0)
-                    if prob_fallback > 0:
-                        est_odd = 1.0 / prob_fallback
-                if est_odd and est_odd > 1.01:
-                    prob_ = float(verdict.get("prob") or 0)
-                    ev_ = prob_ * est_odd - 1
-                    min_stake = round(D["bank"] * MIN_STAKE_PCT, 2)
-                    stake_ = max(kelly(prob_, est_odd, D["bank"], kelly_frac), min_stake)
-                    verdict["real_odds"] = False
-                    verdict["odd"] = est_odd
-                    verdict["ev"] = ev_
-                    verdict["odds_source"] = "estimated"
-                    best = (market_type(verdict["pick"]),
-                            verdict["pick"], est_odd, ev_, prob_, stake_)
-                    odds_source = "estimated"
-                    funnel_counts["estimated"] += 1
+            # Без fallback: если реальной линии Prognozist нет, ставку не создаём.
 
             # Отладка
             if best:
@@ -527,7 +510,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "market": mkt, "pick": pick, "odds": odd, "stake": stake,
                 "prob": prob, "status": "pending", "strat": "value",
                 "odds_source": c.get("odds_source", "estimated"),
-                "mode": "real" if c.get("odds_source") == "real" else "paper",
+                "mode": "real" if c.get("odds_source") == "prognozist_marathon" else "paper",
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
                 "match_time": c.get("time", ""),
