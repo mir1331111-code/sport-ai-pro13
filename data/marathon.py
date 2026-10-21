@@ -56,9 +56,9 @@ def _norm(s: str) -> str:
 def _parse_events(html: str, div_code: str = "") -> list:
     """Parse Prognozist/Marathon event rows while tolerating HTML attribute order."""
     events = []
-    # Attribute order and additional attributes vary between league pages.
+    # Use double-quoted raw strings so both quote styles in HTML attributes are safe.
     pattern = re.compile(
-        r'<tbody\\b(?=[^>]*\\bdata-event-treeid=["\\']?(\\d+)["\\']?)[^>]*>(.*?)</tbody>',
+        r"<tbody\b(?=[^>]*\bdata-event-treeid=['\"]?(\d+)['\"]?)[^>]*>(.*?)</tbody>",
         re.I | re.S,
     )
     blocks = pattern.findall(html or "")
@@ -66,43 +66,46 @@ def _parse_events(html: str, div_code: str = "") -> list:
 
     def text_of(fragment):
         fragment = re.sub(r"<[^>]+>", " ", fragment or "")
-        return re.sub(r"\\s+", " ", fragment).strip()
+        return re.sub(r"\s+", " ", fragment).strip()
 
     def has_class(tag_html, class_name):
-        m = re.search(r"\\bclass\\s*=\\s*(["\\'])(.*?)\\1", tag_html, re.I | re.S)
+        m = re.search(r"\bclass\s*=\s*(['\"])(.*?)\1", tag_html, re.I | re.S)
         return bool(m and class_name in m.group(2).split())
 
     for event_id, block in blocks:
         try:
             names = []
-            for m in re.finditer(r"<span\\b[^>]*>(.*?)</span>", block, re.I | re.S):
+            for m in re.finditer(r"<span\b[^>]*>(.*?)</span>", block, re.I | re.S):
                 opening = block[m.start():block.find(">", m.start()) + 1]
                 if has_class(opening, "member-name"):
                     name = text_of(m.group(1))
                     if name:
                         names.append(name)
             if len(names) < 2:
+                _log(f"SKIP event {event_id}: found only {len(names)} team names")
                 continue
 
             date_str = ""
-            for m in re.finditer(r"<td\\b[^>]*>(.*?)</td>", block, re.I | re.S):
+            for m in re.finditer(r"<td\b[^>]*>(.*?)</td>", block, re.I | re.S):
                 opening = block[m.start():block.find(">", m.start()) + 1]
                 if has_class(opening, "date"):
                     date_str = text_of(m.group(1))
                     break
 
             prices = []
-            for m in re.finditer(r"<td\\b[^>]*>(.*?)</td>", block, re.I | re.S):
+            for m in re.finditer(r"<td\b[^>]*>(.*?)</td>", block, re.I | re.S):
                 opening = block[m.start():block.find(">", m.start()) + 1]
                 if not has_class(opening, "js-price"):
                     continue
                 cell = m.group(1)
-                for sm in re.finditer(r"<span\\b[^>]*>(.*?)</span>", cell, re.I | re.S):
+                for sm in re.finditer(r"<span\b[^>]*>(.*?)</span>", cell, re.I | re.S):
                     span_open = cell[sm.start():cell.find(">", sm.start()) + 1]
-                    if has_class(span_open, "selection-link"):
-                        value = text_of(sm.group(1)).replace(",", ".")
-                        if re.fullmatch(r"\\d+(?:\\.\\d+)?", value):
-                            prices.append(value)
+                    if not has_class(span_open, "selection-link"):
+                        continue
+                    value = text_of(sm.group(1)).replace(",", ".")
+                    if re.fullmatch(r"\d+(?:\.\d+)?", value):
+                        prices.append(value)
+
             if len(prices) < 3:
                 _log(f"SKIP {names[0]} vs {names[1]}: prices={len(prices)}")
                 continue
@@ -118,6 +121,7 @@ def _parse_events(html: str, div_code: str = "") -> list:
             if len(odds) != 3:
                 _log(f"SKIP {names[0]} vs {names[1]}: invalid odds {odds}")
                 continue
+
             events.append({
                 "event_id": event_id,
                 "home": names[0],
@@ -127,9 +131,8 @@ def _parse_events(html: str, div_code: str = "") -> list:
             })
             _log(f"PARSED {names[0]} vs {names[1]}: {odds}")
         except Exception as e:
-            _log(f"parse block error: {e}")
+            _log(f"parse block error: {type(e).__name__}: {e}")
     return events
-
 
 def fetch_league_events(div_code: str) -> list:
     """Загружает и парсит события одной лиги."""
