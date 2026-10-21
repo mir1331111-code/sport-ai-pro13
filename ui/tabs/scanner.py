@@ -223,6 +223,14 @@ def _render_learning_status():
     except Exception as exc:
         st.info(f"Диагностика обучения временно недоступна: {type(exc).__name__}")
 
+def _valid_decimal_odd(value):
+    try:
+        odd = float(value)
+        return 1.01 < odd < 1000
+    except (TypeError, ValueError):
+        return False
+
+
 def _safe_filter(rows):
     if not isinstance(rows, list):
         return []
@@ -647,7 +655,16 @@ def render(min_prob, kelly_frac, matrix_n):
                     odds_source = "market"
                     funnel_counts["market_got"] += 1
 
-            # Если есть реальные кэфы — используем best_value_market
+            # Keep only valid decimal prices; provider payloads often contain
+            # nulls or unsupported market values alongside real prices.
+            market_odds = {
+                str(key): float(value)
+                for key, value in (market_odds or {}).items()
+                if value is not None and str(value).strip() != ""
+                and _valid_decimal_odd(value)
+            }
+
+            # If real prices exist, evaluate them against model probability/EV.
             if market_odds:
                 chosen_verdict, best = best_value_market(
                     verdict, rows_, market_odds, D["bank"], kelly_frac,
@@ -658,8 +675,16 @@ def render(min_prob, kelly_frac, matrix_n):
                     funnel_counts["real"] += 1
                 else:
                     funnel_counts["model_only"] += 1
+                    logs.append(
+                        f"📉 Кэфы есть ({odds_source}), но нет value: "
+                        f"{h_ru} — {a_ru}; требуются edge ≥ 3% и EV ≥ 3%."
+                    )
             else:
                 funnel_counts["model_only"] += 1
+                logs.append(
+                    f"⚠️ Нет реальных кэфов: {h_ru} — {a_ru}. "
+                    "Проверь доступность линии Prognozist/ключ Odds API."
+                )
 
             # Не подменяем рыночные котировки математической оценкой.
             # Без подтверждённого коэффициента букмекера матч остаётся в аналитике,
