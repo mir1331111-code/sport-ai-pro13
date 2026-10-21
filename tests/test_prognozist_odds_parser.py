@@ -19,6 +19,18 @@ class PrognozistOddsParserTests(unittest.TestCase):
             {"П1": 2.60, "X": 3.10, "П2": 2.90},
         )
 
+    def test_american_odds_conversion(self):
+        from data.sources import _american_to_decimal
+        self.assertAlmostEqual(_american_to_decimal(-110), 1.9090909, places=5)
+        self.assertAlmostEqual(_american_to_decimal(150), 2.5, places=5)
+        self.assertIsNone(_american_to_decimal(0))
+
+    def test_rundown_sport_mapping_is_limited_to_supported_leagues(self):
+        from data.sources import THERUNDOWN_SPORT_BY_DIV
+        self.assertEqual(THERUNDOWN_SPORT_BY_DIV["E0"], 11)
+        self.assertEqual(THERUNDOWN_SPORT_BY_DIV["SP1"], 14)
+        self.assertNotIn("R1", THERUNDOWN_SPORT_BY_DIV)
+
     def test_rejects_header_without_prices(self):
         self.assertIsNone(_prognozist_extract_row_odds(["П1", "X", "П2"]))
 
