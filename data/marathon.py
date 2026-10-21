@@ -141,13 +141,13 @@ def fetch_league_events(div_code: str) -> list:
         return []
 
     ck = f"marathon_cat_v6_{cat_id}"
-    cached = cache_get(ck, 1800)
+    cached = cache_get(ck, 300)
     if cached is not None:
         return cached if isinstance(cached, list) else []
 
     url = f"https://prognozist.ru/line/marathon/event_line.php?category={cat_id}"
     try:
-        r = _sess.get(url, timeout=(3, 7), proxies=NO_PROXY)
+        r = _sess.get(url, timeout=(2, 4), proxies=NO_PROXY)
         if r.status_code != 200:
             _log(f"{div_code} HTTP {r.status_code}")
             cache_put(ck, [])
@@ -163,6 +163,9 @@ def fetch_league_events(div_code: str) -> list:
         return events
     except Exception as e:
         _log(f"{div_code} error: {type(e).__name__}: {str(e)[:100]}")
+        # Cache the miss too: otherwise every fixture in this league retries
+        # the same failing HTTP request and the scan appears frozen.
+        cache_put(ck, [])
         return []
 
 
