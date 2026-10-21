@@ -1,5 +1,6 @@
 """ui/tabs/scanner.py — Сканер с поддержкой Marathon и The Odds API."""
 from __future__ import annotations
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
