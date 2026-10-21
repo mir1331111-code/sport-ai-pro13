@@ -1088,16 +1088,29 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         return cached or None
     if usage.odds_remaining() <= 0:
         return None
-    try:
-        r = _sess.get(
-            f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds",
-            params={"apiKey": api_key, "regions": "eu",
-                    "markets": "h2h,totals,btts", "oddsFormat": "decimal"},
-            timeout=20, proxies=NO_PROXY)
-        usage.odds_increment(1)
-        if r.status_code != 200:
+    # The endpoint returns the whole sport's event list. Cache that list per
+    # sport, not per fixture, otherwise a scan with many matches spends one API
+    # request per match and can exhaust the user's quota immediately.
+    events_key = f"odds_events_v1_{sport_key}"
+    events = cache_get(events_key, CACHE_TTL["odds"])
+    if events is None:
+        try:
+            r = _sess.get(
+                f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds",
+                params={"apiKey": api_key, "regions": "eu",
+                        "markets": "h2h,totals,btts", "oddsFormat": "decimal"},
+                timeout=20, proxies=NO_PROXY)
+            usage.odds_increment(1)
+            if r.status_code != 200:
+                return None
+            events = r.json() or []
+            if isinstance(events, list):
+                cache_put(events_key, events)
+            else:
+                events = []
+        except Exception:
             return None
-        events = r.json() or []
+    try:
         hn, an = _norm_name(home), _norm_name(away)
         target = None
         for ev in events:
