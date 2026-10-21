@@ -408,19 +408,24 @@ def render(min_prob, kelly_frac, matrix_n):
                             "X": fixture_odds.get("X", fixture_odds.get("draw")),
                             "П2": fixture_odds.get("П2", fixture_odds.get("awayWin")),
                         }))
-                    # The Odds API key was read but never used in this path.
-                    # Query it before HTML parsers so configured market odds can be used.
+                    # Query The Odds API before HTML parsers. Its response may contain
+                    # totals/BTTS even when a complete 1X2 market is unavailable.
                     if odds_key:
                         sport_key = _odds_api_sport_key(r)
                         if sport_key:
                             try:
                                 odds_api_result = odds_api_fixture(
-                                    sport_key, h_en, a_en, odds_key
+                                    sport_key, h_en, a_en, odds_key, logs=logs
                                 )
-                                if isinstance(odds_api_result, dict):
+                                if isinstance(odds_api_result, dict) and odds_api_result:
                                     candidates.append(("odds_api", odds_api_result))
                             except Exception as exc:
-                                logs.append(f"⚠️ The Odds API: {type(exc).__name__}")
+                                logs.append(f"⚠️ The Odds API: {type(exc).__name__}: {str(exc)[:100]}")
+                        else:
+                            logs.append(
+                                f"ℹ️ The Odds API: лига не сопоставлена — "
+                                f"{r.get('Div', '?')} / {r.get('League', '?')}"
+                            )
                     try:
                         candidates.append(("marathon_category",
                                            marathon_odds(h_en, a_en, r.get("Date", ""), lg)))
@@ -437,14 +442,17 @@ def render(min_prob, kelly_frac, matrix_n):
                         if not isinstance(candidate, dict):
                             continue
                         valid = {}
-                        for key in ("П1", "X", "П2"):
+                        # Preserve each independently quoted market. Requiring all
+                        # three 1X2 outcomes discarded valid totals and BTTS prices.
+                        for key in ("П1", "X", "П2", "ТБ 2.5", "ТМ 2.5",
+                                    "BTTS да", "BTTS нет"):
                             try:
                                 value = float(candidate.get(key))
                                 if 1.01 < value <= 100:
                                     valid[key] = value
                             except (TypeError, ValueError):
                                 continue
-                        if all(key in valid for key in ("П1", "X", "П2")):
+                        if valid:
                             market_odds = valid
                             odds_source = source_name
                             break
@@ -459,23 +467,26 @@ def render(min_prob, kelly_frac, matrix_n):
                             )
                             if isinstance(rundown, dict):
                                 valid_rundown = {}
-                                for key in ("П1", "X", "П2"):
+                                for key in ("П1", "X", "П2", "ТБ 2.5", "ТМ 2.5",
+                                            "BTTS да", "BTTS нет"):
                                     try:
                                         value = float(rundown.get(key))
                                         if 1.01 < value <= 100:
                                             valid_rundown[key] = value
                                     except (TypeError, ValueError):
                                         continue
-                                if all(key in valid_rundown for key in ("П1", "X", "П2")):
+                                if valid_rundown:
                                     market_odds = valid_rundown
                                     odds_source = "therundown"
 
                     if market_odds:
                         funnel_counts["market_got"] += 1
+                        odds_text = " / ".join(
+                            f"{key} {value:.2f}" for key, value in market_odds.items()
+                        )
                         logs.append(
                             f"🏁 Реальные кэфы ({odds_source}): {h_ru} — {a_ru} | "
-                            f"П1 {market_odds['П1']:.2f} / X {market_odds['X']:.2f} / "
-                            f"П2 {market_odds['П2']:.2f}"
+                            f"{odds_text}"
                         )
                     else:
                         logs.append(
