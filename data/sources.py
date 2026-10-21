@@ -1079,14 +1079,21 @@ def therundown_odds_fixture(home: str, away: str, match_date: str,
 
 # ============ THE ODDS API ============
 def odds_api_fixture(sport_key: str, home: str, away: str,
-                     api_key: str) -> Optional[dict]:
+                     api_key: str, logs=None) -> Optional[dict]:
+    """Fetch real market odds and explain misses in the scanner diagnostics."""
     if not api_key or not sport_key:
+        if logs:
+            logs.append("⚠️ The Odds API: отсутствует ключ или sport key")
         return None
     ck = f"odds_{sport_key}_{_norm_name(home)}_{_norm_name(away)}"
     cached = cache_get(ck, CACHE_TTL["odds"])
     if cached is not None:
+        if logs:
+            logs.append(f"The Odds API: матч найден в кэше ({sport_key})" if cached else f"The Odds API: пустой кэш матча ({sport_key})")
         return cached or None
     if usage.odds_remaining() <= 0:
+        if logs:
+            logs.append("⚠️ The Odds API: локальный лимит запросов исчерпан")
         return None
     # The endpoint returns the whole sport's event list. Cache that list per
     # sport, not per fixture, otherwise a scan with many matches spends one API
@@ -1102,13 +1109,20 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
                 timeout=20, proxies=NO_PROXY)
             usage.odds_increment(1)
             if r.status_code != 200:
+                if logs:
+                    detail = (r.text or "").replace("\\n", " ")[:180]
+                    logs.append(f"⚠️ The Odds API HTTP {r.status_code} ({sport_key}): {detail}")
                 return None
             events = r.json() or []
             if isinstance(events, list):
                 cache_put(events_key, events)
+                if logs:
+                    logs.append(f"The Odds API: получено событий {len(events)} ({sport_key})")
             else:
                 events = []
-        except Exception:
+        except Exception as exc:
+            if logs:
+                logs.append(f"⚠️ The Odds API network/JSON error: {type(exc).__name__}: {str(exc)[:100]}")
             return None
     try:
         hn, an = _norm_name(home), _norm_name(away)
@@ -1123,6 +1137,8 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
                 target = ev
                 break
         if not target:
+            if logs:
+                logs.append(f"The Odds API: матч не найден среди {len(events)} событий ({sport_key}) — {home} / {away}")
             return None
         acc = defaultdict(list)
         for bmk in target.get("bookmakers") or []:
@@ -1158,8 +1174,16 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
                 ("BTTS да" in out and "BTTS нет" in out)):
             out = {}
         cache_put(ck, out or None)
+        if logs:
+            logs.append(
+                f"The Odds API: {len(out)} рынков для {home} — {away}"
+                if out else
+                f"The Odds API: матч найден, но нужные рынки не пришли — {home} / {away}"
+            )
         return out or None
-    except Exception:
+    except Exception as exc:
+        if logs:
+            logs.append(f"⚠️ The Odds API parse error: {type(exc).__name__}: {str(exc)[:100]}")
         return None
 
 
