@@ -54,72 +54,80 @@ def _norm(s: str) -> str:
 
 
 def _parse_events(html: str, div_code: str = "") -> list:
-    """Парсит HTML страницы category."""
+    """Parse Prognozist/Marathon event rows while tolerating HTML attribute order."""
     events = []
-    blocks = re.split(r'<tbody\s+data-event-treeid="(\d+)"', html)
+    # Attribute order and additional attributes vary between league pages.
+    pattern = re.compile(
+        r'<tbody\\b(?=[^>]*\\bdata-event-treeid=["\\']?(\\d+)["\\']?)[^>]*>(.*?)</tbody>',
+        re.I | re.S,
+    )
+    blocks = pattern.findall(html or "")
+    _log(f"PARSING {div_code}: HTML len={len(html or '')}, blocks={len(blocks)}")
 
-    _log(f"PARSING {div_code}: HTML len={len(html)}, blocks={len(blocks)//2}")
+    def text_of(fragment):
+        fragment = re.sub(r"<[^>]+>", " ", fragment or "")
+        return re.sub(r"\\s+", " ", fragment).strip()
 
-    for i in range(1, len(blocks), 2):
+    def has_class(tag_html, class_name):
+        m = re.search(r"\\bclass\\s*=\\s*(["\\'])(.*?)\\1", tag_html, re.I | re.S)
+        return bool(m and class_name in m.group(2).split())
+
+    for event_id, block in blocks:
         try:
-            event_id = blocks[i]
-            block = blocks[i + 1] if i + 1 < len(blocks) else ""
-
-            names = re.findall(
-                r'<span\s+class="member-name">([^<]+)</span>', block)
+            names = []
+            for m in re.finditer(r"<span\\b[^>]*>(.*?)</span>", block, re.I | re.S):
+                opening = block[m.start():block.find(">", m.start()) + 1]
+                if has_class(opening, "member-name"):
+                    name = text_of(m.group(1))
+                    if name:
+                        names.append(name)
             if len(names) < 2:
                 continue
-            home_ru = names[0].strip()
-            away_ru = names[1].strip()
 
-            date_m = re.search(
-                r'<td\s+class="date">([^<]+)</td>', block)
-            if not date_m:
-                continue
-            date_str = date_m.group(1).strip()
+            date_str = ""
+            for m in re.finditer(r"<td\\b[^>]*>(.*?)</td>", block, re.I | re.S):
+                opening = block[m.start():block.find(">", m.start()) + 1]
+                if has_class(opening, "date"):
+                    date_str = text_of(m.group(1))
+                    break
 
-            prices = re.findall(
-                r'<td[^>]*class="js-price[^"]*"[^>]*>\s*'
-                r'(?:\([^)]*\)\s*<br\s*/?>\s*)?'
-                r'<span\s+class="selection-link[^"]*">'
-                r'([\d.,]+)</span>',
-                block
-            )
-
+            prices = []
+            for m in re.finditer(r"<td\\b[^>]*>(.*?)</td>", block, re.I | re.S):
+                opening = block[m.start():block.find(">", m.start()) + 1]
+                if not has_class(opening, "js-price"):
+                    continue
+                cell = m.group(1)
+                for sm in re.finditer(r"<span\\b[^>]*>(.*?)</span>", cell, re.I | re.S):
+                    span_open = cell[sm.start():cell.find(">", sm.start()) + 1]
+                    if has_class(span_open, "selection-link"):
+                        value = text_of(sm.group(1)).replace(",", ".")
+                        if re.fullmatch(r"\\d+(?:\\.\\d+)?", value):
+                            prices.append(value)
             if len(prices) < 3:
-                _log(f"SKIP {home_ru} vs {away_ru}: prices={len(prices)}")
+                _log(f"SKIP {names[0]} vs {names[1]}: prices={len(prices)}")
                 continue
 
-            def _f(s):
+            odds = {}
+            for key, value in zip(("П1", "X", "П2"), prices[:3]):
                 try:
-                    return float(str(s).replace(",", "."))
-                except Exception:
-                    return None
-
-            odds = {
-                "П1": _f(prices[0]),
-                "X": _f(prices[1]),
-                "П2": _f(prices[2]),
-            }
-            odds = {k: v for k, v in odds.items() if v and v > 1.0}
-
-            if not (odds.get("П1") and odds.get("X") and odds.get("П2")):
-                _log(f"SKIP {home_ru} vs {away_ru}: invalid odds {odds}")
+                    number = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if 1.0 < number <= 100:
+                    odds[key] = number
+            if len(odds) != 3:
+                _log(f"SKIP {names[0]} vs {names[1]}: invalid odds {odds}")
                 continue
-
-            _log(f"✅ PARSE: {home_ru} vs {away_ru} → П1={odds['П1']} X={odds['X']} П2={odds['П2']}")
-
             events.append({
                 "event_id": event_id,
-                "home": home_ru,
-                "away": away_ru,
+                "home": names[0],
+                "away": names[1],
                 "date_str": date_str,
                 "odds": odds,
             })
+            _log(f"PARSED {names[0]} vs {names[1]}: {odds}")
         except Exception as e:
             _log(f"parse block error: {e}")
-            continue
-
     return events
 
 
