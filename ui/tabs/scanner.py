@@ -1,4 +1,4 @@
-"""ui/tabs/scanner.py — Сканер с правильной логикой best + LLM."""
+"""ui/tabs/scanner.py — Сканер с поддержкой Marathon и The Odds API."""
 from __future__ import annotations
 import time
 from datetime import datetime, timedelta, timezone
@@ -9,8 +9,9 @@ from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
-                          fdorg_matches, fdorg_match_result, odds_api_fixture, prognozist_marathon_odds, parse_date,
+                          fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
                           tsdb_matches, espn_matches)
+from data.marathon import marathon_odds
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict
@@ -21,214 +22,8 @@ from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label)
 
 LLM_TOP_N = 8
-MIN_STAKE_PCT = 0.005   # 0.5% от банка — минимальный стейк
-MAX_STAKE_PCT = 0.05    # 5% от банка — максимальный
-
-def _forecast_learning_service():
-    """Open persistent audit + shadow calibration; never block the live scanner."""
-    try:
-        from model.forecast_ledger import ForecastLedger
-        from model.learning_service import ForecastLearningService
-        ledger = ForecastLedger(str(DB_FILE) + ".forecast-ledger.sqlite")
-        # Guarded online calibration: requires 100 settled results and eligible bins.
-        return ForecastLearningService(ledger, enabled=True, min_history=100)
-    except Exception as exc:
-        _print_log(f"forecast learning service unavailable: {type(exc).__name__}: {exc}")
-        return None
-
-def _reconcile_forecast_results(ledger, token, logs):
-    """Settle old forecasts only when a score provider confirms regular-time FT."""
-    if ledger is None:
-        return 0
-    settled = 0
-    try:
-        from data.scores import find_match_score
-        now = datetime.now(timezone.utc)
-        pending = [row for row in ledger.rows() if row.get("result") is None]
-        for row in pending:
-            fixture_id = row.get("fixture_id")
-            kickoff = row.get("kickoff_at")
-            if not kickoff:
-                continue
-            try:
-                kickoff_dt = datetime.fromisoformat(str(kickoff).replace("Z", "+00:00"))
-                if kickoff_dt.tzinfo is None:
-                    kickoff_dt = kickoff_dt.replace(tzinfo=timezone.utc)
-                if kickoff_dt > now - timedelta(hours=2, minutes=15):
-                    continue
-                result, source = None, None
-                if token and fixture_id and str(fixture_id).isdigit():
-                    result = fdorg_match_result(str(fixture_id), token)
-                    if result and result.get("status") == "FT":
-                        source = "football-data.org:verified-FT"
-                    else:
-                        result = None
-                if result is None:
-                    result = find_match_score(
-                        str(row.get("home_team") or ""),
-                        str(row.get("away_team") or ""),
-                        kickoff_dt.date().isoformat(),
-                    )
-                    if not result or result.get("status") != "FT":
-                        continue
-                    source = "score-provider:" + str(result.get("source") or "verified-FT")
-                hg, ag = int(result["home"]), int(result["away"])
-                if hg < 0 or ag < 0:
-                    continue
-                outcome = "H" if hg > ag else "A" if hg < ag else "D"
-                ledger.settle(
-                    row["forecast_key"], outcome, home_score=hg, away_score=ag,
-                    settled_at=datetime.now(timezone.utc),
-                    closing_odds_source=source or "verified-FT",
-                )
-                settled += 1
-            except Exception as exc:
-                logs.append(f"Журнал: не удалось закрыть {fixture_id or row.get('forecast_key')}: {type(exc).__name__}")
-        if settled:
-            logs.append(f"📚 Журнал: подтверждено итогов FT — {settled}")
-    except Exception as exc:
-        logs.append(f"📚 Журнал результатов недоступен: {type(exc).__name__}")
-    return settled
-
-def _record_raw_forecast(service, known_keys, row, home, away, league,
-                         probabilities, logs, *, variant="h2h"):
-    """Append one immutable A/B forecast variant; never changes live picks."""
-    if service is None:
-        return
-    fixture_id = row.get("fixture_id")
-    kickoff = row.get("kickoff_utc")
-    if fixture_id in (None, "") or not kickoff:
-        return
-    if variant not in ("h2h", "no-h2h"):
-        raise ValueError("unknown forecast audit variant")
-    model_version = f"{APP_VERSION}-{variant}-v1"
-    key = f"fdorg:{fixture_id}:{model_version}"
-    try:
-        if key in known_keys:
-            return
-        prices_raw = row.get("odds") or {}
-        prices = {}
-        for outcome, name in (("H", "П1"), ("D", "X"), ("A", "П2")):
-            try:
-                odd = float(prices_raw.get(name))
-                if 1 < odd < float("inf"):
-                    prices[outcome] = odd
-            except (TypeError, ValueError):
-                pass
-        decision = service.forecast(
-            forecast_key=key, fixture_id=str(fixture_id),
-            home_team=home, away_team=away, model_version=model_version,
-            probabilities=probabilities,
-            forecast_at=datetime.now(timezone.utc),
-            kickoff_at=kickoff, league=str(league or ""),
-            entry_odds=prices or None,
-            odds_source=row.get("odds_source") or None,
-        )
-        known_keys.add(key)
-        if decision.get("history_n", 0) >= 100:
-            logs.append(
-                f"🧠 Калибровка в теневом режиме: история={decision['history_n']}, "
-                f"коррекция={'готова к оценке' if decision.get('learning_report') else 'нет данных'}"
-            )
-    except Exception as exc:
-        logs.append(f"📚 Журнал: прогноз не записан ({type(exc).__name__})")
-
-def _paired_ab_metrics(rows_a, rows_b):
-    """Score A/B variants only on fixture IDs settled in both arms."""
-    a = {row["fixture_id"]: row for row in rows_a
-         if row.get("result") is not None and row.get("fixture_id")}
-    b = {row["fixture_id"]: row for row in rows_b
-         if row.get("result") is not None and row.get("fixture_id")}
-    ids = sorted(set(a) & set(b))
-    if not ids:
-        return {"n": 0, "a_brier": None, "b_brier": None,
-                "a_log_loss": None, "b_log_loss": None}
-    def scores(row):
-        probs, actual = row["probabilities"], row["result"]
-        brier = sum((probs[k] - float(k == actual)) ** 2 for k in ("H", "D", "A"))
-        loss = -math.log(max(probs[actual], 1e-15))
-        return brier, loss
-    import math
-    sa = [scores(a[key]) for key in ids]
-    sb = [scores(b[key]) for key in ids]
-    n = len(ids)
-    return {
-        "n": n,
-        "a_brier": sum(x[0] for x in sa) / n,
-        "a_log_loss": sum(x[1] for x in sa) / n,
-        "b_brier": sum(x[0] for x in sb) / n,
-        "b_log_loss": sum(x[1] for x in sb) / n,
-    }
-
-def _render_learning_status():
-    """Show audit coverage and scoring metrics without changing picks."""
-    try:
-        service = _forecast_learning_service()
-        if service is None:
-            st.info("Журнал обучения пока недоступен.")
-            return
-        with st.expander("🧠 Обучение на ошибках и аудит прогнозов", expanded=False):
-            all_rows = service.ledger.rows()
-            metrics = service.ledger.metrics()
-            total = len(all_rows)
-            settled = metrics.get("n", 0)
-            a, b, c, d = st.columns(4)
-            a.metric("Прогнозов в журнале", total)
-            b.metric("Матчей с итогом", settled)
-            brier, loss, accuracy = metrics.get("brier"), metrics.get("log_loss"), metrics.get("accuracy")
-            c.metric("Brier (ниже лучше)", f"{brier:.4f}" if brier is not None else "—")
-            d.metric("Log loss (ниже лучше)", f"{loss:.4f}" if loss is not None else "—")
-            st.caption(
-                f"Точность top-1: {accuracy:.1%}" if accuracy is not None
-                else "Точность top-1 появится после подтверждённых результатов."
-            )
-            h2h_version = f"{APP_VERSION}-h2h-v1"
-            no_h2h_version = f"{APP_VERSION}-no-h2h-v1"
-            h2h_metrics = service.ledger.metrics(model_version=h2h_version)
-            no_h2h_metrics = service.ledger.metrics(model_version=no_h2h_version)
-            h2h_rows = service.ledger.rows(model_version=h2h_version)
-            no_h2h_rows = service.ledger.rows(model_version=no_h2h_version)
-            paired = _paired_ab_metrics(h2h_rows, no_h2h_rows)
-            left, right = st.columns(2)
-            with left:
-                st.markdown("**A · С H2H**")
-                st.metric("Прогнозов / результатов",
-                          f"{len(h2h_rows)} / {h2h_metrics.get('n', 0)}")
-                bm, lm = paired["a_brier"], paired["a_log_loss"]
-                st.caption(f"Парный Brier: {bm:.4f}" if bm is not None else "Парный Brier: ждём общие результаты")
-                st.caption(f"Парный Log loss: {lm:.4f}" if lm is not None else "Парный Log loss: ждём общие результаты")
-            with right:
-                st.markdown("**B · Без H2H**")
-                st.metric("Прогнозов / результатов",
-                          f"{len(no_h2h_rows)} / {no_h2h_metrics.get('n', 0)}")
-                bm, lm = paired["b_brier"], paired["b_log_loss"]
-                st.caption(f"Парный Brier: {bm:.4f}" if bm is not None else "Парный Brier: ждём общие результаты")
-                st.caption(f"Парный Log loss: {lm:.4f}" if lm is not None else "Парный Log loss: ждём общие результаты")
-            st.caption(
-                f"Парных завершённых прогнозов: {paired['n']}. Метрики рассчитаны "
-                "только на одинаковых fixture_id; меньшие Brier и log loss лучше."
-            )
-            st.warning(
-                "Калибровка работает в теневом режиме: текущие вероятности, ставки "
-                "и размеры ставок не изменяются. Это защищает от включения обучения "
-                "до проверки на отдельной хронологической выборке."
-            )
-            if settled < 100:
-                st.info(f"Для первичного порога нужно больше истории: сейчас {settled}/100 завершённых прогнозов.")
-            else:
-                st.caption(
-                    "Порог истории достигнут. Это не доказательство улучшения: "
-                    "сначала сравни Brier и log loss на отдельном holdout."
-                )
-    except Exception as exc:
-        st.info(f"Диагностика обучения временно недоступна: {type(exc).__name__}")
-
-def _valid_decimal_odd(value):
-    try:
-        odd = float(value)
-        return 1.01 < odd < 1000
-    except (TypeError, ValueError):
-        return False
+MIN_STAKE_PCT = 0.005
+MAX_STAKE_PCT = 0.05
 
 
 def _safe_filter(rows):
@@ -243,12 +38,14 @@ def _safe_filter(rows):
         out.append(r)
     return out
 
+
 def _print_log(msg: str):
     try:
         import sys
         print(f"[SCAN] {msg}", file=sys.stdout, flush=True)
     except Exception:
         pass
+
 
 def _train_engine(matrix_n, logs, update_loader):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -293,6 +90,7 @@ def _train_engine(matrix_n, logs, update_loader):
     logs.append(f"Обучено: {trained}")
     return engine
 
+
 def _load_engine(matrix_n, logs, update_loader):
     import pickle, gzip, os
     from config import DISK_CACHE_DIR
@@ -315,6 +113,7 @@ def _load_engine(matrix_n, logs, update_loader):
         pass
     return engine
 
+
 def render(min_prob, kelly_frac, matrix_n):
     D = st.session_state.data
     c1, c2 = st.columns([4, 1])
@@ -323,7 +122,6 @@ def render(min_prob, kelly_frac, matrix_n):
                      disabled=st.session_state.get("_scan_in_progress", False))
 
     if not scan:
-        _render_learning_status()
         fn = D.get("funnel")
         if fn:
             st.success(
@@ -347,41 +145,6 @@ def render(min_prob, kelly_frac, matrix_n):
                      if c.get("best") is not None
                      and (c.get("verdict") or {}).get("real_odds")
                      and (c.get("verdict") or {}).get("value_passed")]
-        # Daily view and picks use only the latest scan; never fabricate a value pick.
-        today_iso = datetime.now().date().isoformat()
-        todays_cards = [c for c in all_cards if c.get("date_iso") == today_iso]
-        with st.expander(f"📅 Матчи дня · {len(todays_cards)}", expanded=True):
-            if not todays_cards:
-                st.info("Матчи на сегодня не найдены в последнем скане. Нажми ⚡ СКАН, чтобы обновить источники.")
-            else:
-                todays_qualified = [c for c in todays_cards if c in qualified]
-                st.caption(f"Всего матчей: {len(todays_cards)} · value с реальными коэффициентами: {len(todays_qualified)}")
-                for card in sorted(todays_cards, key=lambda c: str(c.get("time") or "99:99")):
-                    v = card.get("verdict") or {}
-                    odds_note = f" · кэф {float(v.get('odd')):.2f}" if v.get("odd") else ""
-                    st.markdown(f"**{card.get('time') or 'Время н/д'} · {card.get('match_ru') or card.get('match')}** — {card.get('league') or 'Лига'}{odds_note}")
-                    if card in todays_qualified:
-                        st.markdown(render_verdict_card(card, min_prob), unsafe_allow_html=True)
-        with st.expander("🎯 Ставка дня / экспресс дня", expanded=True):
-            if not qualified:
-                st.info("Ставка дня не назначается: нет вариантов, прошедших фильтры реального коэффициента, EV и value.")
-            else:
-                daily_ranked = sorted(qualified, key=lambda c: (
-                    -float((c.get("verdict") or {}).get("ev") or -1),
-                    -float((c.get("verdict") or {}).get("edge") or -1),
-                    -float((c.get("verdict") or {}).get("prob") or 0),
-                ))
-                st.markdown("**Ставка дня — лучший одиночный value-вариант**")
-                st.markdown(render_verdict_card(daily_ranked[0], min_prob), unsafe_allow_html=True)
-                express = daily_ranked[:3]
-                if len(express) >= 2:
-                    st.markdown("**Экспресс дня — до 3 вариантов, прошедших фильтры**")
-                    st.warning("Это подборка кандидатов, не гарантия выигрыша; экспресс несёт повышенный риск.")
-                    for card in express:
-                        v = card.get("verdict") or {}
-                        st.markdown(f"- {card.get('match_ru') or card.get('match')} — {v.get('label') or v.get('pick') or 'рынок'}; P {float(v.get('prob') or 0):.0%}; EV {float(v.get('ev') or 0):+.1%}")
-                else:
-                    st.caption("Для экспресса нужно минимум два варианта, прошедших фильтры.")
         try:
             from betting.ranking import rank_score
             qualified.sort(key=lambda c: (
@@ -508,16 +271,6 @@ def render(min_prob, kelly_frac, matrix_n):
         else:
             logs.append("ℹ️ football-data.org token не задан: использую доступные публичные источники TSDB/ESPN.")
 
-        learning_service = _forecast_learning_service()
-        audit_ledger = learning_service.ledger if learning_service is not None else None
-        audit_keys = set()
-        if audit_ledger is not None:
-            _reconcile_forecast_results(audit_ledger, token, logs)
-            try:
-                audit_keys = {item.get("forecast_key") for item in audit_ledger.rows()}
-            except Exception:
-                audit_keys = set()
-
         update_loader("📡 Сбор матчей из всех доступных источников...", 0.05, logs)
         source_rows = {}
         for source_name, source_fn in (
@@ -536,27 +289,7 @@ def render(min_prob, kelly_frac, matrix_n):
             source_rows.get("TheSportsDB", []),
             source_rows.get("ESPN", []),
         ))
-        # Hard guard: this scanner is football-only. A contaminated cache or
-        # upstream response must never feed basketball fixtures into the model.
-        non_football_markers = (
-            "basketball", "ncaa", "college basketball", "nba", "wnba",
-            "march madness", "ncaa tournament", "ncaab", "euroleague basketball",
-        )
-        football_rows = []
-        dropped_non_football = 0
-        for row in rows:
-            league_text = str(row.get("League") or "").lower()
-            kind_text = str(row.get("kind") or "").lower()
-            sport_text = str(row.get("sport") or row.get("strSport") or "").lower()
-            if (any(marker in league_text for marker in non_football_markers)
-                    or "basketball" in kind_text or "basketball" in sport_text):
-                dropped_non_football += 1
-                continue
-            football_rows.append(row)
-        rows = football_rows
-        if dropped_non_football:
-            logs.append(f"🛑 Фильтр футбола: исключено не-футбольных событий — {dropped_non_football}")
-        logs.append(f"📡 Всего после объединения и футбольного фильтра: {len(rows)} уникальных матчей")
+        logs.append(f"📡 Всего после объединения: {len(rows)} уникальных матчей")
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
@@ -594,26 +327,6 @@ def render(min_prob, kelly_frac, matrix_n):
             if P.get("xg_used"):
                 xg_used_count += 1
 
-            # Live A/B audit (shadow only, не влияет на picks)
-            try:
-                _record_raw_forecast(
-                    learning_service, audit_keys, r, h_en, a_en, lg,
-                    {"H": float(P["p1"]), "D": float(P["x"]), "A": float(P["p2"])},
-                    logs, variant="h2h",
-                )
-                P_no_h2h = engine.predict(
-                    h_en, a_en, lg, match_date=d,
-                    cup=lg in ("C1", "EL", "EC"), apply_h2h=False,
-                )
-                _record_raw_forecast(
-                    learning_service, audit_keys, r, h_en, a_en, lg,
-                    {"H": float(P_no_h2h["p1"]), "D": float(P_no_h2h["x"]),
-                     "A": float(P_no_h2h["p2"])},
-                    logs, variant="no-h2h",
-                )
-            except Exception as exc:
-                logs.append(f"📚 Журнал A/B: ошибка записи ({type(exc).__name__})")
-
             fh = engine.form_str(h_en)
             fa = engine.form_str(a_en)
             verdict, rows_, _ = build_verdict(
@@ -623,33 +336,32 @@ def render(min_prob, kelly_frac, matrix_n):
             best = None
             odds_source = "model_only"
 
-            # Приоритет: опубликованная линия Marathon через Prognozist,
-            # затем котировки, пришедшие вместе с матчем, затем The Odds API.
-            market_odds = {}
-            prognozist_odds = None
-            try:
-                # Prognozist's public football line is primarily Russian-localized.
-                # Search localized names first, then source-language aliases.
-                prognozist_odds = prognozist_marathon_odds(h_ru, a_ru)
-                if not prognozist_odds and (h_ru != h_en or a_ru != a_en):
-                    prognozist_odds = prognozist_marathon_odds(h_en, a_en)
-            except Exception as exc:
-                logs.append(f"⚠️ Prognozist: источник недоступен ({type(exc).__name__})")
-            if prognozist_odds:
-                market_odds = dict(prognozist_odds)
-                odds_source = "prognozist_marathon"
-                funnel_counts["market_got"] += 1
-            else:
-                market_odds = dict(r.get("odds") or {})
-                if market_odds:
-                    odds_source = r.get("odds_source") or "fixture_source"
+            # Пробуем взять кэфы: сначала из источника, потом Marathon, потом API
+            market_odds = dict(r.get("odds") or {})
+            if market_odds:
+                odds_source = r.get("odds_source") or "fixture_source"
 
-            sport_key = DIV_TO_ODDS.get(lg)
             has_model_candidate = any(
                 float(item.get("prob") or 0) >= float(min_prob)
                 for item in rows_
             )
-            if (not market_odds and has_model_candidate and sport_key and odds_key
+
+            # 1) Marathon (наш новый парсер)
+            if has_model_candidate and not market_odds:
+                try:
+                    marathon = marathon_odds(h_en, a_en, r.get("Date", ""), lg)
+                    if marathon:
+                        market_odds.update(marathon)
+                        odds_source = "marathon"
+                        funnel_counts["market_got"] += 1
+                        logs.append(f"🏁 Marathon: {h_en} vs {a_en}")
+                except Exception as exc:
+                    logs.append(f"⚠️ Marathon: {type(exc).__name__}")
+
+            # 2) The Odds API (fallback)
+            sport_key = DIV_TO_ODDS.get(lg)
+            if (has_model_candidate and not market_odds
+                    and sport_key and odds_key
                     and usage.odds_remaining() > 0
                     and funnel_counts["market_req"] < 15):
                 funnel_counts["market_req"] += 1
@@ -659,16 +371,7 @@ def render(min_prob, kelly_frac, matrix_n):
                     odds_source = "market"
                     funnel_counts["market_got"] += 1
 
-            # Keep only valid decimal prices; provider payloads often contain
-            # nulls or unsupported market values alongside real prices.
-            market_odds = {
-                str(key): float(value)
-                for key, value in (market_odds or {}).items()
-                if value is not None and str(value).strip() != ""
-                and _valid_decimal_odd(value)
-            }
-
-            # If real prices exist, evaluate them against model probability/EV.
+            # Если есть реальные кэфы — используем best_value_market
             if market_odds:
                 chosen_verdict, best = best_value_market(
                     verdict, rows_, market_odds, D["bank"], kelly_frac,
@@ -679,24 +382,29 @@ def render(min_prob, kelly_frac, matrix_n):
                     funnel_counts["real"] += 1
                 else:
                     funnel_counts["model_only"] += 1
-                    logs.append(
-                        f"📉 Кэфы есть ({odds_source}), но нет value: "
-                        f"{h_ru} — {a_ru}; требуются edge ≥ 3% и EV ≥ 3%."
-                    )
             else:
                 funnel_counts["model_only"] += 1
-                logs.append(
-                    f"⚠️ Нет реальных кэфов: {h_ru} — {a_ru}. "
-                    "Проверь доступность линии Prognozist/ключ Odds API."
-                )
 
-            # Не подменяем рыночные котировки математической оценкой.
-            # Без подтверждённого коэффициента букмекера матч остаётся в аналитике,
-            # но не превращается в ставку с фиктивной ценой.
-            if best is None:
-                verdict["real_odds"] = False
-                verdict["odds_source"] = "unavailable"
-                verdict["price_warning"] = "Нет подтверждённого коэффициента букмекера"
+            # FALLBACK: если нет реальных кэфов, берём модельный
+            if best is None and verdict.get("is_action"):
+                est_odd = verdict.get("fair_odd")
+                if not est_odd:
+                    prob_fallback = float(verdict.get("prob") or 0)
+                    if prob_fallback > 0:
+                        est_odd = 1.0 / prob_fallback
+                if est_odd and est_odd > 1.01:
+                    prob_ = float(verdict.get("prob") or 0)
+                    ev_ = prob_ * est_odd - 1
+                    min_stake = round(D["bank"] * MIN_STAKE_PCT, 2)
+                    stake_ = max(kelly(prob_, est_odd, D["bank"], kelly_frac), min_stake)
+                    verdict["real_odds"] = False
+                    verdict["odd"] = est_odd
+                    verdict["ev"] = ev_
+                    verdict["odds_source"] = "estimated"
+                    best = (market_type(verdict["pick"]),
+                            verdict["pick"], est_odd, ev_, prob_, stake_)
+                    odds_source = "estimated"
+                    funnel_counts["estimated"] += 1
 
             # Отладка
             if best:
@@ -709,20 +417,6 @@ def render(min_prob, kelly_frac, matrix_n):
                 logs.append(
                     f"❌ NO BEST: {h_ru} — {a_ru} | "
                     f"is_action={verdict.get('is_action')}")
-
-            # Контекст
-            context = {}
-            try:
-                from context_football import analyze_match_context
-                context = analyze_match_context(
-                    engine,
-                    home_en=h_en, away_en=a_en,
-                    home_ru=h_ru, away_ru=a_ru,
-                    match_date=d,
-                    referee=r.get("referee", "") or ""
-                )
-            except Exception:
-                context = {}
 
             cards.append({
                 "div": lg,
@@ -738,16 +432,13 @@ def render(min_prob, kelly_frac, matrix_n):
                 "time": r.get("Time") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 "xg_used": bool(P.get("xg_used")),
-                "xg_weight": float(P.get("xg_weight") or 0.0),
-                "xg_home_samples": int(P.get("xg_home_samples") or 0),
-                "xg_away_samples": int(P.get("xg_away_samples") or 0),
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
-                "context": context,
+                "context": {},
             })
 
         logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов")
@@ -769,16 +460,13 @@ def render(min_prob, kelly_frac, matrix_n):
             f"action_cards={len(action_cards)} | "
             f"remaining={usage.llm_remaining()}")
 
-        _print_log(f"LLM: {len(action_cards)} cards, "
-                   f"key={'ok' if llm_key else 'none'}")
-
         if llm_key and usage.llm_remaining() > 0:
             for i_, card in enumerate(action_cards[:LLM_TOP_N]):
                 if usage.llm_remaining() <= 0:
                     logs.append("🤖 LLM: лимит")
                     break
                 if i_ > 0:
-                    time.sleep(2)   # обход rate limit Groq
+                    time.sleep(2)
                 update_loader(
                     f"🤖 ИИ-анализ [{i_+1}/{min(LLM_TOP_N, len(action_cards))}]",
                     0.90 + 0.08 * (i_+1) / LLM_TOP_N, logs)
@@ -839,7 +527,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "market": mkt, "pick": pick, "odds": odd, "stake": stake,
                 "prob": prob, "status": "pending", "strat": "value",
                 "odds_source": c.get("odds_source", "estimated"),
-                "mode": "real" if c.get("odds_source") in ("real", "market", "prognostiz", "prognozist_marathon") else "paper",
+                "mode": "real" if c.get("odds_source") == "real" else "paper",
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
                 "match_time": c.get("time", ""),
