@@ -849,9 +849,14 @@ def _prognozist_match(row, home, away):
     if home_ok and away_ok:
         return True
     # Token overlap handles source names such as "Man United" vs "Manchester United".
-    ht = {x for x in hn.split() if len(x) >= 4}
-    at = {x for x in an.split() if len(x) >= 4}
-    return bool(ht and at and any(x in normalized for x in ht) and any(x in normalized for x in at))
+    # _norm_name removes spaces, so split() on normalized names never works.
+    # Build meaningful tokens from the original team names instead.
+    ht = {_norm_name(x) for x in re.findall(r"[A-Za-zА-Яа-я0-9]+", home)
+          if len(_norm_name(x)) >= 4}
+    at = {_norm_name(x) for x in re.findall(r"[A-Za-zА-Яа-я0-9]+", away)
+          if len(_norm_name(x)) >= 4}
+    return bool(ht and at and any(x in normalized for x in ht)
+                and any(x in normalized for x in at))
 
 
 def _prognozist_line_index():
@@ -882,10 +887,8 @@ def _prognozist_line_index():
                 odds = _prognozist_extract_1x2(text)
                 if odds:
                     indexed.append({"text": text, "odds": odds})
-            # The match centre is the authoritative fallback and usually
-            # contains hundreds of fixtures; don't request it repeatedly.
-            if indexed:
-                break
+            # Keep rows from both feeds: the first endpoint can return a partial
+            # line that does not include the fixture being searched.
         except Exception as exc:
             log.debug("Prognozist request failed (%s): %s", url, type(exc).__name__)
     cache_put(key, indexed)
@@ -911,9 +914,17 @@ def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
             home_ok = hn in normalized
             away_ok = an in normalized
             if not home_ok and len(hn) >= 5:
-                home_ok = any(token in normalized for token in hn.split() if len(token) >= 5)
+                home_ok = any(
+                    _norm_name(token) in normalized
+                    for token in re.findall(r"[A-Za-zА-Яа-я0-9]+", home)
+                    if len(_norm_name(token)) >= 5
+                )
             if not away_ok and len(an) >= 5:
-                away_ok = any(token in normalized for token in an.split() if len(token) >= 5)
+                away_ok = any(
+                    _norm_name(token) in normalized
+                    for token in re.findall(r"[A-Za-zА-Яа-я0-9]+", away)
+                    if len(_norm_name(token)) >= 5
+                )
             if home_ok and away_ok:
                 odds = item.get("odds")
                 if isinstance(odds, dict) and all(k in odds for k in ("П1", "X", "П2")):
