@@ -519,12 +519,16 @@ def render(min_prob, kelly_frac, matrix_n):
                         f"📐 ESTIMATED: {h_ru} — {a_ru} | "
                         f"{pick_} @ {est_odd:.2f}")
 
-            if best:
+            if best and odds_source != "estimated":
                 matches_with_best += 1
                 funnel_counts["bet"] += 1
                 logs.append(
                     f"✅ BET: {h_ru} — {a_ru} | "
                     f"{best[1]} @ {best[2]:.2f} ({odds_source})")
+            elif best:
+                logs.append(
+                    f"📐 ESTIMATED ONLY (не рыночный кэф, не ставка): "
+                    f"{h_ru} — {a_ru} | {best[1]} @ {best[2]:.2f}")
             else:
                 logs.append(
                     f"❌ NO BEST: {h_ru} — {a_ru} | "
@@ -624,6 +628,10 @@ def render(min_prob, kelly_frac, matrix_n):
             if isinstance(b, dict) and b.get("status") == "pending"
         }
         for c in cards:
+            # Model fair odds are display-only; never create a pending bet or
+            # deduct bankroll unless a bookmaker market price was found.
+            if c.get("odds_source") == "estimated":
+                continue
             b = c.get("best")
             if not b:
                 continue
