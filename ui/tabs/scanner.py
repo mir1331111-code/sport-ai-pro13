@@ -12,6 +12,7 @@ from data.sources import (load_seasonal, season_str,
                           fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
                           tsdb_matches, espn_matches)
 from data.marathon import marathon_odds
+from data.sources import prognozist_marathon_odds
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict
@@ -348,7 +349,12 @@ def render(min_prob, kelly_frac, matrix_n):
 
             if has_model_candidate:
                 try:
+                    # Primary parser: category event-line HTML. Secondary parser:
+                    # public Prognozist match-centre/index parser from data.sources.
                     marathon = marathon_odds(h_en, a_en, r.get("Date", ""), lg)
+                    if not isinstance(marathon, dict):
+                        _print_log(f"Primary line parser missed {h_en} vs {a_en}; trying match-centre parser")
+                        marathon = prognozist_marathon_odds(h_en, a_en)
                     if isinstance(marathon, dict):
                         valid = {
                             key: float(value)
