@@ -140,7 +140,7 @@ def fetch_league_events(div_code: str) -> list:
     if not cat_id:
         return []
 
-    ck = f"marathon_cat_v5_{cat_id}"
+    ck = f"marathon_cat_v6_{cat_id}"
     cached = cache_get(ck, 1800)
     if cached is not None:
         return cached if isinstance(cached, list) else []
