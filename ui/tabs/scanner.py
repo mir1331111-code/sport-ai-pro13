@@ -628,7 +628,11 @@ def render(min_prob, kelly_frac, matrix_n):
             market_odds = {}
             prognozist_odds = None
             try:
-                prognozist_odds = prognozist_marathon_odds(h_en, a_en)
+                # Prognozist's public football line is primarily Russian-localized.
+                # Search localized names first, then source-language aliases.
+                prognozist_odds = prognozist_marathon_odds(h_ru, a_ru)
+                if not prognozist_odds and (h_ru != h_en or a_ru != a_en):
+                    prognozist_odds = prognozist_marathon_odds(h_en, a_en)
             except Exception as exc:
                 logs.append(f"⚠️ Prognozist: источник недоступен ({type(exc).__name__})")
             if prognozist_odds:
