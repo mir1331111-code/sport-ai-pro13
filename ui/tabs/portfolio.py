@@ -1,6 +1,6 @@
 """ui/tabs/portfolio.py — Портфель с сортировкой по дням."""
 from __future__ import annotations
-import csv, io, re
+import csv, io, re, hashlib
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -44,6 +44,14 @@ def _bet_pick_label(b: dict) -> str:
     return mapping.get(pick, pick)
 
 
+def _bet_uid(b: dict) -> str:
+    """Уникальный стабильный ID ставки для widget keys."""
+    base = (f"{b.get('match','')}|{b.get('pick','')}|"
+            f"{b.get('date_iso','')}|{b.get('market','')}|"
+            f"{b.get('stake','')}|{b.get('odds','')}")
+    return hashlib.md5(base.encode()).hexdigest()[:10]
+
+
 def _safe_float(value, default=0.0):
     try:
         if value is None or value == "":
@@ -70,13 +78,15 @@ def _apply_settle(D, idx, outcome, score=None):
         stats["push"] = stats.get("push", 0) + 1
     elif outcome == "void":
         b["status"] = "void"
-        D2["bank"] = D2["bank"] + b["stake"]
+        D2["bank"] = _safe_float(D2.get("bank"), 0.0) + _safe_float(b.get("stake"), 0.0)
         stats["void"] = stats.get("void", 0) + 1
     elif outcome == "won":
         b["status"] = "won"
-        D2["bank"] = _safe_float(D2.get("bank"), 0.0) + _safe_float(b.get("stake"), 0.0) * _safe_float(b.get("odds"), 0.0)
+        stake = _safe_float(b.get("stake"), 0.0)
+        odds = _safe_float(b.get("odds"), 0.0)
+        D2["bank"] = _safe_float(D2.get("bank"), 0.0) + stake * odds
         stats["won"] = stats.get("won", 0) + 1
-        stats["profit"] = stats.get("profit", 0) + _safe_float(b.get("stake")) * (_safe_float(b.get("odds")) - 1)
+        stats["profit"] = stats.get("profit", 0) + stake * (odds - 1)
     elif outcome == "lost":
         b["status"] = "lost"
         stats["lost"] = stats.get("lost", 0) + 1
@@ -193,20 +203,22 @@ def _render_bet(b, D, index):
 </div>""", unsafe_allow_html=True)
 
     if b.get("status") == "pending":
+        # Уникальный key через хэш ставки (не зависит от index)
+        _ukey = _bet_uid(b)
         cc = st.columns([1, 1, 1, 1])
-        sin = cc[0].text_input("Счёт", key=f"sc_{index}",
+        sin = cc[0].text_input("Счёт", key=f"sc_{_ukey}",
                                 label_visibility="collapsed",
                                 placeholder="2:1")
         sc = sin.strip() if re.match(r"^\d+\s*:\s*\d+$", sin.strip()) else None
-        if cc[1].button("✅", key=f"w_{index}", help="Выиграла"):
+        if cc[1].button("✅", key=f"w_{_ukey}", help="Выиграла"):
             st.session_state.data = _apply_settle(D, index, "won", score=sc)
             _persist(st.session_state.data)
             st.rerun()
-        if cc[2].button("❌", key=f"l_{index}", help="Проиграла"):
+        if cc[2].button("❌", key=f"l_{_ukey}", help="Проиграла"):
             st.session_state.data = _apply_settle(D, index, "lost", score=sc)
             _persist(st.session_state.data)
             st.rerun()
-        if cc[3].button("🚫", key=f"c_{index}", help="Отменить (вернуть stake)"):
+        if cc[3].button("🚫", key=f"c_{_ukey}", help="Отменить (вернуть stake)"):
             st.session_state.data = _cancel_bet(D, index)
             _persist(st.session_state.data)
             st.toast("Ставка отменена, stake возвращён")
@@ -247,7 +259,6 @@ def render():
         key="pf_mode")
 
     # ==================== ФИЛЬТРАЦИЯ ====================
-    # Сохраняем (bet_dict, original_index) чтобы знать оригинальный idx
     indexed = []
     for idx, b in enumerate(D["bets"]):
         if not isinstance(b, dict):
@@ -362,7 +373,6 @@ def render():
     st.divider()
 
     # ==================== КАЛЕНДАРЬ ПОРТФЕЛЯ ====================
-    # Календарь строится по дате матча, а не по дате добавления ставки.
     from calendar import Calendar
     from datetime import date as _date
 
@@ -419,7 +429,8 @@ def render():
                 label = f"{day_num} · {len(day_items)}\n⏳{pending} 🟢{won} 🔴{lost}"
             else:
                 label = str(day_num)
-            if col.button(label, key=f"pf_cal_day_{year}_{month}_{day_num}", use_container_width=True,
+            if col.button(label, key=f"pf_cal_day_{year}_{month}_{day_num}",
+                           use_container_width=True,
                            type="primary" if st.session_state.get("pf_selected_day") == day.isoformat() else "secondary"):
                 st.session_state.pf_selected_day = day.isoformat()
                 st.rerun()
@@ -431,7 +442,6 @@ def render():
         except ValueError:
             selected_day = _date.today()
     else:
-        # По умолчанию выбираем сегодня, если есть ставки, иначе ближайший день с событиями.
         today = _date.today()
         selected_day = today if today in by_day else (min(by_day) if by_day else today)
         st.session_state.pf_selected_day = selected_day.isoformat()
