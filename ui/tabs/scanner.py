@@ -1,4 +1,4 @@
-"""ui/tabs/scanner.py — Сканер с поддержкой Marathon и The Odds API."""
+"""ui/tabs/scanner.py — Сканер с fallback на estimated + LLM."""
 from __future__ import annotations
 import os
 import time
@@ -271,7 +271,7 @@ def render(min_prob, kelly_frac, matrix_n):
         if token:
             logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
         else:
-            logs.append("ℹ️ football-data.org token не задан: использую доступные публичные источники TSDB/ESPN.")
+            logs.append("ℹ️ football-data.org token не задан: использую публичные источники TSDB/ESPN.")
 
         update_loader("📡 Сбор матчей из всех доступных источников...", 0.05, logs)
         source_rows = {}
@@ -307,9 +307,6 @@ def render(min_prob, kelly_frac, matrix_n):
                           "model_only": 0, "estimated": 0, "real": 0}
 
         for match_idx, r in enumerate(rows, 1):
-            # Keep the Streamlit UI visibly moving during the slow odds phase.
-            # This update happens between fixtures and does not mask a stalled
-            # individual network call (those now have short hard timeouts).
             if match_idx == 1 or match_idx % 5 == 0:
                 update_loader(
                     f"🧠 Анализ матчей... {match_idx}/{len(rows)}",
@@ -347,8 +344,6 @@ def render(min_prob, kelly_frac, matrix_n):
             best = None
             odds_source = "model_only"
 
-            # Только реальные коэффициенты с Prognozist/Marathon.
-            # Не используем коэффициенты из fixture, The Odds API или fair_odd.
             market_odds = {}
             odds_source = "no_market"
 
@@ -359,9 +354,6 @@ def render(min_prob, kelly_frac, matrix_n):
 
             if has_model_candidate:
                 try:
-                    # Try the category parser first, then the match-centre parser
-                    # with both provider's English fixture names and translated names.
-                    # A malformed/partial dict must not prevent the secondary attempts.
                     candidates = []
                     try:
                         candidates.append(("marathon_category",
@@ -391,11 +383,9 @@ def render(min_prob, kelly_frac, matrix_n):
                             odds_source = source_name
                             break
 
-                    # Optional second independent feed: free TheRundown API.
-                    # It requires its own key; unlike Grok/web scraping, it returns
-                    # structured bookmaker prices and a source we can validate.
                     if not market_odds:
-                        rundown_key = (D.get("meta", {}).get("therundown_api_key")
+                        rundown_key = (D.get("meta", {}).get("rundown_key")
+                                       or D.get("meta", {}).get("therundown_api_key")
                                        or os.environ.get("THERUNDOWN_API_KEY", ""))
                         if rundown_key:
                             rundown = therundown_odds_fixture(
@@ -428,7 +418,6 @@ def render(min_prob, kelly_frac, matrix_n):
                 except Exception as exc:
                     logs.append(f"⚠️ Ошибка получения линии: {type(exc).__name__}: {str(exc)[:100]}")
 
-            # Если есть реальные кэфы — используем best_value_market
             if market_odds:
                 chosen_verdict, best = best_value_market(
                     verdict, rows_, market_odds, D["bank"], kelly_frac,
@@ -442,9 +431,27 @@ def render(min_prob, kelly_frac, matrix_n):
             else:
                 funnel_counts["model_only"] += 1
 
-            # Без fallback: если реальной линии Prognozist нет, ставку не создаём.
+            # ============ FALLBACK: estimated odds ============
+            if best is None and verdict.get("is_action"):
+                est_odd = verdict.get("fair_odd")
+                if est_odd and est_odd > 1.01:
+                    prob_ = float(verdict["prob"])
+                    ev_ = prob_ * est_odd - 1
+                    min_stake = round(D["bank"] * MIN_STAKE_PCT, 2)
+                    stake_ = max(
+                        kelly(prob_, est_odd, D["bank"], kelly_frac),
+                        min_stake)
+                    pick_ = verdict["pick"]
+                    best = (market_type(pick_), pick_, est_odd, ev_, prob_, stake_)
+                    verdict["real_odds"] = False
+                    verdict["odd"] = est_odd
+                    verdict["ev"] = ev_
+                    odds_source = "estimated"
+                    funnel_counts["estimated"] += 1
+                    logs.append(
+                        f"📐 ESTIMATED: {h_ru} — {a_ru} | "
+                        f"{pick_} @ {est_odd:.2f}")
 
-            # Отладка
             if best:
                 matches_with_best += 1
                 funnel_counts["bet"] += 1
@@ -498,7 +505,7 @@ def render(min_prob, kelly_frac, matrix_n):
             f"action_cards={len(action_cards)} | "
             f"remaining={usage.llm_remaining()}")
 
-        if llm_key and usage.llm_remaining() > 0:
+        if llm_key and usage.llm_remaining() > 0 and action_cards:
             for i_, card in enumerate(action_cards[:LLM_TOP_N]):
                 if usage.llm_remaining() <= 0:
                     logs.append("🤖 LLM: лимит")
@@ -539,6 +546,8 @@ def render(min_prob, kelly_frac, matrix_n):
             logs.append(f"🤖 LLM итог: {llm_done} мнений")
         elif not llm_key:
             logs.append("🤖 LLM: ключ не задан")
+        elif not action_cards:
+            logs.append("🤖 LLM: нет action_cards (best=None у всех)")
 
         # ============ СТАВКИ ============
         new_bets = []
