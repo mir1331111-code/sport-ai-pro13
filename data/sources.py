@@ -1091,16 +1091,15 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         if logs:
             logs.append(f"The Odds API: матч найден в кэше ({sport_key})" if cached else f"The Odds API: пустой кэш матча ({sport_key})")
         return cached or None
-    if usage.odds_remaining() <= 0:
-        if logs:
-            logs.append("⚠️ The Odds API: локальный лимит запросов исчерпан")
-        return None
-    # The endpoint returns the whole sport's event list. Cache that list per
-    # sport, not per fixture, otherwise a scan with many matches spends one API
-    # request per match and can exhaust the user's quota immediately.
+    # Check the per-sport cache before the local quota: one API request provides
+    # the whole league's events, so every fixture must reuse that response.
     events_key = f"odds_events_v1_{sport_key}"
     events = cache_get(events_key, CACHE_TTL["odds"])
     if events is None:
+        if usage.odds_remaining() <= 0:
+            if logs:
+                logs.append("⚠️ The Odds API: локальный лимит запросов исчерпан")
+            return None
         try:
             r = _sess.get(
                 f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds",
