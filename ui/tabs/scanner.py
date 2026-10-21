@@ -27,6 +27,48 @@ LLM_TOP_N = 8
 MIN_STAKE_PCT = 0.005
 MAX_STAKE_PCT = 0.05
 
+ODDS_API_SPORT_BY_DIV = {
+    "E0": "soccer_epl",
+    "SP1": "soccer_spain_la_liga",
+    "I1": "soccer_italy_serie_a",
+    "D1": "soccer_germany_bundesliga",
+    "F1": "soccer_france_ligue_one",
+    "N1": "soccer_netherlands_eredivisie",
+    "P1": "soccer_portugal_primeira_liga",
+    "B1": "soccer_belgium_first_div",
+    "T1": "soccer_turkey_super_league",
+    "C1": "soccer_uefa_champs_league",
+    "EL": "soccer_uefa_europa_league",
+    "EC": "soccer_uefa_europa_conference_league",
+    "MLS": "soccer_usa_mls",
+    "JP_": "soccer_japan_j_league",
+    "AU_": "soccer_australia_aleague",
+}
+
+
+def _odds_api_sport_key(row):
+    """Map only known football competitions to The Odds API sport keys."""
+    div = str((row or {}).get("Div") or "").strip().upper()
+    if div in ODDS_API_SPORT_BY_DIV:
+        return ODDS_API_SPORT_BY_DIV[div]
+    league = str((row or {}).get("League") or "").lower()
+    for marker, key in (
+        ("premier league", "soccer_epl"),
+        ("la liga", "soccer_spain_la_liga"),
+        ("serie a", "soccer_italy_serie_a"),
+        ("bundesliga", "soccer_germany_bundesliga"),
+        ("ligue 1", "soccer_france_ligue_one"),
+        ("champions league", "soccer_uefa_champs_league"),
+        ("europa league", "soccer_uefa_europa_league"),
+        ("conference league", "soccer_uefa_europa_conference_league"),
+        ("major league soccer", "soccer_usa_mls"),
+        ("mls", "soccer_usa_mls"),
+    ):
+        if marker in league:
+            return key
+    return None
+
+
 
 def _safe_filter(rows):
     if not isinstance(rows, list):
@@ -364,6 +406,19 @@ def render(min_prob, kelly_frac, matrix_n):
                             "X": fixture_odds.get("X", fixture_odds.get("draw")),
                             "П2": fixture_odds.get("П2", fixture_odds.get("awayWin")),
                         }))
+                    # The Odds API key was read but never used in this path.
+                    # Query it before HTML parsers so configured market odds can be used.
+                    if odds_key:
+                        sport_key = _odds_api_sport_key(r)
+                        if sport_key:
+                            try:
+                                odds_api_result = odds_api_fixture(
+                                    sport_key, h_en, a_en, odds_key
+                                )
+                                if isinstance(odds_api_result, dict):
+                                    candidates.append(("odds_api", odds_api_result))
+                            except Exception as exc:
+                                logs.append(f"⚠️ The Odds API: {type(exc).__name__}")
                     try:
                         candidates.append(("marathon_category",
                                            marathon_odds(h_en, a_en, r.get("Date", ""), lg)))
@@ -587,8 +642,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 "prob": prob, "status": "pending", "strat": "value",
                 "odds_source": c.get("odds_source", "estimated"),
                 "mode": "real" if c.get("odds_source") in {
-                    "prognozist_marathon", "marathon_category",
-                    "prognozist_match_centre", "therundown"
+                    "fdorg", "odds_api", "prognozist_marathon",
+                    "marathon_category", "prognozist_match_centre", "therundown"
                 } else "paper",
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
