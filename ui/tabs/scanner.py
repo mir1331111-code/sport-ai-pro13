@@ -10,7 +10,7 @@ from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
                           fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
-                          tsdb_matches, espn_matches)
+                          tsdb_matches, espn_matches, therundown_odds_fixture)
 from data.marathon import marathon_odds
 from data.sources import prognozist_marathon_odds
 from data.fixture_merge import merge_fixture_sources
@@ -389,6 +389,29 @@ def render(min_prob, kelly_frac, matrix_n):
                             market_odds = valid
                             odds_source = source_name
                             break
+
+                    # Optional second independent feed: free TheRundown API.
+                    # It requires its own key; unlike Grok/web scraping, it returns
+                    # structured bookmaker prices and a source we can validate.
+                    if not market_odds:
+                        rundown_key = (D.get("meta", {}).get("therundown_api_key")
+                                       or os.environ.get("THERUNDOWN_API_KEY", ""))
+                        if rundown_key:
+                            rundown = therundown_odds_fixture(
+                                h_en, a_en, d.strftime("%Y-%m-%d"), lg, rundown_key
+                            )
+                            if isinstance(rundown, dict):
+                                valid_rundown = {}
+                                for key in ("П1", "X", "П2"):
+                                    try:
+                                        value = float(rundown.get(key))
+                                        if 1.01 < value <= 100:
+                                            valid_rundown[key] = value
+                                    except (TypeError, ValueError):
+                                        continue
+                                if all(key in valid_rundown for key in ("П1", "X", "П2")):
+                                    market_odds = valid_rundown
+                                    odds_source = "therundown"
 
                     if market_odds:
                         funnel_counts["market_got"] += 1
