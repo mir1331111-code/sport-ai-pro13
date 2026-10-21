@@ -37,7 +37,6 @@ def _session() -> requests.Session:
 _sess = _session()
 
 
-# Маппинг наших лиг → category ID на Прогнозист.ру
 DIV_TO_CATEGORY = {
     "E0": 21520, "E1": 22807,
     "SP1": 8736, "SP2": 48300,
@@ -51,14 +50,15 @@ DIV_TO_CATEGORY = {
 
 
 def _norm(s: str) -> str:
-    """Нормализация имён команд."""
     return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
 
 
-def _parse_events(html: str) -> list:
-    """Парсит HTML страницы category и возвращает список матчей."""
+def _parse_events(html: str, div_code: str = "") -> list:
+    """Парсит HTML страницы category."""
     events = []
     blocks = re.split(r'<tbody\s+data-event-treeid="(\d+)"', html)
+
+    _log(f"PARSING {div_code}: HTML len={len(html)}, blocks={len(blocks)//2}")
 
     for i in range(1, len(blocks), 2):
         try:
@@ -85,7 +85,9 @@ def _parse_events(html: str) -> list:
                 r'([\d.,]+)</span>',
                 block
             )
+
             if len(prices) < 3:
+                _log(f"SKIP {home_ru} vs {away_ru}: prices={len(prices)}")
                 continue
 
             def _f(s):
@@ -102,7 +104,10 @@ def _parse_events(html: str) -> list:
             odds = {k: v for k, v in odds.items() if v and v > 1.0}
 
             if not (odds.get("П1") and odds.get("X") and odds.get("П2")):
+                _log(f"SKIP {home_ru} vs {away_ru}: invalid odds {odds}")
                 continue
+
+            _log(f"✅ PARSE: {home_ru} vs {away_ru} → П1={odds['П1']} X={odds['X']} П2={odds['П2']}")
 
             events.append({
                 "event_id": event_id,
@@ -124,7 +129,7 @@ def fetch_league_events(div_code: str) -> list:
     if not cat_id:
         return []
 
-    ck = f"marathon_cat_v3_{cat_id}"
+    ck = f"marathon_cat_v4_{cat_id}"
     cached = cache_get(ck, 1800)
     if cached is not None:
         return cached if isinstance(cached, list) else []
@@ -136,8 +141,13 @@ def fetch_league_events(div_code: str) -> list:
             _log(f"{div_code} HTTP {r.status_code}")
             cache_put(ck, [])
             return []
-        events = _parse_events(r.text)
-        _log(f"{div_code} (cat={cat_id}): {len(events)} events")
+
+        # Отладка: сохраняем превью HTML
+        _log(f"{div_code} (cat={cat_id}): HTML len={len(r.text)}, "
+             f"first 200 chars: {r.text[:200]}")
+
+        events = _parse_events(r.text, div_code)
+        _log(f"{div_code}: parsed {len(events)} events")
         cache_put(ck, events)
         return events
     except Exception as e:
@@ -145,62 +155,49 @@ def fetch_league_events(div_code: str) -> list:
         return []
 
 
-# ============ РАСШИРЕННЫЙ МАППИНГ РУССКИХ КОМАНД ============
 RU_TO_EN_TEAM = {
-    # ===== АПЛ (E0) =====
     "эвертон": "everton", "челси": "chelsea",
     "манчестер сити": "manchester city",
     "манчестер юнайтед": "manchester united",
     "ливерпуль": "liverpool", "арсенал": "arsenal",
-    "тоттенхэм": "tottenham", "тоттенхэм хотспур": "tottenham",
-    "ньюкасл": "newcastle", "ньюкасл юнайтед": "newcastle",
+    "тоттенхэм": "tottenham", "ньюкасл": "newcastle",
     "астон вилла": "aston villa", "брайтон": "brighton",
-    "брайтон энд хоув альбион": "brighton",
     "кристал пэлас": "crystal palace", "фулхэм": "fulham",
-    "вест хэм": "west ham", "вест хэм юнайтед": "west ham",
-    "борнмут": "bournemouth", "волверхэмптон": "wolverhampton",
-    "волверхэмптон уондерерс": "wolverhampton",
+    "вест хэм": "west ham", "борнмут": "bournemouth",
+    "волверхэмптон": "wolverhampton",
     "ноттингем форест": "nottingham forest",
-    "лестер": "leicester", "лестер сити": "leicester",
-    "ипсвич": "ipswich", "ипсвич таун": "ipswich",
+    "лестер": "leicester", "ипсвич": "ipswich",
     "саутгемптон": "southampton", "бернли": "burnley",
     "уотфорд": "watford", "норвич": "norwich",
-    "норвич сити": "norwich", "лидс": "leeds",
-    "лидс юнайтед": "leeds", "халл сити": "hull",
+    "лидс": "leeds", "халл сити": "hull",
     "ковентри сити": "coventry", "сандерленд": "sunderland",
     "брентфорд": "brentford",
-    # ===== Чемпионшип (E1) =====
     "шеффилд юнайтед": "sheffield united",
     "шеффилд уэнсдей": "sheffield wednesday",
     "мидлсбро": "middlesbrough", "сток сити": "stoke",
     "суонси сити": "swansea", "кардифф сити": "cardiff",
     "престон норт энд": "preston",
-    "куинз парк рейнджерс": "qpr", "кп": "qpr",
+    "куинз парк рейнджерс": "qpr",
     "миллуолл": "millwall",
     "блекберн роверс": "blackburn",
     "портсмут": "portsmouth", "дребери каунти": "derby",
     "линкольн сити": "lincoln",
-    # ===== Ла Лига (SP1) =====
     "реал мадрид": "real madrid", "барселона": "barcelona",
     "атлетико мадрид": "atletico madrid", "севилья": "sevilla",
-    "бетис": "real betis", "реал бетис": "real betis",
-    "реал сосьедад": "real sociedad",
+    "бетис": "real betis", "реал сосьедад": "real sociedad",
     "атлетик бильбао": "athletic bilbao",
-    "атлетик клуб": "athletic bilbao",
     "валенсия": "valencia", "вильярреал": "villarreal",
     "жирона": "girona", "сельта": "celta vigo",
-    "сельта де виго": "celta vigo",
     "осасуна": "osasuna", "кадис": "cadiz",
     "мальорка": "mallorca", "лас пальмас": "las palmas",
-    "алавес": "alaves", "депортиво алавес": "alaves",
+    "алавес": "alaves",
     "райо вальекано": "rayo vallecano",
     "расинг сантандер": "racing santander",
     "хетафе": "getafe", "эспаньол": "espanyol",
     "гранада": "granada", "альмерия": "almeria",
-    # ===== Серия A (I1) =====
-    "интер": "inter", "интер милан": "inter",
-    "милан": "ac milan", "ювентус": "juventus",
-    "наполи": "napoli", "рома": "roma", "лацио": "lazio",
+    "интер": "inter", "милан": "ac milan",
+    "ювентус": "juventus", "наполи": "napoli",
+    "рома": "roma", "лацио": "lazio",
     "аталанта": "atalanta", "фиорентина": "fiorentina",
     "болонья": "bologna", "торино": "torino",
     "удинезе": "udinese", "кальяри": "cagliari",
@@ -209,7 +206,6 @@ RU_TO_EN_TEAM = {
     "верона": "verona", "лечче": "lecce",
     "венеция": "venezia", "монца": "monza",
     "комо": "como", "парма": "parma",
-    # ===== Бундеслига (D1) =====
     "бавария": "bayern munich",
     "боруссия дортмунд": "borussia dortmund",
     "дортмунд": "borussia dortmund",
@@ -221,7 +217,7 @@ RU_TO_EN_TEAM = {
     "боруссия мёнхенгладбах": "borussia monchengladbach",
     "вердер бремен": "werder bremen",
     "аугсбург": "augsburg", "майнц": "mainz",
-    "хoffenheim": "hoffenheim", "хoffенхайм": "hoffenheim",
+    "хоффенхайм": "hoffenheim",
     "унион берлин": "union berlin",
     "хольштайн киль": "holstein kiel",
     "санкт-паули": "st pauli",
@@ -229,11 +225,10 @@ RU_TO_EN_TEAM = {
     "бохум": "bochum", "дармштадт": "darmstadt",
     "кёльн": "koln", "гамбург": "hamburger sv",
     "ганновер": "hannover",
-    # ===== Лига 1 (F1) =====
     "псж": "psg", "пари сен-жермен": "psg",
     "марсель": "marseille", "лион": "lyon",
     "олимпик лион": "lyon", "монако": "monaco",
-    "лилль": "lille", "рeн": "rennes", "рен": "rennes",
+    "лилль": "lille", "рен": "rennes",
     "страсбур": "strasbourg", "ницца": "nice",
     "ланс": "lens", "тулуза": "toulouse",
     "монпелье": "montpellier", "нант": "nantes",
@@ -241,7 +236,6 @@ RU_TO_EN_TEAM = {
     "гавр": "le havre", "метц": "metz",
     "лорьян": "lorient", "анже": "angers",
     "клермон": "clermont", "париж": "paris fc",
-    # ===== РПЛ (R1) =====
     "зенит": "zenit", "спартак": "spartak moscow",
     "спартак москва": "spartak moscow",
     "цска": "cska moscow", "цска москва": "cska moscow",
@@ -258,7 +252,6 @@ RU_TO_EN_TEAM = {
     "торпедо": "torpedo moscow",
     "урал": "ural", "енисей": "yenisey",
     "арсенал тула": "arsenal tula",
-    # ===== Эредивизи (N1) =====
     "аякс": "ajax", "псв": "psv", "фейеноорд": "feyenoord",
     "алмере сити": "almere city",
     "адо ден хааг": "ado den haag",
@@ -268,59 +261,41 @@ RU_TO_EN_TEAM = {
     "willem ii tilburg": "willem ii",
     "фортуна ситтард": "fortuna sittard",
     "эксельсиор": "excelsior",
-    # ===== Примейра (P1) =====
     "порту": "fc porto", "бенфика": "benfica",
     "спортинг": "sporting cp", "спортинг лиссабон": "sporting cp",
     "брага": "braga", "витория": "vitoria",
     "боавишта": "boavista", "маритиму": "maritimo",
     "насьонал": "nacional", "фейренсе": "feirense",
-    "фамаликан": "famalicao", "жил vicente": "gil vicente",
-    "жил виcente": "gil vicente",
+    "фамаликан": "famalicao", "жил виcente": "gil vicente",
     "риу аве": "rio ave", "арока": "arouca",
     "алверка": "alverca",
-    # ===== Суперлига (T1) =====
     "галатасарай": "galatasaray",
     "фенербахче": "fenerbahce",
     "бешикташ": "besiktas",
     "башакшехир": "istanbul basaksehir",
     "истанбул башакшехир": "istanbul basaksehir",
-    "тrabzonспор": "trabzonspor", "трабзонспор": "trabzonspor",
-    # ===== ЛЧ/ЛЕ/ЛК =====
-    "севилья": "sevilla", "псв эйндховен": "psv",
-    "спортинг лиссабон": "sporting cp",
+    "трабзонспор": "trabzonspor",
 }
 
 
 def _find_team_match(team_en: str, team_ru: str) -> bool:
-    """Сравнивает английское и русское название команд."""
     te = _norm(team_en)
     tr = _norm(team_ru)
-
-    # Прямое совпадение нормализованных
     if te == tr:
         return True
-
-    # Через словарь: русское → английское
     en_from_ru = RU_TO_EN_TEAM.get(tr, "")
     if en_from_ru:
         if te == _norm(en_from_ru):
             return True
         if te in en_from_ru or en_from_ru in te:
             return True
-
-    # Частичное совпадение для длинных имён
     if len(te) > 4 and (te in tr or tr in te):
         return True
-
     return False
 
 
 def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
                   div_code: str = "") -> Optional[dict]:
-    """
-    Ищет кэфы Марафона для матча (прямой вызов, загружает лигу сам).
-    Обычно используется `fetch_league_events` + локальный кэш.
-    """
     if not home_en or not away_en:
         return None
 
@@ -331,7 +306,7 @@ def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
         for ev in events:
             if (_find_team_match(home_en, ev["home"])
                     and _find_team_match(away_en, ev["away"])):
-                _log(f"FOUND: {ev['home']} vs {ev['away']} = "
+                _log(f"✅ FOUND: {ev['home']} vs {ev['away']} = "
                      f"П1 {ev['odds'].get('П1')} / X {ev['odds'].get('X')} / "
                      f"П2 {ev['odds'].get('П2')}")
                 return {
@@ -341,5 +316,5 @@ def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
                     "source": "marathon",
                 }
 
-    _log(f"NOT FOUND: {home_en} vs {away_en}")
+    _log(f"❌ NOT FOUND: {home_en} vs {away_en}")
     return None
