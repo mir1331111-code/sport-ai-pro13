@@ -438,12 +438,17 @@ def render(min_prob, kelly_frac, matrix_n):
                         except Exception as exc:
                             logs.append(f"⚠️ Prognozist parser: {type(exc).__name__}")
 
+                    # Prefer the source that actually prices the model's candidate
+                    # markets; otherwise a 1X2-only feed could hide usable BTTS/totals.
+                    model_picks = {
+                        str(item.get("pick") or "") for item in rows_
+                        if isinstance(item, dict)
+                    }
+                    best_source_score = 0
                     for source_name, candidate in candidates:
                         if not isinstance(candidate, dict):
                             continue
                         valid = {}
-                        # Preserve each independently quoted market. Requiring all
-                        # three 1X2 outcomes discarded valid totals and BTTS prices.
                         for key in ("П1", "X", "П2", "ТБ 2.5", "ТМ 2.5",
                                     "BTTS да", "BTTS нет"):
                             try:
@@ -452,10 +457,11 @@ def render(min_prob, kelly_frac, matrix_n):
                                     valid[key] = value
                             except (TypeError, ValueError):
                                 continue
-                        if valid:
+                        score = len(model_picks.intersection(valid))
+                        if score > best_source_score:
                             market_odds = valid
                             odds_source = source_name
-                            break
+                            best_source_score = score
 
                     if not market_odds:
                         rundown_key = (D.get("meta", {}).get("rundown_key")
