@@ -305,7 +305,16 @@ def render(min_prob, kelly_frac, matrix_n):
                           "bet": 0, "watch": 0, "skip": 0,
                           "model_only": 0, "estimated": 0, "real": 0}
 
-        for r in rows:
+        for match_idx, r in enumerate(rows, 1):
+            # Keep the Streamlit UI visibly moving during the slow odds phase.
+            # This update happens between fixtures and does not mask a stalled
+            # individual network call (those now have short hard timeouts).
+            if match_idx == 1 or match_idx % 5 == 0:
+                update_loader(
+                    f"🧠 Анализ матчей... {match_idx}/{len(rows)}",
+                    min(0.88, 0.80 + 0.08 * match_idx / max(1, len(rows))),
+                    logs,
+                )
             d = parse_date(r.get("Date", ""))
             if not d or not (today <= d <= today + timedelta(days=days)):
                 continue
