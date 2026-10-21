@@ -441,7 +441,10 @@ def render(min_prob, kelly_frac, matrix_n):
                 funnel_counts["model_only"] += 1
 
             # ============ FALLBACK: estimated odds ============
-            if best is None and verdict.get("is_action"):
+            # Estimated/model fair odds are only a fallback when NO bookmaker
+            # line was found. Never replace a fetched real market with a fair price
+            # just because that market did not pass the value filter.
+            if best is None and not market_odds and verdict.get("is_action"):
                 est_odd = verdict.get("fair_odd")
                 if est_odd and est_odd > 1.01:
                     prob_ = float(verdict["prob"])
