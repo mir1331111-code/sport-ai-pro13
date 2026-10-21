@@ -41,11 +41,12 @@ def _bet_pick_label(b: dict) -> str:
     return mapping.get(pick, pick)
 
 
-def _bet_uid(b: dict, idx: int = 0) -> str:
-    """Уникальный ID: хэш от данных + index (защита от дубликатов)."""
+def _bet_uid(b: dict, idx: int, context: str = "def") -> str:
+    """Уникальный ID: context + хэш от данных + index."""
     base = (f"{b.get('match','')}|{b.get('pick','')}|"
             f"{b.get('date_iso','')}|{b.get('market','')}")
-    return f"{hashlib.md5(base.encode()).hexdigest()[:8]}_{idx}"
+    h = hashlib.md5(base.encode()).hexdigest()[:8]
+    return f"{context}_{h}_{idx}"
 
 
 def _safe_float(value, default=0.0):
@@ -131,8 +132,8 @@ def _persist(D):
         db.invalidate_caches()
 
 
-def _render_bet(b, D, index):
-    """Отрисовка одной карточки ставки."""
+def _render_bet(b, D, index, context="def"):
+    """Отрисовка одной карточки ставки с уникальным контекстом."""
     st_ = b.get("status", "pending")
     icon = {"pending": "⏳", "won": "🟢", "lost": "🔴",
             "push": "⚪", "void": "⬜"}.get(st_, "⏳")
@@ -193,7 +194,7 @@ def _render_bet(b, D, index):
 </div>""", unsafe_allow_html=True)
 
     if b.get("status") == "pending":
-        _ukey = _bet_uid(b, index)   # ← хэш + index — гарантированно уникален
+        _ukey = _bet_uid(b, index, context)
         cc = st.columns([1, 1, 1, 1])
         sin = cc[0].text_input("Счёт", key=f"sc_{_ukey}",
                                 label_visibility="collapsed",
@@ -428,15 +429,15 @@ def render():
         m3.metric("Выигрыш / проигрыш", f"{d_won} / {d_lost}")
         m4.metric("Сумма ставок", f"{d_stake:.2f}")
         for b, original_idx in day_items:
-            _render_bet(b, D, original_idx)
+            _render_bet(b, D, original_idx, context="day")
     else:
         st.info("На выбранную дату ставок нет.")
 
     if undated:
         with st.expander(f"⚠️ Ставки без корректной даты ({len(undated)})", expanded=False):
             for b, original_idx in undated:
-                _render_bet(b, D, original_idx)
+                _render_bet(b, D, original_idx, context="undated")
 
     with st.expander("📋 Все ставки по выбранным фильтрам", expanded=False):
         for b, original_idx in sorted(indexed, key=lambda t: _bet_date(t[0])):
-            _render_bet(b, D, original_idx)
+            _render_bet(b, D, original_idx, context="all")
