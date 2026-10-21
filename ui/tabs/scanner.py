@@ -355,6 +355,15 @@ def render(min_prob, kelly_frac, matrix_n):
             if has_model_candidate:
                 try:
                     candidates = []
+                    # Prefer odds attached to the fixture itself (e.g. football-data.org
+                    # odds add-on). Keep the three outcomes separate and validate each.
+                    fixture_odds = r.get("odds")
+                    if isinstance(fixture_odds, dict):
+                        candidates.append(("fdorg", {
+                            "П1": fixture_odds.get("П1", fixture_odds.get("homeWin")),
+                            "X": fixture_odds.get("X", fixture_odds.get("draw")),
+                            "П2": fixture_odds.get("П2", fixture_odds.get("awayWin")),
+                        }))
                     try:
                         candidates.append(("marathon_category",
                                            marathon_odds(h_en, a_en, r.get("Date", ""), lg)))
