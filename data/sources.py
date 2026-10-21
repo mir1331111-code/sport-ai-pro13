@@ -888,7 +888,7 @@ def _prognozist_match(row, home, away):
 
 def _prognozist_line_index():
     """Download and parse the public line once per short cache window."""
-    key = "prognozist_marathon_line_index_v2"
+    key = "prognozist_marathon_line_index_v3"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         return cached
@@ -926,7 +926,7 @@ def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
     """Return real Marathon 1X2 prices from Prognozist; fail closed on ambiguity."""
     if not home or not away:
         return None
-    cache_key = f"prognozist_marathon_{_norm_name(home)}_{_norm_name(away)}"
+    cache_key = f"prognozist_marathon_v2_{_norm_name(home)}_{_norm_name(away)}"
     cached = cache_get(cache_key, 180)
     if cached is not None:
         return cached or None
