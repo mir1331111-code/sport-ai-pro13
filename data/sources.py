@@ -272,7 +272,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     for off in range(total_days):
         d = today + timedelta(days=off)
         dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_day_v8_{dstr}"
+        ck = f"tsdb_day_v9_{dstr}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -299,7 +299,17 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                 a = e.get("strAwayTeam")
                 if not h or not a:
                     continue
-                league = e.get("strLeague") or "Матч"
+                # Validate sport explicitly; invalidate old cache via v9 key.
+                sport_name = str(e.get("strSport") or "").strip().lower()
+                league = str(e.get("strLeague") or "Матч")
+                league_lower = league.lower()
+                if sport_name and sport_name not in ("soccer", "football"):
+                    continue
+                if any(marker in league_lower for marker in (
+                    "basketball", "ncaa", "ncaab", "nba", "wnba",
+                    "college basketball", "march madness",
+                )):
+                    continue
                 div, kind, women, national = _tsdb_league_meta(league)
                 rows.append({
                     "Div": div,
