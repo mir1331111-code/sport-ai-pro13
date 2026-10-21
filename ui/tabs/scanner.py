@@ -343,7 +343,12 @@ def render(min_prob, kelly_frac, matrix_n):
         cards = []
         matches_with_best = 0
         xg_used_count = 0
-        odds_key = D.get("meta", {}).get("odds_api_key", "")
+        odds_key = (D.get("meta", {}).get("odds_api_key") or os.environ.get("ODDS_API_KEY", "")).strip()
+        if not odds_key:
+            try:
+                odds_key = str(st.secrets.get("ODDS_API_KEY", st.secrets.get("odds_api_key", ""))).strip()
+            except Exception:
+                odds_key = ""
         logs.append("🔑 The Odds API: ключ задан" if odds_key else "⚠️ The Odds API: ключ не задан — реальные кэфы будут доступны только из других источников")
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
