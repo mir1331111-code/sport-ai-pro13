@@ -886,6 +886,34 @@ def _prognozist_match(row, home, away):
                 and any(x in normalized for x in at))
 
 
+def _prognozist_extract_row_odds(row):
+    """Read 1X2 odds from a single structured table row, even without labels."""
+    text = " ".join(str(x) for x in row)
+    labelled = _prognozist_extract_1x2(text)
+    if labelled:
+        return labelled
+    # The public line often renders team names and three prices in separate
+    # table cells, while the P1/X/P2 labels live in a different header row.
+    # Only accept a row that contains at least two textual team-like cells.
+    cells = [str(x).strip() for x in row if str(x).strip()]
+    textual = [x for x in cells if re.search(r"[A-Za-zА-Яа-я]", x)]
+    if len(textual) < 2:
+        return None
+    prices = []
+    for cell in cells:
+        value = _prognozist_num(cell)
+        if value is not None:
+            prices.append(value)
+    if len(prices) < 3:
+        # Some feeds put multiple prices in one cell.
+        nums = re.findall(r"(?<![\w.])\d{1,3}(?:[.,]\d{1,4})(?![\w.])", text)
+        prices = [_prognozist_num(x) for x in nums]
+        prices = [x for x in prices if x is not None]
+    if len(prices) < 3:
+        return None
+    return {"П1": prices[-3], "X": prices[-2], "П2": prices[-1]}
+
+
 def _prognozist_line_index():
     """Download and parse the public line once per short cache window."""
     key = "prognozist_marathon_line_index_v3"
@@ -911,7 +939,9 @@ def _prognozist_line_index():
             candidates.extend([[x.get("href", ""), x.get("text", "")] for x in parser.links])
             for row in candidates:
                 text = " ".join(str(x) for x in row)
-                odds = _prognozist_extract_1x2(text)
+                odds = _prognozist_extract_row_odds(row)
+                # Preserve only rows that have explicit 1X2 labels or a table-row
+                # shape with team text plus three plausible decimal prices.
                 if odds:
                     indexed.append({"text": text, "odds": odds})
             # Keep rows from both feeds: the first endpoint can return a partial
@@ -937,21 +967,17 @@ def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
         for item in _prognozist_line_index():
             text = item.get("text", "")
             normalized = _norm_name(text)
-            # Full-name matching first; token matching handles shortened names.
+            # Team names may be English in the fixture feed and Russian in the
+            # bookmaker line. Use the shared tolerant matcher before rejecting.
             home_ok = hn in normalized
             away_ok = an in normalized
-            if not home_ok and len(hn) >= 5:
-                home_ok = any(
-                    _norm_name(token) in normalized
-                    for token in re.findall(r"[A-Za-zА-Яа-я0-9]+", home)
-                    if len(_norm_name(token)) >= 5
-                )
-            if not away_ok and len(an) >= 5:
-                away_ok = any(
-                    _norm_name(token) in normalized
-                    for token in re.findall(r"[A-Za-zА-Яа-я0-9]+", away)
-                    if len(_norm_name(token)) >= 5
-                )
+            if not (home_ok and away_ok):
+                try:
+                    from data.marathon import _find_team_match
+                    home_ok = _find_team_match(home, text)
+                    away_ok = _find_team_match(away, text)
+                except Exception:
+                    pass
             if home_ok and away_ok:
                 odds = item.get("odds")
                 if isinstance(odds, dict) and all(k in odds for k in ("П1", "X", "П2")):
