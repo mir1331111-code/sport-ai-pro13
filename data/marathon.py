@@ -129,7 +129,7 @@ def fetch_league_events(div_code: str) -> list:
     if not cat_id:
         return []
 
-    ck = f"marathon_cat_v4_{cat_id}"
+    ck = f"marathon_cat_v5_{cat_id}"
     cached = cache_get(ck, 1800)
     if cached is not None:
         return cached if isinstance(cached, list) else []
@@ -279,19 +279,33 @@ RU_TO_EN_TEAM = {
 
 
 def _find_team_match(team_en: str, team_ru: str) -> bool:
-    te = _norm(team_en)
-    tr = _norm(team_ru)
+    """Match provider team names despite common suffix and naming variants."""
+    te, tr = _norm(team_en), _norm(team_ru)
+    if not te or not tr:
+        return False
+    aliases = {
+        "athleticclub": "athleticbilbao", "athleticbilba": "athleticbilbao",
+        "levanteud": "levante", "levanteuniondeportiva": "levante",
+        "internazionalemilano": "inter", "fcinternazionale": "inter",
+        "intermilan": "inter", "manutd": "manchesterunited",
+        "manchesterutd": "manchesterunited",
+        "manchestercityfc": "manchestercity", "lilleosc": "lille",
+        "como1907": "como", "sportinglisbon": "sportingcp",
+        "fcporto": "porto", "galatasarayysk": "galatasaray",
+    }
+    te, tr = aliases.get(te, te), aliases.get(tr, tr)
     if te == tr:
         return True
-    en_from_ru = RU_TO_EN_TEAM.get(tr, "")
-    if en_from_ru:
-        if te == _norm(en_from_ru):
-            return True
-        if te in en_from_ru or en_from_ru in te:
-            return True
-    if len(te) > 4 and (te in tr or tr in te):
+    mapped = RU_TO_EN_TEAM.get((team_ru or "").strip().lower(), "")
+    if mapped and aliases.get(_norm(mapped), _norm(mapped)) == te:
         return True
-    return False
+    if min(len(te), len(tr)) >= 5 and (te in tr or tr in te):
+        return True
+    a = {x for x in re.findall(r"[a-z0-9]+", (team_en or "").lower())
+         if len(x) >= 4 and x not in {"club", "united", "city"}}
+    b = {x for x in re.findall(r"[a-zа-я0-9]+", (team_ru or "").lower())
+         if len(x) >= 4 and x not in {"club", "united", "city"}}
+    return bool(a & b)
 
 
 def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
@@ -299,7 +313,12 @@ def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
     if not home_en or not away_en:
         return None
 
-    divs_to_try = [div_code] if div_code else list(DIV_TO_CATEGORY.keys())
+    # Provider league codes often differ from Prognozist category codes.
+    # Search the likely league first, then all configured football categories.
+    divs_to_try = []
+    if div_code in DIV_TO_CATEGORY:
+        divs_to_try.append(div_code)
+    divs_to_try.extend(dv for dv in DIV_TO_CATEGORY if dv not in divs_to_try)
 
     for dv in divs_to_try:
         events = fetch_league_events(dv)
