@@ -928,7 +928,7 @@ def _prognozist_line_index():
     indexed = []
     for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE):
         try:
-            response = _sess.get(url, headers=headers, timeout=18, proxies=NO_PROXY)
+            response = _sess.get(url, headers=headers, timeout=(3, 6), proxies=NO_PROXY)
             if response.status_code != 200 or not response.text:
                 log.warning("Prognozist source %s: HTTP %s, body_len=%s",
                             url, response.status_code, len(response.text or ""))
