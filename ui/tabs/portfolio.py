@@ -11,7 +11,6 @@ from ui.cards import translate_match, day_label
 
 
 def _bet_date(b: dict):
-    """Дата ставки (по date_iso)."""
     try:
         iso = b.get("date_iso") or ""
         if iso:
@@ -22,13 +21,11 @@ def _bet_date(b: dict):
 
 
 def _bet_pick_label(b: dict) -> str:
-    """Понятная подпись ставки: '🏠 Победа Arsenal' или '⚽ Больше 2.5'."""
     pick = b.get("pick") or "—"
     match_ru = b.get("match_ru") or b.get("match") or "—"
     parts = match_ru.split(" — ") if " — " in match_ru else match_ru.split(" vs ")
     home = parts[0].strip() if parts else "?"
     away = parts[-1].strip() if len(parts) > 1 else "?"
-
     mapping = {
         "П1": f"🏠 Победа {home}",
         "X": "🤝 Ничья",
@@ -44,12 +41,11 @@ def _bet_pick_label(b: dict) -> str:
     return mapping.get(pick, pick)
 
 
-def _bet_uid(b: dict) -> str:
-    """Уникальный стабильный ID ставки для widget keys."""
+def _bet_uid(b: dict, idx: int = 0) -> str:
+    """Уникальный ID: хэш от данных + index (защита от дубликатов)."""
     base = (f"{b.get('match','')}|{b.get('pick','')}|"
-            f"{b.get('date_iso','')}|{b.get('market','')}|"
-            f"{b.get('stake','')}|{b.get('odds','')}")
-    return hashlib.md5(base.encode()).hexdigest()[:10]
+            f"{b.get('date_iso','')}|{b.get('market','')}")
+    return f"{hashlib.md5(base.encode()).hexdigest()[:8]}_{idx}"
 
 
 def _safe_float(value, default=0.0):
@@ -74,17 +70,17 @@ def _apply_settle(D, idx, outcome, score=None):
     stats = dict(D2.get("stats", {}))
     if outcome == "push":
         b["status"] = "push"
-        D2["bank"] = _safe_float(D2.get("bank"), 0.0) + _safe_float(b.get("stake"), 0.0)
+        D2["bank"] = _safe_float(D2.get("bank")) + _safe_float(b.get("stake"))
         stats["push"] = stats.get("push", 0) + 1
     elif outcome == "void":
         b["status"] = "void"
-        D2["bank"] = _safe_float(D2.get("bank"), 0.0) + _safe_float(b.get("stake"), 0.0)
+        D2["bank"] = _safe_float(D2.get("bank")) + _safe_float(b.get("stake"))
         stats["void"] = stats.get("void", 0) + 1
     elif outcome == "won":
         b["status"] = "won"
-        stake = _safe_float(b.get("stake"), 0.0)
-        odds = _safe_float(b.get("odds"), 0.0)
-        D2["bank"] = _safe_float(D2.get("bank"), 0.0) + stake * odds
+        stake = _safe_float(b.get("stake"))
+        odds = _safe_float(b.get("odds"))
+        D2["bank"] = _safe_float(D2.get("bank")) + stake * odds
         stats["won"] = stats.get("won", 0) + 1
         stats["profit"] = stats.get("profit", 0) + stake * (odds - 1)
     elif outcome == "lost":
@@ -105,7 +101,7 @@ def _cancel_bet(D, idx):
     b = bets[idx]
     if b.get("status") != "pending":
         return D
-    D2["bank"] = _safe_float(D2.get("bank"), 0.0) + _safe_float(b.get("stake"), 0.0)
+    D2["bank"] = _safe_float(D2.get("bank")) + _safe_float(b.get("stake"))
     bets.pop(idx)
     D2["bets"] = bets
     return D2
@@ -120,27 +116,23 @@ def _persist(D):
             bet_id = bet.get("id")
             if bet_id is None:
                 db.update_bet_by_identity(
-                    bet.get("match"),
-                    bet.get("market"),
-                    bet.get("pick"),
-                    bet.get("date_iso"),
+                    bet.get("match"), bet.get("market"),
+                    bet.get("pick"), bet.get("date_iso"),
                     status=bet.get("status", "pending"),
                     score=bet.get("score"),
                     settled_at=bet.get("settled_at"),
                 )
                 continue
-            db.update_bet(
-                int(bet_id),
-                status=bet.get("status", "pending"),
-                score=bet.get("score"),
-                settled_at=bet.get("settled_at"),
-            )
+            db.update_bet(int(bet_id),
+                          status=bet.get("status", "pending"),
+                          score=bet.get("score"),
+                          settled_at=bet.get("settled_at"))
         db.log_bank(_safe_float(D.get("bank"), 10000.0), event="manual_settle")
         db.invalidate_caches()
 
 
 def _render_bet(b, D, index):
-    """Отрисовка одной карточки ставки с кнопками управления."""
+    """Отрисовка одной карточки ставки."""
     st_ = b.get("status", "pending")
     icon = {"pending": "⏳", "won": "🟢", "lost": "🔴",
             "push": "⚪", "void": "⬜"}.get(st_, "⏳")
@@ -167,11 +159,9 @@ def _render_bet(b, D, index):
     pnl_html = ""
     if st_ == "won":
         pr = stake * (odds - 1)
-        pnl_html = (f"<span style='color:#34d399;font-weight:700;'>"
-                    f"+{pr:.2f} у.е.</span>")
+        pnl_html = f"<span style='color:#34d399;font-weight:700;'>+{pr:.2f} у.е.</span>"
     elif st_ == "lost":
-        pnl_html = (f"<span style='color:#f87171;font-weight:700;'>"
-                    f"−{stake:.2f} у.е.</span>")
+        pnl_html = f"<span style='color:#f87171;font-weight:700;'>−{stake:.2f} у.е.</span>"
     elif st_ in ("push", "void"):
         pnl_html = f"<span style='color:#94a3b8;'>возврат {stake:.2f}</span>"
 
@@ -203,25 +193,24 @@ def _render_bet(b, D, index):
 </div>""", unsafe_allow_html=True)
 
     if b.get("status") == "pending":
-        # Уникальный key через хэш ставки (не зависит от index)
-        _ukey = _bet_uid(b)
+        _ukey = _bet_uid(b, index)   # ← хэш + index — гарантированно уникален
         cc = st.columns([1, 1, 1, 1])
         sin = cc[0].text_input("Счёт", key=f"sc_{_ukey}",
                                 label_visibility="collapsed",
                                 placeholder="2:1")
         sc = sin.strip() if re.match(r"^\d+\s*:\s*\d+$", sin.strip()) else None
-        if cc[1].button("✅", key=f"w_{_ukey}", help="Выиграла"):
+        if cc[1].button("✅", key=f"w_{_ukey}"):
             st.session_state.data = _apply_settle(D, index, "won", score=sc)
             _persist(st.session_state.data)
             st.rerun()
-        if cc[2].button("❌", key=f"l_{_ukey}", help="Проиграла"):
+        if cc[2].button("❌", key=f"l_{_ukey}"):
             st.session_state.data = _apply_settle(D, index, "lost", score=sc)
             _persist(st.session_state.data)
             st.rerun()
-        if cc[3].button("🚫", key=f"c_{_ukey}", help="Отменить (вернуть stake)"):
+        if cc[3].button("🚫", key=f"c_{_ukey}"):
             st.session_state.data = _cancel_bet(D, index)
             _persist(st.session_state.data)
-            st.toast("Ставка отменена, stake возвращён")
+            st.toast("Ставка отменена")
             st.rerun()
 
 
@@ -232,15 +221,12 @@ def render():
         st.warning("Пусто. После СКАНа ставки появятся здесь.")
         return
 
-    # ==================== ФИЛЬТРЫ ====================
     c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
-
     status_filter = c1.selectbox(
         "Статус",
         ["Все", "⏳ В работе", "🟢 Выигранные", "🔴 Проигранные",
          "⚪ Возврат", "⬜ Void"],
         key="pf_status")
-
     sort_mode = c2.selectbox(
         "Сортировка",
         ["По дате матча (сначала ближайшие)",
@@ -250,15 +236,12 @@ def render():
          "По EV",
          "По кэфу"],
         key="pf_sort")
-
     group_by_day = c3.checkbox("Группировать по дням", True, key="pf_group")
-
     mode_filter = c4.selectbox(
         "Режим",
         ["Все", "🎯 Real (реальные)", "📐 Paper (оценочные)"],
         key="pf_mode")
 
-    # ==================== ФИЛЬТРАЦИЯ ====================
     indexed = []
     for idx, b in enumerate(D["bets"]):
         if not isinstance(b, dict):
@@ -276,19 +259,16 @@ def render():
             continue
         if status_filter == "⬜ Void" and st_ != "void":
             continue
-
         if mode_filter == "🎯 Real (реальные)" and mode != "real":
             continue
         if mode_filter == "📐 Paper (оценочные)" and mode != "paper":
             continue
-
         indexed.append((b, idx))
 
     if not indexed:
         st.info("Нет ставок по выбранным фильтрам.")
         return
 
-    # ==================== СОРТИРОВКА ====================
     if sort_mode.startswith("По дате матча (сначала ближайшие)"):
         indexed.sort(key=lambda t: _bet_date(t[0]))
     elif sort_mode.startswith("По дате матча (сначала поздние)"):
@@ -302,7 +282,6 @@ def render():
     elif sort_mode == "По кэфу":
         indexed.sort(key=lambda t: -(t[0].get("odds") or 0))
 
-    # ==================== KPI ====================
     total_stake = sum(float(b.get("stake") or 0) for b, _ in indexed)
     pending_cnt = sum(1 for b, _ in indexed if b.get("status") == "pending")
     won_cnt = sum(1 for b, _ in indexed if b.get("status") == "won")
@@ -320,13 +299,9 @@ def render():
     k3.metric("Won / Lost", f"{won_cnt} / {lost_cnt}")
     k4.metric("Profit", f"{profit:+.2f}")
 
-    # ==================== RISK MONITOR ====================
     bank_now = float(D.get("bank") or 0.0)
-    pending_exposure = sum(
-        float(b.get("stake") or 0)
-        for b, _ in indexed
-        if b.get("status") == "pending"
-    )
+    pending_exposure = sum(float(b.get("stake") or 0) for b, _ in indexed
+                            if b.get("status") == "pending")
     exposure_pct = (pending_exposure / bank_now * 100) if bank_now > 0 else 0.0
     league_pending = {}
     for b, _ in indexed:
@@ -335,9 +310,7 @@ def render():
         league = str(b.get("league") or b.get("div") or "OTHER")
         league_pending[league] = league_pending.get(league, 0.0) + float(b.get("stake") or 0)
     largest_league = max(league_pending.items(), key=lambda x: x[1], default=("—", 0.0))
-    largest_league_pct = (
-        largest_league[1] / bank_now * 100 if bank_now > 0 else 0.0
-    )
+    largest_league_pct = (largest_league[1] / bank_now * 100) if bank_now > 0 else 0.0
 
     st.markdown("#### 🛡️ Risk Monitor")
     r1, r2, r3, r4 = st.columns(4)
@@ -346,9 +319,8 @@ def render():
     r3.metric("Макс. лига", f"{largest_league[1]:.0f}", largest_league[0])
     r4.metric("Доля макс. лиги", f"{largest_league_pct:.1f}%")
     if exposure_pct >= 20:
-        st.warning("⚠️ Текущая открытая экспозиция достигла 20% банка. Новые сигналы Risk Guard может отклонять.")
+        st.warning("⚠️ Экспозиция достигла 20% банка.")
 
-    # ==================== ЭКСПОРТ CSV ====================
     if st.button("📥 Экспорт CSV"):
         buf = io.StringIO()
         w = csv.writer(buf)
@@ -356,23 +328,18 @@ def render():
                     "Кэф", "Стейк", "P", "EV", "Режим", "Статус", "Счёт"])
         for b, _ in indexed:
             md = b.get("match_ru") or translate_match(b.get("match", ""))
-            w.writerow([
-                b.get("date_iso", ""), b.get("league", ""), md,
-                b.get("market", ""), _bet_pick_label(b),
-                b.get("odds", ""), b.get("stake", ""),
-                f"{float(b.get('prob') or 0)*100:.0f}%",
-                f"{float(b.get('ev') or 0)*100:+.1f}%",
-                b.get("mode", ""), b.get("status", ""), b.get("score", ""),
-            ])
-        st.download_button(
-            "⬇️ Скачать neuro_bets.csv",
-            buf.getvalue(),
-            file_name=f"neuro_bets_{datetime.now():%Y%m%d_%H%M}.csv",
-            mime="text/csv")
+            w.writerow([b.get("date_iso", ""), b.get("league", ""), md,
+                        b.get("market", ""), _bet_pick_label(b),
+                        b.get("odds", ""), b.get("stake", ""),
+                        f"{float(b.get('prob') or 0)*100:.0f}%",
+                        f"{float(b.get('ev') or 0)*100:+.1f}%",
+                        b.get("mode", ""), b.get("status", ""), b.get("score", "")])
+        st.download_button("⬇️ Скачать neuro_bets.csv", buf.getvalue(),
+                            file_name=f"neuro_bets_{datetime.now():%Y%m%d_%H%M}.csv",
+                            mime="text/csv")
 
     st.divider()
 
-    # ==================== КАЛЕНДАРЬ ПОРТФЕЛЯ ====================
     from calendar import Calendar
     from datetime import date as _date
 
@@ -463,11 +430,10 @@ def render():
         for b, original_idx in day_items:
             _render_bet(b, D, original_idx)
     else:
-        st.info("На выбранную дату ставок нет. Нажми на другой день в календаре.")
+        st.info("На выбранную дату ставок нет.")
 
     if undated:
         with st.expander(f"⚠️ Ставки без корректной даты ({len(undated)})", expanded=False):
-            st.caption("Эти записи нельзя разместить в календаре, пока у них нет даты матча.")
             for b, original_idx in undated:
                 _render_bet(b, D, original_idx)
 
