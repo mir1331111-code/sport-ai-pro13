@@ -349,35 +349,51 @@ def render(min_prob, kelly_frac, matrix_n):
 
             if has_model_candidate:
                 try:
-                    # Primary parser: category event-line HTML. Secondary parser:
-                    # public Prognozist match-centre/index parser from data.sources.
-                    marathon = marathon_odds(h_en, a_en, r.get("Date", ""), lg)
-                    if not isinstance(marathon, dict):
-                        _print_log(f"Primary line parser missed {h_en} vs {a_en}; trying match-centre parser")
-                        marathon = prognozist_marathon_odds(h_en, a_en)
-                    if isinstance(marathon, dict):
-                        valid = {
-                            key: float(value)
-                            for key, value in marathon.items()
-                            if key in ("П1", "X", "П2")
-                            and value is not None
-                            and float(value) > 1.0
-                        }
+                    # Try the category parser first, then the match-centre parser
+                    # with both provider's English fixture names and translated names.
+                    # A malformed/partial dict must not prevent the secondary attempts.
+                    candidates = []
+                    try:
+                        candidates.append(("marathon_category",
+                                           marathon_odds(h_en, a_en, r.get("Date", ""), lg)))
+                    except Exception as exc:
+                        logs.append(f"⚠️ Marathon category parser: {type(exc).__name__}")
+                    for src_home, src_away in ((h_en, a_en), (h_ru, a_ru)):
+                        try:
+                            candidates.append(("prognozist_match_centre",
+                                               prognozist_marathon_odds(src_home, src_away)))
+                        except Exception as exc:
+                            logs.append(f"⚠️ Prognozist parser: {type(exc).__name__}")
+
+                    for source_name, candidate in candidates:
+                        if not isinstance(candidate, dict):
+                            continue
+                        valid = {}
+                        for key in ("П1", "X", "П2"):
+                            try:
+                                value = float(candidate.get(key))
+                                if 1.01 < value <= 100:
+                                    valid[key] = value
+                            except (TypeError, ValueError):
+                                continue
                         if all(key in valid for key in ("П1", "X", "П2")):
                             market_odds = valid
-                            odds_source = "prognozist_marathon"
-                            funnel_counts["market_got"] += 1
-                            logs.append(
-                                f"🏁 Prognozist: {h_ru} — {a_ru} | "
-                                f"П1 {valid['П1']:.2f} / X {valid['X']:.2f} / "
-                                f"П2 {valid['П2']:.2f}"
-                            )
-                        else:
-                            logs.append(f"⚠️ Prognozist: неполная линия {h_ru} — {a_ru}")
+                            odds_source = source_name
+                            break
+
+                    if market_odds:
+                        funnel_counts["market_got"] += 1
+                        logs.append(
+                            f"🏁 Реальные кэфы ({odds_source}): {h_ru} — {a_ru} | "
+                            f"П1 {market_odds['П1']:.2f} / X {market_odds['X']:.2f} / "
+                            f"П2 {market_odds['П2']:.2f}"
+                        )
                     else:
-                        logs.append(f"⚠️ Prognozist: кэфы не найдены {h_ru} — {a_ru}")
+                        logs.append(
+                            f"⚠️ Линия не найдена ни в одном парсере: {h_ru} — {a_ru}"
+                        )
                 except Exception as exc:
-                    logs.append(f"⚠️ Prognozist ошибка: {type(exc).__name__}: {str(exc)[:100]}")
+                    logs.append(f"⚠️ Ошибка получения линии: {type(exc).__name__}: {str(exc)[:100]}")
 
             # Если есть реальные кэфы — используем best_value_market
             if market_odds:
