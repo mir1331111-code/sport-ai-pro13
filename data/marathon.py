@@ -147,7 +147,7 @@ def fetch_league_events(div_code: str) -> list:
 
     url = f"https://prognozist.ru/line/marathon/event_line.php?category={cat_id}"
     try:
-        r = _sess.get(url, timeout=20, proxies=NO_PROXY)
+        r = _sess.get(url, timeout=(3, 7), proxies=NO_PROXY)
         if r.status_code != 200:
             _log(f"{div_code} HTTP {r.status_code}")
             cache_put(ck, [])
@@ -324,27 +324,27 @@ def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
     if not home_en or not away_en:
         return None
 
-    # Provider league codes often differ from Prognozist category codes.
-    # Search the likely league first, then all configured football categories.
-    divs_to_try = []
-    if div_code in DIV_TO_CATEGORY:
-        divs_to_try.append(div_code)
-    divs_to_try.extend(dv for dv in DIV_TO_CATEGORY if dv not in divs_to_try)
+    # Query only the fixture's likely league. The former all-leagues fallback
+    # could trigger up to 17 sequential network requests (20s each) for one
+    # fixture, freezing the scanner on a cold cache. The global match-centre
+    # parser is the secondary source when this category has no match.
+    if div_code not in DIV_TO_CATEGORY:
+        _log(f"SKIP category lookup for unmapped league {div_code!r}")
+        return None
 
-    for dv in divs_to_try:
-        events = fetch_league_events(dv)
-        for ev in events:
-            if (_find_team_match(home_en, ev["home"])
-                    and _find_team_match(away_en, ev["away"])):
-                _log(f"✅ FOUND: {ev['home']} vs {ev['away']} = "
-                     f"П1 {ev['odds'].get('П1')} / X {ev['odds'].get('X')} / "
-                     f"П2 {ev['odds'].get('П2')}")
-                return {
-                    "П1": ev["odds"].get("П1"),
-                    "X": ev["odds"].get("X"),
-                    "П2": ev["odds"].get("П2"),
-                    "source": "marathon",
-                }
+    events = fetch_league_events(div_code)
+    for ev in events:
+        if (_find_team_match(home_en, ev["home"])
+                and _find_team_match(away_en, ev["away"])):
+            _log(f"✅ FOUND: {ev['home']} vs {ev['away']} = "
+                 f"П1 {ev['odds'].get('П1')} / X {ev['odds'].get('X')} / "
+                 f"П2 {ev['odds'].get('П2')}")
+            return {
+                "П1": ev["odds"].get("П1"),
+                "X": ev["odds"].get("X"),
+                "П2": ev["odds"].get("П2"),
+                "source": "marathon",
+            }
 
-    _log(f"❌ NOT FOUND: {home_en} vs {away_en}")
+    _log(f"❌ NOT FOUND in {div_code}: {home_en} vs {away_en}")
     return None
