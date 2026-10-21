@@ -875,16 +875,16 @@ def _prognozist_match(row, home, away):
     # _norm_name removes spaces, so split() on normalized names never works.
     # Build meaningful tokens from the original team names instead.
     ht = {_norm_name(x) for x in re.findall(r"[A-Za-zА-Яа-я0-9]+", home)
-          if len(_norm_name(x)) >= 4}
+          if len(_norm_name(x)) >= 3}
     at = {_norm_name(x) for x in re.findall(r"[A-Za-zА-Яа-я0-9]+", away)
-          if len(_norm_name(x)) >= 4}
+          if len(_norm_name(x)) >= 3}
     return bool(ht and at and any(x in normalized for x in ht)
                 and any(x in normalized for x in at))
 
 
 def _prognozist_line_index():
     """Download and parse the public line once per short cache window."""
-    key = "prognozist_marathon_line_index_v1"
+    key = "prognozist_marathon_line_index_v2"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         return cached
