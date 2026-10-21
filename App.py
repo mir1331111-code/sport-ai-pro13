@@ -52,7 +52,7 @@ SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)
 RETRY_EVERY = timedelta(minutes=60)
 STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 20
-SECRET_KEYS = ("fdorg_token", "odds_api_key", "llm_api_key")
+SECRET_KEYS = ("fdorg_token", "odds_api_key", "therundown_api_key", "llm_api_key")
 FINISHED_STATUSES = {"finished", "ft", "final", "closed", "ended",
                      "full-time", "full_time", "completed"}
 
@@ -524,6 +524,15 @@ with st.sidebar:
         type="password")
     if odds_key != D["meta"].get("odds_api_key", ""):
         D["meta"]["odds_api_key"] = odds_key
+        usage.set_local_data(D)
+
+    rundown_key = st.text_input(
+        "TheRundown free soccer odds key (опц.)",
+        value=D["meta"].get("therundown_api_key") or os.environ.get("THERUNDOWN_API_KEY", ""),
+        type="password",
+        help="Бесплатный ключ: предматчевые коэффициенты 1X2 с задержкой около 5 минут.")
+    if rundown_key != D["meta"].get("therundown_api_key", ""):
+        D["meta"]["therundown_api_key"] = rundown_key
         usage.set_local_data(D)
 
     st.markdown(
