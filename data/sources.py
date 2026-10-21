@@ -999,6 +999,84 @@ def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
     return None
 
 
+# ============ THERUNDOWN FREE SOCCER ODDS ============
+THERUNDOWN_SPORT_BY_DIV = {
+    "E0": 11, "SP1": 14, "I1": 15, "D1": 13, "F1": 12,
+    "C1": 16, "EL": 33, "MLS": 10, "J1": 19,
+}
+
+
+def _american_to_decimal(value):
+    """Convert American moneyline prices to decimal odds."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if value == 0:
+        return None
+    decimal = 1.0 + (value / 100.0 if value > 0 else 100.0 / abs(value))
+    return decimal if 1.01 < decimal <= 100 else None
+
+
+def therundown_odds_fixture(home: str, away: str, match_date: str,
+                            div_code: str, api_key: str) -> Optional[dict]:
+    """Get a real pre-match 1X2 line from TheRundown's free soccer feed.
+
+    Free access needs a user-created key and provides delayed pre-match prices.
+    """
+    sport_id = THERUNDOWN_SPORT_BY_DIV.get((div_code or "").upper())
+    if not api_key or not sport_id or not match_date:
+        return None
+    ck = f"therundown_v1_{sport_id}_{match_date}"
+    events = cache_get(ck, 300)
+    if events is None:
+        try:
+            response = _sess.get(
+                f"https://therundown.io/api/v2/sports/{sport_id}/events/{match_date}",
+                headers={"X-TheRundown-Key": api_key, "Accept": "application/json"},
+                params={"market_ids": "1,41,42,43", "affiliate_ids": "3,19,23",
+                        "main_line": "true", "hide_closed": "true"},
+                timeout=(3, 6), proxies=NO_PROXY,
+            )
+            if response.status_code != 200:
+                log.warning("TheRundown HTTP %s for sport=%s date=%s",
+                            response.status_code, sport_id, match_date)
+                cache_put(ck, [])
+                return None
+            payload = response.json()
+            events = payload.get("events", []) if isinstance(payload, dict) else []
+            cache_put(ck, events if isinstance(events, list) else [])
+        except Exception as exc:
+            log.warning("TheRundown request failed: %s", type(exc).__name__)
+            cache_put(ck, [])
+            return None
+
+    try:
+        from data.marathon import _find_team_match
+        hn, an = _norm_name(home), _norm_name(away)
+        for event in events or []:
+            teams = event.get("teams") or []
+            home_name = next((t.get("name", "") for t in teams if t.get("is_home")), "")
+            away_name = next((t.get("name", "") for t in teams if not t.get("is_home")), "")
+            if not home_name or not away_name:
+                continue
+            if not (_find_team_match(home, home_name) and _find_team_match(away, away_name)):
+                eh, ea = _norm_name(home_name), _norm_name(away_name)
+                if not (hn == eh and an == ea):
+                    continue
+            # Use one sportsbook's complete 1X2 market, never combine books.
+            for book_markets in (event.get("lines") or {}).values():
+                moneyline = book_markets.get("moneyline") or {}
+                p1 = _american_to_decimal(moneyline.get("home"))
+                draw = _american_to_decimal(moneyline.get("draw", moneyline.get("tie")))
+                p2 = _american_to_decimal(moneyline.get("away"))
+                if p1 and draw and p2:
+                    return {"П1": p1, "X": draw, "П2": p2, "source": "therundown"}
+    except Exception as exc:
+        log.warning("TheRundown parse failed: %s", type(exc).__name__)
+    return None
+
+
 # ============ THE ODDS API ============
 def odds_api_fixture(sport_key: str, home: str, away: str,
                      api_key: str) -> Optional[dict]:
