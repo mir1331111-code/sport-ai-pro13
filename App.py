@@ -53,6 +53,17 @@ RETRY_EVERY = timedelta(minutes=60)
 STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 20
 SECRET_KEYS = ("fdorg_token", "odds_api_key", "therundown_api_key", "llm_api_key")
+
+
+def _configured_secret(*keys):
+    try:
+        for key in keys:
+            value = st.secrets.get(key, "")
+            if value:
+                return str(value).strip()
+    except Exception:
+        pass
+    return ""
 FINISHED_STATUSES = {"finished", "ft", "final", "closed", "ended",
                      "full-time", "full_time", "completed"}
 
@@ -520,7 +531,7 @@ with st.sidebar:
 
     odds_key = st.text_input(
         "The Odds API key (опц.)",
-        value=D["meta"].get("odds_api_key") or os.environ.get("ODDS_API_KEY", ""),
+        value=(D["meta"].get("odds_api_key") or os.environ.get("ODDS_API_KEY", "") or _configured_secret("ODDS_API_KEY", "odds_api_key")),
         type="password")
     if odds_key != D["meta"].get("odds_api_key", ""):
         D["meta"]["odds_api_key"] = odds_key
