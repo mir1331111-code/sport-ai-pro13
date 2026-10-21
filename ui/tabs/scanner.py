@@ -41,6 +41,7 @@ ODDS_API_SPORT_BY_DIV = {
     "EL": "soccer_uefa_europa_league",
     "EC": "soccer_uefa_europa_conference_league",
     "MLS": "soccer_usa_mls",
+    "US_MLS": "soccer_usa_mls",
     "JP_": "soccer_japan_j_league",
     "AU_": "soccer_australia_aleague",
 }
@@ -343,6 +344,7 @@ def render(min_prob, kelly_frac, matrix_n):
         matches_with_best = 0
         xg_used_count = 0
         odds_key = D.get("meta", {}).get("odds_api_key", "")
+        logs.append("🔑 The Odds API: ключ задан" if odds_key else "⚠️ The Odds API: ключ не задан — реальные кэфы будут доступны только из других источников")
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
