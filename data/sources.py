@@ -916,7 +916,7 @@ def _prognozist_extract_row_odds(row):
 
 def _prognozist_line_index():
     """Download and parse the public line once per short cache window."""
-    key = "prognozist_marathon_line_index_v3"
+    key = "prognozist_marathon_line_index_v4"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         return cached
@@ -930,6 +930,8 @@ def _prognozist_line_index():
         try:
             response = _sess.get(url, headers=headers, timeout=18, proxies=NO_PROXY)
             if response.status_code != 200 or not response.text:
+                log.warning("Prognozist source %s: HTTP %s, body_len=%s",
+                            url, response.status_code, len(response.text or ""))
                 continue
             body = response.text
             parser = _PrognozistHTMLParser()
@@ -937,6 +939,7 @@ def _prognozist_line_index():
                 parser.feed(body)
             candidates = _prognozist_rows(body)
             candidates.extend([[x.get("href", ""), x.get("text", "")] for x in parser.links])
+            before_count = len(indexed)
             for row in candidates:
                 text = " ".join(str(x) for x in row)
                 odds = _prognozist_extract_row_odds(row)
@@ -944,6 +947,9 @@ def _prognozist_line_index():
                 # shape with team text plus three plausible decimal prices.
                 if odds:
                     indexed.append({"text": text, "odds": odds})
+            log.info("Prognozist source %s: HTTP %s, body_len=%s, rows=%s, odds_rows=%s",
+                     url, response.status_code, len(body), len(candidates),
+                     len(indexed) - before_count)
             # Keep rows from both feeds: the first endpoint can return a partial
             # line that does not include the fixture being searched.
         except Exception as exc:
@@ -956,7 +962,7 @@ def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
     """Return real Marathon 1X2 prices from Prognozist; fail closed on ambiguity."""
     if not home or not away:
         return None
-    cache_key = f"prognozist_marathon_v2_{_norm_name(home)}_{_norm_name(away)}"
+    cache_key = f"prognozist_marathon_v3_{_norm_name(home)}_{_norm_name(away)}"
     cached = cache_get(cache_key, 180)
     if cached is not None:
         return cached or None
