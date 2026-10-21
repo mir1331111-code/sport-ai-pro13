@@ -80,7 +80,11 @@ def season_str(year: int) -> str:
 
 
 def _norm_name(s: str) -> str:
-    return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
+    try:
+        from data.team_names import normalize_team
+        return normalize_team(s)
+    except Exception:
+        return re.sub(r"[^a-zа-я0-9]", "", (s or "").lower())
 
 
 # ============ SESSION ============
