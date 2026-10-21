@@ -351,7 +351,7 @@ def espn_matches(days: int, logs=None) -> list:
     for i in range(max(1, min(int(days), 14))):
         d = start + timedelta(days=i)
         dstr = d.strftime("%Y%m%d")
-        ck = f"espn_soccer_v2_{dstr}"
+        ck = f"espn_soccer_v3_{dstr}"
         cached = cache_get(ck, 900)
         if cached is not None:
             if isinstance(cached, list):
@@ -384,6 +384,19 @@ def espn_matches(days: int, logs=None) -> list:
                 league_obj = event.get("league") or {}
                 league = league_obj.get("name") or league_obj.get("abbreviation") or "Soccer"
                 slug = str(league_obj.get("slug") or "")
+                # Fail closed on contaminated/stale non-soccer ESPN payloads.
+                sport_obj = event.get("sport") or {}
+                sport_name = str(sport_obj.get("name") or sport_obj.get("slug") or "").lower()
+                league_text = f"{league} {slug} {event.get('name') or ''}".lower()
+                non_soccer_markers = (
+                    "basketball", "ncaa", "ncaab", "nba", "wnba",
+                    "college basketball", "march madness", "euroleague",
+                    "volleyball", "baseball", "ice hockey", "american football",
+                )
+                if any(marker in league_text for marker in non_soccer_markers):
+                    continue
+                if sport_name and sport_name not in ("soccer", "football"):
+                    continue
                 logos = league_obj.get("logos") or []
                 rows.append({
                     "Div": _ESPN_DIVS.get(slug, "G"),
