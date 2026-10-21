@@ -947,13 +947,17 @@ def _prognozist_line_index():
                 # shape with team text plus three plausible decimal prices.
                 if odds:
                     indexed.append({"text": text, "odds": odds})
-            log.info("Prognozist source %s: HTTP %s, body_len=%s, rows=%s, odds_rows=%s",
-                     url, response.status_code, len(body), len(candidates),
-                     len(indexed) - before_count)
+            parsed_count = len(indexed) - before_count
+            if parsed_count == 0:
+                log.warning("Prognozist source %s: HTTP %s, body_len=%s, rows=%s, odds_rows=0",
+                            url, response.status_code, len(body), len(candidates))
+            else:
+                log.info("Prognozist source %s: HTTP %s, body_len=%s, rows=%s, odds_rows=%s",
+                         url, response.status_code, len(body), len(candidates), parsed_count)
             # Keep rows from both feeds: the first endpoint can return a partial
             # line that does not include the fixture being searched.
         except Exception as exc:
-            log.debug("Prognozist request failed (%s): %s", url, type(exc).__name__)
+            log.warning("Prognozist request failed (%s): %s", url, type(exc).__name__)
     cache_put(key, indexed)
     return indexed
 
