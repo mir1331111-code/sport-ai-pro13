@@ -528,7 +528,27 @@ def render(min_prob, kelly_frac, matrix_n):
             source_rows.get("TheSportsDB", []),
             source_rows.get("ESPN", []),
         ))
-        logs.append(f"📡 Всего после объединения источников: {len(rows)} уникальных матчей")
+        # Hard guard: this scanner is football-only. A contaminated cache or
+        # upstream response must never feed basketball fixtures into the model.
+        non_football_markers = (
+            "basketball", "ncaa", "college basketball", "nba", "wnba",
+            "march madness", "ncaa tournament", "ncaab", "euroleague basketball",
+        )
+        football_rows = []
+        dropped_non_football = 0
+        for row in rows:
+            league_text = str(row.get("League") or "").lower()
+            kind_text = str(row.get("kind") or "").lower()
+            sport_text = str(row.get("sport") or row.get("strSport") or "").lower()
+            if (any(marker in league_text for marker in non_football_markers)
+                    or "basketball" in kind_text or "basketball" in sport_text):
+                dropped_non_football += 1
+                continue
+            football_rows.append(row)
+        rows = football_rows
+        if dropped_non_football:
+            logs.append(f"🛑 Фильтр футбола: исключено не-футбольных событий — {dropped_non_football}")
+        logs.append(f"📡 Всего после объединения и футбольного фильтра: {len(rows)} уникальных матчей")
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
