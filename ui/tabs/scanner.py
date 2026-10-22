@@ -571,6 +571,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             best = None
             odds_source = "model_only"
             market_odds = {}
+            total_market_odds = {}
+            total_odds_source = "no_market"
+            api_market_data = None
             odds_source = "no_market"
 
             has_model_candidate = any(
