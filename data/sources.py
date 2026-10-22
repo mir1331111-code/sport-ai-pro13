@@ -13,10 +13,12 @@
   * Дополнительно распознаются шотландский, австралийский, японский чемпионаты.
 """
 from __future__ import annotations
-import csv, io, re, logging
+import csv, io, re, logging, os
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.robotparser import RobotFileParser
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -914,14 +916,37 @@ def _prognozist_extract_row_odds(row):
     return {"П1": prices[-3], "X": prices[-2], "П2": prices[-1]}
 
 
+def _prognozist_allowed(url: str) -> bool:
+    """Require explicit operator permission and robots.txt allowance; fail closed."""
+    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+        log.info("Prognozist odds disabled: set PROGNOZIST_PERMISSION=1 only after checking site terms/permission.")
+        return False
+    try:
+        parsed = urlparse(url)
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        response = _sess.get(robots_url, timeout=(3, 6), proxies=NO_PROXY)
+        if response.status_code != 200:
+            log.warning("Prognozist robots.txt unavailable (HTTP %s); disabling source.", response.status_code)
+            return False
+        parser = RobotFileParser()
+        parser.set_url(robots_url)
+        parser.parse(response.text.splitlines())
+        return parser.can_fetch("Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)", url)
+    except Exception as exc:
+        log.warning("Prognozist robots.txt check failed (%s); disabling source.", type(exc).__name__)
+        return False
+
+
 def _prognozist_line_index():
-    """Download and parse the public line once per short cache window."""
-    key = "prognozist_marathon_line_index_v4"
+    """Download and parse the line only when explicitly permitted by the operator and robots.txt."""
+    if not all(_prognozist_allowed(url) for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)):
+        return []
+    key = "prognozist_marathon_line_index_v5"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         return cached
     headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "User-Agent": "Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)",
         "Accept": "text/html,application/json,text/plain,*/*",
         "Referer": "https://prognozist.ru/mc/football/",
     }
