@@ -604,18 +604,32 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         except Exception as exc:
                             logs.append(f"⚠️ Odds API totals: {type(exc).__name__}")
 
-                    # 1. СНАЧАЛА ПРОБУЕМ PROGNOZIST (рабочий парсер)
+                    # 1. Сначала пробуем Prognozist через уже подключённый
+                    # адаптер data.sources. Не импортируем отсутствующий модуль.
+                    # Если имена команд не совпали на английском, пробуем русские.
                     try:
-                        from data.prognozist_odds import find_match_odds
-                        prog_data = find_match_odds(h_en, a_en, kickoff=d)
-                        if prog_data and prog_data.get("odds"):
-                            odds_dict = prog_data["odds"]
-                            p1 = float(odds_dict["1"]["best"])
-                            px = float(odds_dict["X"]["best"])
-                            p2 = float(odds_dict["2"]["best"])
-                            if all(1.01 < v < 100 for v in (p1, px, p2)):
-                                candidates.append(("prognozist", {"П1": p1, "X": px, "П2": p2}))
-                                logs.append(f"✅ Prognozist нашёл: {h_ru} — {a_ru}")
+                        prog_odds = prognozist_marathon_odds(h_en, a_en)
+                        if not prog_odds:
+                            prog_odds = prognozist_marathon_odds(h_ru, a_ru)
+                        if isinstance(prog_odds, dict):
+                            valid_prog = {}
+                            for source_key, target_key in (("П1", "П1"), ("X", "X"), ("П2", "П2"),
+                                                           ("1", "П1"), ("2", "П2")):
+                                if target_key in valid_prog or source_key not in prog_odds:
+                                    continue
+                                try:
+                                    value = float(prog_odds[source_key])
+                                except (TypeError, ValueError):
+                                    continue
+                                if 1.01 < value < 100:
+                                    valid_prog[target_key] = value
+                            if all(key in valid_prog for key in ("П1", "X", "П2")):
+                                candidates.append(("prognozist", valid_prog))
+                                logs.append(f"✅ Prognozist нашёл линию: {h_ru} — {a_ru}")
+                            else:
+                                logs.append("ℹ️ Prognozist: линия неполная или коэффициенты некорректны")
+                        else:
+                            logs.append("ℹ️ Prognozist: матч не найден, проверяю другие источники")
                     except Exception as exc:
                         logs.append(f"⚠️ Prognozist error: {type(exc).__name__}")
 
