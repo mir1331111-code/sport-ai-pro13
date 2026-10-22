@@ -469,9 +469,24 @@ def render(min_prob, kelly_frac, matrix_n):
                             best_source_score = score
 
                     if not market_odds:
-                        rundown_key = (D.get("meta", {}).get("rundown_key")
-                                       or D.get("meta", {}).get("therundown_api_key")
-                                       or os.environ.get("THERUNDOWN_API_KEY", ""))
+                        rundown_key = (
+                            D.get("meta", {}).get("rundown_key")
+                            or D.get("meta", {}).get("therundown_api_key")
+                            or os.environ.get("THERUNDOWN_API_KEY", "")
+                        )
+                        if not rundown_key:
+                            try:
+                                rundown_key = str(
+                                    st.secrets.get(
+                                        "THERUNDOWN_API_KEY",
+                                        st.secrets.get(
+                                            "therundown_api_key",
+                                            st.secrets.get("rundown_key", ""),
+                                        ),
+                                    ) or ""
+                                ).strip()
+                            except Exception:
+                                rundown_key = ""
                         if rundown_key:
                             rundown = therundown_odds_fixture(
                                 h_en, a_en, d.strftime("%Y-%m-%d"), lg, rundown_key
