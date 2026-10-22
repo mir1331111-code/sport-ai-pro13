@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import random
 from datetime import date, datetime
 
 from model.engine import Engine, _row_xg_pair
@@ -44,29 +45,48 @@ def _without_xg(row):
             if str(key).strip().casefold() not in _XG_KEYS}
 
 
-def _metrics(records):
+def _record_scores(record):
+    probabilities, outcome = record
+    classes = ("H", "D", "A")
+    brier = sum((probabilities[k] - float(k == outcome)) ** 2 for k in classes)
+    loss = -math.log(max(probabilities[outcome], 1e-15))
+    # 1X2 has no universally accepted ordinal order; label this convention explicitly.
+    cumulative_p = cumulative_y = rps_sum = 0.0
+    for key in classes[:-1]:
+        cumulative_p += probabilities[key]
+        cumulative_y += float(key == outcome)
+        rps_sum += (cumulative_p - cumulative_y) ** 2
+    return brier, loss, rps_sum / 2.0, float(max(classes, key=lambda k: probabilities[k]) == outcome)
+
+
+def _metrics(records, *, bootstrap_samples=1000, seed=1729):
     if not records:
-        return {"n": 0, "brier": None, "log_loss": None, "accuracy": None}
-    brier, losses, correct = [], [], 0
-    for probabilities, outcome in records:
-        brier.append(sum((probabilities[k] - float(k == outcome)) ** 2 for k in ("H", "D", "A")))
-        losses.append(-math.log(max(probabilities[outcome], 1e-15)))
-        correct += max(("H", "D", "A"), key=lambda k: probabilities[k]) == outcome
-    n = len(records)
-    return {"n": n, "brier": sum(brier) / n, "log_loss": sum(losses) / n, "accuracy": correct / n}
+        return {"n": 0, "brier": None, "log_loss": None, "rps_hda_order": None,
+                "accuracy": None, "confidence_intervals_95": {}}
+    scores = [_record_scores(record) for record in records]
+    n = len(scores)
+    names = ("brier", "log_loss", "rps_hda_order", "accuracy")
+    means = [sum(row[i] for row in scores) / n for i in range(4)]
+    rng = random.Random(seed)
+    samples = {name: [] for name in names}
+    for _ in range(max(0, int(bootstrap_samples))):
+        picked = [scores[rng.randrange(n)] for _ in range(n)]
+        for i, name in enumerate(names):
+            samples[name].append(sum(row[i] for row in picked) / n)
+    intervals = {}
+    for name in names:
+        values = sorted(samples[name])
+        intervals[name] = ({"low": values[int(.025 * (len(values)-1))],
+                            "high": values[int(.975 * (len(values)-1))]}
+                           if values else {"low": None, "high": None})
+    return {"n": n, **dict(zip(names, means)), "confidence_intervals_95": intervals}
 
 
-def _probs(prediction):
-    return {"H": prediction["p1"], "D": prediction["x"], "A": prediction["p2"]}
-
-
-def _market_probs(row):
-    """De-vig a complete 1X2 bookmaker price triplet when available."""
+def _market_probs(row, method="proportional"):
+    """De-vig complete 1X2 odds with proportional, power or Shin method."""
     candidates = (
-        ("B365H", "B365D", "B365A"),
-        ("PSH", "PSD", "PSA"),
-        ("WHH", "WHD", "WHA"),
-        ("AvgH", "AvgD", "AvgA"),
+        ("B365H", "B365D", "B365A"), ("PSH", "PSD", "PSA"),
+        ("WHH", "WHD", "WHA"), ("AvgH", "AvgD", "AvgA"),
         ("BWH", "BWD", "BWA"),
     )
     for keys in candidates:
@@ -76,14 +96,44 @@ def _market_probs(row):
                 continue
             implied = [1.0 / x for x in odds]
             total = sum(implied)
-            if total > 0:
-                return dict(zip(("H", "D", "A"), (x / total for x in implied))), ".".join(keys)
-        except (TypeError, ValueError):
+            if method == "proportional":
+                probs = [x / total for x in implied]
+            elif method == "power":
+                lo, hi = 0.01, 5.0
+                for _ in range(80):
+                    mid = (lo + hi) / 2
+                    if sum(x ** mid for x in implied) > 1.0:
+                        lo = mid
+                    else:
+                        hi = mid
+                raw = [x ** ((lo + hi) / 2) for x in implied]
+                probs = [x / sum(raw) for x in raw]
+            elif method == "shin":
+                def shin(z):
+                    return [(math.sqrt(z*z + 4*(1-z)*q*q/total)-z)/(2*(1-z)) for q in implied]
+                lo, hi = 0.0, min(.999, max(0.0, (total-1.0)/max(total, 1e-9)))
+                for _ in range(80):
+                    mid = (lo + hi) / 2
+                    if sum(shin(mid)) > 1.0:
+                        lo = mid
+                    else:
+                        hi = mid
+                probs = shin((lo + hi) / 2)
+                norm = sum(probs)
+                probs = [p / norm for p in probs] if norm > 0 else [p / total for p in implied]
+            else:
+                raise ValueError("method must be proportional, power, or shin")
+            return dict(zip(("H", "D", "A"), probs)), ".".join(keys)
+        except (TypeError, ValueError, OverflowError, ZeroDivisionError):
             continue
     return None, None
 
 
-def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
+def _probs(prediction):
+    return {"H": prediction["p1"], "D": prediction["x"], "A": prediction["p2"]}
+
+
+def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 180.0, bootstrap_samples: int = 1000) -> dict:
     """Compare goals-only and xG engines on identical chronological fixtures.
 
     All fixtures on the same calendar date are predicted before any result from
@@ -111,6 +161,8 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     temporal_goals = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    candidate.half_life_days = float(half_life_days)
+    temporal_goals.half_life_days = float(half_life_days)
     records = {"baseline": [], "candidate": [], "temporal_goals_only": [],
                "market": [], "candidate_on_market": []}
     market_sources = {}
@@ -140,11 +192,16 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
             records["baseline"].append((_probs(pred_base), outcome))
             records["candidate"].append((_probs(pred_candidate), outcome))
             records["temporal_goals_only"].append((_probs(pred_temporal_goals), outcome))
-            market_p, market_source = _market_probs(row_copy)
+            market_p, market_source = _market_probs(row_copy, "proportional")
             if market_p:
                 records["market"].append((market_p, outcome))
                 records["candidate_on_market"].append((_probs(pred_candidate), outcome))
                 market_sources[market_source] = market_sources.get(market_source, 0) + 1
+            for method in ("power", "shin"):
+                method_probs, _ = _market_probs(row_copy, method)
+                if method_probs:
+                    records.setdefault("market_" + method, []).append((method_probs, outcome))
+                    records.setdefault("candidate_on_market_" + method, []).append((_probs(pred_candidate), outcome))
             pending.append((home, away, hg, ag, row_copy, no_xg_row, stamp,
                             pred_base, pred_candidate, pred_temporal_goals, outcome))
 
@@ -165,7 +222,8 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             index += 1
 
-    metrics = {name: _metrics(value) for name, value in records.items()}
+    metrics = {name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=1729 + i)
+               for i, (name, value) in enumerate(records.items())}
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
     delta = lambda left, right, key: (
@@ -182,6 +240,9 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
         "market": metrics["market"],
         "candidate_on_market_rows": metrics["candidate_on_market"],
         "market_sources": market_sources,
+        "market_devig_methods": {name: metrics[name] for name in ("market", "market_power", "market_shin") if name in metrics},
+        "half_life_days": float(half_life_days),
+        "bootstrap_samples": int(bootstrap_samples),
         "delta_candidate_minus_baseline": {
             key: delta(candidate_metrics, base_metrics, key)
             for key in ("brier", "log_loss", "accuracy")
@@ -191,10 +252,31 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
             for key in ("brier", "log_loss", "accuracy")
         },
         "interpretation": (
-            "Market benchmark uses complete 1X2 odds triplets when present, normalized to remove overround. "
+            "Market benchmark uses complete 1X2 odds triplets; proportional, power and Shin de-vig methods are reported. Bootstrap intervals are fixture-resampled 95% intervals. RPS is labelled H/D/A class-order diagnostic because 1X2 is not naturally ordinal. "
             "Compare candidate_on_market_rows against market; both metrics use exactly the same fixtures. "
             "xG effect is isolated by comparing candidate against temporal_goals_only on identical fixtures. "
             "Lower Brier/log_loss and higher accuracy are better. Do not claim a gain unless it persists "
             "on a separate untouched chronological holdout with adequate xG coverage."
         ),
     }
+
+
+
+def tune_half_life(rows, *, candidates=(60, 90, 120, 180, 270, 365),
+                   matrix_n: int = 12, bootstrap_samples: int = 0) -> dict:
+    """Select decay half-life by chronological log loss; holdout validation remains required."""
+    results = []
+    for days in candidates:
+        report = walk_forward_compare(rows, matrix_n=matrix_n,
+                                      half_life_days=float(days),
+                                      bootstrap_samples=bootstrap_samples)
+        paired = report.get("candidate_on_market_rows") or {}
+        metric = paired if paired.get("n", 0) else report.get("candidate", {})
+        results.append({"half_life_days": float(days), "n": metric.get("n", 0),
+                        "log_loss": metric.get("log_loss"), "brier": metric.get("brier"),
+                        "rps_hda_order": metric.get("rps_hda_order")})
+    valid = [r for r in results if r["n"] and r["log_loss"] is not None]
+    return {"selection_metric": "lowest log_loss; paired bookmaker rows when available",
+            "results": results,
+            "recommended_half_life_days": min(valid, key=lambda r: r["log_loss"])["half_life_days"] if valid else None,
+            "warning": "This tunes on the supplied history, so evaluate the selected value on a later untouched holdout."}
