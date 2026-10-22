@@ -111,7 +111,8 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     temporal_goals = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
-    records = {"baseline": [], "candidate": [], "temporal_goals_only": [], "market": []}
+    records = {"baseline": [], "candidate": [], "temporal_goals_only": [],
+               "market": [], "candidate_on_market": []}
     market_sources = {}
     xg_forecasts = xg_eligible_rows = 0
     index = 0
@@ -142,6 +143,7 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
             market_p, market_source = _market_probs(row_copy)
             if market_p:
                 records["market"].append((market_p, outcome))
+                records["candidate_on_market"].append((_probs(pred_candidate), outcome))
                 market_sources[market_source] = market_sources.get(market_source, 0) + 1
             pending.append((home, away, hg, ag, row_copy, no_xg_row, stamp,
                             pred_base, pred_candidate, pred_temporal_goals, outcome))
@@ -178,6 +180,7 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
         "candidate": candidate_metrics,
         "temporal_goals_only": temporal_metrics,
         "market": metrics["market"],
+        "candidate_on_market_rows": metrics["candidate_on_market"],
         "market_sources": market_sources,
         "delta_candidate_minus_baseline": {
             key: delta(candidate_metrics, base_metrics, key)
@@ -189,7 +192,7 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
         },
         "interpretation": (
             "Market benchmark uses complete 1X2 odds triplets when present, normalized to remove overround. "
-            "Compare candidate against market on the same rows before claiming predictive value. "
+            "Compare candidate_on_market_rows against market; both metrics use exactly the same fixtures. "
             "xG effect is isolated by comparing candidate against temporal_goals_only on identical fixtures. "
             "Lower Brier/log_loss and higher accuracy are better. Do not claim a gain unless it persists "
             "on a separate untouched chronological holdout with adequate xG coverage."
