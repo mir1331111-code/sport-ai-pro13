@@ -494,6 +494,7 @@ def render(min_prob, kelly_frac, matrix_n):
                             D.get("meta", {}).get("rundown_key")
                             or D.get("meta", {}).get("therundown_api_key")
                             or os.environ.get("THERUNDOWN_API_KEY", "")
+                            or os.environ.get("RUNDOWN_KEY", "")
                         )
                         if not rundown_key:
                             try:
@@ -502,7 +503,7 @@ def render(min_prob, kelly_frac, matrix_n):
                                         "THERUNDOWN_API_KEY",
                                         st.secrets.get(
                                             "therundown_api_key",
-                                            st.secrets.get("rundown_key", ""),
+                                            st.secrets.get("rundown_key", st.secrets.get("RUNDOWN_KEY", "")),
                                         ),
                                     ) or ""
                                 ).strip()
@@ -510,7 +511,8 @@ def render(min_prob, kelly_frac, matrix_n):
                                 rundown_key = ""
                         if rundown_key:
                             rundown = therundown_odds_fixture(
-                                h_en, a_en, d.strftime("%Y-%m-%d"), lg, rundown_key
+                                h_en, a_en, d.strftime("%Y-%m-%d"), lg, rundown_key,
+                                logs=logs,
                             )
                             if isinstance(rundown, dict):
                                 valid_rundown = {}
