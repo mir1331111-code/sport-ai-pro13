@@ -209,6 +209,60 @@ def _total_market_probs(row):
     return None, None
 
 
+def _binary_paired_differences(candidate_records, market_records, *, bootstrap_samples=1000, seed=31415):
+    """Paired model-minus-market Brier/log-loss differences on identical fixtures."""
+    if not candidate_records or len(candidate_records) != len(market_records):
+        return {"n": 0, "differences": {}, "confidence_intervals_95": {}}
+    differences = []
+    for candidate, market in zip(candidate_records, market_records):
+        cp, cy = candidate
+        mp, my = market
+        if cy != my:
+            return {"n": 0, "differences": {}, "confidence_intervals_95": {},
+                    "error": "candidate and market records are not paired by outcome"}
+        y = float(cy == "over")
+        cprob = max(1e-15, min(1.0 - 1e-15, float(cp["over"])))
+        mprob = max(1e-15, min(1.0 - 1e-15, float(mp["over"])))
+        cbrier, mbrier = (cprob-y)**2, (mprob-y)**2
+        closs = -(y*math.log(cprob) + (1-y)*math.log(1-cprob))
+        mloss = -(y*math.log(mprob) + (1-y)*math.log(1-mprob))
+        differences.append((cbrier-mbrier, closs-mloss))
+    n = len(differences)
+    names = ("brier", "log_loss")
+    means = [sum(row[i] for row in differences)/n for i in range(2)]
+    rng = random.Random(seed)
+    samples = {name: [] for name in names}
+    for _ in range(max(0, int(bootstrap_samples))):
+        picked = [differences[rng.randrange(n)] for _ in range(n)]
+        for i, name in enumerate(names):
+            samples[name].append(sum(row[i] for row in picked)/n)
+    intervals = {}
+    for name in names:
+        values = sorted(samples[name])
+        intervals[name] = ({"low": values[int(.025*(len(values)-1))],
+                            "high": values[int(.975*(len(values)-1))]}
+                           if values else {"low": None, "high": None})
+    return {"n": n, "differences": dict(zip(names, means)),
+            "confidence_intervals_95": intervals,
+            "note": "Negative differences favor the model; intervals resample paired fixtures."}
+
+
+def totals_market_is_validated(report, *, min_n=500):
+    """Conservative gate: enough paired data and both 95% CIs below zero."""
+    if not isinstance(report, dict) or int(report.get("n", 0) or 0) < int(min_n):
+        return False
+    intervals = report.get("confidence_intervals_95") or {}
+    differences = report.get("differences") or {}
+    for metric in ("brier", "log_loss"):
+        interval = intervals.get(metric) or {}
+        try:
+            if float(differences[metric]) >= 0 or float(interval["high"]) >= 0:
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False
+    return True
+
+
 def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 180.0, bootstrap_samples: int = 1000) -> dict:
     """Compare goals-only and xG engines on identical chronological fixtures.
 
