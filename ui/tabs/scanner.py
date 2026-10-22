@@ -232,7 +232,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         key=f"market_{c.get('match','').replace(' ','_')}",
     )
     pick, model_prob = market_options[selected_label]
-    market_is_validated = market_type(pick) == "1X2"
+    market_is_validated = (market_type(pick) == "1X2" or
+                           (market_type(pick) == "OU" and bool(c.get("total_market_validation"))))
     fair_odd = (1.0 / model_prob) if model_prob > 0 else None
 
     st.caption(
@@ -294,7 +295,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             and stake > 0
         )
         if not market_is_validated:
-            col_btn.info("Рынок пока только для анализа: автоматическое добавление отключено до отдельной проверки.")
+            col_btn.info("Автодобавление отключено: для этого рынка не пройдена историческая проверка или он не поддерживается.")
         elif passed:
             existing = any(
                 f"{b.get('match', '')}|{b.get('pick', '')}" == f"{c['match']}|{pick}"
@@ -692,6 +693,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "time": r.get("Time") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 "xg_used": bool(P.get("xg_used")),
+                "total_market_validation": bool(getattr(engine, "total_market_validation", False)),
+                "total_market_validation_report": getattr(engine, "total_market_validation_report", {}),
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
