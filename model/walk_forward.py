@@ -364,7 +364,7 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             index += 1
 
     metrics = {name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=1729)
-               for name, value in records.items()}
+               for name, value in records.items() if not name.startswith("goals_over25")}
     totals_bs = bootstrap_samples if totals_bootstrap_samples is None else max(0, int(totals_bootstrap_samples))
     goals_over25_metrics = _binary_metrics(records["goals_over25"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_market_metrics = _binary_metrics(records["goals_over25_market"], bootstrap_samples=totals_bs, seed=31415)
