@@ -60,6 +60,29 @@ def _probs(prediction):
     return {"H": prediction["p1"], "D": prediction["x"], "A": prediction["p2"]}
 
 
+def _market_probs(row):
+    """De-vig a complete 1X2 bookmaker price triplet when available."""
+    candidates = (
+        ("B365H", "B365D", "B365A"),
+        ("PSH", "PSD", "PSA"),
+        ("WHH", "WHD", "WHA"),
+        ("AvgH", "AvgD", "AvgA"),
+        ("BWH", "BWD", "BWA"),
+    )
+    for keys in candidates:
+        try:
+            odds = [float(row.get(key)) for key in keys]
+            if not all(math.isfinite(x) and x > 1.0 for x in odds):
+                continue
+            implied = [1.0 / x for x in odds]
+            total = sum(implied)
+            if total > 0:
+                return dict(zip(("H", "D", "A"), (x / total for x in implied))), ".".join(keys)
+        except (TypeError, ValueError):
+            continue
+    return None, None
+
+
 def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
     """Compare goals-only and xG engines on identical chronological fixtures.
 
@@ -88,7 +111,8 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     temporal_goals = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
-    records = {"baseline": [], "candidate": [], "temporal_goals_only": []}
+    records = {"baseline": [], "candidate": [], "temporal_goals_only": [], "market": []}
+    market_sources = {}
     xg_forecasts = xg_eligible_rows = 0
     index = 0
     cursor = 0
@@ -115,10 +139,25 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
             records["baseline"].append((_probs(pred_base), outcome))
             records["candidate"].append((_probs(pred_candidate), outcome))
             records["temporal_goals_only"].append((_probs(pred_temporal_goals), outcome))
-            pending.append((home, away, hg, ag, row_copy, no_xg_row, stamp))
+            market_p, market_source = _market_probs(row_copy)
+            if market_p:
+                records["market"].append((market_p, outcome))
+                market_sources[market_source] = market_sources.get(market_source, 0) + 1
+            pending.append((home, away, hg, ag, row_copy, no_xg_row, stamp,
+                            pred_base, pred_candidate, pred_temporal_goals, outcome))
 
         # Ingest outcomes only after every forecast for this date has been made.
-        for home, away, hg, ag, row_copy, no_xg_row, match_stamp in pending:
+        for home, away, hg, ag, row_copy, no_xg_row, match_stamp, pred_base, pred_candidate, pred_temporal_goals, outcome in pending:
+            # Train the calibrator only after every forecast for this date exists.
+            target = {"H": 0, "D": 1, "A": 2}[outcome]
+            for model, prediction in ((baseline, pred_base), (candidate, pred_candidate),
+                                      (temporal_goals, pred_temporal_goals)):
+                raw = (prediction.get("p1_raw"), prediction.get("x_raw"), prediction.get("p2_raw"))
+                model.calib_logits.extend(model._logit(p) for p in raw)
+                model.calib_outcomes.append(target)
+            baseline.refit_calibrator()
+            candidate.refit_calibrator()
+            temporal_goals.refit_calibrator()
             baseline.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
@@ -138,6 +177,8 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
         "baseline": base_metrics,
         "candidate": candidate_metrics,
         "temporal_goals_only": temporal_metrics,
+        "market": metrics["market"],
+        "market_sources": market_sources,
         "delta_candidate_minus_baseline": {
             key: delta(candidate_metrics, base_metrics, key)
             for key in ("brier", "log_loss", "accuracy")
@@ -147,6 +188,8 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
             for key in ("brier", "log_loss", "accuracy")
         },
         "interpretation": (
+            "Market benchmark uses complete 1X2 odds triplets when present, normalized to remove overround. "
+            "Compare candidate against market on the same rows before claiming predictive value. "
             "xG effect is isolated by comparing candidate against temporal_goals_only on identical fixtures. "
             "Lower Brier/log_loss and higher accuracy are better. Do not claim a gain unless it persists "
             "on a separate untouched chronological holdout with adequate xG coverage."
