@@ -352,6 +352,27 @@ def render(min_prob, kelly_frac, matrix_n):
                 odds_key = ""
         logs.append("🔑 The Odds API: ключ задан" if odds_key else "⚠️ The Odds API: ключ не задан — реальные кэфы будут доступны только из других источников")
 
+        api_football_key = (
+            D.get("meta", {}).get("api_football_key")
+            or os.environ.get("API_FOOTBALL_KEY", "")
+            or os.environ.get("APIFOOTBALL_KEY", "")
+        ).strip()
+        if not api_football_key:
+            try:
+                api_football_key = str(
+                    st.secrets.get(
+                        "API_FOOTBALL_KEY",
+                        st.secrets.get("api_football_key", st.secrets.get("APIFOOTBALL_KEY", "")),
+                    ) or ""
+                ).strip()
+            except Exception:
+                api_football_key = ""
+        logs.append(
+            "🔑 API-Football: ключ задан"
+            if api_football_key
+            else "ℹ️ API-Football: ключ не задан (API_FOOTBALL_KEY в Secrets/env)"
+        )
+
         rundown_key_status = (
             D.get("meta", {}).get("rundown_key")
             or D.get("meta", {}).get("therundown_api_key")
