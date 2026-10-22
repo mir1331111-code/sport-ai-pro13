@@ -116,7 +116,7 @@ def _load_engine(matrix_n, logs, update_loader):
     return engine
 
 
-def _render_manual_odds_block(c, D, kelly_frac):
+def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, min_ev=0.03):
     """Блок для ручного ввода кэфа под карточкой."""
     v = c.get("verdict", {})
     pick = v.get("pick", "—")
@@ -163,7 +163,8 @@ def _render_manual_odds_block(c, D, kelly_frac):
             f"</div>", unsafe_allow_html=True
         )
         
-        if col_btn.button("➕ В портфель", key=btn_key, use_container_width=True):
+        passed = (prob >= min_prob and edge >= min_edge and ev >= min_ev and stake > 0)
+        if col_btn.button("➕ В портфель", key=btn_key, use_container_width=True, disabled=not passed):
             D2 = dict(D)
             new_bet = {
                 "match": c["match"], "match_ru": c["match_ru"],
@@ -311,7 +312,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 for c in items:
                     st.markdown(render_verdict_card(c, min_prob),
                                 unsafe_allow_html=True)
-                    _render_manual_odds_block(c, D, kelly_frac)
+                    _render_manual_odds_block(c, D, kelly_frac, min_prob)
         else:
             for c in cards_view:
                 st.markdown(render_verdict_card(c, min_prob),
