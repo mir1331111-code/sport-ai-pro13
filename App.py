@@ -167,6 +167,10 @@ def _validate_data(raw):
     d.setdefault("mode", "paper")
     if not isinstance(d.get("meta"), dict):
         d["meta"] = {}
+    # Imported backups are untrusted too: never restore credentials into local state.
+    for secret_key in SECRET_KEYS:
+        d["meta"].pop(secret_key, None)
+    d["meta"].pop("rundown_key", None)
     d["stats"] = _recompute_stats(d["bets"], d.get("stats"))
     d["meta"].setdefault("initial_bank", d["bank"])
     return d
