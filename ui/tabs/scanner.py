@@ -859,6 +859,53 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 total_stake += stake_value
                 logs.append(f"🤖 AUTO-PORTFOLIO: {card.get('match_ru', card.get('match', ''))} | {pick} @ {odds_value:.2f} | stake {stake_value:.2f}")
 
+        # Totals are auto-added only after the historical market benchmark passes.
+        if auto_add:
+            for card in cards:
+                if not card.get("total_market_validation"):
+                    continue
+                try:
+                    over_p = float(card.get("over"))
+                except (TypeError, ValueError):
+                    continue
+                if not 0.0 < over_p < 1.0:
+                    continue
+                odds_by_pick = card.get("total_market_odds") or {}
+                for pick, model_p in (("ТБ 2.5", over_p), ("ТМ 2.5", 1.0 - over_p)):
+                    match_key = (str(card.get("match") or ""), pick)
+                    if pick not in odds_by_pick or match_key in existing_keys:
+                        continue
+                    try:
+                        odd = float(odds_by_pick[pick])
+                        if not 1.01 < odd <= 100:
+                            continue
+                        implied = 1.0 / odd
+                        prob = max(1e-6, min(1.0 - 1e-6, implied + 0.40 * (model_p - implied)))
+                        edge_value = prob - implied
+                        ev_value = prob * odd - 1.0
+                        stake = kelly(prob, odd, available_bank, kelly_frac, cap=0.02)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        continue
+                    if prob < float(min_prob) or edge_value < float(min_edge) or ev_value < 0.03 or stake <= 0 or stake > available_bank:
+                        continue
+                    new_bets.append({
+                        "match": card.get("match", ""), "match_ru": card.get("match_ru", card.get("match", "")),
+                        "div": card.get("div", ""), "league": card.get("league", ""),
+                        "market": "OU", "pick": pick, "odds": odd, "stake": stake,
+                        "prob": prob, "model_prob": model_p, "market_implied_raw": implied,
+                        "probability_method": "market_blend_0.4_model_delta",
+                        "status": "pending", "strat": "scanner_auto_totals",
+                        "odds_source": card.get("total_odds_source", "the_odds_api"), "mode": "real",
+                        "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
+                        "date_iso": card.get("date_iso"), "match_time": card.get("time", ""),
+                        "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "fixture_id": card.get("fixture_id"), "score": None, "ev": ev_value,
+                    })
+                    existing_keys.add(match_key)
+                    available_bank -= stake
+                    total_stake += stake
+                    logs.append("AUTO-TOTALS: " + str(card.get("match_ru") or card.get("match") or "") + " | " + pick + " @ " + format(odd, ".2f"))
+
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
