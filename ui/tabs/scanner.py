@@ -639,6 +639,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             if rundown:
                                 candidates.append(("therundown", rundown))
 
+                    if not candidates and isinstance(api_market_data, dict):
+                        candidates.append(("the_odds_api", api_market_data))
+
                     for source_name, candidate in candidates:
                         if not isinstance(candidate, dict):
                             continue
