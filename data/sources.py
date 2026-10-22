@@ -917,10 +917,14 @@ def _prognozist_extract_row_odds(row):
 
 
 def _prognozist_allowed(url: str) -> bool:
-    """Require explicit operator permission and robots.txt allowance; fail closed."""
+    """Require explicit permission and robots.txt allowance; cache the robots check."""
     if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
         log.info("Prognozist odds disabled: set PROGNOZIST_PERMISSION=1 only after checking site terms/permission.")
         return False
+    cache_key = "prognozist_robots_allowed_v1"
+    cached = cache_get(cache_key, 180)
+    if isinstance(cached, dict) and url in cached:
+        return bool(cached[url])
     try:
         parsed = urlparse(url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
@@ -931,20 +935,28 @@ def _prognozist_allowed(url: str) -> bool:
         parser = RobotFileParser()
         parser.set_url(robots_url)
         parser.parse(response.text.splitlines())
-        return parser.can_fetch("Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)", url)
+        agent = "Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)"
+        result = {
+            target: bool(parser.can_fetch(agent, target))
+            for target in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)
+        }
+        cache_put(cache_key, result)
+        return result.get(url, False)
     except Exception as exc:
         log.warning("Prognozist robots.txt check failed (%s); disabling source.", type(exc).__name__)
         return False
 
-
 def _prognozist_line_index():
     """Download and parse the line only when explicitly permitted by the operator and robots.txt."""
-    if not all(_prognozist_allowed(url) for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)):
+    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+        _prognozist_allowed(_PROGNOZIST_URL)
         return []
     key = "prognozist_marathon_line_index_v5"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         return cached
+    if not all(_prognozist_allowed(url) for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)):
+        return []
     headers = {
         "User-Agent": "Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)",
         "Accept": "text/html,application/json,text/plain,*/*",
