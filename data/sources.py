@@ -1019,9 +1019,27 @@ def _american_to_decimal(value):
 
 
 def therundown_odds_fixture(home: str, away: str, match_date: str,
-                            div_code: str, api_key: str, logs=None) -> Optional[dict]:
+                            div_code: str, api_key: str, logs=None, league_name: str = "") -> Optional[dict]:
     """Get a real pre-match 1X2 line and report why a lookup failed."""
     sport_id = THERUNDOWN_SPORT_BY_DIV.get((div_code or "").upper())
+    if not sport_id:
+        league = (league_name or "").lower()
+        league_aliases = (
+            (("premier league", "english premier", "epl"), "E0"),
+            (("la liga", "laliga", "spanish la liga"), "SP1"),
+            (("serie a", "italian serie a"), "I1"),
+            (("bundesliga", "german bundesliga"), "D1"),
+            (("ligue 1", "french ligue 1"), "F1"),
+            (("champions league", "uefa champions"), "C1"),
+            (("europa league", "uefa europa league"), "EL"),
+            (("major league soccer", "mls"), "MLS"),
+            (("j1 league", "j-league", "japan"), "J1"),
+        )
+        for markers, code in league_aliases:
+            if any(marker in league for marker in markers):
+                sport_id = THERUNDOWN_SPORT_BY_DIV.get(code)
+                if sport_id:
+                    break
     if not api_key:
         if logs is not None:
             logs.append("TheRundown: пропущен запрос — API-ключ пустой")
