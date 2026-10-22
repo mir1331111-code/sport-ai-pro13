@@ -453,6 +453,17 @@ def render(min_prob, kelly_frac, matrix_n):
                                 f"ℹ️ The Odds API: лига не сопоставлена — "
                                 f"{r.get('Div', '?')} / {r.get('League', '?')}"
                             )
+                    # API-Football: date-based odds lookup independent of ESPN league codes.
+                    if api_football_key:
+                        try:
+                            api_football_result = api_football_odds_fixture(
+                                h_en, a_en, d.strftime("%Y-%m-%d"),
+                                api_football_key, logs=logs,
+                            )
+                            if isinstance(api_football_result, dict) and api_football_result:
+                                candidates.append(("api_football", api_football_result))
+                        except Exception as exc:
+                            logs.append(f"⚠️ API-Football: {type(exc).__name__}: {str(exc)[:100]}")
                     try:
                         candidates.append(("marathon_category",
                                            marathon_odds(h_en, a_en, r.get("Date", ""), lg)))
