@@ -296,9 +296,15 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
     c1, c2 = st.columns([4, 1])
-    days = c1.slider("Горизонт, дней", 1, 14, 7)
+    days = c1.slider("Период матчей: 1 = только сегодня", 1, 14, 1)
     scan = c2.button("⚡ СКАН", type="primary",
                      disabled=st.session_state.get("_scan_in_progress", False))
+    auto_add = st.checkbox(
+        "Автоматически добавлять в виртуальный портфель подходящие ставки 1X2",
+        value=True,
+        key="scanner_auto_add_qualified",
+        help="Добавляет только найденные сканером исходы с реальным коэффициентом букмекера, прошедшие фильтры. Это виртуальный учёт в приложении, а не размещение ставки у букмекера.",
+    )
 
     if not scan:
         fn = D.get("funnel")
@@ -307,7 +313,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 f"🧠 Обучено {fn.get('trained', 0)} · "
                 f"📡 Источников {fn.get('src', 0)} · "
                 f"🎯 Найдено {fn.get('found', 0)} · "
-                f"➕ В портфель {fn.get('added', 0)} · "
+                f"🤖 Автодобавлено {fn.get('added', 0)} · "
                 f"💰 Заморожено {fn.get('frozen', 0):.0f} · "
                 f"🤖 LLM: {fn.get('llm', 0)}"
             )
@@ -494,7 +500,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     logs,
                 )
             d = parse_date(r.get("Date", ""))
-            if not d or not (today <= d <= today + timedelta(days=days)):
+            if not d or not (today <= d < today + timedelta(days=days)):
                 continue
             h_en = (r.get("HomeTeam") or "").strip()
             a_en = (r.get("AwayTeam") or "").strip()
@@ -718,16 +724,76 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         elif not action_cards:
             logs.append("🤖 LLM: нет action_cards (best=None у всех)")
 
-        # Портфель пополняется только вручную после ввода реального коэффициента.
-        # Автоматические и оценочные коэффициенты никогда не создают ставки.
+        # Автодобавление — только в виртуальный портфель, не в аккаунт букмекера.
+        # Учитываем только реальные котировки 1X2, прошедшие все value-фильтры.
         new_bets = []
+        total_stake = 0.0
+        available_bank = float(D.get("bank") or 0.0)
+        existing_keys = {
+            (str(b.get("match") or ""), str(b.get("pick") or ""))
+            for b in (D.get("bets") or [])
+            if b.get("status") == "pending"
+        }
+        if auto_add:
+            for card in cards:
+                verdict_card = card.get("verdict") or {}
+                best_card = card.get("best")
+                if not best_card or not verdict_card.get("real_odds") or not verdict_card.get("value_passed"):
+                    continue
+                pick = str(best_card[1])
+                if market_type(pick) != "1X2":
+                    continue
+                match_key = (str(card.get("match") or ""), pick)
+                if match_key in existing_keys:
+                    continue
+                try:
+                    odds_value = float(best_card[2])
+                    probability = float(verdict_card.get("prob") or 0.0)
+                    ev_value = float(verdict_card.get("ev") or 0.0)
+                    stake_value = kelly(
+                        probability, odds_value, available_bank,
+                        kelly_frac, cap=0.02,
+                    )
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if stake_value <= 0 or stake_value > available_bank:
+                    continue
+                new_bet = {
+                    "match": card.get("match", ""),
+                    "match_ru": card.get("match_ru", card.get("match", "")),
+                    "div": card.get("div", ""),
+                    "league": card.get("league", ""),
+                    "market": "1X2",
+                    "pick": pick,
+                    "odds": odds_value,
+                    "stake": stake_value,
+                    "prob": probability,
+                    "model_prob": verdict_card.get("model_prob"),
+                    "market_implied_raw": verdict_card.get("market_implied_raw"),
+                    "probability_method": verdict_card.get("probability_method", "market_blend_0.4_model_delta"),
+                    "status": "pending",
+                    "strat": "scanner_auto",
+                    "odds_source": card.get("odds_source", "unknown"),
+                    "mode": "real",
+                    "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
+                    "date_iso": card.get("date_iso"),
+                    "match_time": card.get("time", ""),
+                    "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "fixture_id": card.get("fixture_id"),
+                    "score": None,
+                    "ev": ev_value,
+                }
+                new_bets.append(new_bet)
+                existing_keys.add(match_key)
+                available_bank -= stake_value
+                total_stake += stake_value
+                logs.append(f"🤖 AUTO-PORTFOLIO: {card.get('match_ru', card.get('match', ''))} | {pick} @ {odds_value:.2f} | stake {stake_value:.2f}")
 
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
-        D2["bets"] = D["bets"] + new_bets
-        total_stake = 0.0
-        D2["bank"] = D["bank"]
+        D2["bets"] = list(D.get("bets") or []) + new_bets
+        D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - total_stake)
         D2["funnel"] = {
             "trained": getattr(engine, "trained_n", 0),
             "src": len(rows), "found": matches_with_best,
@@ -743,7 +809,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         _print_log(f"FUNNEL: {funnel_counts}")
 
         update_loader(
-            f"✅ Готово! +{len(new_bets)} ставок · 🤖 {llm_done} LLM",
+            f"✅ Готово! автодобавлено {len(new_bets)} ставок · 🤖 {llm_done} LLM",
             1.0, logs)
         time.sleep(1.2)
         loader_ph.empty()
