@@ -101,6 +101,48 @@ def _train_engine(matrix_n, logs, update_loader):
                     f"n={metric['n']}, MAE={metric['mae']:.2f}"
                 )
         logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(league_rows)} матчей за {len(history_years)} сезонов")
+    # Separate leakage-safe historical walk-forward check for totals.
+    # Other markets skip bootstrap here to keep the one-time cache rebuild practical.
+    historical_rows = []
+    for dv in train_divs:
+        for season_rows in history.get(dv, []):
+            for original in season_rows:
+                row = dict(original)
+                row["Div"] = dv
+                historical_rows.append(row)
+    try:
+        from model.walk_forward import walk_forward_compare, totals_market_is_validated
+        totals_backtest = walk_forward_compare(
+            historical_rows, matrix_n=matrix_n, bootstrap_samples=0,
+            totals_bootstrap_samples=250,
+        )
+        engine.total_market_validation_report = totals_backtest.get(
+            "goals_over25_candidate_minus_market", {})
+        engine.total_market_validation = totals_market_is_validated(
+            engine.total_market_validation_report, min_n=500)
+        total_diff = engine.total_market_validation_report.get("differences", {})
+        total_ci = engine.total_market_validation_report.get("confidence_intervals_95", {})
+        logs.append(
+            f"Исторический walk-forward тоталов: прогнозов={totals_backtest.get('goals_over25', {}).get('n', 0)}, "
+            f"парных с рынком={engine.total_market_validation_report.get('n', 0)}, "
+            f"источники={totals_backtest.get('goals_over25_market_sources', {})}"
+        )
+        if total_diff:
+            logs.append(
+                f"ТБ/ТМ vs рынок: ΔBrier={total_diff.get('brier'):.4f}, "
+                f"ΔLogLoss={total_diff.get('log_loss'):.4f}; "
+                f"95% CI Brier={total_ci.get('brier', {}).get('low')}…{total_ci.get('brier', {}).get('high')}, "
+                f"LogLoss={total_ci.get('log_loss', {}).get('low')}…{total_ci.get('log_loss', {}).get('high')}"
+            )
+        logs.append(
+            "Тоталы допущены к ручному автодобавлению."
+            if engine.total_market_validation else
+            "Тоталы не допущены: нужно ≥500 парных матчей и статистически подтверждённое улучшение Brier и LogLoss."
+        )
+    except Exception as exc:
+        engine.total_market_validation = False
+        engine.total_market_validation_report = {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        logs.append(f"Историческая проверка тоталов не выполнена: {type(exc).__name__}: {str(exc)[:160]}")
     total = sum(len(src) for dv in train_divs for src in history.get(dv, []))
     processed = 0
     trained = 0
