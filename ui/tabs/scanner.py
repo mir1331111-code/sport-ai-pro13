@@ -251,45 +251,43 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             and ev >= min_ev
             and stake > 0
         )
-        if col_btn.button(
-            "➕ В портфель" if market_is_validated else "Пока недоступно",
-            key=btn_key,
-            use_container_width=True,
-            disabled=not passed,
-        ):
-            D2 = dict(D)
-            new_bet = {
-                "match": c["match"], "match_ru": c["match_ru"],
-                "div": c["div"], "league": c["league"],
-                "market": market_type(pick), "pick": pick,
-                "odds": manual_odd, "stake": stake,
-                "prob": prob, "model_prob": model_prob,
-                "market_implied_raw": market_implied,
-                "probability_method": "market_blend_0.4_model_delta",
-                "status": "pending", "strat": "manual",
-                "odds_source": "manual",
-                "mode": "real",
-                "date": datetime.now().strftime("%d.%m.%Y"),
-                "date_iso": c.get("date_iso"),
-                "match_time": c.get("time", ""),
-                "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "fixture_id": c.get("fixture_id"), "score": None, "ev": ev,
-            }
-            existing = f"{c['match']}|{pick}"
-            if not any(f"{b['match']}|{b['pick']}" == existing for b in D2["bets"] if b.get("status") == "pending"):
-                D2["bets"].append(new_bet)
-                D2["bank"] = max(0.0, D2["bank"] - stake)
+        if not market_is_validated:
+            col_btn.info("Рынок пока только для анализа: автоматическое добавление отключено до отдельной проверки.")
+        elif passed:
+            existing = any(
+                f"{b.get('match', '')}|{b.get('pick', '')}" == f"{c['match']}|{pick}"
+                and b.get("status") == "pending"
+                for b in (D.get("bets") or [])
+            )
+            if existing:
+                col_btn.caption("Этот исход уже находится в портфеле.")
+            else:
+                D2 = dict(D)
+                new_bet = {
+                    "match": c["match"], "match_ru": c["match_ru"],
+                    "div": c["div"], "league": c["league"],
+                    "market": market_type(pick), "pick": pick,
+                    "odds": manual_odd, "stake": stake,
+                    "prob": prob, "model_prob": model_prob,
+                    "market_implied_raw": market_implied,
+                    "probability_method": "market_blend_0.4_model_delta",
+                    "status": "pending", "strat": "manual",
+                    "odds_source": "manual",
+                    "mode": "real",
+                    "date": (parse_date(c.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
+                    "date_iso": c.get("date_iso"),
+                    "match_time": c.get("time", ""),
+                    "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "fixture_id": c.get("fixture_id"), "score": None, "ev": ev,
+                }
+                D2["bets"] = list(D.get("bets") or []) + [new_bet]
+                D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - stake)
                 st.session_state.data = D2
                 usage.set_local_data(D2)
-                st.toast("✅ Добавлено в портфель!", icon="✅")
+                st.toast("✅ Условия выполнены — автоматически добавлено в виртуальный портфель.", icon="✅")
                 st.rerun()
-            else:
-                st.warning("Эта ставка уже есть в портфеле.")
-
-        if not market_is_validated:
-            col_btn.caption("Кэф ввести и расчёт посмотреть можно, но добавление в портфель отключено до отдельной проверки модели этого рынка.")
-        elif not passed:
-            col_btn.caption("Ставка не прошла один или несколько порогов: вероятность, Edge, EV или Kelly.")
+        else:
+            col_btn.caption("Автодобавление не сработало: не пройдены пороги вероятности, Edge, EV или Kelly.")
     else:
         col_metrics.caption("Введите коэффициент выше 1.01, чтобы увидеть расчёт.")
 
