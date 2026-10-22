@@ -53,7 +53,8 @@ def best_value_market(verdict: dict, rows: list, market_odds: dict | None,
             candidate, [dict(row)], {pick: odd}, bank, kelly_frac,
             min_edge=min_edge, min_ev=min_ev,
         )
-        if not best or not refined.get("value_passed"):
+        if (not best or not refined.get("value_passed")
+                or float(refined.get("prob") or 0.0) < float(min_prob)):
             continue
 
         # Candidate-specific confidence so the card's rank matches the selected market.
