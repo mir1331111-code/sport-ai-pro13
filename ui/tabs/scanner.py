@@ -1,8 +1,8 @@
-"""ui/tabs/scanner.py — Сканер с fallback на estimated + LLM."""
+"""ui/tabs/scanner.py — Сканер с поддержкой Marathon, The Odds API и fallback."""
 from __future__ import annotations
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import streamlit as st
 
@@ -11,10 +11,9 @@ from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
                           fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
-                          tsdb_matches, espn_matches, therundown_odds_fixture)
+                          tsdb_matches, espn_matches, therundown_odds_fixture,
+                          prognozist_marathon_odds)
 from data.marathon import marathon_odds
-from data.sources import prognozist_marathon_odds
-from data.api_football import api_football_odds_fixture
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict
@@ -27,49 +26,6 @@ from ui.cards import (render_verdict_card, translate_team,
 LLM_TOP_N = 8
 MIN_STAKE_PCT = 0.005
 MAX_STAKE_PCT = 0.05
-
-ODDS_API_SPORT_BY_DIV = {
-    "E0": "soccer_epl",
-    "SP1": "soccer_spain_la_liga",
-    "I1": "soccer_italy_serie_a",
-    "D1": "soccer_germany_bundesliga",
-    "F1": "soccer_france_ligue_one",
-    "N1": "soccer_netherlands_eredivisie",
-    "P1": "soccer_portugal_primeira_liga",
-    "B1": "soccer_belgium_first_div",
-    "T1": "soccer_turkey_super_league",
-    "C1": "soccer_uefa_champs_league",
-    "EL": "soccer_uefa_europa_league",
-    "EC": "soccer_uefa_europa_conference_league",
-    "MLS": "soccer_usa_mls",
-    "US_MLS": "soccer_usa_mls",
-    "JP_": "soccer_japan_j_league",
-    "AU_": "soccer_australia_aleague",
-}
-
-
-def _odds_api_sport_key(row):
-    """Map only known football competitions to The Odds API sport keys."""
-    div = str((row or {}).get("Div") or "").strip().upper()
-    if div in ODDS_API_SPORT_BY_DIV:
-        return ODDS_API_SPORT_BY_DIV[div]
-    league = str((row or {}).get("League") or "").lower()
-    for marker, key in (
-        ("premier league", "soccer_epl"),
-        ("la liga", "soccer_spain_la_liga"),
-        ("serie a", "soccer_italy_serie_a"),
-        ("bundesliga", "soccer_germany_bundesliga"),
-        ("ligue 1", "soccer_france_ligue_one"),
-        ("champions league", "soccer_uefa_champs_league"),
-        ("europa league", "soccer_uefa_europa_league"),
-        ("conference league", "soccer_uefa_europa_conference_league"),
-        ("major league soccer", "soccer_usa_mls"),
-        ("mls", "soccer_usa_mls"),
-    ):
-        if marker in league:
-            return key
-    return None
-
 
 
 def _safe_filter(rows):
@@ -315,7 +271,7 @@ def render(min_prob, kelly_frac, matrix_n):
         if token:
             logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
         else:
-            logs.append("ℹ️ football-data.org token не задан: использую публичные источники TSDB/ESPN.")
+            logs.append("ℹ️ football-data.org token не задан: использую доступные публичные источники TSDB/ESPN.")
 
         update_loader("📡 Сбор матчей из всех доступных источников...", 0.05, logs)
         source_rows = {}
@@ -344,56 +300,7 @@ def render(min_prob, kelly_frac, matrix_n):
         cards = []
         matches_with_best = 0
         xg_used_count = 0
-        odds_key = (D.get("meta", {}).get("odds_api_key") or os.environ.get("ODDS_API_KEY", "")).strip()
-        if not odds_key:
-            try:
-                odds_key = str(st.secrets.get("ODDS_API_KEY", st.secrets.get("odds_api_key", ""))).strip()
-            except Exception:
-                odds_key = ""
-        logs.append("🔑 The Odds API: ключ задан" if odds_key else "⚠️ The Odds API: ключ не задан — реальные кэфы будут доступны только из других источников")
-
-        api_football_key = (
-            D.get("meta", {}).get("api_football_key")
-            or os.environ.get("API_FOOTBALL_KEY", "")
-            or os.environ.get("APIFOOTBALL_KEY", "")
-        ).strip()
-        if not api_football_key:
-            try:
-                api_football_key = str(
-                    st.secrets.get(
-                        "API_FOOTBALL_KEY",
-                        st.secrets.get("api_football_key", st.secrets.get("APIFOOTBALL_KEY", "")),
-                    ) or ""
-                ).strip()
-            except Exception:
-                api_football_key = ""
-        logs.append(
-            "🔑 API-Football: ключ задан"
-            if api_football_key
-            else "ℹ️ API-Football: ключ не задан (API_FOOTBALL_KEY в Secrets/env)"
-        )
-
-        rundown_key_status = (
-            D.get("meta", {}).get("rundown_key")
-            or D.get("meta", {}).get("therundown_api_key")
-            or os.environ.get("THERUNDOWN_API_KEY", "")
-            or os.environ.get("RUNDOWN_KEY", "")
-        )
-        if not rundown_key_status:
-            try:
-                rundown_key_status = str(
-                    st.secrets.get(
-                        "THERUNDOWN_API_KEY",
-                        st.secrets.get("therundown_api_key", st.secrets.get("rundown_key", st.secrets.get("RUNDOWN_KEY", ""))),
-                    ) or ""
-                ).strip()
-            except Exception:
-                rundown_key_status = ""
-        logs.append(
-            "🔑 TheRundown: ключ задан"
-            if rundown_key_status
-            else "⚠️ TheRundown: ключ не задан (D.meta / env / Streamlit secrets)"
-        )
+        odds_key = D.get("meta", {}).get("odds_api_key", "")
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
@@ -436,7 +343,6 @@ def render(min_prob, kelly_frac, matrix_n):
 
             best = None
             odds_source = "model_only"
-
             market_odds = {}
             odds_source = "no_market"
 
@@ -448,136 +354,63 @@ def render(min_prob, kelly_frac, matrix_n):
             if has_model_candidate:
                 try:
                     candidates = []
-                    # Prefer odds attached to the fixture itself (e.g. football-data.org
-                    # odds add-on). Keep the three outcomes separate and validate each.
-                    fixture_odds = r.get("odds")
-                    if isinstance(fixture_odds, dict):
-                        candidates.append(("fdorg", {
-                            "П1": fixture_odds.get("П1", fixture_odds.get("homeWin")),
-                            "X": fixture_odds.get("X", fixture_odds.get("draw")),
-                            "П2": fixture_odds.get("П2", fixture_odds.get("awayWin")),
-                        }))
-                    # Query The Odds API before HTML parsers. Its response may contain
-                    # totals/BTTS even when a complete 1X2 market is unavailable.
-                    if odds_key:
-                        sport_key = _odds_api_sport_key(r)
-                        if sport_key:
-                            try:
-                                odds_api_result = odds_api_fixture(
-                                    sport_key, h_en, a_en, odds_key, logs=logs
-                                )
-                                if isinstance(odds_api_result, dict) and odds_api_result:
-                                    candidates.append(("odds_api", odds_api_result))
-                            except Exception as exc:
-                                logs.append(f"⚠️ The Odds API: {type(exc).__name__}: {str(exc)[:100]}")
-                        else:
-                            logs.append(
-                                f"ℹ️ The Odds API: лига не сопоставлена — "
-                                f"{r.get('Div', '?')} / {r.get('League', '?')}"
-                            )
-                    # API-Football: date-based odds lookup independent of ESPN league codes.
-                    if api_football_key:
-                        try:
-                            api_football_result = api_football_odds_fixture(
-                                h_en, a_en, d.strftime("%Y-%m-%d"),
-                                api_football_key, logs=logs,
-                            )
-                            if isinstance(api_football_result, dict) and api_football_result:
-                                candidates.append(("api_football", api_football_result))
-                        except Exception as exc:
-                            logs.append(f"⚠️ API-Football: {type(exc).__name__}: {str(exc)[:100]}")
+                    # 1. Marathon напрямую
                     try:
                         candidates.append(("marathon_category",
                                            marathon_odds(h_en, a_en, r.get("Date", ""), lg)))
-                    except Exception as exc:
-                        logs.append(f"⚠️ Marathon category parser: {type(exc).__name__}")
-                    for src_home, src_away in ((h_en, a_en), (h_ru, a_ru)):
-                        try:
-                            candidates.append(("prognozist_match_centre",
-                                               prognozist_marathon_odds(src_home, src_away)))
-                        except Exception as exc:
-                            logs.append(f"⚠️ Prognozist parser: {type(exc).__name__}")
+                    except Exception:
+                        pass
+                    
+                    # 2. Prognozist (Marathon)
+                    try:
+                        candidates.append(("prognozist_match_centre",
+                                           prognozist_marathon_odds(h_en, a_en)))
+                    except Exception:
+                        pass
+                    
+                    # 3. TheRundown
+                    if not candidates:
+                        rundown_key = (
+                            D.get("meta", {}).get("rundown_key")
+                            or D.get("meta", {}).get("therundown_api_key")
+                            or os.environ.get("THERUNDOWN_API_KEY", "")
+                        )
+                        if rundown_key:
+                            rundown = therundown_odds_fixture(
+                                h_en, a_en, d.strftime("%Y-%m-%d"), lg, rundown_key, logs
+                            )
+                            if rundown:
+                                candidates.append(("therundown", rundown))
+                        else:
+                            logs.append("⚠️ TheRundown: ключ не передан в scanner.py")
 
-                    # Prefer the source that actually prices the model's candidate
-                    # markets; otherwise a 1X2-only feed could hide usable BTTS/totals.
-                    model_picks = {
-                        str(item.get("pick") or "") for item in rows_
-                        if isinstance(item, dict)
-                    }
-                    best_source_score = 0
                     for source_name, candidate in candidates:
                         if not isinstance(candidate, dict):
                             continue
                         valid = {}
-                        for key in ("П1", "X", "П2", "ТБ 2.5", "ТМ 2.5",
-                                    "BTTS да", "BTTS нет"):
+                        for key in ("П1", "X", "П2"):
                             try:
                                 value = float(candidate.get(key))
                                 if 1.01 < value <= 100:
                                     valid[key] = value
                             except (TypeError, ValueError):
                                 continue
-                        score = len(model_picks.intersection(valid))
-                        if score > best_source_score:
+                        if all(key in valid for key in ("П1", "X", "П2")):
                             market_odds = valid
                             odds_source = source_name
-                            best_source_score = score
-
-                    if not market_odds:
-                        rundown_key = (
-                            D.get("meta", {}).get("rundown_key")
-                            or D.get("meta", {}).get("therundown_api_key")
-                            or os.environ.get("THERUNDOWN_API_KEY", "")
-                            or os.environ.get("RUNDOWN_KEY", "")
-                        )
-                        if not rundown_key:
-                            try:
-                                rundown_key = str(
-                                    st.secrets.get(
-                                        "THERUNDOWN_API_KEY",
-                                        st.secrets.get(
-                                            "therundown_api_key",
-                                            st.secrets.get("rundown_key", st.secrets.get("RUNDOWN_KEY", "")),
-                                        ),
-                                    ) or ""
-                                ).strip()
-                            except Exception:
-                                rundown_key = ""
-                        if rundown_key:
-                            rundown = therundown_odds_fixture(
-                                h_en, a_en, d.strftime("%Y-%m-%d"), lg, rundown_key,
-                                logs=logs, league_name=str(r.get("League") or ""),
-                            )
-                            if isinstance(rundown, dict):
-                                valid_rundown = {}
-                                for key in ("П1", "X", "П2", "ТБ 2.5", "ТМ 2.5",
-                                            "BTTS да", "BTTS нет"):
-                                    try:
-                                        value = float(rundown.get(key))
-                                        if 1.01 < value <= 100:
-                                            valid_rundown[key] = value
-                                    except (TypeError, ValueError):
-                                        continue
-                                if valid_rundown:
-                                    market_odds = valid_rundown
-                                    odds_source = "therundown"
+                            break
 
                     if market_odds:
                         funnel_counts["market_got"] += 1
-                        odds_text = " / ".join(
-                            f"{key} {value:.2f}" for key, value in market_odds.items()
-                        )
                         logs.append(
                             f"🏁 Реальные кэфы ({odds_source}): {h_ru} — {a_ru} | "
-                            f"{odds_text}"
-                        )
-                    else:
-                        logs.append(
-                            f"⚠️ Линия не найдена ни в одном парсере: {h_ru} — {a_ru}"
+                            f"П1 {market_odds['П1']:.2f} / X {market_odds['X']:.2f} / "
+                            f"П2 {market_odds['П2']:.2f}"
                         )
                 except Exception as exc:
-                    logs.append(f"⚠️ Ошибка получения линии: {type(exc).__name__}: {str(exc)[:100]}")
+                    logs.append(f"⚠️ Ошибка получения линии: {type(exc).__name__}")
 
+            # Если есть реальные кэфы — используем best_value_market
             if market_odds:
                 chosen_verdict, best = best_value_market(
                     verdict, rows_, market_odds, D["bank"], kelly_frac,
@@ -591,20 +424,17 @@ def render(min_prob, kelly_frac, matrix_n):
             else:
                 funnel_counts["model_only"] += 1
 
-            # ============ FALLBACK: estimated odds ============
-            # Estimated/model fair odds are only a fallback when NO bookmaker
-            # line was found. Never replace a fetched real market with a fair price
-            # just because that market did not pass the value filter.
-            if best is None and not market_odds and verdict.get("is_action"):
+            # ============ FALLBACK: ESTIMATED ============
+            # Если реальных кэфов нет, создаём ставку по оценочному кэфу (paper)
+            if best is None and verdict.get("is_action"):
                 est_odd = verdict.get("fair_odd")
                 if est_odd and est_odd > 1.01:
                     prob_ = float(verdict["prob"])
                     ev_ = prob_ * est_odd - 1
                     min_stake = round(D["bank"] * MIN_STAKE_PCT, 2)
-                    stake_ = max(
-                        kelly(prob_, est_odd, D["bank"], kelly_frac),
-                        min_stake)
+                    stake_ = max(kelly(prob_, est_odd, D["bank"], kelly_frac), min_stake)
                     pick_ = verdict["pick"]
+                    
                     best = (market_type(pick_), pick_, est_odd, ev_, prob_, stake_)
                     verdict["real_odds"] = False
                     verdict["odd"] = est_odd
@@ -612,19 +442,15 @@ def render(min_prob, kelly_frac, matrix_n):
                     odds_source = "estimated"
                     funnel_counts["estimated"] += 1
                     logs.append(
-                        f"📐 ESTIMATED: {h_ru} — {a_ru} | "
-                        f"{pick_} @ {est_odd:.2f}")
+                        f"📐 ESTIMATED BET: {h_ru} — {a_ru} | {pick_} @ {est_odd:.2f}"
+                    )
 
-            if best and odds_source != "estimated":
+            if best:
                 matches_with_best += 1
                 funnel_counts["bet"] += 1
                 logs.append(
                     f"✅ BET: {h_ru} — {a_ru} | "
                     f"{best[1]} @ {best[2]:.2f} ({odds_source})")
-            elif best:
-                logs.append(
-                    f"📐 ESTIMATED ONLY (не рыночный кэф, не ставка): "
-                    f"{h_ru} — {a_ru} | {best[1]} @ {best[2]:.2f}")
             else:
                 logs.append(
                     f"❌ NO BEST: {h_ru} — {a_ru} | "
@@ -724,10 +550,6 @@ def render(min_prob, kelly_frac, matrix_n):
             if isinstance(b, dict) and b.get("status") == "pending"
         }
         for c in cards:
-            # Model fair odds are display-only; never create a pending bet or
-            # deduct bankroll unless a bookmaker market price was found.
-            if c.get("odds_source") == "estimated":
-                continue
             b = c.get("best")
             if not b:
                 continue
@@ -746,8 +568,8 @@ def render(min_prob, kelly_frac, matrix_n):
                 "prob": prob, "status": "pending", "strat": "value",
                 "odds_source": c.get("odds_source", "estimated"),
                 "mode": "real" if c.get("odds_source") in {
-                    "fdorg", "odds_api", "prognozist_marathon",
-                    "marathon_category", "prognozist_match_centre", "therundown"
+                    "prognozist_marathon", "marathon_category",
+                    "prognozist_match_centre", "therundown"
                 } else "paper",
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
