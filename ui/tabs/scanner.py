@@ -283,16 +283,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
              "По вероятности (высокие сначала)",
              "По дате (ближайшие сначала)"],
             key="scanner_sort")
-        show_hidden = c2.checkbox("Показывать слабые", False,
+        show_hidden = c2.checkbox("Только сильные модели", False,
                                    key="scanner_show_hidden")
         group_by_day = c3.checkbox("Группировать по дням", True,
                                     key="scanner_group_by_day")
 
         if show_hidden:
-            cards_view = all_cards
-        else:
             cards_view = [c for c in all_cards
                           if (c.get("verdict") or {}).get("is_action")]
+        else:
+            # Manual bookmaker odds should be available for every scanned fixture.
+            cards_view = all_cards
 
         if sort_mode.startswith("По дате"):
             cards_view.sort(key=lambda c: parse_card_date(c))
