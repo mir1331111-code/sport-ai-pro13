@@ -159,6 +159,53 @@ def _probs(prediction):
     return {"H": prediction["p1"], "D": prediction["x"], "A": prediction["p2"]}
 
 
+def _binary_metrics(records, *, bootstrap_samples=1000, seed=31415):
+    """Brier/log-loss and fixture-bootstrap intervals for binary markets."""
+    if not records:
+        return {"n": 0, "brier": None, "log_loss": None, "confidence_intervals_95": {}}
+    scores = []
+    for probabilities, outcome in records:
+        p = max(1e-15, min(1.0 - 1e-15, float(probabilities["over"])))
+        y = float(outcome == "over")
+        scores.append((((p-y)**2 + ((1-p)-(1-y))**2) / 2.0,
+                       -(y * math.log(p) + (1-y) * math.log(1-p))))
+    n = len(scores)
+    names = ("brier", "log_loss")
+    means = [sum(row[i] for row in scores) / n for i in range(2)]
+    rng = random.Random(seed)
+    samples = {name: [] for name in names}
+    for _ in range(max(0, int(bootstrap_samples))):
+        picked = [scores[rng.randrange(n)] for _ in range(n)]
+        for i, name in enumerate(names):
+            samples[name].append(sum(row[i] for row in picked) / n)
+    intervals = {}
+    for name in names:
+        values = sorted(samples[name])
+        intervals[name] = ({"low": values[int(.025*(len(values)-1))],
+                            "high": values[int(.975*(len(values)-1))]}
+                           if values else {"low": None, "high": None})
+    return {"n": n, **dict(zip(names, means)), "confidence_intervals_95": intervals}
+
+
+def _total_market_probs(row):
+    """Return no-vig over/under 2.5 probabilities and source from historical odds."""
+    for over_key, under_key in (
+        ("B365>2.5", "B365<2.5"), ("Avg>2.5", "Avg<2.5"),
+        ("Max>2.5", "Max<2.5"), ("P>2.5", "P<2.5"),
+    ):
+        try:
+            over_odd, under_odd = float(row.get(over_key)), float(row.get(under_key))
+            if not (math.isfinite(over_odd) and math.isfinite(under_odd)
+                    and over_odd > 1.0 and under_odd > 1.0):
+                continue
+            over_raw, under_raw = 1.0 / over_odd, 1.0 / under_odd
+            total = over_raw + under_raw
+            return {"over": over_raw / total, "under": under_raw / total}, f"{over_key}/{under_key}"
+        except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+            continue
+    return None, None
+
+
 def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 180.0, bootstrap_samples: int = 1000) -> dict:
     """Compare goals-only and xG engines on identical chronological fixtures.
 
