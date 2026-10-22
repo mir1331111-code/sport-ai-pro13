@@ -581,7 +581,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 for item in rows_
             )
 
-            if has_model_candidate:
+            if has_model_candidate or (odds_key and getattr(engine, "total_market_validation", False)):
                 try:
                     candidates = []
 
