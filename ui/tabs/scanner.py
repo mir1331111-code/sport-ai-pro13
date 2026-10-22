@@ -358,7 +358,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             for c in cards_view:
                 st.markdown(render_verdict_card(c, min_prob),
                             unsafe_allow_html=True)
-                _render_manual_odds_block(c, D, kelly_frac, min_prob)
+                _render_manual_odds_block(c, D, kelly_frac, min_prob, min_edge)
 
         st.caption("✅ Показано " + str(len(cards_view)) + " из "
                    + str(len(all_cards)))
