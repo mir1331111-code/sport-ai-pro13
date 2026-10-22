@@ -95,6 +95,9 @@ def _parse_events(html: str, div_code: str = "") -> list:
                 marked = bool(team_marker.search(cls)) or bool(re.search(
                     r'\bdata-(team|member|participant|competitor)(-name)?\s*=',
                     attrs, re.I,
+                )) or bool(re.search(
+                    r'\bhref\s*=\s*([\'"])[^\'"]*/(?:team|member|participant|competitor)s?/[^\'"]*\1',
+                    attrs, re.I,
                 ))
                 if not marked or ignored_marker.search(cls):
                     continue
