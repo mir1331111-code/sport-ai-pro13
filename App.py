@@ -37,6 +37,7 @@ from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
                     AUTO_SETTLE_THROTTLE_SEC)
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
+from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
 from data.sources import parse_date, fdorg_match_result  # noqa: E402
 from betting.settlement import determine_outcome  # noqa: E402
 from ui import theme  # noqa: E402
@@ -64,6 +65,24 @@ def _configured_secret(*keys):
     except Exception:
         pass
     return ""
+def _api_key_default(storage_key, env_name, *secret_names):
+    """Configured deployment secrets take precedence over the private local UI store."""
+    env_value = os.environ.get(env_name, "").strip()
+    if env_value:
+        return env_value
+    configured = _configured_secret(env_name, *secret_names)
+    if configured:
+        return configured
+    return _saved_ui_secrets.get(storage_key, "")
+
+
+def _configured_key_value(env_names, secret_names):
+    for name in env_names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return _configured_secret(*secret_names)
+
 FINISHED_STATUSES = {"finished", "ft", "final", "closed", "ended",
                      "full-time", "full_time", "completed"}
 
@@ -190,6 +209,8 @@ if "data" not in st.session_state:
 
 D = st.session_state.data
 D.setdefault("meta", {})
+# Credentials live outside portfolio data and backup/sync files.
+_saved_ui_secrets = load_local_secrets()
 # API credentials are session/env/secrets-only, never persisted in local state.
 _secret_keys = ("fdorg_token", "odds_api_key", "api_football_key",
                 "therundown_api_key", "rundown_key", "llm_api_key")
@@ -542,20 +563,20 @@ with st.sidebar:
 
     fdorg_token = st.text_input(
         "football-data.org token",
-        value=os.environ.get("FDORG_TOKEN", "") or _configured_secret("FDORG_TOKEN", "fdorg_token"),
+        value=_api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token"),
         type="password", key="fdorg_token_input")
     odds_key = st.text_input(
         "The Odds API key (опц.)",
-        value=os.environ.get("ODDS_API_KEY", "") or _configured_secret("ODDS_API_KEY", "odds_api_key"),
+        value=_api_key_default("odds_api_key", "ODDS_API_KEY", "odds_api_key"),
         type="password", key="odds_api_key_input")
     api_football_key = st.text_input(
         "API-Football key",
-        value=os.environ.get("API_FOOTBALL_KEY", "") or _configured_secret("API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY"),
+        value=_api_key_default("api_football_key", "API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY"),
         type="password", key="api_football_key_input",
         help="API-Football v3: реальные предматчевые коэффициенты. Доступность зависит от тарифа и матча.")
     rundown_key = st.text_input(
         "TheRundown free soccer odds key (опц.)",
-        value=os.environ.get("THERUNDOWN_API_KEY", "") or _configured_secret("THERUNDOWN_API_KEY", "therundown_api_key", "rundown_key"),
+        value=_api_key_default("therundown_api_key", "THERUNDOWN_API_KEY", "therundown_api_key", "rundown_key"),
         type="password", key="therundown_api_key_input",
         help="Бесплатный ключ: предматчевые коэффициенты 1X2 с задержкой около 5 минут.")
 
@@ -569,8 +590,24 @@ with st.sidebar:
                             index=prov_keys.index(cur) if cur in prov_keys else 0)
     llm_key = st.text_input(
         "LLM key",
-        value=os.environ.get("LLM_API_KEY", "") or _configured_secret("LLM_API_KEY", "llm_api_key"),
+        value=_api_key_default("llm_api_key", "LLM_API_KEY", "llm_api_key"),
         type="password", key="llm_api_key_input")
+    # Save only UI-entered keys, separate from portfolio data and its Gist sync.
+    _widget_key_map = {
+        "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
+        "odds_api_key": ("odds_api_key_input", ("ODDS_API_KEY",), ("ODDS_API_KEY", "odds_api_key")),
+        "api_football_key": ("api_football_key_input", ("API_FOOTBALL_KEY",), ("API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY")),
+        "therundown_api_key": ("therundown_api_key_input", ("THERUNDOWN_API_KEY",), ("THERUNDOWN_API_KEY", "therundown_api_key", "rundown_key")),
+        "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
+    }
+    _user_entered_keys = {}
+    for _storage_key, (_widget_key, _env_names, _secret_names) in _widget_key_map.items():
+        _current = str(st.session_state.get(_widget_key, "") or "").strip()
+        _configured = _configured_key_value(_env_names, _secret_names)
+        if _current and _current != _configured:
+            _user_entered_keys[_storage_key] = _current
+    if not save_local_secrets(_user_entered_keys):
+        st.caption("⚠️ Не удалось сохранить ключи на диске. Для постоянного хранения настройте Secrets/Environment на хостинге.")
     if llm_prov != D["meta"].get("llm_provider"):
         D["meta"]["llm_provider"] = llm_prov
         usage.set_local_data(D)
