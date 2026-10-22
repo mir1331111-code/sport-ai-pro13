@@ -208,7 +208,9 @@ def _auto_settle(D, force: bool = False):
     bets = list(D2.get("bets", []))
     closed = tried = 0
     now = datetime.now()
-    token = (D.get("meta", {}).get("fdorg_token") or "").strip()
+    token = (st.session_state.get("fdorg_token_input", "")
+             or os.environ.get("FDORG_TOKEN", "")
+             or _configured_secret("FDORG_TOKEN", "fdorg_token")).strip()
     log.info("START: %d bets | remaining=%s", len(bets), usage.settle_remaining())
 
     for idx, b in enumerate(bets):
