@@ -1,6 +1,6 @@
 import unittest
 
-from model.walk_forward import _market_probs, _metrics
+from model.walk_forward import _market_probs, _metrics, _paired_differences
 
 
 class WalkForwardMarketBenchmarkTests(unittest.TestCase):
@@ -43,6 +43,16 @@ class WalkForwardMarketBenchmarkTests(unittest.TestCase):
         self.assertIsNotNone(result["rps_hda_order"])
         self.assertLessEqual(result["confidence_intervals_95"]["log_loss"]["low"],
                              result["confidence_intervals_95"]["log_loss"]["high"])
+
+    def test_paired_bootstrap_compares_same_fixtures(self):
+        candidate = [({"H": .6, "D": .25, "A": .15}, "H"),
+                     ({"H": .2, "D": .3, "A": .5}, "A")]
+        market = [({"H": .5, "D": .3, "A": .2}, "H"),
+                  ({"H": .25, "D": .3, "A": .45}, "A")]
+        result = _paired_differences(candidate, market, bootstrap_samples=50, seed=3)
+        self.assertEqual(result["n"], 2)
+        self.assertIn("log_loss", result["differences"])
+        self.assertIn("low", result["confidence_intervals_95"]["brier"])
 
 if __name__ == "__main__":
     unittest.main()
