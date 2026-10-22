@@ -129,6 +129,32 @@ def _market_probs(row, method="proportional"):
     return None, None
 
 
+def _paired_differences(left_records, right_records, *, bootstrap_samples=1000, seed=2718):
+    """Paired left-minus-right score differences on the same fixtures."""
+    if not left_records or len(left_records) != len(right_records):
+        return {"n": 0, "differences": {}, "confidence_intervals_95": {}}
+    left = [_record_scores(r) for r in left_records]
+    right = [_record_scores(r) for r in right_records]
+    names = ("brier", "log_loss", "rps_hda_order", "accuracy")
+    diffs = [[a[i] - b[i] for i in range(4)] for a, b in zip(left, right)]
+    means = [sum(row[i] for row in diffs) / len(diffs) for i in range(4)]
+    rng = random.Random(seed)
+    samples = {name: [] for name in names}
+    for _ in range(max(0, int(bootstrap_samples))):
+        picked = [diffs[rng.randrange(len(diffs))] for _ in range(len(diffs))]
+        for i, name in enumerate(names):
+            samples[name].append(sum(row[i] for row in picked) / len(picked))
+    intervals = {}
+    for name in names:
+        values = sorted(samples[name])
+        intervals[name] = ({"low": values[int(.025 * (len(values)-1))],
+                            "high": values[int(.975 * (len(values)-1))]}
+                           if values else {"low": None, "high": None})
+    return {"n": len(diffs), "differences": dict(zip(names, means)),
+            "confidence_intervals_95": intervals,
+            "note": "Negative values favor left model for proper scoring rules; positive accuracy difference favors left."}
+
+
 def _probs(prediction):
     return {"H": prediction["p1"], "D": prediction["x"], "A": prediction["p2"]}
 
@@ -241,6 +267,9 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
         "candidate_on_market_rows": metrics["candidate_on_market"],
         "market_sources": market_sources,
         "market_devig_methods": {name: metrics[name] for name in ("market", "market_power", "market_shin") if name in metrics},
+        "candidate_minus_market": _paired_differences(records["candidate_on_market"], records["market"], bootstrap_samples=bootstrap_samples, seed=2720),
+        "candidate_minus_market_power": _paired_differences(records.get("candidate_on_market_power", []), records.get("market_power", []), bootstrap_samples=bootstrap_samples, seed=2721),
+        "candidate_minus_market_shin": _paired_differences(records.get("candidate_on_market_shin", []), records.get("market_shin", []), bootstrap_samples=bootstrap_samples, seed=2722),
         "half_life_days": float(half_life_days),
         "bootstrap_samples": int(bootstrap_samples),
         "delta_candidate_minus_baseline": {
