@@ -186,6 +186,15 @@ if "data" not in st.session_state:
 
 D = st.session_state.data
 D.setdefault("meta", {})
+# API credentials are session/env/secrets-only, never persisted in local state.
+_secret_keys = ("fdorg_token", "odds_api_key", "api_football_key",
+                "therundown_api_key", "rundown_key", "llm_api_key")
+_secrets_removed = False
+for _key in _secret_keys:
+    if D["meta"].pop(_key, None) is not None:
+        _secrets_removed = True
+if _secrets_removed:
+    usage.set_local_data(D)
 D.setdefault("bets", [])
 if "initial_bank" not in D["meta"]:
     D["meta"]["initial_bank"] = float(D.get("bank", DEFAULT_BANK))
@@ -527,40 +536,22 @@ with st.sidebar:
 
     fdorg_token = st.text_input(
         "football-data.org token",
-        value=D["meta"].get("fdorg_token") or os.environ.get("FDORG_TOKEN", ""),
-        type="password")
-    if fdorg_token != D["meta"].get("fdorg_token", ""):
-        D["meta"]["fdorg_token"] = fdorg_token
-        usage.set_local_data(D)
-
+        value=os.environ.get("FDORG_TOKEN", "") or _configured_secret("FDORG_TOKEN", "fdorg_token"),
+        type="password", key="fdorg_token_input")
     odds_key = st.text_input(
         "The Odds API key (опц.)",
-        value=(D["meta"].get("odds_api_key") or os.environ.get("ODDS_API_KEY", "") or _configured_secret("ODDS_API_KEY", "odds_api_key")),
-        type="password")
-    if odds_key != D["meta"].get("odds_api_key", ""):
-        D["meta"]["odds_api_key"] = odds_key
-        usage.set_local_data(D)
-
+        value=os.environ.get("ODDS_API_KEY", "") or _configured_secret("ODDS_API_KEY", "odds_api_key"),
+        type="password", key="odds_api_key_input")
     api_football_key = st.text_input(
         "API-Football key",
-        value=(D["meta"].get("api_football_key") or os.environ.get("API_FOOTBALL_KEY", "")
-               or _configured_secret("API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY")),
-        type="password",
+        value=os.environ.get("API_FOOTBALL_KEY", "") or _configured_secret("API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY"),
+        type="password", key="api_football_key_input",
         help="API-Football v3: реальные предматчевые коэффициенты. Доступность зависит от тарифа и матча.")
-    if api_football_key != D["meta"].get("api_football_key", ""):
-        D["meta"]["api_football_key"] = api_football_key
-        usage.set_local_data(D)
-
     rundown_key = st.text_input(
         "TheRundown free soccer odds key (опц.)",
-        value=(D["meta"].get("therundown_api_key") or D["meta"].get("rundown_key")
-               or os.environ.get("THERUNDOWN_API_KEY", "")
-               or _configured_secret("THERUNDOWN_API_KEY", "therundown_api_key", "rundown_key")),
-        type="password",
+        value=os.environ.get("THERUNDOWN_API_KEY", "") or _configured_secret("THERUNDOWN_API_KEY", "therundown_api_key", "rundown_key"),
+        type="password", key="therundown_api_key_input",
         help="Бесплатный ключ: предматчевые коэффициенты 1X2 с задержкой около 5 минут.")
-    if rundown_key != D["meta"].get("therundown_api_key", ""):
-        D["meta"]["therundown_api_key"] = rundown_key
-        usage.set_local_data(D)
 
     st.markdown(
         "<div style='font-size:.72rem;color:#8b93a7;margin-top:14px;"
@@ -572,12 +563,10 @@ with st.sidebar:
                             index=prov_keys.index(cur) if cur in prov_keys else 0)
     llm_key = st.text_input(
         "LLM key",
-        value=D["meta"].get("llm_api_key") or os.environ.get("LLM_API_KEY", ""),
-        type="password")
-    if (llm_prov != D["meta"].get("llm_provider")
-            or llm_key != D["meta"].get("llm_api_key", "")):
+        value=os.environ.get("LLM_API_KEY", "") or _configured_secret("LLM_API_KEY", "llm_api_key"),
+        type="password", key="llm_api_key_input")
+    if llm_prov != D["meta"].get("llm_provider"):
         D["meta"]["llm_provider"] = llm_prov
-        D["meta"]["llm_api_key"] = llm_key
         usage.set_local_data(D)
 
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
