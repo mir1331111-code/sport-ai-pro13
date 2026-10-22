@@ -2,7 +2,8 @@ import unittest
 
 from model.walk_forward import (_market_probs, _metrics, _paired_differences,
                                 _binary_metrics, _total_market_probs,
-                                _binary_paired_differences, totals_market_is_validated)
+                                _binary_paired_differences, totals_market_is_validated,
+                                walk_forward_compare)
 
 
 class WalkForwardMarketBenchmarkTests(unittest.TestCase):
@@ -74,6 +75,21 @@ class WalkForwardMarketBenchmarkTests(unittest.TestCase):
         self.assertIsNotNone(result["log_loss"])
         self.assertLessEqual(result["confidence_intervals_95"]["brier"]["low"],
                              result["confidence_intervals_95"]["brier"]["high"])
+
+    def test_walk_forward_report_includes_paired_totals_benchmark(self):
+        rows = [
+            {"Date": "2024-01-01", "Div": "E0", "HomeTeam": "A", "AwayTeam": "B",
+             "FTHG": 2, "FTAG": 1, "B365>2.5": 1.80, "B365<2.5": 2.05},
+            {"Date": "2024-01-08", "Div": "E0", "HomeTeam": "B", "AwayTeam": "C",
+             "FTHG": 0, "FTAG": 0, "B365>2.5": 2.10, "B365<2.5": 1.75},
+            {"Date": "2024-01-15", "Div": "E0", "HomeTeam": "A", "AwayTeam": "C",
+             "FTHG": 1, "FTAG": 2, "BbAv>2.5": 1.95, "BbAv<2.5": 1.90},
+        ]
+        result = walk_forward_compare(rows, bootstrap_samples=0, totals_bootstrap_samples=0)
+        self.assertEqual(result["goals_over25"]["n"], 3)
+        self.assertEqual(result["goals_over25_market"]["n"], 3)
+        self.assertEqual(result["goals_over25_candidate_minus_market"]["n"], 3)
+        self.assertIn("brier", result["goals_over25_candidate_minus_market"]["differences"])
 
     def test_power_and_shin_methods_return_valid_probabilities(self):
         row = {"B365H": "2.00", "B365D": "3.50", "B365A": "4.00"}
