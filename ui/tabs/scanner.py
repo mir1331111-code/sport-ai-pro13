@@ -159,9 +159,9 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                     market_options[f"{prefix}: меньше {line}"] = (f"{'Угл' if stat_market == 'corners' else 'Карты'} ТМ {line}", 1.0 - over_p)
     default_label = next((name for name, item in market_options.items() if item[0] == v.get("pick")), "Победа хозяев (П1)")
     selected_label = st.selectbox("Рынок для ручной ставки", list(market_options), index=list(market_options).index(default_label), key=f"market_{c.get('match','').replace(' ','_')}")
-    pick, prob = market_options[selected_label]
+    pick, model_prob = market_options[selected_label]
     label = selected_label
-    fair_odd = (1.0 / prob) if prob > 0 else 1.0
+    fair_odd = (1.0 / model_prob) if model_prob > 0 else 1.0
     
     key_base = f"manual_{c.get('match', '')}_{pick}".replace(" ", "_").replace("/", "_")
     input_key = f"odd_{key_base}"
@@ -190,9 +190,12 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     )
     
     if manual_odd > 1.01:
+        market_implied = 1.0 / manual_odd
+        prob = max(1e-6, min(1.0 - 1e-6,
+                             market_implied + 0.40 * (model_prob - market_implied)))
         ev = prob * manual_odd - 1
-        edge = prob - (1.0 / manual_odd)
-        stake = kelly(prob, manual_odd, D["bank"], kelly_frac)
+        edge = prob - market_implied
+        stake = kelly(prob, manual_odd, D["bank"], kelly_frac, cap=0.02)
         
         col_metrics.markdown(
             f"<div style='font-size:.9rem;line-height:1.5;'>"
@@ -202,7 +205,11 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             f"</div>", unsafe_allow_html=True
         )
         
-        passed = (prob >= min_prob and edge >= min_edge and ev >= min_ev and stake > 0)
+        # Only 1X2 is enabled for staking until totals/BTTS/corners/cards pass
+        # their own out-of-sample calibration and market benchmark.
+        market_is_validated = market_type(pick) == "1X2"
+        passed = (market_is_validated and prob >= min_prob and edge >= min_edge
+                  and ev >= min_ev and stake > 0)
         if col_btn.button("➕ В портфель", key=btn_key, use_container_width=True, disabled=not passed):
             D2 = dict(D)
             new_bet = {
@@ -210,7 +217,10 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                 "div": c["div"], "league": c["league"],
                 "market": market_type(pick), "pick": pick, 
                 "odds": manual_odd, "stake": stake,
-                "prob": prob, "status": "pending", "strat": "manual",
+                "prob": prob, "model_prob": model_prob,
+                "market_implied_raw": market_implied,
+                "probability_method": "market_blend_0.4_model_delta",
+                "status": "pending", "strat": "manual",
                 "odds_source": "manual",
                 "mode": "real",
                 "date": datetime.now().strftime("%d.%m.%Y"),
@@ -229,6 +239,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                 st.rerun()
             else:
                 st.warning("Эта ставка уже есть в портфеле.")
+        if not market_is_validated:
+            col_btn.caption("Пока доступен только рынок 1X2: остальные рынки ждут отдельной проверки.")
     else:
         col_metrics.caption("Введи кэф > 1.01")
 
