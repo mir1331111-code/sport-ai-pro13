@@ -87,9 +87,9 @@ def _parse_odds(event: dict) -> dict:
                     elif label in ("away", "2"):
                         acc["П2"].append(price)
                 elif "over under" in market or "goals over under" in market:
-                    if re.search(r"over\\s*2[.,]5", label):
+                    if re.search(r"over\s*2[.,]5", label):
                         acc["ТБ 2.5"].append(price)
-                    elif re.search(r"under\\s*2[.,]5", label):
+                    elif re.search(r"under\s*2[.,]5", label):
                         acc["ТМ 2.5"].append(price)
                 elif "both teams score" in market or market == "btts":
                     if label in ("yes", "both teams to score yes"):
