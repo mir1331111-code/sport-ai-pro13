@@ -27,6 +27,25 @@ LLM_TOP_N = 8
 MAX_STAKE_PCT = 0.05
 
 
+def _runtime_secret(session_key: str, *names: str) -> str:
+    """Read credentials from the current password widget, environment, or Streamlit secrets."""
+    value = str(st.session_state.get(session_key, "") or "").strip()
+    if value:
+        return value
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    try:
+        for name in names:
+            value = str(st.secrets.get(name, "") or "").strip()
+            if value:
+                return value
+    except Exception:
+        pass
+    return ""
+
+
 def _safe_filter(rows):
     if not isinstance(rows, list):
         return []
@@ -399,7 +418,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
 
-        token = D.get("meta", {}).get("fdorg_token", "").strip()
+        token = _runtime_secret("fdorg_token_input", "FDORG_TOKEN", "fdorg_token")
         if token:
             logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
         else:
@@ -432,7 +451,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         cards = []
         matches_with_best = 0
         xg_used_count = 0
-        odds_key = D.get("meta", {}).get("odds_api_key", "")
+        odds_key = _runtime_secret("odds_api_key_input", "ODDS_API_KEY", "odds_api_key")
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
@@ -613,7 +632,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         logs.append(f"🎯 BET: {matches_with_best}")
 
         # ============ LLM ============
-        llm_key = D.get("meta", {}).get("llm_api_key", "")
+        llm_key = _runtime_secret("llm_api_key_input", "LLM_API_KEY", "llm_api_key")
         llm_prov = D.get("meta", {}).get("llm_provider",
                                           "Groq (бесплатно, быстро)")
         llm_model = D.get("meta", {}).get("llm_model", "")
