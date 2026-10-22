@@ -512,7 +512,7 @@ def render(min_prob, kelly_frac, matrix_n):
                         if rundown_key:
                             rundown = therundown_odds_fixture(
                                 h_en, a_en, d.strftime("%Y-%m-%d"), lg, rundown_key,
-                                logs=logs,
+                                logs=logs, league_name=str(r.get("League") or ""),
                             )
                             if isinstance(rundown, dict):
                                 valid_rundown = {}
