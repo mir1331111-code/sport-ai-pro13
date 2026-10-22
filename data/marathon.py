@@ -75,15 +75,53 @@ def _parse_events(html: str, div_code: str = "") -> list:
     for event_id, block in blocks:
         try:
             names = []
-            for m in re.finditer(r"<span\b[^>]*>(.*?)</span>", block, re.I | re.S):
-                opening = block[m.start():block.find(">", m.start()) + 1]
-                if has_class(opening, "member-name"):
-                    name = text_of(m.group(1))
-                    if name:
-                        names.append(name)
+            # Prognozist has changed its team markup: accept common class names
+            # on spans, links and divs rather than requiring span.member-name.
+            team_marker = re.compile(
+                r"(member|team|participant|competitor)[-_ ]?(name|link|title)?",
+                re.I,
+            )
+            ignored_marker = re.compile(
+                r"price|odd|coef|selection|score|date|time|league|country|sport",
+                re.I,
+            )
+            for m in re.finditer(
+                r"<(span|a|div|strong|b)\b([^>]*)>(.*?)</\1>",
+                block, re.I | re.S,
+            ):
+                attrs, inner = m.group(2) or "", m.group(3) or ""
+                cls_m = re.search(r'\bclass\s*=\s*([\'"])(.*?)\1', attrs, re.I | re.S)
+                cls = cls_m.group(2) if cls_m else ""
+                marked = bool(team_marker.search(cls)) or bool(re.search(
+                    r'\bdata-(team|member|participant|competitor)(-name)?\s*=',
+                    attrs, re.I,
+                ))
+                if not marked or ignored_marker.search(cls):
+                    continue
+                name = re.sub(r"\s+", " ", text_of(inner)).strip(" -:|")
+                if (name and len(name) >= 2
+                        and not re.fullmatch(r"[\d.,:+-]+", name)
+                        and name not in names):
+                    names.append(name)
+
+            # Last fallback: some versions expose names only as data attributes.
+            if len(names) < 2:
+                for attr_name in ("data-team-name", "data-member-name",
+                                  "data-participant-name"):
+                    for match in re.finditer(
+                        r'\b' + re.escape(attr_name) + r'\s*=\s*([\'"])(.*?)\1',
+                        block, re.I | re.S,
+                    ):
+                        name = re.sub(r"\s+", " ", text_of(match.group(2))).strip(" -:|")
+                        if (name and len(name) >= 2
+                                and re.search(r"[A-Za-zА-Яа-я]", name)
+                                and name not in names):
+                            names.append(name)
+
             if len(names) < 2:
                 _log(f"SKIP event {event_id}: found only {len(names)} team names")
                 continue
+            names = names[:2]
 
             date_str = ""
             for m in re.finditer(r"<td\b[^>]*>(.*?)</td>", block, re.I | re.S):
@@ -140,7 +178,7 @@ def fetch_league_events(div_code: str) -> list:
     if not cat_id:
         return []
 
-    ck = f"marathon_cat_v6_{cat_id}"
+    ck = f"marathon_cat_v7_{cat_id}"
     cached = cache_get(ck, 300)
     if cached is not None:
         return cached if isinstance(cached, list) else []
