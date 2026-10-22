@@ -52,7 +52,7 @@ SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)
 RETRY_EVERY = timedelta(minutes=60)
 STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 20
-SECRET_KEYS = ("fdorg_token", "odds_api_key", "therundown_api_key", "llm_api_key")
+SECRET_KEYS = ("fdorg_token", "odds_api_key", "therundown_api_key", "api_football_key", "llm_api_key")
 
 
 def _configured_secret(*keys):
