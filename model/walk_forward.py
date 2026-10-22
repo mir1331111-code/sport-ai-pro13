@@ -160,9 +160,6 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
                 model.calib_outcomes.extend(one_hot)
                 if model.match_count % 150 == 149:
                     model.refit_calibrator()
-            baseline.refit_calibrator()
-            candidate.refit_calibrator()
-            temporal_goals.refit_calibrator()
             baseline.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
