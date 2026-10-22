@@ -1,5 +1,7 @@
 # Local state, databases, credentials and generated caches
 .env
+.neuro_secrets.json
+.neuro_secrets.json.*.tmp
 .env.*
 !.env.example
 .streamlit/secrets.toml
