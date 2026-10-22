@@ -330,11 +330,20 @@ def refine_with_real_odds(
 
         return verdict, None
 
-    prob = float(verdict["prob"])
+    model_prob = float(verdict["prob"])
+    market_implied = 1.0 / real_odd
+    # Conservative single-price blend: raw implied probability includes margin,
+    # so it is not described as de-vigged. Blend weight is fixed pending OOF fit.
+    prob = max(1e-6, min(1.0 - 1e-6,
+                         market_implied + 0.40 * (model_prob - market_implied)))
 
     market_edge = edge(prob, real_odd)
     ev = expected_value(prob, real_odd)
 
+    verdict["model_prob"] = model_prob
+    verdict["market_implied_raw"] = market_implied
+    verdict["prob"] = prob
+    verdict["probability_method"] = "market_blend_0.4_model_delta"
     verdict["odd"] = real_odd
     verdict["real_odds"] = True
     verdict["edge"] = market_edge
