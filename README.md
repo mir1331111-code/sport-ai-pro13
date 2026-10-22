@@ -45,3 +45,12 @@ The scanner merges fixtures from football-data.org (when a token is configured),
 Historical engine training keeps the original priority leagues first and then includes every configured seasonal CSV division, plus English League One/Two and German 3. Liga codes. A configured division with no current CSV data is skipped naturally by the source; it no longer disappears merely because it was omitted from a hard-coded 15-league list.
 
 The engine cache fingerprint is bumped to v13.4.3 so deployments rebuild the model with the expanded training coverage. The scanner builds a cross-league **Best picks of the day** shortlist using available real bookmaker prices, minimum model edge and expected-value filters, and positive fractional Kelly. Model fair odds are never treated as bookmaker prices or used to create paper bets. If no priced candidate passes the filters, the shortlist reports no qualified value picks. The ranking is a decision aid, not a guarantee of profit.
+
+
+## Manual odds and historical corners/cards
+
+The scanner's portfolio flow is manual-only: a scan saves forecasts and never creates or funds a bet. A user selects a market, enters the bookmaker's decimal price, and the portfolio button is enabled only when probability, minimum Edge, EV, and fractional Kelly filters pass. Estimated/fair odds are not prefilled as bookmaker prices.
+
+Markets currently exposed in the manual selector include 1X2, goals over/under 2.5, BTTS yes/no, total corners over/under 8.5/9.5/10.5, and total cards over/under 3.5/4.5/5.5. Corner/card options are shown only where the historical feed contains at least 30 observed match rows for that league/market.
+
+The new historical statistics baseline learns from football-data.co.uk columns `HC`, `AC`, `HY`, `AY` and recorded `HR`, `AR`, using league rates and same-venue team rates. It is trained from the same previous/current seasonal CSVs as the goals engine, and the cache fingerprint was bumped to force retraining. Missing stats are not imputed as zero. Corner/card totals use a Poisson approximation; this is an initial baseline, **not yet a validated or calibrated betting model**. Backtest it chronologically against an untouched holdout before treating probabilities as reliable. These markets must be settled using actual corner/card results, not the final goal score.
