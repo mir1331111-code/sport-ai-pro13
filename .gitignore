@@ -1,0 +1,22 @@
+# Local state, databases, credentials and generated caches
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+neuro_local.json
+neuro.db
+*.db
+*.sqlite
+*.sqlite3
+*.pkl
+*.pickle
+*.pkl.gz
+.cache/
+cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.DS_Store
