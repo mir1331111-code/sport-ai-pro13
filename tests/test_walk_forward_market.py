@@ -1,7 +1,8 @@
 import unittest
 
 from model.walk_forward import (_market_probs, _metrics, _paired_differences,
-                                _binary_metrics, _total_market_probs)
+                                _binary_metrics, _total_market_probs,
+                                _binary_paired_differences, totals_market_is_validated)
 
 
 class WalkForwardMarketBenchmarkTests(unittest.TestCase):
@@ -32,6 +33,34 @@ class WalkForwardMarketBenchmarkTests(unittest.TestCase):
         self.assertEqual(source, "B365>2.5/B365<2.5")
         self.assertAlmostEqual(sum(probabilities.values()), 1.0)
         self.assertGreater(probabilities["over"], probabilities["under"])
+
+    def test_betbrain_totals_columns_are_supported(self):
+        probabilities, source = _total_market_probs({
+            "BbAv>2.5": "1.85", "BbAv<2.5": "2.00"
+        })
+        self.assertEqual(source, "BbAv>2.5/BbAv<2.5")
+        self.assertAlmostEqual(sum(probabilities.values()), 1.0)
+
+    def test_paired_totals_comparison_and_validation_gate(self):
+        candidate = [({"over": 0.80, "under": 0.20}, "over")] * 600
+        market = [({"over": 0.55, "under": 0.45}, "over")] * 600
+        result = _binary_paired_differences(candidate, market, bootstrap_samples=100, seed=4)
+        self.assertEqual(result["n"], 600)
+        self.assertLess(result["differences"]["brier"], 0)
+        self.assertLess(result["confidence_intervals_95"]["brier"]["high"], 0)
+        self.assertTrue(totals_market_is_validated(result, min_n=500))
+        self.assertFalse(totals_market_is_validated(result, min_n=601))
+
+    def test_totals_validation_fails_if_confidence_interval_crosses_zero(self):
+        report = {
+            "n": 700,
+            "differences": {"brier": -0.01, "log_loss": -0.02},
+            "confidence_intervals_95": {
+                "brier": {"low": -0.03, "high": 0.01},
+                "log_loss": {"low": -0.04, "high": -0.01},
+            },
+        }
+        self.assertFalse(totals_market_is_validated(report))
 
     def test_binary_metrics_report_brier_log_loss_and_intervals(self):
         records = [
