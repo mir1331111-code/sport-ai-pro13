@@ -549,25 +549,20 @@ class Engine:
         # Силы атаки / защиты
         # ---------------------------------------------------------
 
-        attack_home = (
-            self._m(sh["hs"], lh_g, sh["hs_dates"], match_date)
-            / lh_g
-        )
+        # Empirical-Bayes shrinkage toward league scoring rates. Sparse team
+        # samples should not create extreme attack/defence multipliers.
+        shrink_k = 6.0
 
-        defense_home = (
-            self._m(sh["hc"], la_g, sh["hc_dates"], match_date)
-            / la_g
-        )
+        def shrunk_rate(values, dates, league_rate):
+            if not values:
+                return league_rate
+            team_rate = self._m(values, league_rate, dates, match_date)
+            return (team_rate * len(values) + shrink_k * league_rate) / (len(values) + shrink_k)
 
-        attack_away = (
-            self._m(sa["as"], la_g, sa["as_dates"], match_date)
-            / la_g
-        )
-
-        defense_away = (
-            self._m(sa["ac"], lh_g, sa["ac_dates"], match_date)
-            / lh_g
-        )
+        attack_home = shrunk_rate(sh["hs"], sh["hs_dates"], lh_g) / lh_g
+        defense_home = shrunk_rate(sh["hc"], sh["hc_dates"], la_g) / la_g
+        attack_away = shrunk_rate(sa["as"], sa["as_dates"], la_g) / la_g
+        defense_away = shrunk_rate(sa["ac"], sa["ac_dates"], lh_g) / lh_g
 
         # xG is blended only when this league has a useful dated sample and
         # the individual team has enough same-venue observations. Missing xG
@@ -618,9 +613,7 @@ class Engine:
                 5.0,
                 lh_g
                 * attack_home
-                * defense_away
-                * 1.10
-                * (0.85 + 0.30 * fh),
+                * defense_away,
             ),
         )
 
@@ -630,9 +623,7 @@ class Engine:
                 4.5,
                 la_g
                 * attack_away
-                * defense_home
-                * 0.95
-                * (0.85 + 0.30 * fa),
+                * defense_home,
             ),
         )
 
