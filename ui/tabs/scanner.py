@@ -154,7 +154,7 @@ def _load_engine(matrix_n, logs, update_loader):
 
 
 def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, min_ev=0.03):
-    """Блок для ручного ввода кэфа под карточкой."""
+    """Понятный ввод букмекерского коэффициента для выбранного рынка."""
     v = c.get("verdict", {})
     stat_preds = c.get("historical_stats") or {}
     from model.historical_match_stats import poisson_over_probability
@@ -162,10 +162,10 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         "Победа хозяев (П1)": ("П1", float(c.get("p1") or 0)),
         "Ничья (X)": ("X", float(c.get("px") or 0)),
         "Победа гостей (П2)": ("П2", float(c.get("p2") or 0)),
-        "Тотал голов больше 2.5": ("ТБ 2.5", float(c.get("over") or 0)),
-        "Тотал голов меньше 2.5": ("ТМ 2.5", 1.0 - float(c.get("over") or 0)),
-        "Обе забьют — да": ("BTTS Да", float(c.get("btts") or 0)),
-        "Обе забьют — нет": ("BTTS Нет", 1.0 - float(c.get("btts") or 0)),
+        "Тотал голов больше 2.5 (ТБ 2.5)": ("ТБ 2.5", float(c.get("over") or 0)),
+        "Тотал голов меньше 2.5 (ТМ 2.5)": ("ТМ 2.5", 1.0 - float(c.get("over") or 0)),
+        "Обе команды забьют — да": ("BTTS Да", float(c.get("btts") or 0)),
+        "Обе команды забьют — нет": ("BTTS Нет", 1.0 - float(c.get("btts") or 0)),
     }
     for stat_market, lines in (("corners", (8.5, 9.5, 10.5)), ("cards", (3.5, 4.5, 5.5))):
         pred = stat_preds.get(stat_market) or {}
@@ -176,65 +176,92 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                     prefix = "Угловые" if stat_market == "corners" else "Карточки"
                     market_options[f"{prefix}: больше {line}"] = (f"{'Угл' if stat_market == 'corners' else 'Карты'} ТБ {line}", over_p)
                     market_options[f"{prefix}: меньше {line}"] = (f"{'Угл' if stat_market == 'corners' else 'Карты'} ТМ {line}", 1.0 - over_p)
-    default_label = next((name for name, item in market_options.items() if item[0] == v.get("pick")), "Победа хозяев (П1)")
-    selected_label = st.selectbox("Рынок для ручной ставки", list(market_options), index=list(market_options).index(default_label), key=f"market_{c.get('match','').replace(' ','_')}")
+
+    default_label = next(
+        (name for name, item in market_options.items()
+         if item[0].casefold() == str(v.get("pick") or "").casefold()),
+        "Победа хозяев (П1)",
+    )
+    labels = list(market_options)
+    selected_label = st.selectbox(
+        "1. Выберите исход, на который смотрите коэффициент",
+        labels,
+        index=labels.index(default_label),
+        key=f"market_{c.get('match','').replace(' ','_')}",
+    )
     pick, model_prob = market_options[selected_label]
-    label = selected_label
-    fair_odd = (1.0 / model_prob) if model_prob > 0 else 1.0
-    
+    market_is_validated = market_type(pick) == "1X2"
+    fair_odd = (1.0 / model_prob) if model_prob > 0 else None
+
+    st.caption(
+        f"Вероятность модели: {model_prob * 100:.1f}% · "
+        + (f"справочный кэф модели: {fair_odd:.2f}" if fair_odd else "справочный кэф модели: нет расчёта")
+    )
+    st.info(
+        "2. Введите десятичный коэффициент именно из линии букмекера для выбранного исхода. "
+        "Например, если у букмекера рядом с «ТБ 2.5» написано 1.85 — вводите 1.85. "
+        "Не вводите справочный кэф модели и не вводите сумму ставки."
+    )
+
+    examples = {
+        "1X2": "Пример: выбрали «Победа хозяев (П1)» → берите коэффициент П1.",
+        "OU": "Пример: выбрали «ТБ 2.5» → берите кэф именно на тотал больше 2.5, не на ТМ 2.5.",
+        "BTTS": "Пример: выбрали «Обе команды забьют — да» → берите кэф на «Да», а не на «Нет».",
+        "STAT": "Пример: берите кэф именно на выбранную линию угловых или карточек. Эти рынки пока только для просмотра.",
+    }
+    st.caption(examples.get(market_type(pick), "Коэффициент должен соответствовать выбранному исходу и линии."))
+
     key_base = f"manual_{c.get('match', '')}_{pick}".replace(" ", "_").replace("/", "_")
     input_key = f"odd_{key_base}"
     btn_key = f"btn_{key_base}"
-    
-    st.markdown(
-        "<div style='background:rgba(52,211,153,.1);"
-        "border:1px solid rgba(52,211,153,.3);"
-        "padding:10px 14px;border-radius:10px;margin-bottom:14px;"
-        "display:flex;align-items:center;gap:10px;'>"
-        "<span style='color:#34d399;font-weight:bold;font-size:1.1rem;'>✍️</span>"
-        "<span style='color:#a5f3fc;font-size:.85rem;'>Ручной ввод кэфа (если нет реального):</span>"
-        "</div>", unsafe_allow_html=True
-    )
-    
+
     col_input, col_metrics, col_btn = st.columns([2, 2, 1])
-    
     manual_odd = col_input.number_input(
-        "Кэф", 
-        min_value=1.01, max_value=100.0, 
+        "3. Коэффициент букмекера",
+        min_value=1.01,
+        max_value=100.0,
         value=1.01,
         step=0.01,
         key=input_key,
-        label_visibility="collapsed",
-        help=f"Введи реальный кэф для {label}"
+        help="Введите десятичный кэф, например 1.85 или 2.10. Значение 1.01 означает, что кэф ещё не введён.",
     )
-    
-    if manual_odd > 1.01:
+
+    if manual_odd > 1.01 and 0.0 < model_prob < 1.0:
         market_implied = 1.0 / manual_odd
         prob = max(1e-6, min(1.0 - 1e-6,
                              market_implied + 0.40 * (model_prob - market_implied)))
         ev = prob * manual_odd - 1
         edge = prob - market_implied
         stake = kelly(prob, manual_odd, D["bank"], kelly_frac, cap=0.02)
-        
+
         col_metrics.markdown(
-            f"<div style='font-size:.9rem;line-height:1.5;'>"
-            f"EV: <b style='color:{'#34d399' if ev>0 else '#f87171'}'>{ev*100:+.1f}%</b><br>"
-            f"Edge: <b>{edge*100:+.1f}%</b><br>"
-            f"Kelly: <b style='color:#fbbf24'>{stake:.2f} у.е.</b>"
-            f"</div>", unsafe_allow_html=True
+            f"**Расчёт для выбранного исхода**  \n"
+            f"- Вероятность после смешивания: **{prob * 100:.1f}%**  \n"
+            f"- Вероятность из кэфа (без снятия маржи): **{market_implied * 100:.1f}%**  \n"
+            f"- Edge: **{edge * 100:+.1f}%**  \n"
+            f"- EV: **{ev * 100:+.1f}%**"
         )
-        
-        # Only 1X2 is enabled for staking until totals/BTTS/corners/cards pass
-        # their own out-of-sample calibration and market benchmark.
-        market_is_validated = market_type(pick) == "1X2"
-        passed = (market_is_validated and prob >= min_prob and edge >= min_edge
-                  and ev >= min_ev and stake > 0)
-        if col_btn.button("➕ В портфель", key=btn_key, use_container_width=True, disabled=not passed):
+        if market_is_validated:
+            col_metrics.caption(f"Предварительный размер по дробному Kelly: {stake:.2f} у.е. (лимит 2% банка).")
+
+        passed = (
+            market_is_validated
+            and prob >= min_prob
+            and edge >= min_edge
+            and ev >= min_ev
+            and stake > 0
+        )
+        if col_btn.button(
+            "➕ В портфель" if market_is_validated else "Пока недоступно",
+            key=btn_key,
+            use_container_width=True,
+            disabled=not passed,
+        ):
             D2 = dict(D)
             new_bet = {
                 "match": c["match"], "match_ru": c["match_ru"],
                 "div": c["div"], "league": c["league"],
-                "market": market_type(pick), "pick": pick, 
+                "market": market_type(pick), "pick": pick,
                 "odds": manual_odd, "stake": stake,
                 "prob": prob, "model_prob": model_prob,
                 "market_implied_raw": market_implied,
@@ -258,11 +285,13 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                 st.rerun()
             else:
                 st.warning("Эта ставка уже есть в портфеле.")
-        if not market_is_validated:
-            col_btn.caption("Пока доступен только рынок 1X2: остальные рынки ждут отдельной проверки.")
-    else:
-        col_metrics.caption("Введи кэф > 1.01")
 
+        if not market_is_validated:
+            col_btn.caption("Кэф ввести и расчёт посмотреть можно, но добавление в портфель отключено до отдельной проверки модели этого рынка.")
+        elif not passed:
+            col_btn.caption("Ставка не прошла один или несколько порогов: вероятность, Edge, EV или Kelly.")
+    else:
+        col_metrics.caption("Введите коэффициент выше 1.01, чтобы увидеть расчёт.")
 
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
