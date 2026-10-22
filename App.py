@@ -205,6 +205,10 @@ def _auto_settle(D, force: bool = False):
     for idx, b in enumerate(bets):
         if not isinstance(b, dict) or b.get("status") != "pending":
             continue
+        # Corners/cards require their own result feed; never query goal-only
+        # score sources or spend settlement quota on these markets.
+        if str(b.get("market", "")).upper() == "STAT":
+            continue
         if tried >= MAX_PER_RUN:
             log.info("MAX_PER_RUN reached")
             break
