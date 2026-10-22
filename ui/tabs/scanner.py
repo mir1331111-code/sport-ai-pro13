@@ -584,7 +584,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if has_model_candidate:
                 try:
                     candidates = []
-                    
+
+                    # Fetch current bookmaker prices for totals separately from the 1X2 source.
+                    if odds_key and DIV_TO_ODDS.get(lg):
+                        try:
+                            api_market_data = odds_api_fixture(
+                                DIV_TO_ODDS.get(lg), h_en, a_en, odds_key, logs
+                            )
+                            if isinstance(api_market_data, dict):
+                                for total_pick in ("ТБ 2.5", "ТМ 2.5"):
+                                    try:
+                                        total_odd = float(api_market_data.get(total_pick))
+                                        if 1.01 < total_odd <= 100:
+                                            total_market_odds[total_pick] = total_odd
+                                    except (TypeError, ValueError):
+                                        continue
+                                if total_market_odds:
+                                    total_odds_source = "the_odds_api"
+                        except Exception as exc:
+                            logs.append(f"⚠️ Odds API totals: {type(exc).__name__}")
+
                     # 1. СНАЧАЛА ПРОБУЕМ PROGNOZIST (рабочий парсер)
                     try:
                         from data.prognozist_odds import find_match_odds
