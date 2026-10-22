@@ -636,10 +636,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     # 2. Если Prognozist не дал — пробуем Marathon
                     if not candidates:
                         try:
-                            candidates.append(("marathon_category",
-                                               marathon_odds(h_en, a_en, r.get("Date", ""), lg)))
-                        except Exception:
-                            pass
+                            marathon_line = marathon_odds(h_en, a_en, r.get("Date", ""), lg)
+                            if isinstance(marathon_line, dict) and all(
+                                key in marathon_line for key in ("П1", "X", "П2")
+                            ):
+                                candidates.append(("marathon_category", marathon_line))
+                            else:
+                                logs.append("ℹ️ Marathon: линия для матча не найдена, проверяю следующие источники")
+                        except Exception as exc:
+                            logs.append(f"ℹ️ Marathon lookup failed: {type(exc).__name__}")
                     
                     # 3. Если всё ещё нет — TheRundown
                     if not candidates:
@@ -686,7 +691,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if market_odds:
                 chosen_verdict, best = best_value_market(
                     verdict, rows_, market_odds, D["bank"], kelly_frac,
-                    min_prob, min_edge=min_edge, min_ev=0.03,
+                    min_prob, min_edge=max(min_edge, 0.05), min_ev=0.05,
                 )
                 if best is not None:
                     verdict = chosen_verdict
