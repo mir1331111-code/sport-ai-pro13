@@ -7,7 +7,7 @@ def kelly(
     odds: float,
     bank: float,
     frac: float = 0.25,
-    cap: float = 0.05,
+    cap: float = 0.02,
 ) -> float:
     """
     Fractional Kelly.
