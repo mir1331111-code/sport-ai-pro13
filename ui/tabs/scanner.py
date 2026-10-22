@@ -531,11 +531,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     
                     # 3. Если всё ещё нет — TheRundown
                     if not candidates:
-                        rundown_key = (
-                            D.get("meta", {}).get("rundown_key")
-                            or D.get("meta", {}).get("therundown_api_key")
-                            or os.environ.get("THERUNDOWN_API_KEY", "")
-                        )
+                        rundown_key = _runtime_secret(
+                            "therundown_api_key_input", "THERUNDOWN_API_KEY",
+                            "therundown_api_key", "rundown_key")
                         if rundown_key:
                             rundown = therundown_odds_fixture(
                                 h_en, a_en, d.strftime("%Y-%m-%d"), lg, rundown_key, logs
