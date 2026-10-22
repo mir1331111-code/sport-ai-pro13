@@ -539,7 +539,9 @@ with st.sidebar:
 
     rundown_key = st.text_input(
         "TheRundown free soccer odds key (опц.)",
-        value=D["meta"].get("therundown_api_key") or os.environ.get("THERUNDOWN_API_KEY", ""),
+        value=(D["meta"].get("therundown_api_key") or D["meta"].get("rundown_key")
+               or os.environ.get("THERUNDOWN_API_KEY", "")
+               or _configured_secret("THERUNDOWN_API_KEY", "therundown_api_key", "rundown_key")),
         type="password",
         help="Бесплатный ключ: предматчевые коэффициенты 1X2 с задержкой около 5 минут.")
     if rundown_key != D["meta"].get("therundown_api_key", ""):
