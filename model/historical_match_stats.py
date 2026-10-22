@@ -118,3 +118,40 @@ def poisson_over_probability(mean, line):
         return min(1.0, max(0.0, 1.0 - cdf))
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+
+def walk_forward_evaluate(rows, league="G", min_history=30):
+    """Evaluate totals chronologically; each forecast sees only earlier rows."""
+    model = HistoricalMatchStats()
+    metrics = {
+        market: {"n": 0, "absolute_error_sum": 0.0, "mae": None}
+        for market in _FIELDS
+    }
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        home = str(row.get("HomeTeam") or "").strip()
+        away = str(row.get("AwayTeam") or "").strip()
+        if home and away:
+            forecasts = model.predict(home, away, league)
+            actuals = {}
+            hc, ac = _num(row.get("HC")), _num(row.get("AC"))
+            if hc is not None and ac is not None:
+                actuals["corners"] = hc + ac
+            hy, ay = _num(row.get("HY")), _num(row.get("AY"))
+            if hy is not None and ay is not None:
+                hr, ar = _num(row.get("HR")), _num(row.get("AR"))
+                actuals["cards"] = hy + ay + (hr or 0.0) + (ar or 0.0)
+            for market, actual in actuals.items():
+                forecast = forecasts.get(market)
+                if forecast and forecast.get("history_matches", 0) >= min_history:
+                    metrics[market]["n"] += 1
+                    metrics[market]["absolute_error_sum"] += abs(
+                        forecast["total"] - actual
+                    )
+        model.learn_step(row, league)
+    for result in metrics.values():
+        n = result["n"]
+        result["mae"] = result["absolute_error_sum"] / n if n else None
+    return metrics
