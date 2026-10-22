@@ -955,7 +955,11 @@ def _prognozist_line_index():
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         return cached
-    if not all(_prognozist_allowed(url) for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)):
+    allowed_urls = [
+        url for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)
+        if _prognozist_allowed(url)
+    ]
+    if not allowed_urls:
         return []
     headers = {
         "User-Agent": "Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)",
@@ -963,7 +967,7 @@ def _prognozist_line_index():
         "Referer": "https://prognozist.ru/mc/football/",
     }
     indexed = []
-    for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE):
+    for url in allowed_urls:
         try:
             response = _sess.get(url, headers=headers, timeout=(3, 6), proxies=NO_PROXY)
             if response.status_code != 200 or not response.text:
