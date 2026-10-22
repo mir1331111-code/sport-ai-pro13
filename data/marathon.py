@@ -1,8 +1,10 @@
 """data/marathon.py — парсер линии Марафон с prognozist.ru."""
 from __future__ import annotations
-import re, sys
+import os, re, sys
 from datetime import datetime
 from typing import Optional
+from urllib.robotparser import RobotFileParser
+from urllib.parse import urlparse
 
 import requests
 
@@ -22,9 +24,7 @@ def _log(msg: str):
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)",
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "ru-RU,ru;q=0.9",
         "Referer": "https://prognozist.ru/",
@@ -35,6 +35,27 @@ def _session() -> requests.Session:
 
 
 _sess = _session()
+
+
+def _permitted_by_robots(url: str) -> bool:
+    """Fail closed: require explicit permission and robots.txt allowance."""
+    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+        _log("Disabled: set PROGNOZIST_PERMISSION=1 only after confirming site terms/permission.")
+        return False
+    try:
+        parsed = urlparse(url)
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        response = _sess.get(robots_url, timeout=(2, 4), proxies=NO_PROXY)
+        if response.status_code != 200:
+            _log(f"Disabled: robots.txt unavailable (HTTP {response.status_code}); fail-closed.")
+            return False
+        parser = RobotFileParser()
+        parser.set_url(robots_url)
+        parser.parse(response.text.splitlines())
+        return parser.can_fetch(_sess.headers["User-Agent"], url)
+    except Exception as exc:
+        _log(f"Disabled: robots.txt check failed ({type(exc).__name__}); fail-closed.")
+        return False
 
 
 DIV_TO_CATEGORY = {
@@ -187,6 +208,8 @@ def fetch_league_events(div_code: str) -> list:
         return cached if isinstance(cached, list) else []
 
     url = f"https://prognozist.ru/line/marathon/event_line.php?category={cat_id}"
+    if not _permitted_by_robots(url):
+        return []
     try:
         r = _sess.get(url, timeout=(2, 4), proxies=NO_PROXY)
         if r.status_code != 200:
