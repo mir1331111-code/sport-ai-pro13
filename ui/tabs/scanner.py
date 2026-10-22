@@ -104,9 +104,11 @@ def _load_engine(matrix_n, logs, update_loader):
         try:
             with open(p, "rb") as f:
                 data = pickle.loads(gzip.decompress(f.read()))
-            if data.get("fp") == APP_VERSION:
-                logs.append("Engine из кэша")
-                return data.get("engine")
+            cached_engine = data.get("engine")
+            if (data.get("fp") == APP_VERSION
+                    and hasattr(cached_engine, "match_stats")):
+                logs.append("Engine из кэша (включая историю угловых/карточек)")
+                return cached_engine
         except Exception:
             pass
     engine = _train_engine(matrix_n, logs, update_loader)
@@ -130,8 +132,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         "Победа гостей (П2)": ("П2", float(c.get("p2") or 0)),
         "Тотал голов больше 2.5": ("ТБ 2.5", float(c.get("over") or 0)),
         "Тотал голов меньше 2.5": ("ТМ 2.5", 1.0 - float(c.get("over") or 0)),
-        "Обе забьют — да": ("ОЗ Да", float(c.get("btts") or 0)),
-        "Обе забьют — нет": ("ОЗ Нет", 1.0 - float(c.get("btts") or 0)),
+        "Обе забьют — да": ("BTTS Да", float(c.get("btts") or 0)),
+        "Обе забьют — нет": ("BTTS Нет", 1.0 - float(c.get("btts") or 0)),
     }
     for stat_market, lines in (("corners", (8.5, 9.5, 10.5)), ("cards", (3.5, 4.5, 5.5))):
         pred = stat_preds.get(stat_market) or {}
