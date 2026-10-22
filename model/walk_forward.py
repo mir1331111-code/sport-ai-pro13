@@ -248,8 +248,8 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             index += 1
 
-    metrics = {name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=1729 + i)
-               for i, (name, value) in enumerate(records.items())}
+    metrics = {name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=1729)
+               for name, value in records.items()}
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
     delta = lambda left, right, key: (
