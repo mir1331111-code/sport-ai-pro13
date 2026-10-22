@@ -58,6 +58,8 @@ def _train_engine(matrix_n, logs, update_loader):
     supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
     train_divs = list(dict.fromkeys(priority_divs + supported_divs))
     engine = Engine(matrix_n=matrix_n)
+    from model.historical_match_stats import HistoricalMatchStats
+    engine.match_stats = HistoricalMatchStats()
     dp, dc = {}, {}
     for i, dv in enumerate(train_divs):
         pct = 0.1 + (i + 1) / len(train_divs) * 0.4
@@ -80,6 +82,7 @@ def _train_engine(matrix_n, logs, update_loader):
                         r["HomeTeam"], r["AwayTeam"], hg, ag, r,
                         lg=dv, match_num=processed, total=total,
                         match_date=parse_date(r.get("Date", "")))
+                    engine.match_stats.learn_step(r, dv)
                     trained += 1
                 except Exception:
                     pass
@@ -119,10 +122,31 @@ def _load_engine(matrix_n, logs, update_loader):
 def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, min_ev=0.03):
     """Блок для ручного ввода кэфа под карточкой."""
     v = c.get("verdict", {})
-    pick = v.get("pick", "—")
-    label = v.get("label", "—")
-    fair_odd = v.get("fair_odd", 1.0)
-    prob = v.get("prob", 0.0)
+    stat_preds = c.get("historical_stats") or {}
+    from model.historical_match_stats import poisson_over_probability
+    market_options = {
+        "Победа хозяев (П1)": ("П1", float(c.get("p1") or 0)),
+        "Ничья (X)": ("X", float(c.get("px") or 0)),
+        "Победа гостей (П2)": ("П2", float(c.get("p2") or 0)),
+        "Тотал голов больше 2.5": ("ТБ 2.5", float(c.get("over") or 0)),
+        "Тотал голов меньше 2.5": ("ТМ 2.5", 1.0 - float(c.get("over") or 0)),
+        "Обе забьют — да": ("ОЗ Да", float(c.get("btts") or 0)),
+        "Обе забьют — нет": ("ОЗ Нет", 1.0 - float(c.get("btts") or 0)),
+    }
+    for stat_market, lines in (("corners", (8.5, 9.5, 10.5)), ("cards", (3.5, 4.5, 5.5))):
+        pred = stat_preds.get(stat_market) or {}
+        if pred.get("total") is not None and pred.get("history_matches", 0) >= 30:
+            for line in lines:
+                over_p = poisson_over_probability(pred["total"], line)
+                if over_p is not None:
+                    prefix = "Угловые" if stat_market == "corners" else "Карточки"
+                    market_options[f"{prefix}: больше {line}"] = (f"{'Угл' if stat_market == 'corners' else 'Карты'} ТБ {line}", over_p)
+                    market_options[f"{prefix}: меньше {line}"] = (f"{'Угл' if stat_market == 'corners' else 'Карты'} ТМ {line}", 1.0 - over_p)
+    default_label = next((name for name, item in market_options.items() if item[0] == v.get("pick")), "Победа хозяев (П1)")
+    selected_label = st.selectbox("Рынок для ручной ставки", list(market_options), index=list(market_options).index(default_label), key=f"market_{c.get('match','').replace(' ','_')}")
+    pick, prob = market_options[selected_label]
+    label = selected_label
+    fair_odd = (1.0 / prob) if prob > 0 else 1.0
     
     key_base = f"manual_{c.get('match', '')}_{pick}".replace(" ", "_").replace("/", "_")
     input_key = f"odd_{key_base}"
@@ -317,7 +341,7 @@ def render(min_prob, kelly_frac, matrix_n):
             for c in cards_view:
                 st.markdown(render_verdict_card(c, min_prob),
                             unsafe_allow_html=True)
-                _render_manual_odds_block(c, D, kelly_frac)
+                _render_manual_odds_block(c, D, kelly_frac, min_prob)
 
         st.caption("✅ Показано " + str(len(cards_view)) + " из "
                    + str(len(all_cards)))
@@ -553,6 +577,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "verdict": verdict, "best": best,
                 "games": P["games"], "fh": fh, "fa": fa,
                 "fixture_id": r.get("fixture_id"),
+                "historical_stats": (engine.match_stats.predict(h_en, a_en, lg) if hasattr(engine, "match_stats") else {}),
                 "date_iso": d.strftime("%Y-%m-%d"),
                 "time": r.get("Time") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
@@ -629,49 +654,16 @@ def render(min_prob, kelly_frac, matrix_n):
         elif not action_cards:
             logs.append("🤖 LLM: нет action_cards (best=None у всех)")
 
-        # ============ СТАВКИ ============
+        # Портфель пополняется только вручную после ввода реального коэффициента.
+        # Автоматические и оценочные коэффициенты никогда не создают ставки.
         new_bets = []
-        existing = {
-            f"{b['match']}|{b['pick']}"
-            for b in D["bets"]
-            if isinstance(b, dict) and b.get("status") == "pending"
-        }
-        for c in cards:
-            b = c.get("best")
-            if not b:
-                continue
-            mkt, pick, odd, ev, prob, stake = b
-            stake = round(min(max(stake, D["bank"] * MIN_STAKE_PCT),
-                              D["bank"] * MAX_STAKE_PCT), 2)
-            if stake <= 0:
-                continue
-            bk = f"{c['match']}|{pick}"
-            if bk in existing:
-                continue
-            new_bets.append({
-                "match": c["match"], "match_ru": c["match_ru"],
-                "div": c["div"], "league": c["league"],
-                "market": mkt, "pick": pick, "odds": odd, "stake": stake,
-                "prob": prob, "status": "pending", "strat": "value",
-                "odds_source": c.get("odds_source", "estimated"),
-                "mode": "real" if c.get("odds_source") in {
-                    "prognozist_marathon", "marathon_category",
-                    "prognozist_match_centre", "therundown", "prognozist"
-                } else "paper",
-                "date": datetime.now().strftime("%d.%m.%Y"),
-                "date_iso": c.get("date_iso"),
-                "match_time": c.get("time", ""),
-                "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "fixture_id": c.get("fixture_id"), "score": None, "ev": ev,
-            })
-            existing.add(bk)
 
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
         D2["bets"] = D["bets"] + new_bets
-        total_stake = sum(b["stake"] for b in new_bets)
-        D2["bank"] = max(0.0, D["bank"] - total_stake)
+        total_stake = 0.0
+        D2["bank"] = D["bank"]
         D2["funnel"] = {
             "trained": getattr(engine, "trained_n", 0),
             "src": len(rows), "found": matches_with_best,
