@@ -263,7 +263,7 @@ def totals_market_is_validated(report, *, min_n=500):
     return True
 
 
-def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 180.0, bootstrap_samples: int = 1000) -> dict:
+def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 180.0, bootstrap_samples: int = 1000, totals_bootstrap_samples: int | None = None) -> dict:
     """Compare goals-only and xG engines on identical chronological fixtures.
 
     All fixtures on the same calendar date are predicted before any result from
@@ -365,9 +365,10 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
 
     metrics = {name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=1729)
                for name, value in records.items()}
-    goals_over25_metrics = _binary_metrics(records["goals_over25"], bootstrap_samples=bootstrap_samples, seed=31415)
-    goals_over25_market_metrics = _binary_metrics(records["goals_over25_market"], bootstrap_samples=bootstrap_samples, seed=31415)
-    goals_over25_candidate_market_metrics = _binary_metrics(records["goals_over25_candidate_on_market"], bootstrap_samples=bootstrap_samples, seed=31415)
+    totals_bs = bootstrap_samples if totals_bootstrap_samples is None else max(0, int(totals_bootstrap_samples))
+    goals_over25_metrics = _binary_metrics(records["goals_over25"], bootstrap_samples=totals_bs, seed=31415)
+    goals_over25_market_metrics = _binary_metrics(records["goals_over25_market"], bootstrap_samples=totals_bs, seed=31415)
+    goals_over25_candidate_market_metrics = _binary_metrics(records["goals_over25_candidate_on_market"], bootstrap_samples=totals_bs, seed=31415)
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
     delta = lambda left, right, key: (
@@ -390,7 +391,7 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
         "goals_over25_market_sources": total_market_sources,
         "goals_over25_candidate_minus_market": _binary_paired_differences(
             records["goals_over25_candidate_on_market"], records["goals_over25_market"],
-            bootstrap_samples=bootstrap_samples, seed=31416),
+            bootstrap_samples=totals_bs, seed=31416),
         "market_devig_methods": {name: metrics[name] for name in ("market", "market_power", "market_shin") if name in metrics},
         "candidate_minus_market": _paired_differences(records["candidate_on_market"], records["market"], bootstrap_samples=bootstrap_samples, seed=2720),
         "candidate_minus_market_power": _paired_differences(records.get("candidate_on_market_power", []), records.get("market_power", []), bootstrap_samples=bootstrap_samples, seed=2721),
