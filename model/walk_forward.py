@@ -167,7 +167,8 @@ def _binary_metrics(records, *, bootstrap_samples=1000, seed=31415):
     for probabilities, outcome in records:
         p = max(1e-15, min(1.0 - 1e-15, float(probabilities["over"])))
         y = float(outcome == "over")
-        scores.append((((p-y)**2 + ((1-p)-(1-y))**2) / 2.0,
+        # Standard binary Brier score: (p - y)^2.
+        scores.append(((p-y)**2,
                        -(y * math.log(p) + (1-y) * math.log(1-p))))
     n = len(scores)
     names = ("brier", "log_loss")
@@ -190,8 +191,10 @@ def _binary_metrics(records, *, bootstrap_samples=1000, seed=31415):
 def _total_market_probs(row):
     """Return no-vig over/under 2.5 probabilities and source from historical odds."""
     for over_key, under_key in (
+        # Football-Data CSVs commonly use BetBrain (Bb) names.
         ("B365>2.5", "B365<2.5"), ("Avg>2.5", "Avg<2.5"),
         ("Max>2.5", "Max<2.5"), ("P>2.5", "P<2.5"),
+        ("BbAv>2.5", "BbAv<2.5"), ("BbMx>2.5", "BbMx<2.5"),
     ):
         try:
             over_odd, under_odd = float(row.get(over_key)), float(row.get(under_key))
