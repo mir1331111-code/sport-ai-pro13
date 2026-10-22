@@ -537,6 +537,16 @@ with st.sidebar:
         D["meta"]["odds_api_key"] = odds_key
         usage.set_local_data(D)
 
+    api_football_key = st.text_input(
+        "API-Football key",
+        value=(D["meta"].get("api_football_key") or os.environ.get("API_FOOTBALL_KEY", "")
+               or _configured_secret("API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY")),
+        type="password",
+        help="API-Football v3: реальные предматчевые коэффициенты. Доступность зависит от тарифа и матча.")
+    if api_football_key != D["meta"].get("api_football_key", ""):
+        D["meta"]["api_football_key"] = api_football_key
+        usage.set_local_data(D)
+
     rundown_key = st.text_input(
         "TheRundown free soccer odds key (опц.)",
         value=(D["meta"].get("therundown_api_key") or D["meta"].get("rundown_key")
