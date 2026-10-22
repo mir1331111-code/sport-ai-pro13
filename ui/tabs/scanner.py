@@ -351,6 +351,27 @@ def render(min_prob, kelly_frac, matrix_n):
                 odds_key = ""
         logs.append("🔑 The Odds API: ключ задан" if odds_key else "⚠️ The Odds API: ключ не задан — реальные кэфы будут доступны только из других источников")
 
+        rundown_key_status = (
+            D.get("meta", {}).get("rundown_key")
+            or D.get("meta", {}).get("therundown_api_key")
+            or os.environ.get("THERUNDOWN_API_KEY", "")
+        )
+        if not rundown_key_status:
+            try:
+                rundown_key_status = str(
+                    st.secrets.get(
+                        "THERUNDOWN_API_KEY",
+                        st.secrets.get("therundown_api_key", st.secrets.get("rundown_key", "")),
+                    ) or ""
+                ).strip()
+            except Exception:
+                rundown_key_status = ""
+        logs.append(
+            "🔑 TheRundown: ключ задан"
+            if rundown_key_status
+            else "⚠️ TheRundown: ключ не задан (D.meta / env / Streamlit secrets)"
+        )
+
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
                           "model_only": 0, "estimated": 0, "real": 0}
