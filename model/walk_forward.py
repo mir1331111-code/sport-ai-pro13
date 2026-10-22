@@ -388,17 +388,9 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
         "goals_over25_market": goals_over25_market_metrics,
         "goals_over25_candidate_on_market": goals_over25_candidate_market_metrics,
         "goals_over25_market_sources": total_market_sources,
-        "goals_over25_candidate_minus_market": {
-            "n": goals_over25_candidate_market_metrics["n"],
-            "brier_difference": (
-                goals_over25_candidate_market_metrics["brier"] - goals_over25_market_metrics["brier"]
-                if goals_over25_candidate_market_metrics["brier"] is not None and goals_over25_market_metrics["brier"] is not None else None
-            ),
-            "log_loss_difference": (
-                goals_over25_candidate_market_metrics["log_loss"] - goals_over25_market_metrics["log_loss"]
-                if goals_over25_candidate_market_metrics["log_loss"] is not None and goals_over25_market_metrics["log_loss"] is not None else None
-            ),
-        },
+        "goals_over25_candidate_minus_market": _binary_paired_differences(
+            records["goals_over25_candidate_on_market"], records["goals_over25_market"],
+            bootstrap_samples=bootstrap_samples, seed=31416),
         "market_devig_methods": {name: metrics[name] for name in ("market", "market_power", "market_shin") if name in metrics},
         "candidate_minus_market": _paired_differences(records["candidate_on_market"], records["market"], bootstrap_samples=bootstrap_samples, seed=2720),
         "candidate_minus_market_power": _paired_differences(records.get("candidate_on_market_power", []), records.get("market_power", []), bootstrap_samples=bootstrap_samples, seed=2721),
