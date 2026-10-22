@@ -1019,36 +1019,54 @@ def _american_to_decimal(value):
 
 
 def therundown_odds_fixture(home: str, away: str, match_date: str,
-                            div_code: str, api_key: str) -> Optional[dict]:
-    """Get a real pre-match 1X2 line from TheRundown's free soccer feed.
-
-    Free access needs a user-created key and provides delayed pre-match prices.
-    """
+                            div_code: str, api_key: str, logs=None) -> Optional[dict]:
+    """Get a real pre-match 1X2 line and report why a lookup failed."""
     sport_id = THERUNDOWN_SPORT_BY_DIV.get((div_code or "").upper())
-    if not api_key or not sport_id or not match_date:
+    if not api_key:
+        if logs is not None:
+            logs.append("TheRundown: пропущен запрос — API-ключ пустой")
         return None
-    ck = f"therundown_v1_{sport_id}_{match_date}"
+    if not sport_id:
+        if logs is not None:
+            logs.append(f"TheRundown: лига не поддерживается (Div={div_code!r}); для неё не запрашивались коэффициенты")
+        return None
+    if not match_date:
+        if logs is not None:
+            logs.append("TheRundown: пропущен запрос — дата матча не распознана")
+        return None
+
+    ck = f"therundown_v2_{sport_id}_{match_date}"
     events = cache_get(ck, 300)
     if events is None:
         try:
             response = _sess.get(
                 f"https://therundown.io/api/v2/sports/{sport_id}/events/{match_date}",
                 headers={"X-TheRundown-Key": api_key, "Accept": "application/json"},
-                params={"market_ids": "1,41,42,43", "affiliate_ids": "3,19,23",
+                params={"market_ids": "1,2,3,41,42,43", "affiliate_ids": "3,19,23",
                         "main_line": "true", "hide_closed": "true"},
-                timeout=(3, 6), proxies=NO_PROXY,
+                timeout=(5, 15), proxies=NO_PROXY,
             )
             if response.status_code != 200:
-                log.warning("TheRundown HTTP %s for sport=%s date=%s",
-                            response.status_code, sport_id, match_date)
-                cache_put(ck, [])
+                detail = (response.text or "").replace("\\n", " ")[:160]
+                message = f"TheRundown HTTP {response.status_code} (sport={sport_id}, date={match_date})"
+                if detail:
+                    message += f": {detail}"
+                log.warning(message)
+                if logs is not None:
+                    logs.append("⚠️ " + message)
+                # Do not cache failures: a transient 429/5xx must not poison the next scan.
                 return None
             payload = response.json()
             events = payload.get("events", []) if isinstance(payload, dict) else []
-            cache_put(ck, events if isinstance(events, list) else [])
+            events = events if isinstance(events, list) else []
+            cache_put(ck, events)
+            if logs is not None:
+                logs.append(f"TheRundown: API ответил успешно, событий {len(events)} (sport={sport_id}, {match_date})")
         except Exception as exc:
-            log.warning("TheRundown request failed: %s", type(exc).__name__)
-            cache_put(ck, [])
+            message = f"TheRundown request failed: {type(exc).__name__}: {str(exc)[:100]}"
+            log.warning(message)
+            if logs is not None:
+                logs.append("⚠️ " + message)
             return None
 
     try:
@@ -1072,8 +1090,16 @@ def therundown_odds_fixture(home: str, away: str, match_date: str,
                 p2 = _american_to_decimal(moneyline.get("away"))
                 if p1 and draw and p2:
                     return {"П1": p1, "X": draw, "П2": p2, "source": "therundown"}
+            if logs is not None:
+                logs.append(f"TheRundown: матч найден ({home_name} — {away_name}), но полной линии 1X2 нет")
+            return None
+        if logs is not None:
+            logs.append(f"TheRundown: среди {len(events or [])} событий не найден матч {home} — {away}")
     except Exception as exc:
-        log.warning("TheRundown parse failed: %s", type(exc).__name__)
+        message = f"TheRundown parse failed: {type(exc).__name__}: {str(exc)[:100]}"
+        log.warning(message)
+        if logs is not None:
+            logs.append("⚠️ " + message)
     return None
 
 
