@@ -52,7 +52,7 @@ def _print_log(msg: str):
 def _train_engine(matrix_n, logs, update_loader):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
-    prev_year = cur_year - 1
+    history_years = list(range(cur_year - 4, cur_year + 1))
     priority_divs = ["E0", "SP1", "I1", "D1", "F1", "E1", "SP2", "I2",
                      "D2", "F2", "N1", "B1", "P1", "T1", "R1"]
     supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
@@ -60,20 +60,25 @@ def _train_engine(matrix_n, logs, update_loader):
     engine = Engine(matrix_n=matrix_n)
     from model.historical_match_stats import HistoricalMatchStats
     engine.match_stats = HistoricalMatchStats()
-    dp, dc = {}, {}
+    history = {}
     for i, dv in enumerate(train_divs):
         pct = 0.1 + (i + 1) / len(train_divs) * 0.4
         update_loader(
             f"История [{i+1}/{len(train_divs)}] — {DIV_NAMES.get(dv, dv)}",
             pct, logs)
-        dp[dv] = load_seasonal(dv, season_str(prev_year))
-        dc[dv] = load_seasonal(dv, season_str(cur_year))
-        logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(dp[dv])+len(dc[dv])}")
-    total = sum(len(dp.get(dv, [])) + len(dc.get(dv, [])) for dv in train_divs)
+        seasons = []
+        for year in history_years:
+            rows = load_seasonal(dv, season_str(year))
+            seasons.append(rows)
+            if rows:
+                logs.append(f"  {season_str(year)}: {len(rows)} матчей")
+        history[dv] = seasons
+        logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {sum(len(x) for x in seasons)} матчей за {len(history_years)} сезонов")
+    total = sum(len(src) for dv in train_divs for src in history.get(dv, []))
     processed = 0
     trained = 0
     for dv in train_divs:
-        for src in (dp.get(dv, []), dc.get(dv, [])):
+        for src in history.get(dv, []):
             for r in src:
                 try:
                     hg = float(r.get("FTHG", 0))
