@@ -58,7 +58,7 @@ def _train_engine(matrix_n, logs, update_loader):
     supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
     train_divs = list(dict.fromkeys(priority_divs + supported_divs))
     engine = Engine(matrix_n=matrix_n)
-    from model.historical_match_stats import HistoricalMatchStats
+    from model.historical_match_stats import HistoricalMatchStats, walk_forward_evaluate
     engine.match_stats = HistoricalMatchStats()
     history = {}
     for i, dv in enumerate(train_divs):
@@ -69,11 +69,20 @@ def _train_engine(matrix_n, logs, update_loader):
         seasons = []
         for year in history_years:
             rows = load_seasonal(dv, season_str(year))
+            rows = sorted(rows, key=lambda row: parse_date(row.get("Date", "")) or datetime.min)
             seasons.append(rows)
             if rows:
                 logs.append(f"  {season_str(year)}: {len(rows)} матчей")
         history[dv] = seasons
-        logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {sum(len(x) for x in seasons)} матчей за {len(history_years)} сезонов")
+        league_rows = [row for season_rows in seasons for row in season_rows]
+        evaluation = walk_forward_evaluate(league_rows, dv, min_history=30)
+        for market_name, metric in evaluation.items():
+            if metric["n"]:
+                logs.append(
+                    f"WF {DIV_NAMES.get(dv, dv)} {market_name}: "
+                    f"n={metric['n']}, MAE={metric['mae']:.2f}"
+                )
+        logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(league_rows)} матчей за {len(history_years)} сезонов")
     total = sum(len(src) for dv in train_divs for src in history.get(dv, []))
     processed = 0
     trained = 0
