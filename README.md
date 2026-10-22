@@ -2,7 +2,11 @@
 
 Football match probability forecasting with a Poisson/Dixon–Coles score model, Elo, team form, head-to-head adjustments, probability calibration, and an append-only forecast ledger.
 
-## API key persistence\n\nKeys entered in the sidebar are saved separately in `.neuro_secrets.json` with owner-only file permissions on the app host. They are not written into `neuro_local.json`, synced through the portfolio Gist, or included in downloaded backups; `.gitignore` excludes the local secret file. If the host uses an ephemeral filesystem or the app is redeployed/restarted, use the host's environment variables or Streamlit Secrets for durable configuration. Re-enter UI-only keys once after upgrading if the earlier version already removed them from portfolio state.\n## Model evaluation and xG ablation
+## API key persistence
+
+Keys entered in the sidebar are saved separately in `.neuro_secrets.json` with owner-only file permissions on the app host. They are not written into `neuro_local.json`, synced through the portfolio Gist, or included in downloaded backups; `.gitignore` excludes the local secret file. If the host uses an ephemeral filesystem or the app is redeployed/restarted, use the host's environment variables or Streamlit Secrets for durable configuration. Re-enter UI-only keys once after upgrading if the earlier version already removed them from portfolio state.
+
+## Model evaluation and xG ablation
 
 Run a leakage-safe chronological evaluation on historical CSV-like records:
 
