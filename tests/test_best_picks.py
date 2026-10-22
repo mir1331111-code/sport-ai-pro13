@@ -35,6 +35,17 @@ class BestValueMarketTests(unittest.TestCase):
         self.assertEqual(best[1], "П1")
         self.assertEqual(best[2], 2.10)
 
+    def test_confidence_uses_market_blended_probability_not_raw_model_probability(self):
+        chosen, best = best_value_market(
+            _verdict(), _rows(), {"П1": 2.10},
+            bank=1000, kelly_frac=0.25, min_prob=0.50,
+        )
+        self.assertIsNotNone(best)
+        self.assertAlmostEqual(chosen["confidence_score"], chosen["prob"] * 100, places=1)
+        self.assertEqual(chosen["confidence_basis"],
+                         "market_blended_probability_not_historical_hit_rate")
+        self.assertNotEqual(chosen["confidence"], "высокая")
+
     def test_non_1x2_markets_never_become_automatic_candidates(self):
         chosen, best = best_value_market(
             _verdict(), _rows(), {"ТБ 2.5": 1.90},
