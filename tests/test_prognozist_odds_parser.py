@@ -1,5 +1,7 @@
 """Regression tests for the free Prognozist/Marathon odds parser."""
 import unittest
+import os
+from unittest.mock import patch
 
 from data.sources import _prognozist_extract_row_odds
 
@@ -30,6 +32,13 @@ class PrognozistOddsParserTests(unittest.TestCase):
         self.assertEqual(THERUNDOWN_SPORT_BY_DIV["E0"], 11)
         self.assertEqual(THERUNDOWN_SPORT_BY_DIV["SP1"], 14)
         self.assertNotIn("R1", THERUNDOWN_SPORT_BY_DIV)
+
+    def test_prognozist_source_is_disabled_without_explicit_permission(self):
+        from data.sources import _prognozist_allowed, _sess
+        with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
+            with patch.object(_sess, "get") as mocked_get:
+                self.assertFalse(_prognozist_allowed("https://prognozist.ru/mc/football/"))
+                mocked_get.assert_not_called()
 
     def test_rejects_header_without_prices(self):
         self.assertIsNone(_prognozist_extract_row_odds(["П1", "X", "П2"]))
