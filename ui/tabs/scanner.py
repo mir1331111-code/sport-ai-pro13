@@ -723,6 +723,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
+                "total_market_odds": total_market_odds,
+                "total_odds_source": total_odds_source,
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
