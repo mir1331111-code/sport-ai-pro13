@@ -143,7 +143,7 @@ def _render_manual_odds_block(c, D, kelly_frac):
     manual_odd = col_input.number_input(
         "Кэф", 
         min_value=1.01, max_value=100.0, 
-        value=float(fair_odd),
+        value=1.01,
         step=0.01,
         key=input_key,
         label_visibility="collapsed",
