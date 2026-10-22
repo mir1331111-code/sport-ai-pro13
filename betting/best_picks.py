@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from betting.verdict import refine_with_real_odds
+from betting.kelly import market_type
 
 
 def best_value_market(verdict: dict, rows: list, market_odds: dict | None,
@@ -22,6 +23,10 @@ def best_value_market(verdict: dict, rows: list, market_odds: dict | None,
         if not isinstance(row, dict):
             continue
         pick = row.get("pick")
+        # Until each market has its own out-of-sample calibration/benchmark,
+        # only the 1X2 market can become an automatic value candidate.
+        if market_type(pick) != "1X2":
+            continue
         try:
             prob = float(row.get("prob"))
             odd = float(market_odds.get(pick))
