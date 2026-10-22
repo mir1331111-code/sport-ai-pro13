@@ -14,6 +14,7 @@ from data.sources import (load_seasonal, season_str,
                           tsdb_matches, espn_matches, therundown_odds_fixture)
 from data.marathon import marathon_odds
 from data.sources import prognozist_marathon_odds
+from data.api_football import api_football_odds_fixture
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict
