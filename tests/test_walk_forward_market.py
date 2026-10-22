@@ -1,6 +1,7 @@
 import unittest
 
-from model.walk_forward import _market_probs, _metrics, _paired_differences
+from model.walk_forward import (_market_probs, _metrics, _paired_differences,
+                                _binary_metrics, _total_market_probs)
 
 
 class WalkForwardMarketBenchmarkTests(unittest.TestCase):
@@ -23,6 +24,27 @@ class WalkForwardMarketBenchmarkTests(unittest.TestCase):
         self.assertIsNone(probabilities)
         self.assertIsNone(source)
 
+
+    def test_historical_totals_odds_are_de_vigged(self):
+        probabilities, source = _total_market_probs({
+            "B365>2.5": "1.80", "B365<2.5": "2.05"
+        })
+        self.assertEqual(source, "B365>2.5/B365<2.5")
+        self.assertAlmostEqual(sum(probabilities.values()), 1.0)
+        self.assertGreater(probabilities["over"], probabilities["under"])
+
+    def test_binary_metrics_report_brier_log_loss_and_intervals(self):
+        records = [
+            ({"over": 0.70, "under": 0.30}, "over"),
+            ({"over": 0.25, "under": 0.75}, "under"),
+            ({"over": 0.55, "under": 0.45}, "over"),
+        ]
+        result = _binary_metrics(records, bootstrap_samples=100, seed=7)
+        self.assertEqual(result["n"], 3)
+        self.assertIsNotNone(result["brier"])
+        self.assertIsNotNone(result["log_loss"])
+        self.assertLessEqual(result["confidence_intervals_95"]["brier"]["low"],
+                             result["confidence_intervals_95"]["brier"]["high"])
 
     def test_power_and_shin_methods_return_valid_probabilities(self):
         row = {"B365H": "2.00", "B365D": "3.50", "B365A": "4.00"}
