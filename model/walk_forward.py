@@ -237,8 +237,11 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
     candidate.half_life_days = float(half_life_days)
     temporal_goals.half_life_days = float(half_life_days)
     records = {"baseline": [], "candidate": [], "temporal_goals_only": [],
-               "market": [], "candidate_on_market": []}
+               "market": [], "candidate_on_market": [],
+               "goals_over25": [], "goals_over25_market": [],
+               "goals_over25_candidate_on_market": []}
     market_sources = {}
+    total_market_sources = {}
     xg_forecasts = xg_eligible_rows = 0
     index = 0
     cursor = 0
@@ -261,6 +264,14 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             pred_temporal_goals = temporal_goals.predict(home, away, league, match_date=stamp.isoformat())
             if pred_candidate.get("xg_used"):
                 xg_forecasts += 1
+            total_outcome = "over" if hg + ag >= 3 else "under"
+            over_prob = max(1e-6, min(1.0 - 1e-6, float(pred_candidate.get("over", 0.5))))
+            records["goals_over25"].append(({"over": over_prob, "under": 1.0 - over_prob}, total_outcome))
+            total_market_p, total_market_source = _total_market_probs(row_copy)
+            if total_market_p:
+                records["goals_over25_market"].append((total_market_p, total_outcome))
+                records["goals_over25_candidate_on_market"].append(({"over": over_prob, "under": 1.0 - over_prob}, total_outcome))
+                total_market_sources[total_market_source] = total_market_sources.get(total_market_source, 0) + 1
             outcome = "H" if hg > ag else "A" if hg < ag else "D"
             records["baseline"].append((_probs(pred_base), outcome))
             records["candidate"].append((_probs(pred_candidate), outcome))
