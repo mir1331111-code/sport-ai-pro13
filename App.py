@@ -583,6 +583,7 @@ with st.sidebar:
         "🎯 Параметры</div>",
         unsafe_allow_html=True)
     min_prob = st.slider("Мин. P %", 30, 85, 40, 1) / 100
+    min_edge = st.slider("Мин. Edge %", 0, 15, 3, 1) / 100
     kelly_frac = st.slider("Kelly", 0.05, 0.40, 0.25, 0.05)
     matrix_n = st.slider("Матрица", 6, 15, 12, 1)
 
@@ -688,7 +689,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
      "🧮 Калькулятор", "🧪 Бэктест"])
 
 with tab1:
-    scanner.render(min_prob, kelly_frac, matrix_n)
+    scanner.render(min_prob, kelly_frac, matrix_n, min_edge)
 with tab2:
     portfolio.render()
 with tab3:
