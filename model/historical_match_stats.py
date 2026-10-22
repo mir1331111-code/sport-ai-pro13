@@ -34,7 +34,9 @@ class HistoricalMatchStats:
     def __init__(self, min_team_games=4):
         self.min_team_games = int(min_team_games)
         self.league = defaultdict(lambda: defaultdict(list))
-        self.teams = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        self.teams = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+        )
         self.trained_matches = defaultdict(int)
 
     def learn_step(self, row, league="G"):
