@@ -220,7 +220,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         col_metrics.caption("Введи кэф > 1.01")
 
 
-def render(min_prob, kelly_frac, matrix_n):
+def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
     c1, c2 = st.columns([4, 1])
     days = c1.slider("Горизонт, дней", 1, 14, 7)
@@ -338,7 +338,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 for c in items:
                     st.markdown(render_verdict_card(c, min_prob),
                                 unsafe_allow_html=True)
-                    _render_manual_odds_block(c, D, kelly_frac, min_prob)
+                    _render_manual_odds_block(c, D, kelly_frac, min_prob, min_edge)
         else:
             for c in cards_view:
                 st.markdown(render_verdict_card(c, min_prob),
