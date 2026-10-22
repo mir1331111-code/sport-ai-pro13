@@ -43,6 +43,14 @@ class HistoricalMatchStats:
         values = {}
         for market, (home_key, away_key) in _FIELDS.items():
             h, a = _num(row.get(home_key)), _num(row.get(away_key))
+            if market == "cards":
+                # Red cards are added when present; absent values stay missing,
+                # rather than being silently treated as zero.
+                hr, ar = _num(row.get("HR")), _num(row.get("AR"))
+                if h is not None and hr is not None:
+                    h += hr
+                if a is not None and ar is not None:
+                    a += ar
             if h is None or a is None:
                 continue
             values[market] = (h, a)
