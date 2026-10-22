@@ -1,4 +1,4 @@
-"""ui/tabs/scanner.py — Сканер с поддержкой Marathon, The Odds API и fallback."""
+"""ui/tabs/scanner.py — Сканер с ручным вводом кэфов."""
 from __future__ import annotations
 import os
 import time
@@ -114,6 +114,83 @@ def _load_engine(matrix_n, logs, update_loader):
     except Exception:
         pass
     return engine
+
+
+def _render_manual_odds_block(c, D, kelly_frac):
+    """Блок для ручного ввода кэфа под карточкой."""
+    v = c.get("verdict", {})
+    pick = v.get("pick", "—")
+    label = v.get("label", "—")
+    fair_odd = v.get("fair_odd", 1.0)
+    prob = v.get("prob", 0.0)
+    
+    key_base = f"manual_{c.get('match', '')}_{pick}".replace(" ", "_").replace("/", "_")
+    input_key = f"odd_{key_base}"
+    btn_key = f"btn_{key_base}"
+    
+    st.markdown(
+        "<div style='background:rgba(52,211,153,.1);"
+        "border:1px solid rgba(52,211,153,.3);"
+        "padding:10px 14px;border-radius:10px;margin-bottom:14px;"
+        "display:flex;align-items:center;gap:10px;'>"
+        "<span style='color:#34d399;font-weight:bold;font-size:1.1rem;'>✍️</span>"
+        "<span style='color:#a5f3fc;font-size:.85rem;'>Ручной ввод кэфа (если нет реального):</span>"
+        "</div>", unsafe_allow_html=True
+    )
+    
+    col_input, col_metrics, col_btn = st.columns([2, 2, 1])
+    
+    manual_odd = col_input.number_input(
+        "Кэф", 
+        min_value=1.01, max_value=100.0, 
+        value=float(fair_odd),
+        step=0.01,
+        key=input_key,
+        label_visibility="collapsed",
+        help=f"Введи реальный кэф для {label}"
+    )
+    
+    if manual_odd > 1.01:
+        ev = prob * manual_odd - 1
+        edge = prob - (1.0 / manual_odd)
+        stake = kelly(prob, manual_odd, D["bank"], kelly_frac)
+        
+        col_metrics.markdown(
+            f"<div style='font-size:.9rem;line-height:1.5;'>"
+            f"EV: <b style='color:{'#34d399' if ev>0 else '#f87171'}'>{ev*100:+.1f}%</b><br>"
+            f"Edge: <b>{edge*100:+.1f}%</b><br>"
+            f"Kelly: <b style='color:#fbbf24'>{stake:.2f} у.е.</b>"
+            f"</div>", unsafe_allow_html=True
+        )
+        
+        if col_btn.button("➕ В портфель", key=btn_key, use_container_width=True):
+            D2 = dict(D)
+            new_bet = {
+                "match": c["match"], "match_ru": c["match_ru"],
+                "div": c["div"], "league": c["league"],
+                "market": market_type(pick), "pick": pick, 
+                "odds": manual_odd, "stake": stake,
+                "prob": prob, "status": "pending", "strat": "manual",
+                "odds_source": "manual",
+                "mode": "real",
+                "date": datetime.now().strftime("%d.%m.%Y"),
+                "date_iso": c.get("date_iso"),
+                "match_time": c.get("time", ""),
+                "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "fixture_id": c.get("fixture_id"), "score": None, "ev": ev,
+            }
+            existing = f"{c['match']}|{pick}"
+            if not any(f"{b['match']}|{b['pick']}" == existing for b in D2["bets"] if b.get("status") == "pending"):
+                D2["bets"].append(new_bet)
+                D2["bank"] = max(0.0, D2["bank"] - stake)
+                st.session_state.data = D2
+                usage.set_local_data(D2)
+                st.toast("✅ Добавлено в портфель!", icon="✅")
+                st.rerun()
+            else:
+                st.warning("Эта ставка уже есть в портфеле.")
+    else:
+        col_metrics.caption("Введи кэф > 1.01")
 
 
 def render(min_prob, kelly_frac, matrix_n):
@@ -234,10 +311,12 @@ def render(min_prob, kelly_frac, matrix_n):
                 for c in items:
                     st.markdown(render_verdict_card(c, min_prob),
                                 unsafe_allow_html=True)
+                    _render_manual_odds_block(c, D, kelly_frac)
         else:
             for c in cards_view:
                 st.markdown(render_verdict_card(c, min_prob),
                             unsafe_allow_html=True)
+                _render_manual_odds_block(c, D, kelly_frac)
 
         st.caption("✅ Показано " + str(len(cards_view)) + " из "
                    + str(len(all_cards)))
@@ -354,21 +433,31 @@ def render(min_prob, kelly_frac, matrix_n):
             if has_model_candidate:
                 try:
                     candidates = []
-                    # 1. Marathon напрямую
-                    try:
-                        candidates.append(("marathon_category",
-                                           marathon_odds(h_en, a_en, r.get("Date", ""), lg)))
-                    except Exception:
-                        pass
                     
-                    # 2. Prognozist (Marathon)
+                    # 1. СНАЧАЛА ПРОБУЕМ PROGNOZIST (рабочий парсер)
                     try:
-                        candidates.append(("prognozist_match_centre",
-                                           prognozist_marathon_odds(h_en, a_en)))
-                    except Exception:
-                        pass
+                        from data.prognozist_odds import find_match_odds
+                        prog_data = find_match_odds(h_en, a_en, kickoff=d)
+                        if prog_data and prog_data.get("odds"):
+                            odds_dict = prog_data["odds"]
+                            p1 = float(odds_dict["1"]["best"])
+                            px = float(odds_dict["X"]["best"])
+                            p2 = float(odds_dict["2"]["best"])
+                            if all(1.01 < v < 100 for v in (p1, px, p2)):
+                                candidates.append(("prognozist", {"П1": p1, "X": px, "П2": p2}))
+                                logs.append(f"✅ Prognozist нашёл: {h_ru} — {a_ru}")
+                    except Exception as exc:
+                        logs.append(f"⚠️ Prognozist error: {type(exc).__name__}")
+
+                    # 2. Если Prognozist не дал — пробуем Marathon
+                    if not candidates:
+                        try:
+                            candidates.append(("marathon_category",
+                                               marathon_odds(h_en, a_en, r.get("Date", ""), lg)))
+                        except Exception:
+                            pass
                     
-                    # 3. TheRundown
+                    # 3. Если всё ещё нет — TheRundown
                     if not candidates:
                         rundown_key = (
                             D.get("meta", {}).get("rundown_key")
@@ -381,8 +470,6 @@ def render(min_prob, kelly_frac, matrix_n):
                             )
                             if rundown:
                                 candidates.append(("therundown", rundown))
-                        else:
-                            logs.append("⚠️ TheRundown: ключ не передан в scanner.py")
 
                     for source_name, candidate in candidates:
                         if not isinstance(candidate, dict):
@@ -425,7 +512,6 @@ def render(min_prob, kelly_frac, matrix_n):
                 funnel_counts["model_only"] += 1
 
             # ============ FALLBACK: ESTIMATED ============
-            # Если реальных кэфов нет, создаём ставку по оценочному кэфу (paper)
             if best is None and verdict.get("is_action"):
                 est_odd = verdict.get("fair_odd")
                 if est_odd and est_odd > 1.01:
@@ -569,7 +655,7 @@ def render(min_prob, kelly_frac, matrix_n):
                 "odds_source": c.get("odds_source", "estimated"),
                 "mode": "real" if c.get("odds_source") in {
                     "prognozist_marathon", "marathon_category",
-                    "prognozist_match_centre", "therundown"
+                    "prognozist_match_centre", "therundown", "prognozist"
                 } else "paper",
                 "date": datetime.now().strftime("%d.%m.%Y"),
                 "date_iso": c.get("date_iso"),
