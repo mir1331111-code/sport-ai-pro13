@@ -152,11 +152,14 @@ def walk_forward_compare(rows, *, matrix_n: int = 12) -> dict:
         for home, away, hg, ag, row_copy, no_xg_row, match_stamp, pred_base, pred_candidate, pred_temporal_goals, outcome in pending:
             # Train the calibrator only after every forecast for this date exists.
             target = {"H": 0, "D": 1, "A": 2}[outcome]
+            one_hot = [1.0 if target == cls else 0.0 for cls in range(3)]
             for model, prediction in ((baseline, pred_base), (candidate, pred_candidate),
                                       (temporal_goals, pred_temporal_goals)):
                 raw = (prediction.get("p1_raw"), prediction.get("x_raw"), prediction.get("p2_raw"))
                 model.calib_logits.extend(model._logit(p) for p in raw)
-                model.calib_outcomes.append(target)
+                model.calib_outcomes.extend(one_hot)
+                if model.match_count % 150 == 149:
+                    model.refit_calibrator()
             baseline.refit_calibrator()
             candidate.refit_calibrator()
             temporal_goals.refit_calibrator()
