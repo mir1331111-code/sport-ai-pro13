@@ -58,18 +58,20 @@ def best_value_market(verdict: dict, rows: list, market_odds: dict | None,
             continue
 
         # Candidate-specific confidence so the card's rank matches the selected market.
-        confidence_score = min(100.0, max(0.0, (
-            0.55 * prob * 100.0
-            + 0.45 * min(1.0, max(0.0, (prob - 0.50) / 0.35)) * 100.0
-        )))
-        refined["confidence_score"] = round(confidence_score, 1)
-        if prob >= 0.80:
+        # Rank and label using the final market-blended probability, not the
+        # unadjusted model probability. This avoids calling a pick "high" when
+        # the real line strongly disagrees with the model.
+        final_prob = float(refined.get("prob") or 0.0)
+        confidence_score = round(final_prob * 100.0, 1)
+        refined["confidence_score"] = confidence_score
+        refined["confidence_basis"] = "market_blended_probability_not_historical_hit_rate"
+        if final_prob >= 0.80:
             refined["confidence"] = "очень высокая"
-        elif prob >= 0.72:
+        elif final_prob >= 0.72:
             refined["confidence"] = "высокая"
-        elif prob >= 0.65:
+        elif final_prob >= 0.65:
             refined["confidence"] = "хорошая"
-        elif prob >= 0.55:
+        elif final_prob >= 0.55:
             refined["confidence"] = "средняя"
         else:
             refined["confidence"] = "низкая"
@@ -83,7 +85,7 @@ def best_value_market(verdict: dict, rows: list, market_odds: dict | None,
         score = (
             0.60 * max(-1.0, min(1.0, float(refined["ev"])))
             + 0.25 * max(-1.0, min(1.0, float(refined["edge"])))
-            + 0.15 * prob
+            + 0.15 * final_prob
         )
         qualified.append((score, refined, best))
 
