@@ -24,7 +24,6 @@ from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label)
 
 LLM_TOP_N = 8
-MIN_STAKE_PCT = 0.005
 MAX_STAKE_PCT = 0.05
 
 
@@ -543,7 +542,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if market_odds:
                 chosen_verdict, best = best_value_market(
                     verdict, rows_, market_odds, D["bank"], kelly_frac,
-                    min_prob, min_edge=0.03, min_ev=0.03,
+                    min_prob, min_edge=min_edge, min_ev=0.03,
                 )
                 if best is not None:
                     verdict = chosen_verdict
@@ -553,25 +552,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             else:
                 funnel_counts["model_only"] += 1
 
-            # ============ FALLBACK: ESTIMATED ============
-            if best is None and verdict.get("is_action"):
-                est_odd = verdict.get("fair_odd")
-                if est_odd and est_odd > 1.01:
-                    prob_ = float(verdict["prob"])
-                    ev_ = prob_ * est_odd - 1
-                    min_stake = round(D["bank"] * MIN_STAKE_PCT, 2)
-                    stake_ = max(kelly(prob_, est_odd, D["bank"], kelly_frac), min_stake)
-                    pick_ = verdict["pick"]
-                    
-                    best = (market_type(pick_), pick_, est_odd, ev_, prob_, stake_)
-                    verdict["real_odds"] = False
-                    verdict["odd"] = est_odd
-                    verdict["ev"] = ev_
-                    odds_source = "estimated"
-                    funnel_counts["estimated"] += 1
-                    logs.append(
-                        f"📐 ESTIMATED BET: {h_ru} — {a_ru} | {pick_} @ {est_odd:.2f}"
-                    )
+            # No bookmaker price means no bet candidate. Fair odds are display-only.
+            if best is None:
+                verdict["real_odds"] = False
+                verdict["odd"] = None
+                verdict["ev"] = None
+                verdict["edge"] = None
+                verdict["stake"] = 0.0
+                verdict["is_bet"] = False
+                odds_source = "no_market"
 
             if best:
                 matches_with_best += 1
