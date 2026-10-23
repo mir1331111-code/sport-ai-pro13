@@ -975,16 +975,18 @@ def _prognozist_line_index():
     if not prognozist_permission_enabled():
         _prognozist_allowed(_PROGNOZIST_URL)
         return []
-    key = "prognozist_marathon_line_index_v5"
-    cached = cache_get(key, 180)
-    if isinstance(cached, list):
-        return cached
+    # Check the current permission/robots decision before consulting the
+    # odds cache; a previously cached line must not bypass a newly blocked source.
     allowed_urls = [
         url for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)
         if _prognozist_allowed(url)
     ]
     if not allowed_urls:
         return []
+    key = "prognozist_marathon_line_index_v5"
+    cached = cache_get(key, 180)
+    if isinstance(cached, list):
+        return cached
     headers = {
         "User-Agent": "Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)",
         "Accept": "text/html,application/json,text/plain,*/*",
@@ -1044,6 +1046,10 @@ def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dic
             day = kickoff.strftime("%Y-%m-%d") if hasattr(kickoff, "strftime") else str(kickoff)[:10]
         except Exception:
             day = ""
+    # Re-check source access before the fixture-level cache too.
+    if not any(_prognozist_allowed(url)
+               for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)):
+        return None
     cache_key = f"prognozist_marathon_v4_{day}_{hn}_{an}"
     cached = cache_get(cache_key, 180)
     if cached is not None:
