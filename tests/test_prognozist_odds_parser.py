@@ -41,6 +41,11 @@ class PrognozistOddsParserTests(unittest.TestCase):
                 self.assertFalse(_prognozist_allowed("https://prognozist.ru/mc/football/"))
                 mocked_get.assert_not_called()
 
+    def test_source_status_reports_safe_default(self):
+        from data.sources import prognozist_source_status
+        with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
+            self.assertEqual(prognozist_source_status(), "disabled_permission")
+
     def test_match_lookup_uses_line_only_when_permission_enabled(self):
         from data import sources
         odds = {"П1": 2.1, "X": 3.2, "П2": 3.5}
