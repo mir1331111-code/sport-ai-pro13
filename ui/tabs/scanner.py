@@ -585,11 +585,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             api_market_data = None
             odds_source = "no_market"
 
-            has_model_candidate = any(
-                float(item.get("prob") or 0) >= float(min_prob)
-                for item in rows_
-            )
-
             # Fetch real 1X2 odds for every displayed fixture, not only when
             # the model already crosses the probability threshold. The strict
             # value gates below decide whether a bet is eligible; odds display
