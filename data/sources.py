@@ -1003,37 +1003,66 @@ def _prognozist_line_index():
     return indexed
 
 
-def prognozist_marathon_odds(home: str, away: str) -> Optional[dict]:
-    """Return real Marathon 1X2 prices from Prognozist; fail closed on ambiguity."""
+def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dict]:
+    """Return a complete, unambiguous real 1X2 line; never use cache to bypass permission."""
     if not home or not away:
         return None
-    cache_key = f"prognozist_marathon_v3_{_norm_name(home)}_{_norm_name(away)}"
-    cached = cache_get(cache_key, 180)
-    if cached is not None:
-        return cached or None
+    # Check permission before reading match or line caches, so disabling the
+    # source takes effect immediately and cached data cannot bypass the gate.
+    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+        return None
     hn, an = _norm_name(home), _norm_name(away)
     if not hn or not an:
         return None
+    day = ""
+    if kickoff:
+        try:
+            day = kickoff.strftime("%Y-%m-%d") if hasattr(kickoff, "strftime") else str(kickoff)[:10]
+        except Exception:
+            day = ""
+    cache_key = f"prognozist_marathon_v4_{day}_{hn}_{an}"
+    cached = cache_get(cache_key, 180)
+    if cached is not None:
+        return cached or None
     try:
+        matches = []
         for item in _prognozist_line_index():
-            text = item.get("text", "")
-            normalized = _norm_name(text)
-            # Team names may be English in the fixture feed and Russian in the
-            # bookmaker line. Use the shared tolerant matcher before rejecting.
-            home_ok = hn in normalized
-            away_ok = an in normalized
-            if not (home_ok and away_ok):
-                try:
-                    from data.marathon import _find_team_match
-                    home_ok = _find_team_match(home, text)
-                    away_ok = _find_team_match(away, text)
-                except Exception:
-                    pass
-            if home_ok and away_ok:
-                odds = item.get("odds")
-                if isinstance(odds, dict) and all(k in odds for k in ("П1", "X", "П2")):
-                    cache_put(cache_key, odds)
-                    return odds
+            row_text = item.get("text", "")
+            if not _prognozist_match([row_text], home, away):
+                continue
+            odds = item.get("odds")
+            if not isinstance(odds, dict) or not all(k in odds for k in ("П1", "X", "П2")):
+                continue
+            if not all(1.01 < float(odds[k]) <= 100 for k in ("П1", "X", "П2")):
+                continue
+            # If the line contains a parseable date and a kickoff was supplied,
+            # do not accept a different calendar date. Rows without dates remain
+            # eligible, but multiple matching rows are rejected below.
+            if day:
+                date_tokens = re.findall(r"(?<!\\d)(\\d{1,2})[./-](\\d{1,2})(?:[./-](\\d{2,4}))?(?!\\d)", row_text)
+                dated = []
+                for dd, mm, yy in date_tokens:
+                    year = int(yy) if yy else None
+                    if year is not None and year < 100:
+                        year += 2000
+                    if year is None:
+                        continue
+                    try:
+                        dated.append(datetime(year, int(mm), int(dd)).strftime("%Y-%m-%d"))
+                    except ValueError:
+                        continue
+                if dated and day not in dated:
+                    continue
+            matches.append({"П1": float(odds["П1"]), "X": float(odds["X"]), "П2": float(odds["П2"])})
+        # Same team names can occur in youth/cup/league fixtures. Without a
+        # unique fixture identity, fail closed instead of attaching the wrong line.
+        unique = {tuple(round(item[k], 4) for k in ("П1", "X", "П2")) for item in matches}
+        if len(unique) == 1 and matches:
+            result = matches[0]
+            cache_put(cache_key, result)
+            return result
+        if len(unique) > 1:
+            log.warning("Prognozist: ambiguous fixture match for %s — %s; refusing to attach odds", home, away)
     except Exception as exc:
         log.debug("Prognozist lookup failed: %s", type(exc).__name__)
     cache_put(cache_key, None)
