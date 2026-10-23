@@ -719,7 +719,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 verdict["edge"] = None
                 verdict["stake"] = 0.0
                 verdict["is_bet"] = False
-                odds_source = "no_market"
+                # Keep the fetched line/source for display even when it fails
+                # value gates. "No bet" is not the same as "no odds found".
+                if not market_odds:
+                    odds_source = "no_market"
 
             if best:
                 matches_with_best += 1
@@ -752,6 +755,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
+                "market_odds": dict(market_odds),
                 "total_market_odds": total_market_odds,
                 "total_odds_source": total_odds_source,
                 "home_badge": r.get("home_badge") or "",
