@@ -378,9 +378,16 @@ RU_TO_EN_TEAM = {
 
 
 def _find_team_match(team_en: str, team_ru: str) -> bool:
-    """Match provider team names despite common suffix and naming variants."""
+    """Match provider names without collapsing youth/reserve sides into senior teams."""
     te, tr = _norm(team_en), _norm(team_ru)
     if not te or not tr:
+        return False
+    def age_marker(value):
+        raw = (value or "").lower()
+        match = re.search(r"\b(u\s*\d{2}|under\s*[- ]?\s*\d{2}|youth|reserves?|ii)\b", raw)
+        return re.sub(r"\s+", "", match.group(1)) if match else ""
+    age_en, age_ru = age_marker(team_en), age_marker(team_ru)
+    if age_en != age_ru and (age_en or age_ru):
         return False
     aliases = {
         "athleticclub": "athleticbilbao", "athleticbilba": "athleticbilbao",
