@@ -946,6 +946,17 @@ def _prognozist_allowed(url: str) -> bool:
         log.warning("Prognozist robots.txt check failed (%s); disabling source.", type(exc).__name__)
         return False
 
+def prognozist_source_status() -> str:
+    """Return an operator-facing status without scraping match data."""
+    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+        return "disabled_permission"
+    allowed = [
+        url for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)
+        if _prognozist_allowed(url)
+    ]
+    return "ready" if allowed else "blocked_or_unavailable"
+
+
 def _prognozist_line_index():
     """Download and parse the line only when explicitly permitted by the operator and robots.txt."""
     if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
