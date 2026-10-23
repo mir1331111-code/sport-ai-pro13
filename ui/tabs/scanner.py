@@ -608,9 +608,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     # адаптер data.sources. Не импортируем отсутствующий модуль.
                     # Если имена команд не совпали на английском, пробуем русские.
                     try:
-                        prog_odds = prognozist_marathon_odds(h_en, a_en)
+                        prog_odds = prognozist_marathon_odds(h_en, a_en, kickoff=d)
                         if not prog_odds:
-                            prog_odds = prognozist_marathon_odds(h_ru, a_ru)
+                            prog_odds = prognozist_marathon_odds(h_ru, a_ru, kickoff=d)
                         if isinstance(prog_odds, dict):
                             valid_prog = {}
                             for source_key, target_key in (("П1", "П1"), ("X", "X"), ("П2", "П2"),
