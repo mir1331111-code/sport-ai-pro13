@@ -71,6 +71,23 @@ class PrognozistOddsParserTests(unittest.TestCase):
                 self.assertIsNone(sources.prognozist_marathon_odds("Arsenal", "Chelsea"))
                 cached.assert_not_called()
 
+    def test_match_lookup_honors_streamlit_secret_permission(self):
+        from data import sources
+        odds = {"П1": 2.1, "X": 3.2, "П2": 3.5}
+        with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
+            with (
+                patch.object(sources, "prognozist_permission_enabled", return_value=True),
+                patch.object(sources, "cache_get", return_value=None),
+                patch.object(sources, "_prognozist_line_index", return_value=[
+                    {"text": "Arsenal Chelsea П1 2.10 X 3.20 П2 3.50", "odds": odds}
+                ]),
+                patch.object(sources, "cache_put"),
+            ):
+                self.assertEqual(
+                    sources.prognozist_marathon_odds("Arsenal", "Chelsea"),
+                    odds,
+                )
+
     def test_match_lookup_returns_unique_real_line(self):
         from data import sources
         odds = {"П1": 2.1, "X": 3.2, "П2": 3.5}
