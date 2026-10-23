@@ -49,6 +49,15 @@ class PrognozistOddsParserTests(unittest.TestCase):
                 self.assertFalse(_prognozist_allowed("https://prognozist.ru/mc/football/"))
                 mocked_get.assert_not_called()
 
+    def test_marathon_fallback_is_disabled_without_permission(self):
+        from data.marathon import _permitted_by_robots, _sess
+        with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
+            with patch.object(_sess, "get") as mocked_get:
+                self.assertFalse(_permitted_by_robots(
+                    "https://prognozist.ru/line/marathon/event_line.php?category=21520"
+                ))
+                mocked_get.assert_not_called()
+
     def test_source_status_reports_safe_default(self):
         from data.sources import prognozist_source_status
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
