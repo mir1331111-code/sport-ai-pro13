@@ -866,26 +866,34 @@ def _prognozist_extract_1x2(text):
 
 
 def _prognozist_match(row, home, away):
-    joined = " ".join(str(x) for x in row)
-    normalized = _norm_name(joined)
-    hn, an = _norm_name(home), _norm_name(away)
-    # Compare both full row and URL slug; tolerate transliteration and
-    # common short/long team-name variants without matching single letters.
-    if not hn or not an:
+    """Match both teams in home-away order; avoid canonicalizing the whole row."""
+    joined = " ".join(str(x) for x in row).lower()
+    raw = re.sub(r"[^a-zа-я0-9]", "", joined)
+    if not raw or not home or not away:
         return False
-    home_ok = hn in normalized or (len(hn) >= 5 and hn in normalized)
-    away_ok = an in normalized or (len(an) >= 5 and an in normalized)
-    if home_ok and away_ok:
-        return True
-    # Token overlap handles source names such as "Man United" vs "Manchester United".
-    # _norm_name removes spaces, so split() on normalized names never works.
-    # Build meaningful tokens from the original team names instead.
-    ht = {_norm_name(x) for x in re.findall(r"[A-Za-zА-Яа-я0-9]+", home)
-          if len(_norm_name(x)) >= 3}
-    at = {_norm_name(x) for x in re.findall(r"[A-Za-zА-Яа-я0-9]+", away)
-          if len(_norm_name(x)) >= 3}
-    return bool(ht and at and any(x in normalized for x in ht)
-                and any(x in normalized for x in at))
+
+    try:
+        from data.team_names import ALIASES, normalize_team
+        def variants(team):
+            canonical = normalize_team(team)
+            values = {re.sub(r"[^a-zа-я0-9]", "", str(team).lower())}
+            values.update(
+                re.sub(r"[^a-zа-я0-9]", "", alias.lower())
+                for alias, target in ALIASES.items() if target == canonical
+            )
+            # Longest names first; short aliases are prone to false positives.
+            return sorted((v for v in values if len(v) >= 5), key=len, reverse=True)
+        home_variants, away_variants = variants(home), variants(away)
+    except Exception:
+        home_variants = [re.sub(r"[^a-zа-я0-9]", "", str(home).lower())]
+        away_variants = [re.sub(r"[^a-zа-я0-9]", "", str(away).lower())]
+
+    home_positions = [(raw.find(v), len(v)) for v in home_variants if raw.find(v) >= 0]
+    away_positions = [(raw.find(v), len(v)) for v in away_variants if raw.find(v) >= 0]
+    # Odds are side-specific. Presence alone is insufficient: reversed fixtures
+    # must not be accepted because that swaps home and away prices.
+    return any(hpos + hlen <= apos for hpos, hlen in home_positions
+               for apos, _ in away_positions)
 
 
 def _prognozist_extract_row_odds(row):
