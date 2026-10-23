@@ -128,6 +128,27 @@ class PrognozistOddsParserTests(unittest.TestCase):
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
             self.assertEqual(prognozist_source_status(), "disabled_permission")
 
+    def test_odds_api_does_not_match_senior_fixture_to_u21_event(self):
+        from data import sources
+        events = [{
+            "home_team": "Manchester City U21",
+            "away_team": "Arsenal",
+            "bookmakers": [{
+                "markets": [{"key": "h2h", "outcomes": [
+                    {"name": "Manchester City U21", "price": 1.4},
+                    {"name": "Draw", "price": 4.8},
+                    {"name": "Arsenal", "price": 6.0},
+                ]}]
+            }],
+        }]
+        with (
+            patch.object(sources, "cache_get", side_effect=[None, events]),
+            patch.object(sources.usage, "odds_remaining", return_value=10),
+        ):
+            self.assertIsNone(sources.odds_api_fixture(
+                "soccer_epl", "Manchester City", "Arsenal", "test-key", []
+            ))
+
     def test_prognozist_match_respects_home_away_order(self):
         from data.sources import _prognozist_match
         self.assertTrue(_prognozist_match(
