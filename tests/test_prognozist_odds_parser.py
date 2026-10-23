@@ -15,6 +15,14 @@ class PrognozistOddsParserTests(unittest.TestCase):
             {"П1": 2.60, "X": 3.10, "П2": 2.90},
         )
 
+    def test_parses_compact_match_centre_markup_shape(self):
+        # Current public match-centre rows often concatenate labels and prices.
+        row = ["21:00СкороМанчестер Сити U21Сток Сити U21П11.14X6.35П211.50—"]
+        self.assertEqual(
+            _prognozist_extract_row_odds(row),
+            {"П1": 1.14, "X": 6.35, "П2": 11.50},
+        )
+
     def test_extracts_prices_from_separate_table_cells(self):
         row = ["Levante", "Athletic Club", "2.60", "3.10", "2.90"]
         self.assertEqual(
