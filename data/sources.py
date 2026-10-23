@@ -959,7 +959,7 @@ def _prognozist_allowed(url: str) -> bool:
 
 def prognozist_source_status() -> str:
     """Return an operator-facing status without scraping match data."""
-    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+    if not prognozist_permission_enabled():
         return "disabled_permission"
     allowed = [
         url for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)
