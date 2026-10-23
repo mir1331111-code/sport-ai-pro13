@@ -73,6 +73,7 @@ def _permitted_by_robots(url: str) -> bool:
         return allowed
     except Exception as exc:
         _log(f"Disabled: robots.txt check failed ({type(exc).__name__}); fail-closed.")
+        cache_put(cache_key, False)
         return False
 
 
