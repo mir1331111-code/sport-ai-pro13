@@ -630,7 +630,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             else:
                                 logs.append("ℹ️ Prognozist: линия неполная или коэффициенты некорректны")
                         else:
-                            logs.append("ℹ️ Prognozist: матч не найден, проверяю другие источники")
+                            if os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1":
+                                logs.append("ℹ️ Prognozist: матч/линия не найдены или неоднозначны, проверяю другие источники")
                     except Exception as exc:
                         logs.append(f"⚠️ Prognozist error: {type(exc).__name__}")
 
