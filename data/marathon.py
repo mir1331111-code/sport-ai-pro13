@@ -407,32 +407,84 @@ def _find_team_match(team_en: str, team_ru: str) -> bool:
     return bool(a & b)
 
 
+def _event_calendar_date(value: str) -> str:
+    """Extract a calendar date from common provider date/time formats."""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    for pattern in (r"(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)",
+                   r"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})(?!\d)"):
+        match = re.search(pattern, raw)
+        if not match:
+            continue
+        parts = [int(x) for x in match.groups()]
+        if pattern.startswith("(?<!\\d)(\\d{4})"):
+            year, month, day = parts
+        else:
+            day, month, year = parts
+            if year < 100:
+                year += 2000
+        try:
+            return datetime(year, month, day).strftime("%Y-%m-%d")
+        except ValueError:
+            return ""
+    return ""
+
+
 def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
                   div_code: str = "") -> Optional[dict]:
     if not home_en or not away_en:
         return None
 
-    # Query only the fixture's likely league. The former all-leagues fallback
-    # could trigger up to 17 sequential network requests (20s each) for one
-    # fixture, freezing the scanner on a cold cache. The global match-centre
-    # parser is the secondary source when this category has no match.
+    # Query only the fixture's likely league; do not attach a line from another
+    # date or choose arbitrarily if multiple same-name fixtures are present.
     if div_code not in DIV_TO_CATEGORY:
         _log(f"SKIP category lookup for unmapped league {div_code!r}")
         return None
 
+    target_date = (date_iso or "")[:10]
     events = fetch_league_events(div_code)
+    matches = []
     for ev in events:
-        if (_find_team_match(home_en, ev["home"])
-                and _find_team_match(away_en, ev["away"])):
-            _log(f"✅ FOUND: {ev['home']} vs {ev['away']} = "
-                 f"П1 {ev['odds'].get('П1')} / X {ev['odds'].get('X')} / "
-                 f"П2 {ev['odds'].get('П2')}")
-            return {
-                "П1": ev["odds"].get("П1"),
-                "X": ev["odds"].get("X"),
-                "П2": ev["odds"].get("П2"),
-                "source": "marathon",
-            }
+        if not (_find_team_match(home_en, ev.get("home", ""))
+                and _find_team_match(away_en, ev.get("away", ""))):
+            continue
+        event_date = _event_calendar_date(ev.get("date_str", ""))
+        if target_date and event_date and event_date != target_date:
+            continue
+        odds = ev.get("odds")
+        if not isinstance(odds, dict) or not all(
+            _valid_marathon_odd(odds.get(key)) for key in ("П1", "X", "П2")
+        ):
+            continue
+        matches.append(ev)
 
-    _log(f"❌ NOT FOUND in {div_code}: {home_en} vs {away_en}")
-    return None
+    if not matches:
+        _log(f"❌ NOT FOUND in {div_code}: {home_en} vs {away_en} ({target_date or 'date unknown'})")
+        return None
+    if len(matches) > 1:
+        # If a single dated match can be identified, prefer it over undated rows.
+        dated = [ev for ev in matches if _event_calendar_date(ev.get("date_str", "")) == target_date] if target_date else []
+        if len(dated) == 1:
+            matches = dated
+        else:
+            unique_lines = {
+                tuple(round(float(ev["odds"][key]), 4) for key in ("П1", "X", "П2"))
+                for ev in matches
+            }
+            if len(unique_lines) != 1:
+                _log(f"⚠️ AMBIGUOUS: multiple lines for {home_en} vs {away_en}; refusing to choose")
+                return None
+    ev = matches[0]
+    _log(f"✅ FOUND: {ev['home']} vs {ev['away']} = "
+         f"П1 {ev['odds']['П1']} / X {ev['odds']['X']} / П2 {ev['odds']['П2']}")
+    return {"П1": float(ev["odds"]["П1"]), "X": float(ev["odds"]["X"]),
+            "П2": float(ev["odds"]["П2"]), "source": "marathon"}
+
+
+def _valid_marathon_odd(value) -> bool:
+    try:
+        number = float(value)
+        return 1.01 < number <= 100
+    except (TypeError, ValueError):
+        return False
