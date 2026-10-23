@@ -1033,7 +1033,7 @@ def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dic
         return None
     # Check permission before reading match or line caches, so disabling the
     # source takes effect immediately and cached data cannot bypass the gate.
-    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+    if not prognozist_permission_enabled():
         return None
     hn, an = _norm_name(home), _norm_name(away)
     if not hn or not an:
