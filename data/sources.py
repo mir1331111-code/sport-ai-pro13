@@ -1039,7 +1039,7 @@ def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dic
             # do not accept a different calendar date. Rows without dates remain
             # eligible, but multiple matching rows are rejected below.
             if day:
-                date_tokens = re.findall(r"(?<!\\d)(\\d{1,2})[./-](\\d{1,2})(?:[./-](\\d{2,4}))?(?!\\d)", row_text)
+                date_tokens = re.findall(r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?(?!\d)", row_text)
                 dated = []
                 for dd, mm, yy in date_tokens:
                     year = int(yy) if yy else None
