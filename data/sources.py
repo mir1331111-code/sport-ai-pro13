@@ -972,7 +972,7 @@ def prognozist_source_status() -> str:
 
 def _prognozist_line_index():
     """Download and parse the line only when explicitly permitted by the operator and robots.txt."""
-    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+    if not prognozist_permission_enabled():
         _prognozist_allowed(_PROGNOZIST_URL)
         return []
     key = "prognozist_marathon_line_index_v5"
