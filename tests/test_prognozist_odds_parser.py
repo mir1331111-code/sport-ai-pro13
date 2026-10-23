@@ -58,6 +58,21 @@ class PrognozistOddsParserTests(unittest.TestCase):
                 ))
                 mocked_get.assert_not_called()
 
+    def test_marathon_cached_line_does_not_bypass_disabled_permission(self):
+        from data import marathon
+        cached_events = [{"home": "Arsenal", "away": "Chelsea",
+                          "odds": {"П1": 2.1, "X": 3.2, "П2": 3.5}}]
+        with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
+            with (
+                patch.object(marathon, "cache_get", return_value=cached_events) as cached,
+                patch.object(marathon, "_permitted_by_robots", return_value=False) as permission,
+                patch.object(marathon._sess, "get") as mocked_get,
+            ):
+                self.assertEqual(marathon.fetch_league_events("E0"), [])
+                permission.assert_called_once()
+                cached.assert_not_called()
+                mocked_get.assert_not_called()
+
     def test_source_status_reports_safe_default(self):
         from data.sources import prognozist_source_status
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
