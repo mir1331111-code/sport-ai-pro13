@@ -916,9 +916,20 @@ def _prognozist_extract_row_odds(row):
     return {"П1": prices[-3], "X": prices[-2], "П2": prices[-1]}
 
 
+def prognozist_permission_enabled() -> bool:
+    """Read explicit source permission from environment or Streamlit Secrets."""
+    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1":
+        return True
+    try:
+        import streamlit as st
+        return str(st.secrets.get("PROGNOZIST_PERMISSION", "") or "").strip() == "1"
+    except Exception:
+        return False
+
+
 def _prognozist_allowed(url: str) -> bool:
     """Require explicit permission and robots.txt allowance; cache the robots check."""
-    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+    if not prognozist_permission_enabled():
         log.info("Prognozist odds disabled: set PROGNOZIST_PERMISSION=1 only after checking site terms/permission.")
         return False
     cache_key = "prognozist_robots_allowed_v1"
