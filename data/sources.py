@@ -942,6 +942,7 @@ def _prognozist_allowed(url: str) -> bool:
         response = _sess.get(robots_url, timeout=(3, 6), proxies=NO_PROXY)
         if response.status_code != 200:
             log.warning("Prognozist robots.txt unavailable (HTTP %s); disabling source.", response.status_code)
+            cache_put(cache_key, {_PROGNOZIST_URL: False, _PROGNOZIST_MATCH_CENTRE: False})
             return False
         parser = RobotFileParser()
         parser.set_url(robots_url)
@@ -955,6 +956,7 @@ def _prognozist_allowed(url: str) -> bool:
         return result.get(url, False)
     except Exception as exc:
         log.warning("Prognozist robots.txt check failed (%s); disabling source.", type(exc).__name__)
+        cache_put(cache_key, {_PROGNOZIST_URL: False, _PROGNOZIST_MATCH_CENTRE: False})
         return False
 
 def prognozist_source_status() -> str:
