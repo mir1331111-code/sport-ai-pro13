@@ -1279,10 +1279,9 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         for ev in events:
             eh = _norm_name(ev.get("home_team", ""))
             ea = _norm_name(ev.get("away_team", ""))
-            if eh == hn and ea == an:
-                target = ev
-                break
-            if (eh in hn or hn in eh) and (ea in an or an in ea):
+            # Require canonical equality: substring matching can attach
+            # senior-team odds to U21/reserve fixtures with similar names.
+            if eh and ea and eh == hn and ea == an:
                 target = ev
                 break
         if not target:
