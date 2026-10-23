@@ -49,6 +49,38 @@ class PrognozistOddsParserTests(unittest.TestCase):
                 self.assertFalse(_prognozist_allowed("https://prognozist.ru/mc/football/"))
                 mocked_get.assert_not_called()
 
+    def test_marathon_lookup_rejects_wrong_date(self):
+        from data import marathon
+        event = {"home": "Arsenal", "away": "Chelsea", "date_str": "23.10.2026 20:00",
+                 "odds": {"П1": 2.1, "X": 3.2, "П2": 3.5}}
+        with patch.object(marathon, "fetch_league_events", return_value=[event]):
+            self.assertIsNone(marathon.marathon_odds(
+                "Arsenal", "Chelsea", "2026-10-24", "E0"
+            ))
+
+    def test_marathon_lookup_selects_correct_date_for_repeated_fixture(self):
+        from data import marathon
+        old = {"home": "Arsenal", "away": "Chelsea", "date_str": "23.10.2026 20:00",
+               "odds": {"П1": 2.1, "X": 3.2, "П2": 3.5}}
+        current = {"home": "Arsenal", "away": "Chelsea", "date_str": "24.10.2026 20:00",
+                   "odds": {"П1": 2.0, "X": 3.3, "П2": 3.7}}
+        with patch.object(marathon, "fetch_league_events", return_value=[old, current]):
+            result = marathon.marathon_odds("Arsenal", "Chelsea", "2026-10-24", "E0")
+        self.assertEqual(result["П1"], 2.0)
+
+    def test_marathon_lookup_rejects_ambiguous_same_date_lines(self):
+        from data import marathon
+        events = [
+            {"home": "Arsenal", "away": "Chelsea", "date_str": "24.10.2026 18:00",
+             "odds": {"П1": 2.0, "X": 3.3, "П2": 3.7}},
+            {"home": "Arsenal", "away": "Chelsea", "date_str": "24.10.2026 20:00",
+             "odds": {"П1": 2.2, "X": 3.1, "П2": 3.4}},
+        ]
+        with patch.object(marathon, "fetch_league_events", return_value=events):
+            self.assertIsNone(marathon.marathon_odds(
+                "Arsenal", "Chelsea", "2026-10-24", "E0"
+            ))
+
     def test_marathon_fallback_is_disabled_without_permission(self):
         from data.marathon import _permitted_by_robots, _sess
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
