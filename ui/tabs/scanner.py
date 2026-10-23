@@ -12,7 +12,7 @@ from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
                           fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
                           tsdb_matches, espn_matches, therundown_odds_fixture,
-                          prognozist_marathon_odds)
+                          prognozist_marathon_odds, prognozist_source_status)
 from data.marathon import marathon_odds
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
@@ -494,6 +494,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
 
+        prog_status = prognozist_source_status()
+        if prog_status == "disabled_permission":
+            logs.append("ℹ️ Prognozist: отключён по умолчанию. Для проверки задайте PROGNOZIST_PERMISSION=1 только если использование разрешено правилами сайта.")
+        elif prog_status == "blocked_or_unavailable":
+            logs.append("⚠️ Prognozist: robots.txt запрещает доступ или недоступен; источник отключён, проверяю остальные источники.")
+        else:
+            logs.append("📡 Prognozist: доступ разрешён robots.txt; проверяю линию матчей.")
+
         token = _runtime_secret("fdorg_token_input", "FDORG_TOKEN", "fdorg_token")
         if token:
             logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
@@ -606,8 +614,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
                     # 1. Сначала пробуем Prognozist через существующий адаптер.
                     # Не маскируем отключённый источник под "матч не найден".
-                    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
-                        logs.append("ℹ️ Prognozist отключён: задайте PROGNOZIST_PERMISSION=1 только если использование разрешено правилами сайта.")
                     try:
                         prog_odds = prognozist_marathon_odds(h_en, a_en, kickoff=d)
                         if not prog_odds:
