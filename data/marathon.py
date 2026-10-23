@@ -407,23 +407,35 @@ def _find_team_match(team_en: str, team_ru: str) -> bool:
     return bool(a & b)
 
 
-def _event_calendar_date(value: str) -> str:
-    """Extract a calendar date from common provider date/time formats."""
+def _event_calendar_date(value: str, reference_date: str = "") -> str:
+    """Extract a calendar date; infer the year for DD.MM when a fixture date is known."""
     raw = (value or "").strip()
     if not raw:
         return ""
-    for pattern in (r"(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)",
-                   r"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})(?!\d)"):
+    patterns = (
+        (r"(?<!\d)(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)", "ymd"),
+        (r"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})(?!\d)", "dmy"),
+        (r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?!\d)", "dm"),
+    )
+    for pattern, kind in patterns:
         match = re.search(pattern, raw)
         if not match:
             continue
         parts = [int(x) for x in match.groups()]
-        if pattern.startswith("(?<!\\d)(\\d{4})"):
+        if kind == "ymd":
             year, month, day = parts
-        else:
+        elif kind == "dmy":
             day, month, year = parts
             if year < 100:
                 year += 2000
+        else:
+            day, month = parts
+            try:
+                year = int((reference_date or "")[:4])
+            except ValueError:
+                return ""
+            if year < 2000:
+                return ""
         try:
             return datetime(year, month, day).strftime("%Y-%m-%d")
         except ValueError:
@@ -449,7 +461,7 @@ def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
         if not (_find_team_match(home_en, ev.get("home", ""))
                 and _find_team_match(away_en, ev.get("away", ""))):
             continue
-        event_date = _event_calendar_date(ev.get("date_str", ""))
+        event_date = _event_calendar_date(ev.get("date_str", ""), target_date)
         if target_date and event_date and event_date != target_date:
             continue
         odds = ev.get("odds")
