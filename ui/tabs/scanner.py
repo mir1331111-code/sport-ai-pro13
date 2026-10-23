@@ -590,7 +590,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 for item in rows_
             )
 
-            if has_model_candidate or (odds_key and getattr(engine, "total_market_validation", False)):
+            # Fetch real 1X2 odds for every displayed fixture, not only when
+            # the model already crosses the probability threshold. The strict
+            # value gates below decide whether a bet is eligible; odds display
+            # and source diagnostics must not depend on model confidence.
+            if rows_ is not None or (odds_key and getattr(engine, "total_market_validation", False)):
                 try:
                     candidates = []
 
