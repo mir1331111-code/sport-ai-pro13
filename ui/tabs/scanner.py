@@ -604,9 +604,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         except Exception as exc:
                             logs.append(f"⚠️ Odds API totals: {type(exc).__name__}")
 
-                    # 1. Сначала пробуем Prognozist через уже подключённый
-                    # адаптер data.sources. Не импортируем отсутствующий модуль.
-                    # Если имена команд не совпали на английском, пробуем русские.
+                    # 1. Сначала пробуем Prognozist через существующий адаптер.
+                    # Не маскируем отключённый источник под "матч не найден".
+                    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+                        logs.append("ℹ️ Prognozist отключён: задайте PROGNOZIST_PERMISSION=1 только если использование разрешено правилами сайта.")
                     try:
                         prog_odds = prognozist_marathon_odds(h_en, a_en, kickoff=d)
                         if not prog_odds:
