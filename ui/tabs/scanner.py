@@ -12,7 +12,8 @@ from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
                           fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
                           tsdb_matches, espn_matches, therundown_odds_fixture,
-                          prognozist_marathon_odds, prognozist_source_status)
+                          prognozist_marathon_odds, prognozist_source_status,
+                          prognozist_permission_enabled)
 from data.marathon import marathon_odds
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
@@ -636,7 +637,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             else:
                                 logs.append("ℹ️ Prognozist: линия неполная или коэффициенты некорректны")
                         else:
-                            if os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1":
+                            if prognozist_permission_enabled():
                                 logs.append("ℹ️ Prognozist: матч/линия не найдены или неоднозначны, проверяю другие источники")
                     except Exception as exc:
                         logs.append(f"⚠️ Prognozist error: {type(exc).__name__}")
