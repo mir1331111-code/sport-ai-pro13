@@ -49,6 +49,13 @@ class PrognozistOddsParserTests(unittest.TestCase):
                 self.assertFalse(_prognozist_allowed("https://prognozist.ru/mc/football/"))
                 mocked_get.assert_not_called()
 
+    def test_marathon_team_match_does_not_confuse_manchester_clubs(self):
+        from data.marathon import _find_team_match
+        self.assertFalse(_find_team_match("Manchester United", "Manchester City"))
+        self.assertTrue(_find_team_match("Manchester United", "Man Utd"))
+        self.assertFalse(_find_team_match("Arsenal", "Arsenal U21"))
+        self.assertTrue(_find_team_match("Levante", "Levante UD"))
+
     def test_marathon_lookup_rejects_wrong_date(self):
         from data import marathon
         event = {"home": "Arsenal", "away": "Chelsea", "date_str": "23.10.2026 20:00",
