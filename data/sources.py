@@ -1042,11 +1042,9 @@ def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dic
                 date_tokens = re.findall(r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?(?!\d)", row_text)
                 dated = []
                 for dd, mm, yy in date_tokens:
-                    year = int(yy) if yy else None
-                    if year is not None and year < 100:
+                    year = int(yy) if yy else int(day[:4])
+                    if year < 100:
                         year += 2000
-                    if year is None:
-                        continue
                     try:
                         dated.append(datetime(year, int(mm), int(dd)).strftime("%Y-%m-%d"))
                     except ValueError:
