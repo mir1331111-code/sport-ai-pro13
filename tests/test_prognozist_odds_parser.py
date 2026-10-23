@@ -1,6 +1,7 @@
 """Regression tests for the free Prognozist/Marathon odds parser."""
 import unittest
 import os
+from datetime import datetime
 from unittest.mock import patch
 
 from data.sources import _prognozist_extract_row_odds
@@ -62,6 +63,23 @@ class PrognozistOddsParserTests(unittest.TestCase):
                 self.assertEqual(
                     sources.prognozist_marathon_odds("Arsenal", "Chelsea"),
                     odds,
+                )
+
+    def test_match_lookup_rejects_line_for_different_calendar_date(self):
+        from data import sources
+        odds = {"П1": 2.1, "X": 3.2, "П2": 3.5}
+        with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": "1"}):
+            with (
+                patch.object(sources, "cache_get", return_value=None),
+                patch.object(sources, "_prognozist_line_index", return_value=[
+                    {"text": "23.10.2026 Arsenal Chelsea", "odds": odds}
+                ]),
+                patch.object(sources, "cache_put"),
+            ):
+                self.assertIsNone(
+                    sources.prognozist_marathon_odds(
+                        "Arsenal", "Chelsea", kickoff=datetime(2026, 10, 24)
+                    )
                 )
 
     def test_match_lookup_rejects_ambiguous_lines(self):
