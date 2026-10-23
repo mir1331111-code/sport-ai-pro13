@@ -121,6 +121,24 @@ class PrognozistOddsParserTests(unittest.TestCase):
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
             self.assertEqual(prognozist_source_status(), "disabled_permission")
 
+    def test_prognozist_match_respects_home_away_order(self):
+        from data.sources import _prognozist_match
+        self.assertTrue(_prognozist_match(
+            ["Manchester United", "Manchester City", "П1 2.10 X 3.20 П2 3.50"],
+            "Manchester United", "Manchester City",
+        ))
+        self.assertFalse(_prognozist_match(
+            ["Manchester City", "Manchester United", "П1 2.10 X 3.20 П2 3.50"],
+            "Manchester United", "Manchester City",
+        ))
+
+    def test_prognozist_match_does_not_confuse_city_and_united(self):
+        from data.sources import _prognozist_match
+        self.assertFalse(_prognozist_match(
+            ["Manchester City", "Arsenal", "П1 2.10 X 3.20 П2 3.50"],
+            "Manchester United", "Arsenal",
+        ))
+
     def test_match_lookup_uses_line_only_when_permission_enabled(self):
         from data import sources
         odds = {"П1": 2.1, "X": 3.2, "П2": 3.5}
