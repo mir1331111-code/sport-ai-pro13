@@ -101,7 +101,32 @@ def render_verdict_card(c: dict, thr: float) -> str:
     odd = v.get("odd")
     has_real = v.get("real_odds", False) and odd is not None
     odds_source = c.get("odds_source", "")
-    source_label = {"market": "BOOKMAKER API", "grok_web": "GROK WEB", "manual": "MANUAL", "fdorg": "FOOTBALL-DATA"}.get(odds_source, "MARKET")
+    source_label = {
+        "market": "BOOKMAKER API", "grok_web": "GROK WEB",
+        "manual": "MANUAL", "fdorg": "FOOTBALL-DATA",
+        "prognozist": "PROGNOZIST", "marathon_category": "MARATHON",
+        "therundown": "THE RUNDOWN", "the_odds_api": "THE ODDS API",
+    }.get(odds_source, "MARKET")
+    market_odds = c.get("market_odds") or {}
+    line_html = ""
+    if isinstance(market_odds, dict) and all(k in market_odds for k in ("П1", "X", "П2")):
+        try:
+            line_values = {k: float(market_odds[k]) for k in ("П1", "X", "П2")}
+            if all(1.01 < value <= 100 for value in line_values.values()):
+                line_html = (
+                    '<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;'
+                    'margin-top:10px;padding:9px 12px;border-radius:9px;'
+                    'background:rgba(14,165,233,.07);border:1px solid rgba(56,189,248,.2);'
+                    'font-size:.78rem;color:#cbd5e1;">'
+                    '<span style="color:#7dd3fc;font-weight:700;">Реальная линия 1X2 · '
+                    + esc(source_label) + '</span>'
+                    '<span>П1 <b style="color:#e2e8f0;">' + f"{line_values['П1']:.2f}" + '</b></span>'
+                    '<span>X <b style="color:#e2e8f0;">' + f"{line_values['X']:.2f}" + '</b></span>'
+                    '<span>П2 <b style="color:#e2e8f0;">' + f"{line_values['П2']:.2f}" + '</b></span>'
+                    '</div>'
+                )
+        except (TypeError, ValueError):
+            line_html = ""
     conf = v.get("confidence", "средняя")
     cc = v.get("conf_color", "#fbbf24")
     reasons = v.get("reasons", [])
@@ -352,7 +377,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         '<div>Кэф: <b style="color:#a5f3fc;font-size:1.15rem;'
         'font-family:JetBrains Mono,monospace;">' + odd_display + '</b></div>'
         '<div>Уверенность: <b style="color:' + cc + ';">' + esc(conf) + '</b></div>'
-        '</div>' + warn + market_html + '</div>'
+        '</div>' + line_html + warn + market_html + '</div>'
 
         '<div style="padding:16px 24px;">'
         '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
