@@ -221,14 +221,16 @@ def fetch_league_events(div_code: str) -> list:
     if not cat_id:
         return []
 
+    url = f"https://prognozist.ru/line/marathon/event_line.php?category={cat_id}"
+    # Permission must be checked before cache reads: cached odds must never
+    # bypass an operator's decision to disable this external source.
+    if not _permitted_by_robots(url):
+        return []
+
     ck = f"marathon_cat_v7_{cat_id}"
     cached = cache_get(ck, 300)
     if cached is not None:
         return cached if isinstance(cached, list) else []
-
-    url = f"https://prognozist.ru/line/marathon/event_line.php?category={cat_id}"
-    if not _permitted_by_robots(url):
-        return []
     try:
         r = _sess.get(url, timeout=(2, 4), proxies=NO_PROXY)
         if r.status_code != 200:
