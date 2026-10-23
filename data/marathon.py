@@ -402,16 +402,21 @@ def _find_team_match(team_en: str, team_ru: str) -> bool:
     te, tr = aliases.get(te, te), aliases.get(tr, tr)
     if te == tr:
         return True
+    # Use the shared alias registry for exact canonical matches across feeds.
+    try:
+        from data.team_names import normalize_team
+        canonical_en = normalize_team(team_en)
+        canonical_provider = normalize_team(team_ru)
+        if canonical_en and canonical_en == canonical_provider:
+            return True
+    except Exception:
+        pass
     mapped = RU_TO_EN_TEAM.get((team_ru or "").strip().lower(), "")
     if mapped and aliases.get(_norm(mapped), _norm(mapped)) == te:
         return True
-    if min(len(te), len(tr)) >= 5 and (te in tr or tr in te):
-        return True
-    a = {x for x in re.findall(r"[a-z0-9]+", (team_en or "").lower())
-         if len(x) >= 4 and x not in {"club", "united", "city"}}
-    b = {x for x in re.findall(r"[a-zа-я0-9]+", (team_ru or "").lower())
-         if len(x) >= 4 and x not in {"club", "united", "city"}}
-    return bool(a & b)
+    # Deliberately avoid substring/token-overlap matches here: e.g. "Manchester"
+    # is shared by Manchester United and Manchester City and can attach wrong odds.
+    return False
 
 
 def _event_calendar_date(value: str, reference_date: str = "") -> str:
