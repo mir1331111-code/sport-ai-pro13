@@ -68,6 +68,17 @@ class PrognozistOddsParserTests(unittest.TestCase):
             result = marathon.marathon_odds("Arsenal", "Chelsea", "2026-10-24", "E0")
         self.assertEqual(result["П1"], 2.0)
 
+    def test_marathon_date_parser_infers_year_from_fixture(self):
+        from data.marathon import _event_calendar_date
+        self.assertEqual(
+            _event_calendar_date("24.10 20:00", "2026-10-24"),
+            "2026-10-24",
+        )
+        self.assertEqual(
+            _event_calendar_date("23.10 20:00", "2026-10-24"),
+            "2026-10-23",
+        )
+
     def test_marathon_lookup_rejects_ambiguous_same_date_lines(self):
         from data import marathon
         events = [
