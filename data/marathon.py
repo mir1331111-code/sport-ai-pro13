@@ -476,7 +476,7 @@ def marathon_odds(home_en: str, away_en: str, date_iso: str = "",
         return None
     if len(matches) > 1:
         # If a single dated match can be identified, prefer it over undated rows.
-        dated = [ev for ev in matches if _event_calendar_date(ev.get("date_str", "")) == target_date] if target_date else []
+        dated = [ev for ev in matches if _event_calendar_date(ev.get("date_str", ""), target_date) == target_date] if target_date else []
         if len(dated) == 1:
             matches = dated
         else:
