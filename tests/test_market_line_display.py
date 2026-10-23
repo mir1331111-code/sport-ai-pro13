@@ -35,8 +35,9 @@ class MarketLineDisplayTests(unittest.TestCase):
         self.assertIn("2.15", rendered)
         self.assertIn("3.30", rendered)
         self.assertIn("3.60", rendered)
-        self.assertIn("Кэф:</b>", rendered)
-        self.assertIn(">—</b>", rendered)
+        self.assertIn("Кэф:", rendered)
+        self.assertIn(">2.15</b>", rendered)
+        self.assertNotIn("Реального кэфа для выбранного исхода нет", rendered)
 
     def test_invalid_market_line_is_not_rendered(self):
         card = {
