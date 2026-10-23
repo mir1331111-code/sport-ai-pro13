@@ -52,10 +52,13 @@ class PrognozistOddsParserTests(unittest.TestCase):
         from data import sources
         odds = {"П1": 2.1, "X": 3.2, "П2": 3.5}
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": "1"}):
-            with patch.object(sources, "cache_get", return_value=None), \\
-                 patch.object(sources, "_prognozist_line_index", return_value=[
-                     {"text": "Arsenal Chelsea П1 2.10 X 3.20 П2 3.50", "odds": odds}
-                 ]), patch.object(sources, "cache_put"):
+            with (
+                patch.object(sources, "cache_get", return_value=None),
+                patch.object(sources, "_prognozist_line_index", return_value=[
+                    {"text": "Arsenal Chelsea П1 2.10 X 3.20 П2 3.50", "odds": odds}
+                ]),
+                patch.object(sources, "cache_put"),
+            ):
                 self.assertEqual(
                     sources.prognozist_marathon_odds("Arsenal", "Chelsea"),
                     odds,
@@ -66,11 +69,14 @@ class PrognozistOddsParserTests(unittest.TestCase):
         odds_a = {"П1": 2.1, "X": 3.2, "П2": 3.5}
         odds_b = {"П1": 2.2, "X": 3.1, "П2": 3.4}
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": "1"}):
-            with patch.object(sources, "cache_get", return_value=None), \\
-                 patch.object(sources, "_prognozist_line_index", return_value=[
-                     {"text": "Arsenal Chelsea", "odds": odds_a},
-                     {"text": "Arsenal Chelsea", "odds": odds_b},
-                 ]), patch.object(sources, "cache_put"):
+            with (
+                patch.object(sources, "cache_get", return_value=None),
+                patch.object(sources, "_prognozist_line_index", return_value=[
+                    {"text": "Arsenal Chelsea", "odds": odds_a},
+                    {"text": "Arsenal Chelsea", "odds": odds_b},
+                ]),
+                patch.object(sources, "cache_put"),
+            ):
                 self.assertIsNone(
                     sources.prognozist_marathon_odds("Arsenal", "Chelsea")
                 )
