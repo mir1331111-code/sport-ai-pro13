@@ -37,22 +37,40 @@ def _session() -> requests.Session:
 _sess = _session()
 
 
+def _permission_enabled() -> bool:
+    """Require explicit operator permission from environment or Streamlit Secrets."""
+    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1":
+        return True
+    try:
+        import streamlit as st
+        return str(st.secrets.get("PROGNOZIST_PERMISSION", "") or "").strip() == "1"
+    except Exception:
+        return False
+
+
 def _permitted_by_robots(url: str) -> bool:
-    """Fail closed: require explicit permission and robots.txt allowance."""
-    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() != "1":
+    """Fail closed: require explicit permission and cached robots.txt allowance."""
+    if not _permission_enabled():
         _log("Disabled: set PROGNOZIST_PERMISSION=1 only after confirming site terms/permission.")
         return False
+    cache_key = f"marathon_robots_allowed_v1_{url}"
+    cached = cache_get(cache_key, 300)
+    if cached is not None:
+        return bool(cached)
     try:
         parsed = urlparse(url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
         response = _sess.get(robots_url, timeout=(2, 4), proxies=NO_PROXY)
         if response.status_code != 200:
             _log(f"Disabled: robots.txt unavailable (HTTP {response.status_code}); fail-closed.")
+            cache_put(cache_key, False)
             return False
         parser = RobotFileParser()
         parser.set_url(robots_url)
         parser.parse(response.text.splitlines())
-        return parser.can_fetch(_sess.headers["User-Agent"], url)
+        allowed = bool(parser.can_fetch(_sess.headers["User-Agent"], url))
+        cache_put(cache_key, allowed)
+        return allowed
     except Exception as exc:
         _log(f"Disabled: robots.txt check failed ({type(exc).__name__}); fail-closed.")
         return False
