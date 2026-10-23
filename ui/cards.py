@@ -220,11 +220,11 @@ def render_verdict_card(c: dict, thr: float) -> str:
     reasons_html = "".join("<li>" + esc(r) + "</li>" for r in reasons)
 
     warn = ""
-    if is_action and not has_real:
+    if is_action and not has_real and market_pick_odd is None:
         warn = ('<div style="color:#fde68a;font-size:.78rem;margin-top:10px;'
                 'padding:8px 12px;background:rgba(251,191,36,.08);'
                 'border-radius:10px;border:1px solid rgba(251,191,36,.25);">'
-                '⚠️ Реального кэфа нет — введи его вручную ниже, чтобы проверить value.</div>')
+                '⚠️ Реального кэфа для выбранного исхода нет — введи его вручную ниже, чтобы проверить value.</div>')
 
     # ============ КОНТЕКСТ ============
     context_html = ""
@@ -266,7 +266,21 @@ def render_verdict_card(c: dict, thr: float) -> str:
             '<div style="color:#e9d5ff;font-size:.88rem;line-height:1.55;">'
             + esc(llm_opinion) + '</div></div>')
 
-    odd_display = str(round(odd, 2)) if has_real else "—"
+    pick_code = str(v.get("pick") or "")
+    market_pick_odd = market_odds.get(pick_code) if isinstance(market_odds, dict) else None
+    try:
+        market_pick_odd = float(market_pick_odd)
+        if not 1.01 < market_pick_odd <= 100:
+            market_pick_odd = None
+    except (TypeError, ValueError):
+        market_pick_odd = None
+    # Show the fetched price for the model's 1X2 pick even when value gates
+    # reject a bet. The separate real_odds flag remains false in that case.
+    odd_display = (
+        str(round(odd, 2)) if has_real
+        else str(round(market_pick_odd, 2)) if market_pick_odd is not None
+        else "—"
+    )
     prob_display = str(round(prob * 100))
 
     # ============ BET / WATCH / SKIP ============
