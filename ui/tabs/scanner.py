@@ -645,7 +645,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     # 2. Если Prognozist не дал — пробуем Marathon
                     if not candidates:
                         try:
-                            marathon_line = marathon_odds(h_en, a_en, r.get("Date", ""), lg)
+                            marathon_line = marathon_odds(
+                                h_en, a_en, d.strftime("%Y-%m-%d"), lg
+                            )
                             if isinstance(marathon_line, dict) and all(
                                 key in marathon_line for key in ("П1", "X", "П2")
                             ):
