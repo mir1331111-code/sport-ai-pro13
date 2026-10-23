@@ -108,6 +108,14 @@ def render_verdict_card(c: dict, thr: float) -> str:
         "therundown": "THE RUNDOWN", "the_odds_api": "THE ODDS API",
     }.get(odds_source, "MARKET")
     market_odds = c.get("market_odds") or {}
+    pick_code = str(v.get("pick") or "")
+    market_pick_odd = market_odds.get(pick_code) if isinstance(market_odds, dict) else None
+    try:
+        market_pick_odd = float(market_pick_odd)
+        if not 1.01 < market_pick_odd <= 100:
+            market_pick_odd = None
+    except (TypeError, ValueError):
+        market_pick_odd = None
     line_html = ""
     if isinstance(market_odds, dict) and all(k in market_odds for k in ("П1", "X", "П2")):
         try:
@@ -266,14 +274,6 @@ def render_verdict_card(c: dict, thr: float) -> str:
             '<div style="color:#e9d5ff;font-size:.88rem;line-height:1.55;">'
             + esc(llm_opinion) + '</div></div>')
 
-    pick_code = str(v.get("pick") or "")
-    market_pick_odd = market_odds.get(pick_code) if isinstance(market_odds, dict) else None
-    try:
-        market_pick_odd = float(market_pick_odd)
-        if not 1.01 < market_pick_odd <= 100:
-            market_pick_odd = None
-    except (TypeError, ValueError):
-        market_pick_odd = None
     # Show the fetched price for the model's 1X2 pick even when value gates
     # reject a bet. The separate real_odds flag remains false in that case.
     odd_display = (
