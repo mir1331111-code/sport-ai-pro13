@@ -221,30 +221,42 @@ ALIASES = {
 
 
 def normalize_team(name: str) -> str:
-    """Приводит любое название к каноническому ключу."""
+    """Normalize common aliases without merging distinct clubs or age groups."""
     if not name:
         return ""
-    s = str(name).strip().lower()
-    
-    # Убираем типичные префиксы/суффиксы
-    for prefix in ("fc ", "afc ", "cf ", "sc ", "ac ", "as ", "ss ", "us ", "rc ", "sk "):
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-    for suffix in (" fc", " afc", " cf", " sc", " ac", " united", " utd",
-                   " city", " town", " rovers", " county", " club"):
-        if s.endswith(suffix):
-            s = s[:-len(suffix)]
-    
-    # Прямое совпадение с алиасом
+    s = re.sub(r"\s+", " ", str(name).strip().lower())
+
+    # Exact aliases must be resolved before removing generic club prefixes:
+    # "Manchester United" and "Manchester City" are different teams.
     if s in ALIASES:
         return ALIASES[s]
-    
-    # Поиск по подстроке (длинные ключи первыми)
+
+    for prefix in ("fc ", "afc ", "cf ", "sc ", "ac ", "as ", "ss ", "us ", "rc ", "sk "):
+        if s.startswith(prefix):
+            s = s[len(prefix):].strip()
+            break
+    if s in ALIASES:
+        return ALIASES[s]
+
+    # Preserve age-group/reserve markers: an U21/reserve fixture must not be
+    # normalized to the senior team just because its name contains an alias.
+    if re.search(r"\b(?:u\s*\d{2}|under\s*[- ]?\s*\d{2}|youth|reserves?|ii)\b", s):
+        return re.sub(r"[^a-zа-я0-9]", "", s)
+
+    # Only remove suffixes that are organizational labels, not identity-bearing
+    # words such as "United", "City" or "Utd".
+    for suffix in (" fc", " afc", " cf", " sc", " ac", " town", " rovers", " county", " club"):
+        if s.endswith(suffix):
+            s = s[:-len(suffix)].strip()
+            break
+    if s in ALIASES:
+        return ALIASES[s]
+
+    # Substring aliases are a fallback for common provider variants only.
     for alias, canonical in sorted(ALIASES.items(), key=lambda kv: -len(kv[0])):
-        if alias in s:
+        if len(alias) >= 5 and alias in s:
             return canonical
-    
-    # Fallback: убираем знаки и цифры
+
     return re.sub(r"[^a-zа-я0-9]", "", s)
 
 
