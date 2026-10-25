@@ -963,37 +963,36 @@ def prognozist_permission_enabled() -> bool:
 
 
 def _prognozist_allowed(url: str) -> bool:
-    """Require explicit permission and robots.txt allowance; cache the robots check."""
+    """Require explicit permission and robots.txt allowance; cache robots rules once."""
     if not prognozist_permission_enabled():
-        log.info("Prognozist odds disabled: set PROGNOZIST_PERMISSION=1 only after checking site terms/permission.")
+        log.info("Prognozist odds disabled: explicit permission is off.")
         return False
-    cache_key = "prognozist_robots_allowed_v1"
-    cached = cache_get(cache_key, 180)
-    if isinstance(cached, dict) and url in cached:
-        return bool(cached[url])
+    decision_key = "prognozist_robots_decision_" + hashlib.sha256(url.encode("utf-8")).hexdigest()[:20]
+    cached_decision = cache_get(decision_key, 180)
+    if isinstance(cached_decision, bool):
+        return cached_decision
     try:
-        parsed = urlparse(url)
-        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-        response = _sess.get(robots_url, timeout=(3, 6), proxies=NO_PROXY)
-        if response.status_code != 200:
-            log.warning("Prognozist robots.txt unavailable (HTTP %s); disabling source.", response.status_code)
-            cache_put(cache_key, {_PROGNOZIST_URL: False, _PROGNOZIST_MATCH_CENTRE: False})
-            return False
+        parsed_url = urlparse(url)
+        robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
+        robots_text = cache_get("prognozist_robots_body_v1", 3600)
+        if not isinstance(robots_text, str) or not robots_text.strip():
+            response = _sess.get(robots_url, timeout=(3, 6), proxies=NO_PROXY)
+            if response.status_code != 200 or not response.text:
+                log.warning("Prognozist robots.txt unavailable (HTTP %s); disabling source.", response.status_code)
+                cache_put(decision_key, False)
+                return False
+            robots_text = response.text
+            cache_put("prognozist_robots_body_v1", robots_text)
         parser = RobotFileParser()
         parser.set_url(robots_url)
-        parser.parse(response.text.splitlines())
+        parser.parse(robots_text.splitlines())
         agent = "Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)"
-        result = {
-            target: bool(parser.can_fetch(agent, target))
-            for target in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)
-        }
-        # Check each detail-page path against robots rules instead of rejecting all non-base URLs.
-        result[url] = bool(parser.can_fetch(agent, url))
-        cache_put(cache_key, result)
-        return result.get(url, False)
+        allowed = bool(parser.can_fetch(agent, url))
+        cache_put(decision_key, allowed)
+        return allowed
     except Exception as exc:
         log.warning("Prognozist robots.txt check failed (%s); disabling source.", type(exc).__name__)
-        cache_put(cache_key, {_PROGNOZIST_URL: False, _PROGNOZIST_MATCH_CENTRE: False})
+        cache_put(decision_key, False)
         return False
 
 def prognozist_source_status() -> str:
