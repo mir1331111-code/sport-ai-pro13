@@ -13,7 +13,7 @@
   * Дополнительно распознаются шотландский, австралийский, японский чемпионаты.
 """
 from __future__ import annotations
-import csv, io, re, logging, os
+import csv, io, re, logging, os, hashlib
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
@@ -1065,6 +1065,136 @@ def _prognozist_line_index():
             log.warning("Prognozist request failed (%s): %s", url, type(exc).__name__)
     cache_put(key, indexed)
     return indexed
+
+
+def _prognozist_fixture_from_item(item, today=None):
+    """Convert a parsed Prognozist 1X2 row into a fixture only when teams/date are clear."""
+    if not isinstance(item, dict):
+        return None
+    cells = item.get("cells")
+    if not isinstance(cells, list) or len(cells) < 3:
+        return None
+    odds = item.get("odds")
+    if not isinstance(odds, dict) or not all(k in odds for k in ("П1", "X", "П2")):
+        return None
+    prices = []
+    for key in ("П1", "X", "П2"):
+        try:
+            prices.append(float(odds[key]))
+        except (TypeError, ValueError):
+            return None
+
+    price_indexes = []
+    for idx, cell in enumerate(cells):
+        number = _prognozist_num(cell)
+        if number is not None and any(abs(number - price) < 0.0001 for price in prices):
+            price_indexes.append(idx)
+    cutoff = min(price_indexes) if price_indexes else len(cells)
+    candidates = []
+    generic = {
+        "футбол", "soccer", "матч", "линия", "прогноз", "событие",
+        "п1", "x", "п2", "1", "2", "коэффициенты", "коэф.",
+        "скоро", "live", "prematch", "предматч",
+    }
+    for cell in cells[:cutoff]:
+        value = " ".join(str(cell or "").split()).strip(" —–-")
+        if not value or value.casefold() in generic:
+            continue
+        if re.search(r"\b\d{1,2}:\d{2}\b", value):
+            continue
+        if re.search(r"(?<!\d)\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?(?!\d)", value):
+            continue
+        if re.fullmatch(r"\d{1,3}(?:[.,]\d{1,4})?", value):
+            continue
+        if not re.search(r"[A-Za-zА-Яа-я]", value):
+            continue
+        candidates.append(value)
+    if len(candidates) < 2:
+        # Compact rows may concatenate both teams and odds into one cell;
+        # do not guess a split: a missing fixture is safer than wrong odds.
+        return None
+    home, away = candidates[-2], candidates[-1]
+    if _norm_name(home) == _norm_name(away):
+        return None
+
+    text = " ".join(str(x or "") for x in cells)
+    iso_dates = re.findall(r"(?<!\d)(20\d{2})-(\d{1,2})-(\d{1,2})(?!\d)", text)
+    dates = []
+    for yy, mm, dd in iso_dates:
+        try:
+            dates.append(datetime(int(yy), int(mm), int(dd)).date())
+        except ValueError:
+            pass
+    if not dates:
+        for dd, mm, yy in re.findall(
+            r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?(?!\d)", text
+        ):
+            year = int(yy) if yy else (today or datetime.now().date()).year
+            if year < 100:
+                year += 2000
+            try:
+                dates.append(datetime(year, int(mm), int(dd)).date())
+            except ValueError:
+                pass
+    if not dates:
+        return None
+    match_date = dates[0]
+    now_date = today or datetime.now().date()
+    if match_date < now_date - timedelta(days=180):
+        try:
+            match_date = match_date.replace(year=match_date.year + 1)
+        except ValueError:
+            pass
+    time_match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+    match_time = f"{int(time_match.group(1)):02d}:{time_match.group(2)}" if time_match else ""
+    return {
+        "Div": "G",
+        "League": "Prognozist / Marathon",
+        "Date": match_date.isoformat(),
+        "Time": match_time,
+        "HomeTeam": home,
+        "AwayTeam": away,
+        "fixture_id": "prognozist:" + hashlib.sha256(
+            f"{match_date.isoformat()}|{home}|{away}".casefold().encode("utf-8")
+        ).hexdigest()[:20],
+        "women": False,
+        "national": False,
+        "kind": "club",
+        "prognozist_odds": {"П1": prices[0], "X": prices[1], "П2": prices[2]},
+    }
+
+
+def prognozist_matches(days: int = 7, logs=None) -> list:
+    """Use Prognozist's own parsed 1X2 line as the scanner's fixture list."""
+    if not prognozist_permission_enabled():
+        if logs is not None:
+            logs.append("Prognozist: сбор матчей выключен — требуется явное разрешение/opt-in.")
+        return []
+    today = datetime.now().date()
+    end_date = today + timedelta(days=max(1, min(int(days), 14)) - 1)
+    line_index = _prognozist_line_index()
+    fixtures, seen = [], set()
+    for item in line_index:
+        fixture = _prognozist_fixture_from_item(item, today=today)
+        if not fixture:
+            continue
+        try:
+            match_date = datetime.strptime(fixture["Date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if not today <= match_date <= end_date:
+            continue
+        key = (match_date.isoformat(), _norm_name(fixture["HomeTeam"]), _norm_name(fixture["AwayTeam"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        fixtures.append(fixture)
+    fixtures.sort(key=lambda row: (row["Date"], row["Time"], row["HomeTeam"], row["AwayTeam"]))
+    if logs is not None:
+        logs.append(f"📡 Prognozist/Marathon: распознано матчей с полной линией 1X2: {len(fixtures)}")
+        if line_index and not fixtures:
+            logs.append("⚠️ Prognozist вернул строки с коэффициентами, но не удалось безопасно выделить команды и дату; проверьте формат страницы.")
+    return fixtures
 
 
 def prognozist_marathon_odds(
