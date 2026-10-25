@@ -30,6 +30,28 @@ class PrognozistOddsParserTests(unittest.TestCase):
             {"П1": 2.60, "X": 3.10, "П2": 2.90},
         )
 
+    def test_prognozist_fixture_requires_clear_teams_date_and_full_line(self):
+        from data.sources import _prognozist_fixture_from_item
+        item = {
+            "cells": ["25.10.2026", "19:30", "Атлетико Мадрид", "Севилья", "1.95", "3.40", "4.10"],
+            "odds": {"П1": 1.95, "X": 3.40, "П2": 4.10},
+        }
+        fixture = _prognozist_fixture_from_item(item, today=datetime(2026, 10, 25).date())
+        self.assertIsNotNone(fixture)
+        self.assertEqual(fixture["Date"], "2026-10-25")
+        self.assertEqual(fixture["Time"], "19:30")
+        self.assertEqual(fixture["HomeTeam"], "Атлетико Мадрид")
+        self.assertEqual(fixture["AwayTeam"], "Севилья")
+        self.assertEqual(fixture["prognozist_odds"]["X"], 3.40)
+
+    def test_prognozist_fixture_does_not_guess_compact_team_split(self):
+        from data.sources import _prognozist_fixture_from_item
+        item = {
+            "cells": ["21:00СкороМанчестер Сити U21Сток Сити U21П11.14X6.35П211.50"],
+            "odds": {"П1": 1.14, "X": 6.35, "П2": 11.50},
+        }
+        self.assertIsNone(_prognozist_fixture_from_item(item, today=datetime(2026, 10, 25).date()))
+
     def test_american_odds_conversion(self):
         from data.sources import _american_to_decimal
         self.assertAlmostEqual(_american_to_decimal(-110), 1.9090909, places=5)
