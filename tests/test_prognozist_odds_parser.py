@@ -356,5 +356,50 @@ class PrognozistOddsParserTests(unittest.TestCase):
         self.assertEqual(result, odds)
 
 
+
+    def test_odds_api_retries_h2h_when_featured_markets_are_rejected(self):
+        from types import SimpleNamespace
+        from data import sources
+
+        events = [{
+            "home_team": "Arsenal",
+            "away_team": "Chelsea",
+            "bookmakers": [{
+                "markets": [{
+                    "key": "h2h",
+                    "outcomes": [
+                        {"name": "Arsenal", "price": 2.1},
+                        {"name": "Draw", "price": 3.2},
+                        {"name": "Chelsea", "price": 3.5},
+                    ],
+                }]
+            }],
+        }]
+        rejected = SimpleNamespace(
+            status_code=422,
+            text='{"error_code":"INVALID_MARKET","message":"unsupported market"}',
+        )
+        accepted = SimpleNamespace(status_code=200, text="", json=lambda: events)
+        logs = []
+        with (
+            patch.object(sources, "cache_get", side_effect=[None, None]),
+            patch.object(sources, "cache_put"),
+            patch.object(sources.usage, "odds_remaining", return_value=10),
+            patch.object(sources.usage, "odds_increment"),
+            patch.object(sources._sess, "get", side_effect=[rejected, accepted]) as mocked_get,
+        ):
+            result = sources.odds_api_fixture(
+                "soccer_epl", "Arsenal", "Chelsea", "test-key", logs
+            )
+
+        self.assertEqual(result, {"П1": 2.1, "X": 3.2, "П2": 3.5})
+        self.assertEqual(mocked_get.call_count, 2)
+        first_params = mocked_get.call_args_list[0].kwargs["params"]
+        second_params = mocked_get.call_args_list[1].kwargs["params"]
+        self.assertEqual(first_params["markets"], "h2h,totals")
+        self.assertNotIn("btts", first_params["markets"].lower())
+        self.assertEqual(second_params["markets"], "h2h")
+        self.assertTrue(any("повторяю запрос только с h2h" in line for line in logs))
+
 if __name__ == "__main__":
     unittest.main()
