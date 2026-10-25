@@ -174,8 +174,26 @@ def _train_engine(matrix_n, logs, update_loader):
 
 
 def _load_engine(matrix_n, logs, update_loader):
+    """Reuse the trained model for repeated scans in the same Streamlit session."""
     import pickle, gzip, os
     from config import DISK_CACHE_DIR
+
+    cache_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}"
+    # Streamlit reruns the script after every interaction. Keep the fitted model
+    # in session_state so pressing SCAN again never rebuilds the same history.
+    try:
+        session_engine = st.session_state.get(cache_key)
+        if (session_engine is not None
+                and hasattr(session_engine, "match_stats")
+                and getattr(session_engine, "trained_n", 0) > 0):
+            logs.append(
+                f"🧠 Обученная модель из памяти сессии "
+                f"({session_engine.trained_n} матчей; повторного обучения нет)"
+            )
+            return session_engine
+    except Exception:
+        pass
+
     p = os.path.join(DISK_CACHE_DIR, f"engine_{matrix_n}.pkl.gz")
     if os.path.exists(p):
         try:
@@ -184,15 +202,24 @@ def _load_engine(matrix_n, logs, update_loader):
             cached_engine = data.get("engine")
             if (data.get("fp") == APP_VERSION
                     and hasattr(cached_engine, "match_stats")):
-                logs.append("Engine из кэша (включая историю угловых/карточек)")
+                try:
+                    st.session_state[cache_key] = cached_engine
+                except Exception:
+                    pass
+                logs.append("Engine из дискового кэша (включая историю угловых/карточек)")
                 return cached_engine
         except Exception:
             pass
+
     engine = _train_engine(matrix_n, logs, update_loader)
     try:
         with open(p, "wb") as f:
             f.write(gzip.compress(pickle.dumps(
                 {"fp": APP_VERSION, "engine": engine})))
+    except Exception:
+        pass
+    try:
+        st.session_state[cache_key] = engine
     except Exception:
         pass
     return engine
@@ -345,9 +372,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                      disabled=st.session_state.get("_scan_in_progress", False))
     auto_add = st.checkbox(
         "Автоматически добавлять прошедшие фильтры прогнозы в виртуальный портфель",
-        value=False,
-        key="scanner_auto_add_qualified_v2",
-        help="По умолчанию выключено, пока качество отбора не подтверждено на вашей истории. Если включить: 1X2 проходит строгие value-фильтры; ТБ/ТМ 2.5 — только после исторической проверки. Только виртуальный учёт, не размещение ставки у букмекера.",
+        value=True,
+        key="scanner_auto_add_qualified_v3",
+        help="Автоматически добавляет в виртуальный портфель только прогнозы с реальными коэффициентами, прошедшие строгие value-фильтры. ТБ/ТМ 2.5 — только после исторической проверки. Это виртуальный учёт, не размещение ставки у букмекера.",
     )
 
     if not scan:
@@ -614,15 +641,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         except Exception as exc:
                             logs.append(f"⚠️ Odds API totals: {type(exc).__name__}")
 
-                    # 1. Сначала пробуем Prognozist через существующий адаптер.
-                    # Не маскируем отключённый источник под "матч не найден".
+                    # 1. Prognozist is the primary odds source. Search with the
+                    # source-native Russian names first to avoid translation mismatch;
+                    # use provider English names only as a fallback.
                     try:
-                        prog_odds = prognozist_marathon_odds(h_en, a_en, kickoff=d)
-                        if not prog_odds:
-                            # On the second attempt, surface a concise reason for a miss
-                            # (no matching row, parser returned no rows, robots blocked).
+                        prog_odds = prognozist_marathon_odds(
+                            h_ru, a_ru, kickoff=d, logs=logs
+                        )
+                        if not prog_odds and (h_en, a_en) != (h_ru, a_ru):
                             prog_odds = prognozist_marathon_odds(
-                                h_ru, a_ru, kickoff=d, logs=logs
+                                h_en, a_en, kickoff=d, logs=logs
                             )
                         if isinstance(prog_odds, dict):
                             valid_prog = {}
