@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from config import APP_VERSION, DB_FILE
+from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
 from model.forecast_ledger import ForecastLedger, OUTCOMES
 
 
@@ -175,7 +175,11 @@ def record_scan_forecasts(
         raise ValueError("now must be timezone-aware")
     now = now.astimezone(timezone.utc)
     main_version = f"main-model-v{APP_VERSION}"
-    slug = re.sub(r"[^a-z0-9]+", "-", f"{provider}-{model}".casefold()).strip("-")[:80]
+    resolved_provider = provider if provider in LLM_PROVIDERS else "Groq (бесплатно, быстро)"
+    resolved_model = model or LLM_PROVIDERS[resolved_provider]["model"]
+    slug = re.sub(
+        r"[^a-z0-9]+", "-", f"{resolved_provider}-{resolved_model}".casefold()
+    ).strip("-")[:80]
     ai_version = f"independent-llm-{slug or 'configured-model'}"
 
     for card in cards or []:
