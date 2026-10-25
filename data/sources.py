@@ -1291,7 +1291,12 @@ def prognozist_matches(days: int = 7, logs=None) -> list:
         if logs is not None:
             logs.append("Prognozist: сбор матчей выключен — требуется явное разрешение/opt-in.")
         return []
-    # Capture Streamlit-controlled permission on the main thread. Worker threads\n    # receive this explicit snapshot and never touch st.session_state.\n    permission_granted = prognozist_permission_enabled()\n    today = datetime.now().date()\n    end_date = today + timedelta(days=max(1, min(int(days), 14)) - 1)\n    line_index = _prognozist_line_index(days=days, logs=logs)
+    # Capture Streamlit-controlled permission on the main thread. Worker threads
+    # receive this explicit snapshot and never touch st.session_state.
+    permission_granted = prognozist_permission_enabled()
+    today = datetime.now().date()
+    end_date = today + timedelta(days=max(1, min(int(days), 14)) - 1)
+    line_index = _prognozist_line_index(days=days, logs=logs)
     fixtures, seen = [], set()
     compact_items, structured_items = [], []
     for item in line_index:
