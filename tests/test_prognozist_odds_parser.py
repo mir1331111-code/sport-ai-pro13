@@ -454,3 +454,11 @@ class PrognozistOddsParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_prognozist_matches_returns_empty_line_without_name_error(self):
+        from data import sources
+        with (
+            patch.object(sources, "prognozist_permission_enabled", return_value=True),
+            patch.object(sources, "_prognozist_line_index", return_value=[]),
+        ):
+            self.assertEqual(sources.prognozist_matches(days=1, logs=[]), [])
