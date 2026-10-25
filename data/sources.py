@@ -986,6 +986,8 @@ def _prognozist_allowed(url: str) -> bool:
             target: bool(parser.can_fetch(agent, target))
             for target in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)
         }
+        # Check each detail-page path against robots rules instead of rejecting all non-base URLs.
+        result[url] = bool(parser.can_fetch(agent, url))
         cache_put(cache_key, result)
         return result.get(url, False)
     except Exception as exc:
@@ -1004,6 +1006,87 @@ def prognozist_source_status() -> str:
     return "ready" if allowed else "blocked_or_unavailable"
 
 
+def _prognozist_parse_russian_date(text, fallback_year=None):
+    months = {"января":1,"февраля":2,"марта":3,"апреля":4,"мая":5,"июня":6,
+              "июля":7,"августа":8,"сентября":9,"октября":10,"ноября":11,"декабря":12}
+    m = re.search(r"\b(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\s+(20\d{2}))?\b", str(text or "").casefold())
+    if not m:
+        return None
+    day, month, year = m.groups()
+    try:
+        result = datetime(int(year or fallback_year or datetime.now().year), months[month], int(day)).date()
+        if not year and result < datetime.now().date() - timedelta(days=180):
+            result = result.replace(year=result.year + 1)
+        return result
+    except (ValueError, OverflowError):
+        return None
+
+
+def _prognozist_parse_detail_heading(heading, odds=None, today=None):
+    heading = " ".join(str(heading or "").split())
+    m = re.search(r"^\s*(.+?)\s+[—–-]\s+(.+?)\s+прогноз\s+на\s+(.+?)\s*$", heading, re.I)
+    if not m:
+        return None
+    home, away, date_time = (x.strip() for x in m.groups())
+    match_date = _prognozist_parse_russian_date(date_time, fallback_year=(today or datetime.now().date()).year)
+    if not match_date or not home or not away or _norm_name(home) == _norm_name(away):
+        return None
+    tm = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", date_time)
+    fixture = {
+        "Div":"G", "League":"Prognozist / Marathon", "Date":match_date.isoformat(),
+        "Time":f"{int(tm.group(1)):02d}:{tm.group(2)}" if tm else "",
+        "HomeTeam":home, "AwayTeam":away,
+        "fixture_id":"prognozist:" + hashlib.sha256(f"{match_date.isoformat()}|{home}|{away}".casefold().encode("utf-8")).hexdigest()[:20],
+        "women":"(ж)" in f"{home} {away}".casefold(), "national":False, "kind":"club",
+    }
+    if isinstance(odds, dict):
+        try:
+            prices = {k:float(odds[k]) for k in ("П1","X","П2")}
+            if all(1.01 < v <= 100 for v in prices.values()):
+                fixture["prognozist_odds"] = prices
+        except (KeyError, TypeError, ValueError):
+            pass
+    return fixture
+
+
+def _prognozist_fetch_detail_fixture(href, odds=None, today=None):
+    href = str(href or "").strip()
+    if href.startswith("/"):
+        from urllib.parse import urljoin
+        href = urljoin("https://prognozist.ru", href)
+    parsed = urlparse(href)
+    if parsed.scheme != "https" or parsed.netloc.casefold() != "prognozist.ru" or not parsed.path.startswith("/mc/football/"):
+        return None
+    if not _prognozist_allowed(href):
+        return None
+    cache_key = "prognozist_detail_" + hashlib.sha256(href.encode("utf-8")).hexdigest()[:24]
+    cached = cache_get(cache_key, 1800)
+    if isinstance(cached, dict):
+        fixture = dict(cached)
+        if isinstance(odds, dict):
+            fixture["prognozist_odds"] = dict(odds)
+        return fixture
+    headers = {"User-Agent":"Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)",
+               "Accept":"text/html,application/xhtml+xml", "Referer":_PROGNOZIST_MATCH_CENTRE}
+    try:
+        response = _sess.get(href, headers=headers, timeout=(3,6), proxies=NO_PROXY)
+        if response.status_code != 200 or not response.text:
+            log.warning("Prognozist detail HTTP %s: %s", response.status_code, href)
+            return None
+        m = re.search(r"<h1\b[^>]*>(.*?)</h1>", response.text, re.I | re.S)
+        if not m:
+            return None
+        heading = re.sub(r"<[^>]+>", " ", m.group(1))
+        from html import unescape
+        fixture = _prognozist_parse_detail_heading(unescape(heading), odds, today=today)
+        if fixture:
+            cache_put(cache_key, {k:v for k,v in fixture.items() if k != "prognozist_odds"})
+        return fixture
+    except Exception as exc:
+        log.warning("Prognozist detail fetch failed (%s)", type(exc).__name__)
+        return None
+
+
 def _prognozist_line_index():
     """Download and parse the line only when explicitly permitted by the operator and robots.txt."""
     if not prognozist_permission_enabled():
@@ -1017,7 +1100,7 @@ def _prognozist_line_index():
     ]
     if not allowed_urls:
         return []
-    key = "prognozist_marathon_line_index_v5"
+    key = "prognozist_marathon_line_index_v6"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         return cached
@@ -1068,6 +1151,23 @@ def _prognozist_line_index():
 
 
 def _prognozist_fixture_from_item(item, today=None):
+    if not isinstance(item, dict):
+        return None
+    cells = item.get("cells")
+    href = str(item.get("href") or (cells[0] if isinstance(cells, list) and cells else "")).strip()
+    odds = item.get("odds")
+    # Match-centre entries are compact anchors, not separate team/date cells.
+    if href.startswith("/mc/football/") or href.startswith("https://prognozist.ru/mc/football/"):
+        if not isinstance(odds, dict) or not all(k in odds for k in ("П1", "X", "П2")):
+            return None
+        try:
+            prices = {k: float(odds[k]) for k in ("П1", "X", "П2")}
+        except (TypeError, ValueError):
+            return None
+        if not all(1.01 < v <= 100 for v in prices.values()):
+            return None
+        return _prognozist_fetch_detail_fixture(href, prices, today=today)
+
     """Convert a parsed Prognozist 1X2 row into a fixture only when teams/date are clear."""
     if not isinstance(item, dict):
         return None
@@ -1191,9 +1291,11 @@ def prognozist_matches(days: int = 7, logs=None) -> list:
         fixtures.append(fixture)
     fixtures.sort(key=lambda row: (row["Date"], row["Time"], row["HomeTeam"], row["AwayTeam"]))
     if logs is not None:
-        logs.append(f"📡 Prognozist/Marathon: распознано матчей с полной линией 1X2: {len(fixtures)}")
+        logs.append(f"📡 Prognozist/Marathon: строк с коэффициентами {len(line_index)}; матчей распознано {len(fixtures)}.")
         if line_index and not fixtures:
-            logs.append("⚠️ Prognozist вернул строки с коэффициентами, но не удалось безопасно выделить команды и дату; проверьте формат страницы.")
+            logs.append("⚠️ Коэффициенты найдены, но карточки матчей не разобраны. Проверьте доступ к страницам матчей и заголовки H1.")
+        elif not line_index:
+            logs.append("⚠️ В ответе Prognozist не распознано ни одной строки 1X2.")
     return fixtures
 
 
