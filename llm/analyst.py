@@ -103,7 +103,9 @@ def _append_model_comparison(base_result: str, model_pick_code: str = "") -> str
     )
 
 
-def _parse_llm_response(content: str, model_pick_code: str = "") -> Optional[str]:
+def _parse_llm_response(
+    content: str, model_pick_code: str = "", quality_cap: str = "medium"
+) -> Optional[str]:
     """Validate the independent probability distribution; the chosen pick is never trusted blindly."""
     parsed = _response_json(content)
     if not parsed or not str(parsed.get("opinion") or "").strip():
@@ -144,11 +146,12 @@ def _parse_llm_response(content: str, model_pick_code: str = "") -> Optional[str
         "П2": "победа гостей (П2)",
     }
     quality_raw = str(parsed.get("data_quality") or "low").strip().lower()
-    quality = {
-        "high": "высокое",
-        "medium": "среднее",
-        "low": "низкое",
-    }.get(quality_raw, "низкое")
+    quality_rank = {"low": 0, "medium": 1, "high": 2}
+    cap = quality_cap if quality_cap in quality_rank else "low"
+    effective_quality = min(
+        quality_rank.get(quality_raw, 0), quality_rank[cap]
+    )
+    quality = ("низкое", "среднее", "высокое")[effective_quality]
     opinion = re.sub(r"\s+", " ", str(parsed.get("opinion") or "").strip())[:600]
     risks = re.sub(r"\s+", " ", str(parsed.get("risks") or "").strip())[:300]
     result = (
@@ -185,7 +188,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
     ctx_hash = hashlib.sha256(
         json.dumps(cache_context, sort_keys=True, default=str).encode()
     ).hexdigest()
-    ck = f"llm_v6_blind_{ctx_hash}"
+    ck = f"llm_v7_blind_{ctx_hash}"
     cached = cache_get(ck, CACHE_TTL["llm"])
     if cached is not None:
         _log(f"CACHE HIT: {ctx_hash[:8]}")
@@ -262,7 +265,11 @@ def analyze_match(ctx: dict) -> Optional[str]:
 
         _log(f"CONTENT: {content[:300]}")
         # Cache the blind opinion without any comparison text; the comparison is local.
-        base_result = _parse_llm_response(content, "")
+        home_sample = int(features.get("home_home_sample") or 0)
+        away_sample = int(features.get("away_away_sample") or 0)
+        # No lineup/news data is available, so the source-data label is capped at medium.
+        quality_cap = "medium" if min(home_sample, away_sample) >= 5 else "low"
+        base_result = _parse_llm_response(content, "", quality_cap=quality_cap)
         if base_result:
             cache_put(ck, base_result)
             result = _append_model_comparison(base_result, ctx.get("model_pick_code", ""))
