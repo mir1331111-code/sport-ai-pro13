@@ -817,7 +817,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "home": card.get("match_ru", "").split(" — ")[0],
                     "away": card.get("match_ru", "").split(" — ")[-1],
                     "league": card.get("league", ""),
-                    "date": card.get("date", ""),
+                    "date": f"{card.get('date_iso') or card.get('date', '')} {card.get('time') or ''}".strip(),
                     "independent_features": card.get("independent_features") or {},
                     "fh": card.get("fh", "—"), "fa": card.get("fa", "—"),
                     # Main-model label is derived locally after the blind LLM response.
