@@ -385,10 +385,22 @@ def compare_forecast_rows(rows: list[dict]) -> dict[str, Any]:
         "best_paired": model_reports[0] if model_reports else None,
         "paired_n": max((report["n"] for report in model_reports), default=0),
         "unsettled_due": sum(
-            1 for r in rows if r.get("result") is None and r.get("kickoff_at")
+            1 for r in rows
+            if r.get("result") is None and r.get("kickoff_at")
             and str(r.get("model_version") or "").startswith(("main-model-", "independent-llm-"))
+            and _is_kickoff_due(r.get("kickoff_at"))
         ),
     }
+
+
+def _is_kickoff_due(value: Any) -> bool:
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return False
+        return stamp.astimezone(timezone.utc) <= datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        return False
 
 
 def _timestamp_distance(left: str, right: str) -> float:
