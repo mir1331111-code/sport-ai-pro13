@@ -944,19 +944,21 @@ def _prognozist_extract_row_odds(row):
 
 def prognozist_permission_enabled() -> bool:
     """Read explicit opt-in from the app toggle, environment, or Streamlit Secrets."""
-    if os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1":
-        return True
     try:
         import streamlit as st
-        if bool(st.session_state.get("prognozist_permission_input", False)):
-            return True
+        # Once the UI opt-in exists, it is the operator's current choice and
+        # can turn even a configured source off for this session.
+        if "prognozist_permission_input" in st.session_state:
+            return bool(st.session_state.get("prognozist_permission_input", False))
         data = st.session_state.get("data") or {}
         meta = data.get("meta") if isinstance(data, dict) else {}
         if isinstance(meta, dict) and bool(meta.get("prognozist_permission_enabled", False)):
             return True
+        if os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1":
+            return True
         return str(st.secrets.get("PROGNOZIST_PERMISSION", "") or "").strip() == "1"
     except Exception:
-        return False
+        return os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1
 
 
 def _prognozist_allowed(url: str) -> bool:
