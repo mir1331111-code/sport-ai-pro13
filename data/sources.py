@@ -866,7 +866,7 @@ def _prognozist_extract_1x2(text):
 
 
 def _prognozist_match(row, home, away):
-    """Match both teams in home-away order; avoid canonicalizing the whole row."""
+    """Match home/away order across English provider names and Russian public-page labels."""
     joined = " ".join(str(x) for x in row).lower()
     raw = re.sub(r"[^a-zа-я0-9]", "", joined)
     if not raw or not home or not away:
@@ -874,19 +874,37 @@ def _prognozist_match(row, home, away):
 
     try:
         from data.team_names import ALIASES, normalize_team
+        from config import TEAM_TRANSLATIONS
+
+        def clean(value):
+            return re.sub(r"[^a-zа-я0-9]", "", str(value or "").casefold())
+
         def variants(team):
             canonical = normalize_team(team)
-            values = {re.sub(r"[^a-zа-я0-9]", "", str(team).lower())}
+            values = {clean(team)}
             values.update(
-                re.sub(r"[^a-zа-я0-9]", "", alias.lower())
+                clean(alias)
                 for alias, target in ALIASES.items() if target == canonical
             )
+            # The public Prognozist match-centre is Russian, while ESPN/TSDB
+            # fixture names are commonly English. Add both sides of every
+            # configured translation whose English alias maps to this club.
+            for english, russian in TEAM_TRANSLATIONS.items():
+                try:
+                    english_key = normalize_team(english)
+                    russian_key = normalize_team(russian)
+                except Exception:
+                    english_key, russian_key = clean(english), clean(russian)
+                if canonical in (english_key, russian_key):
+                    values.add(clean(english))
+                    values.add(clean(russian))
             # Longest names first; short aliases are prone to false positives.
             return sorted((v for v in values if len(v) >= 5), key=len, reverse=True)
+
         home_variants, away_variants = variants(home), variants(away)
     except Exception:
-        home_variants = [re.sub(r"[^a-zа-я0-9]", "", str(home).lower())]
-        away_variants = [re.sub(r"[^a-zа-я0-9]", "", str(away).lower())]
+        home_variants = [re.sub(r"[^a-zа-я0-9]", "", str(home).casefold())]
+        away_variants = [re.sub(r"[^a-zа-я0-9]", "", str(away).casefold())]
 
     home_positions = [(raw.find(v), len(v)) for v in home_variants if raw.find(v) >= 0]
     away_positions = [(raw.find(v), len(v)) for v in away_variants if raw.find(v) >= 0]
@@ -925,11 +943,13 @@ def _prognozist_extract_row_odds(row):
 
 
 def prognozist_permission_enabled() -> bool:
-    """Read explicit source permission from environment or Streamlit Secrets."""
+    """Read explicit opt-in from the app toggle, environment, or Streamlit Secrets."""
     if os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1":
         return True
     try:
         import streamlit as st
+        if bool(st.session_state.get("prognozist_permission_input", False)):
+            return True
         return str(st.secrets.get("PROGNOZIST_PERMISSION", "") or "").strip() == "1"
     except Exception:
         return False
@@ -1238,7 +1258,7 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
     # Odds move much faster than historical fixtures; a two-hour cache
     # can make a visible "real" price misleadingly stale. Keep live lines short.
     odds_cache_ttl = 300
-    ck = f"odds_{sport_key}_{_norm_name(home)}_{_norm_name(away)}"
+    ck = f"odds_v2_{sport_key}_{_norm_name(home)}_{_norm_name(away)}"
     cached = cache_get(ck, odds_cache_ttl)
     if cached is not None:
         if logs:
@@ -1246,7 +1266,7 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         return cached or None
     # Check the per-sport cache before the local quota: one API request provides
     # the whole league's events, so every fixture must reuse that response.
-    events_key = f"odds_events_v1_{sport_key}"
+    events_key = f"odds_events_v2_{sport_key}"
     events = cache_get(events_key, odds_cache_ttl)
     if events is None:
         if usage.odds_remaining() <= 0:
@@ -1254,12 +1274,31 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
                 logs.append("⚠️ The Odds API: локальный лимит запросов исчерпан")
             return None
         try:
-            r = _sess.get(
-                f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds",
-                params={"apiKey": api_key, "regions": "eu",
-                        "markets": "h2h,totals,btts", "oddsFormat": "decimal"},
-                timeout=20, proxies=NO_PROXY)
+            odds_url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
+            # /sports/{sport}/odds supports featured markets. BTTS is an additional
+            # market on event-specific endpoints and made the entire league request
+            # fail with HTTP 422, including the otherwise valid 1X2 prices.
+            params = {"apiKey": api_key, "regions": "eu",
+                      "markets": "h2h,totals", "oddsFormat": "decimal"}
+            r = _sess.get(odds_url, params=params, timeout=20, proxies=NO_PROXY)
             usage.odds_increment(1)
+            if r.status_code == 422 and "INVALID_MARKET" in (r.text or ""):
+                if logs:
+                    logs.append(
+                        f"ℹ️ The Odds API ({sport_key}): featured markets h2h/totals rejected; "
+                        "повторяю запрос только с h2h для восстановления линии 1X2."
+                    )
+                if usage.odds_remaining() <= 0:
+                    if logs:
+                        logs.append("⚠️ The Odds API: лимит исчерпан до fallback-запроса h2h")
+                    return None
+                r = _sess.get(
+                    odds_url,
+                    params={"apiKey": api_key, "regions": "eu",
+                            "markets": "h2h", "oddsFormat": "decimal"},
+                    timeout=20, proxies=NO_PROXY,
+                )
+                usage.odds_increment(1)
             if r.status_code != 200:
                 if logs:
                     detail = (r.text or "").replace("\\n", " ")[:180]
