@@ -53,7 +53,7 @@ def _permission_enabled() -> bool:
             return True
         return str(st.secrets.get("PROGNOZIST_PERMISSION", "") or "").strip() == "1"
     except Exception:
-        return os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1
+        return os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1"
 
 
 def _permitted_by_robots(url: str) -> bool:
