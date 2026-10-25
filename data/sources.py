@@ -1097,7 +1097,18 @@ def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dic
             # do not accept a different calendar date. Rows without dates remain
             # eligible, but multiple matching rows are rejected below.
             if day:
-                date_tokens = re.findall(r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?(?!\d)", row_text)
+                # First remove explicitly labelled decimal prices. Otherwise text such
+                # as "П1 2.12" can be misread as the calendar date "12.12".
+                date_text = re.sub(
+                    r"(?:П1|П2|X)\s*\d{1,3}(?:[.,]\d{1,4})?",
+                    " ",
+                    row_text,
+                    flags=re.IGNORECASE,
+                )
+                date_tokens = re.findall(
+                    r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?(?!\d)",
+                    date_text,
+                )
                 dated = []
                 for dd, mm, yy in date_tokens:
                     year = int(yy) if yy else int(day[:4])
@@ -1283,13 +1294,13 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
             r = _sess.get(odds_url, params=params, timeout=20, proxies=NO_PROXY)
             usage.odds_increment(1)
             if r.status_code == 422 and "INVALID_MARKET" in (r.text or ""):
-                if logs:
+                if logs is not None:
                     logs.append(
                         f"ℹ️ The Odds API ({sport_key}): featured markets h2h/totals rejected; "
                         "повторяю запрос только с h2h для восстановления линии 1X2."
                     )
                 if usage.odds_remaining() <= 0:
-                    if logs:
+                    if logs is not None:
                         logs.append("⚠️ The Odds API: лимит исчерпан до fallback-запроса h2h")
                     return None
                 r = _sess.get(
