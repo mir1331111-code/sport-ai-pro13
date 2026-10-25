@@ -1088,7 +1088,7 @@ def _prognozist_fetch_detail_fixture(href, odds=None, today=None):
         return None
 
 
-def _prognozist_line_index(logs=None):
+def _prognozist_line_index(days=1, logs=None):
     """Download and parse the line only when explicitly permitted by the operator and robots.txt."""
     if not prognozist_permission_enabled():
         if logs is not None:
@@ -1097,15 +1097,19 @@ def _prognozist_line_index(logs=None):
         return []
     # Check the current permission/robots decision before consulting the
     # odds cache; a previously cached line must not bypass a newly blocked source.
-    allowed_urls = [
-        url for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)
-        if _prognozist_allowed(url)
-    ]
+    today = datetime.now().date()
+    page_urls = [_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE]
+    for offset in range(1, max(1, min(int(days), 14))):
+        if offset == 1:
+            page_urls.append("https://prognozist.ru/mc/football/tomorrow/")
+        else:
+            page_urls.append(f"https://prognozist.ru/mc/football/{(today + timedelta(days=offset)).isoformat()}/")
+    allowed_urls = list(dict.fromkeys(url for url in page_urls if _prognozist_allowed(url)))
     if not allowed_urls:
         if logs is not None:
-            logs.append("Prognozist: оба адреса линии заблокированы robots.txt или недоступны.")
+            logs.append("Prognozist: все адреса заблокированы robots.txt или недоступны.")
         return []
-    key = "prognozist_marathon_line_index_v6"
+    key = f"prognozist_marathon_line_index_v6_{max(1, min(int(days), 14))}"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         if logs is not None:
@@ -1286,7 +1290,7 @@ def prognozist_matches(days: int = 7, logs=None) -> list:
         return []
     today = datetime.now().date()
     end_date = today + timedelta(days=max(1, min(int(days), 14)) - 1)
-    line_index = _prognozist_line_index(logs=logs)
+    line_index = _prognozist_line_index(days=days, logs=logs)
     fixtures, seen = [], set()
     compact_items, structured_items = [], []
     for item in line_index:
