@@ -794,6 +794,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"🤖 ИИ-анализ [{i_+1}/{min(LLM_TOP_N, len(action_cards))}]",
                     0.90 + 0.08 * (i_+1) / LLM_TOP_N, logs)
                 v_ = card.get("verdict", {})
+                # Blind AI context: the statistical model's probabilities, selected outcome,
+                # confidence, EV and market prices are deliberately not passed to the LLM.
+                # Model outcome is used only after the LLM responds, for a separate comparison.
                 ctx_llm = {
                     "api_key": llm_key, "provider": llm_prov, "model": llm_model,
                     "home": card.get("match_ru", "").split(" — ")[0],
@@ -801,12 +804,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "league": card.get("league", ""),
                     "date": card.get("date", ""),
                     "lam_h": card.get("lam_h", 0), "lam_a": card.get("lam_a", 0),
-                    "p1": card.get("p1", 0), "px": card.get("px", 0),
-                    "p2": card.get("p2", 0), "over": card.get("over", 0),
-                    "btts": card.get("btts", 0),
                     "fh": card.get("fh", "—"), "fa": card.get("fa", "—"),
-                    "pick": v_.get("label", ""), "prob": v_.get("prob", 0),
-                    "confidence": v_.get("confidence", ""), "ev": v_.get("ev", 0),
+                    "model_pick_code": v_.get("pick", ""),
                 }
                 try:
                     opinion = analyze_match(ctx_llm)
