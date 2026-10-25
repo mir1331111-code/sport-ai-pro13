@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import time
+import hashlib
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -21,6 +22,7 @@ from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
 from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
+from model.independent_forecasts import historical_features, record_scan_forecasts
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label)
 
@@ -749,6 +751,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "date_iso": d.strftime("%Y-%m-%d"),
                 "time": r.get("Time") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
+                # LLM receives observed venue-specific goal averages, not the primary model's lambdas.
+                "independent_features": historical_features(engine, h_en, a_en),
                 "xg_used": bool(P.get("xg_used")),
                 "total_market_validation": bool(getattr(engine, "total_market_validation", False)),
                 "total_market_validation_report": getattr(engine, "total_market_validation_report", {}),
@@ -781,7 +785,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if isinstance(c.get("verdict"), dict)
             and c.get("lam_h") is not None and c.get("lam_a") is not None
         ]
-        action_cards.sort(key=lambda c: -(c.get("games") or 0))
+        # Deterministic hash sampling spreads the limited LLM budget across fixtures
+        # without prioritizing the main model's favourite pick, confidence, or odds value.
+        action_cards.sort(key=lambda c: hashlib.sha256(
+            f"{c.get('date_iso','')}|{c.get('match','')}".encode("utf-8")
+        ).hexdigest())
         llm_done = 0
 
         logs.append(
@@ -810,9 +818,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "away": card.get("match_ru", "").split(" — ")[-1],
                     "league": card.get("league", ""),
                     "date": card.get("date", ""),
-                    "lam_h": card.get("lam_h", 0), "lam_a": card.get("lam_a", 0),
+                    "independent_features": card.get("independent_features") or {},
                     "fh": card.get("fh", "—"), "fa": card.get("fa", "—"),
-                    "model_pick_code": v_.get("pick", ""),
+                    # Main-model label is derived locally after the blind LLM response.
+                    "model_pick_code": max(
+                        (("П1", float(card.get("p1") or 0)),
+                         ("X", float(card.get("px") or 0)),
+                         ("П2", float(card.get("p2") or 0))),
+                        key=lambda item: item[1],
+                    )[0],
                 }
                 try:
                     opinion = analyze_match(ctx_llm)
@@ -832,6 +846,22 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             logs.append("🤖 LLM: ключ не задан")
         elif not action_cards:
             logs.append("🤖 LLM: нет матчей с данными для независимого анализа")
+
+        # Persist both forecasters before the fixture starts. The ledger keeps the
+        # first prediction immutable, making repeated scans idempotent and auditable.
+        try:
+            tracked = record_scan_forecasts(
+                cards, provider=llm_prov, model=llm_model, db_path=DB_FILE,
+            )
+            logs.append(
+                "📚 Журнал прогнозов: "
+                f"модель +{tracked['main_recorded']}, ИИ +{tracked['ai_recorded']}, "
+                f"без времени старта пропущено {tracked['skipped_no_time']}, "
+                f"после старта пропущено {tracked['skipped_started']}, "
+                f"ошибок {tracked['invalid']}"
+            )
+        except Exception as exc:
+            logs.append(f"⚠️ Журнал прогнозов ИИ недоступен: {type(exc).__name__}: {str(exc)[:120]}")
 
         # Автодобавление — только в виртуальный портфель, не в аккаунт букмекера.
         # Учитываем только реальные котировки 1X2, прошедшие все value-фильтры.
