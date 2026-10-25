@@ -15,6 +15,7 @@
 from __future__ import annotations
 import csv, io, re, logging, os, hashlib
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 from urllib.robotparser import RobotFileParser
@@ -1274,10 +1275,36 @@ def prognozist_matches(days: int = 7, logs=None) -> list:
     end_date = today + timedelta(days=max(1, min(int(days), 14)) - 1)
     line_index = _prognozist_line_index()
     fixtures, seen = [], set()
+    compact_items, structured_items = [], []
     for item in line_index:
+        cells = item.get("cells") if isinstance(item, dict) else None
+        href = str(item.get("href") or (cells[0] if isinstance(cells, list) and cells else "")).strip()
+        if href.startswith("/mc/football/") or href.startswith("https://prognozist.ru/mc/football/"):
+            # Only detail-fetch upcoming rows with a full line; avoid needless requests for live/finished events.
+            label = str(item.get("text") or " ".join(str(x) for x in cells or [])).casefold()
+            if "скоро" in label and isinstance(item.get("odds"), dict):
+                compact_items.append(item)
+        else:
+            structured_items.append(item)
+
+    # Match pages are fetched concurrently with a conservative cap; all URLs still pass robots.txt checks.
+    parsed_fixtures = []
+    for item in structured_items:
         fixture = _prognozist_fixture_from_item(item, today=today)
-        if not fixture:
-            continue
+        if fixture:
+            parsed_fixtures.append(fixture)
+    if compact_items:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(_prognozist_fixture_from_item, item, today) for item in compact_items]
+            for future in futures:
+                try:
+                    fixture = future.result(timeout=12)
+                except Exception:
+                    fixture = None
+                if fixture:
+                    parsed_fixtures.append(fixture)
+
+    for fixture in parsed_fixtures:
         try:
             match_date = datetime.strptime(fixture["Date"], "%Y-%m-%d").date()
         except Exception:
