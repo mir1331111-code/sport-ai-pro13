@@ -962,9 +962,13 @@ def prognozist_permission_enabled() -> bool:
         return os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1"
 
 
-def _prognozist_allowed(url: str) -> bool:
-    """Require explicit permission and robots.txt allowance; cache robots rules once."""
-    if not prognozist_permission_enabled():
+def _prognozist_allowed(url: str, permission_granted: bool = False) -> bool:
+    """Require explicit permission and robots.txt allowance; cache robots rules once.
+
+    permission_granted is captured on the Streamlit main thread before worker
+    threads start; worker threads cannot safely read st.session_state.
+    """
+    if not permission_granted and not prognozist_permission_enabled():
         log.info("Prognozist odds disabled: explicit permission is off.")
         return False
     decision_key = "prognozist_robots_decision_" + hashlib.sha256(url.encode("utf-8")).hexdigest()[:20]
@@ -1049,7 +1053,7 @@ def _prognozist_parse_detail_heading(heading, odds=None, today=None):
     return fixture
 
 
-def _prognozist_fetch_detail_fixture(href, odds=None, today=None):
+def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_granted=False):
     href = str(href or "").strip()
     if href.startswith("/"):
         from urllib.parse import urljoin
@@ -1057,7 +1061,7 @@ def _prognozist_fetch_detail_fixture(href, odds=None, today=None):
     parsed = urlparse(href)
     if parsed.scheme != "https" or parsed.netloc.casefold() != "prognozist.ru" or not parsed.path.startswith("/mc/football/"):
         return None
-    if not _prognozist_allowed(href):
+    if not _prognozist_allowed(href, permission_granted=permission_granted):
         return None
     cache_key = "prognozist_detail_" + hashlib.sha256(href.encode("utf-8")).hexdigest()[:24]
     cached = cache_get(cache_key, 1800)
@@ -1167,7 +1171,7 @@ def _prognozist_line_index(days=1, logs=None):
     return indexed
 
 
-def _prognozist_fixture_from_item(item, today=None):
+def _prognozist_fixture_from_item(item, today=None, permission_granted=False):
     if not isinstance(item, dict):
         return None
     cells = item.get("cells")
@@ -1183,7 +1187,7 @@ def _prognozist_fixture_from_item(item, today=None):
             return None
         if not all(1.01 < v <= 100 for v in prices.values()):
             return None
-        return _prognozist_fetch_detail_fixture(href, prices, today=today)
+        return _prognozist_fetch_detail_fixture(href, prices, today=today, permission_granted=permission_granted)
 
     """Convert a parsed Prognozist 1X2 row into a fixture only when teams/date are clear."""
     if not isinstance(item, dict):
@@ -1287,9 +1291,7 @@ def prognozist_matches(days: int = 7, logs=None) -> list:
         if logs is not None:
             logs.append("Prognozist: сбор матчей выключен — требуется явное разрешение/opt-in.")
         return []
-    today = datetime.now().date()
-    end_date = today + timedelta(days=max(1, min(int(days), 14)) - 1)
-    line_index = _prognozist_line_index(days=days, logs=logs)
+    # Capture Streamlit-controlled permission on the main thread. Worker threads\n    # receive this explicit snapshot and never touch st.session_state.\n    permission_granted = prognozist_permission_enabled()\n    today = datetime.now().date()\n    end_date = today + timedelta(days=max(1, min(int(days), 14)) - 1)\n    line_index = _prognozist_line_index(days=days, logs=logs)
     fixtures, seen = [], set()
     compact_items, structured_items = [], []
     for item in line_index:
@@ -1306,12 +1308,12 @@ def prognozist_matches(days: int = 7, logs=None) -> list:
     # Match pages are fetched concurrently with a conservative cap; all URLs still pass robots.txt checks.
     parsed_fixtures = []
     for item in structured_items:
-        fixture = _prognozist_fixture_from_item(item, today=today)
+        fixture = _prognozist_fixture_from_item(item, today=today, permission_granted=permission_granted)
         if fixture:
             parsed_fixtures.append(fixture)
     if compact_items:
         with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = [pool.submit(_prognozist_fixture_from_item, item, today) for item in compact_items]
+            futures = [pool.submit(_prognozist_fixture_from_item, item, today, permission_granted) for item in compact_items]
             for future in futures:
                 try:
                     fixture = future.result(timeout=12)
