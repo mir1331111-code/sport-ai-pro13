@@ -996,6 +996,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             db.log_bank(D2["bank"], event="scan")
             db.invalidate_caches()
 
+        # Surface source diagnostics in deployment logs, not only the in-app report.
+        for source_line in logs:
+            if "Prognozist" in source_line or "Marathon" in source_line or "матчей после фильтрации" in source_line:
+                _print_log(f"SOURCE: {source_line}")
+
         _print_log(f"FUNNEL: {funnel_counts}")
 
         update_loader(
