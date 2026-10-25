@@ -1057,13 +1057,17 @@ def _prognozist_line_index():
     return indexed
 
 
-def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dict]:
+def prognozist_marathon_odds(
+    home: str, away: str, kickoff=None, logs=None
+) -> Optional[dict]:
     """Return a complete, unambiguous real 1X2 line; never use cache to bypass permission."""
     if not home or not away:
         return None
     # Check permission before reading match or line caches, so disabling the
     # source takes effect immediately and cached data cannot bypass the gate.
     if not prognozist_permission_enabled():
+        if logs is not None:
+            logs.append("Prognozist: отключён — включите opt-in переключатель в боковой панели (только если разрешено правилами сайта).")
         return None
     hn, an = _norm_name(home), _norm_name(away)
     if not hn or not an:
@@ -1077,6 +1081,8 @@ def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dic
     # Re-check source access before the fixture-level cache too.
     if not any(_prognozist_allowed(url)
                for url in (_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE)):
+        if logs is not None:
+            logs.append("Prognozist: доступ заблокирован robots.txt или robots.txt недоступен; линия не загружается.")
         return None
     cache_key = f"prognozist_marathon_v4_{day}_{hn}_{an}"
     cached = cache_get(cache_key, 180)
@@ -1084,7 +1090,8 @@ def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dic
         return cached or None
     try:
         matches = []
-        for item in _prognozist_line_index():
+        line_index = _prognozist_line_index()
+        for item in line_index:
             row_text = item.get("text", "")
             if not _prognozist_match([row_text], home, away):
                 continue
@@ -1130,6 +1137,19 @@ def prognozist_marathon_odds(home: str, away: str, kickoff=None) -> Optional[dic
             return result
         if len(unique) > 1:
             log.warning("Prognozist: ambiguous fixture match for %s — %s; refusing to attach odds", home, away)
+            if logs is not None:
+                logs.append(f"Prognozist: найдено несколько разных линий для {home} — {away}; безопасно пропускаю.")
+        elif not matches and logs is not None:
+            if line_index:
+                logs.append(
+                    f"Prognozist: получено строк с коэффициентами 1X2: {len(line_index)}, "
+                    f"но совпадение для {home} — {away} не найдено."
+                )
+            else:
+                logs.append(
+                    "Prognozist: источник доступен, но парсер не извлёк строки с коэффициентами; "
+                    "проверьте журнал источника/изменение HTML."
+                )
     except Exception as exc:
         log.debug("Prognozist lookup failed: %s", type(exc).__name__)
     cache_put(cache_key, None)
