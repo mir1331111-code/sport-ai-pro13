@@ -787,7 +787,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         logs.append(
             f"🤖 LLM подготовка: key={'есть' if llm_key else 'НЕТ'} | "
             f"provider={llm_prov} | "
-            f"action_cards={len(action_cards)} | "
+            f"analysis_cards={len(action_cards)} | "
             f"remaining={usage.llm_remaining()}")
 
         if llm_key and usage.llm_remaining() > 0 and action_cards:
@@ -798,7 +798,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if i_ > 0:
                     time.sleep(2)
                 update_loader(
-                    f"🤖 ИИ-анализ [{i_+1}/{min(LLM_TOP_N, len(action_cards))}]",
+                    f"🤖 Независимый ИИ-анализ [{i_+1}/{min(LLM_TOP_N, len(action_cards))}]",
                     0.90 + 0.08 * (i_+1) / LLM_TOP_N, logs)
                 v_ = card.get("verdict", {})
                 # Blind AI context: the statistical model's probabilities, selected outcome,
@@ -831,7 +831,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         elif not llm_key:
             logs.append("🤖 LLM: ключ не задан")
         elif not action_cards:
-            logs.append("🤖 LLM: нет action_cards (best=None у всех)")
+            logs.append("🤖 LLM: нет матчей с данными для независимого анализа")
 
         # Автодобавление — только в виртуальный портфель, не в аккаунт букмекера.
         # Учитываем только реальные котировки 1X2, прошедшие все value-фильтры.
