@@ -268,5 +268,71 @@ class PrognozistOddsParserTests(unittest.TestCase):
         self.assertIsNone(_prognozist_extract_row_odds(["П1", "X", "П2"]))
 
 
+
+    def test_prognozist_matches_russian_match_centre_names_to_english_fixtures(self):
+        from data.sources import _prognozist_match
+        row = ["17:00СкороЛиверпульБрайтонП12.12X3.98П23.24—"]
+        self.assertTrue(_prognozist_match(row, "Liverpool", "Brighton & Hove Albion"))
+        self.assertFalse(_prognozist_match(row, "Brighton & Hove Albion", "Liverpool"))
+
+    def test_prognozist_lookup_returns_public_russian_page_line(self):
+        from data import sources
+        odds = {"П1": 2.12, "X": 3.98, "П2": 3.24}
+        with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": "1"}):
+            with (
+                patch.object(sources, "_prognozist_allowed", return_value=True),
+                patch.object(sources, "cache_get", return_value=None),
+                patch.object(sources, "_prognozist_line_index", return_value=[
+                    {"text": "17:00СкороЛиверпульБрайтонП12.12X3.98П23.24—", "odds": odds}
+                ]),
+                patch.object(sources, "cache_put"),
+            ):
+                result = sources.prognozist_marathon_odds(
+                    "Liverpool", "Brighton & Hove Albion",
+                    kickoff=datetime(2026, 10, 25, 17, 0),
+                )
+        self.assertEqual(result, odds)
+
+    def test_odds_api_retries_h2h_when_endpoint_rejects_market_combo(self):
+        from types import SimpleNamespace
+        from data import sources
+        events = [{
+            "home_team": "Liverpool",
+            "away_team": "Brighton & Hove Albion",
+            "bookmakers": [{
+                "markets": [{
+                    "key": "h2h",
+                    "outcomes": [
+                        {"name": "Liverpool", "price": 2.12},
+                        {"name": "Draw", "price": 3.98},
+                        {"name": "Brighton & Hove Albion", "price": 3.24},
+                    ],
+                }]
+            }],
+        }]
+        bad = SimpleNamespace(
+            status_code=422,
+            text='{"error_code":"INVALID_MARKET","message":"Markets not supported by this endpoint: totals"}',
+        )
+        good = SimpleNamespace(status_code=200, text="[]", json=lambda: events)
+        logs = []
+        with (
+            patch.object(sources, "cache_get", return_value=None),
+            patch.object(sources, "cache_put"),
+            patch.object(sources.usage, "odds_remaining", return_value=10),
+            patch.object(sources.usage, "odds_increment"),
+            patch.object(sources._sess, "get", side_effect=[bad, good]) as mocked_get,
+        ):
+            result = sources.odds_api_fixture(
+                "soccer_epl", "Liverpool", "Brighton & Hove Albion", "test-key", logs
+            )
+        self.assertEqual(result, {"П1": 2.12, "X": 3.98, "П2": 3.24})
+        self.assertEqual(mocked_get.call_count, 2)
+        self.assertEqual(mocked_get.call_args_list[0].kwargs["params"]["markets"], "h2h,totals")
+        self.assertEqual(mocked_get.call_args_list[1].kwargs["params"]["markets"], "h2h")
+        self.assertNotIn("btts", mocked_get.call_args_list[0].kwargs["params"]["markets"])
+        self.assertTrue(any("повторяю запрос только с h2h" in line for line in logs))
+
+
 if __name__ == "__main__":
     unittest.main()
