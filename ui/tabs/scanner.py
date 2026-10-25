@@ -612,24 +612,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 try:
                     candidates = []
 
-                    # Fetch current bookmaker prices for totals separately from the 1X2 source.
-                    if odds_key and DIV_TO_ODDS.get(lg):
-                        try:
-                            api_market_data = odds_api_fixture(
-                                DIV_TO_ODDS.get(lg), h_en, a_en, odds_key, logs
-                            )
-                            if isinstance(api_market_data, dict):
-                                for total_pick in ("ТБ 2.5", "ТМ 2.5"):
-                                    try:
-                                        total_odd = float(api_market_data.get(total_pick))
-                                        if 1.01 < total_odd <= 100:
-                                            total_market_odds[total_pick] = total_odd
-                                    except (TypeError, ValueError):
-                                        continue
-                                if total_market_odds:
-                                    total_odds_source = "the_odds_api"
-                        except Exception as exc:
-                            logs.append(f"⚠️ Odds API totals: {type(exc).__name__}")
+                    # Only Prognozist/Marathon is enabled for live prices. External odds APIs are disabled.
 
                     # The fixture row already carries the exact 1X2 line parsed from Prognozist.
                     # Reuse it to avoid a second lookup and accidental cross-match.
@@ -692,20 +675,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         except Exception as exc:
                             logs.append(f"ℹ️ Marathon lookup failed: {type(exc).__name__}")
                     
-                    # 3. Если всё ещё нет — TheRundown
-                    if not candidates:
-                        rundown_key = _runtime_secret(
-                            "therundown_api_key_input", "THERUNDOWN_API_KEY",
-                            "therundown_api_key", "rundown_key")
-                        if rundown_key:
-                            rundown = therundown_odds_fixture(
-                                h_en, a_en, d.strftime("%Y-%m-%d"), lg, rundown_key, logs
-                            )
-                            if rundown:
-                                candidates.append(("therundown", rundown))
-
-                    if not candidates and isinstance(api_market_data, dict):
-                        candidates.append(("the_odds_api", api_market_data))
+                    # No fallback odds providers: a missing Prognozist/Marathon line stays missing.
 
                     for source_name, candidate in candidates:
                         if not isinstance(candidate, dict):
