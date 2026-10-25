@@ -773,8 +773,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                           "Groq (бесплатно, быстро)")
         llm_model = D.get("meta", {}).get("llm_model", "")
 
-        action_cards = [c for c in cards if c.get("best") is not None]
-        action_cards.sort(key=lambda c: -(c.get("verdict", {}).get("prob") or 0))
+        # Review fixtures with the most historical observations first, not only
+        # fixtures already selected by the value model. The LLM still receives no
+        # model probabilities, pick, confidence, EV, or bookmaker prices.
+        action_cards = [
+            c for c in cards
+            if isinstance(c.get("verdict"), dict)
+            and c.get("lam_h") is not None and c.get("lam_a") is not None
+        ]
+        action_cards.sort(key=lambda c: -(c.get("games") or 0))
         llm_done = 0
 
         logs.append(
