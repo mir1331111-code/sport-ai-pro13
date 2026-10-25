@@ -38,11 +38,13 @@ _sess = _session()
 
 
 def _permission_enabled() -> bool:
-    """Require explicit operator permission from environment or Streamlit Secrets."""
+    """Require explicit opt-in from the UI, environment, or Streamlit Secrets."""
     if os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1":
         return True
     try:
         import streamlit as st
+        if bool(st.session_state.get("prognozist_permission_input", False)):
+            return True
         return str(st.secrets.get("PROGNOZIST_PERMISSION", "") or "").strip() == "1"
     except Exception:
         return False
