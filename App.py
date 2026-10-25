@@ -580,15 +580,27 @@ with st.sidebar:
         type="password", key="therundown_api_key_input",
         help="Бесплатный ключ: предматчевые коэффициенты 1X2 с задержкой около 5 минут.")
 
-    st.checkbox(
+    _prognozist_configured = (
+        os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1"
+        or str(_configured_secret("PROGNOZIST_PERMISSION") or "").strip() == "1"
+    )
+    _prognozist_default = bool(st.session_state.get(
+        "prognozist_permission_input",
+        D["meta"].get("prognozist_permission_enabled", _prognozist_configured),
+    ))
+    _prognozist_opt_in = st.checkbox(
         "Пробовать публичную линию Prognozist",
-        value=bool(st.session_state.get("prognozist_permission_input", False)),
+        value=_prognozist_default,
         key="prognozist_permission_input",
         help=(
             "Включайте только если использование данных разрешено правилами сайта. "
-            "Приложение всё равно проверяет robots.txt и не обращается к запрещённым URL."
+            "Выбор сохраняется в настройках; приложение всё равно проверяет robots.txt "
+            "и не обращается к запрещённым URL."
         ),
     )
+    if D["meta"].get("prognozist_permission_enabled") is not bool(_prognozist_opt_in):
+        D["meta"]["prognozist_permission_enabled"] = bool(_prognozist_opt_in)
+        usage.set_local_data(D)
 
     st.markdown(
         "<div style='font-size:.72rem;color:#8b93a7;margin-top:14px;"
