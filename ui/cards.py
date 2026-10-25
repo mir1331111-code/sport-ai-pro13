@@ -264,14 +264,18 @@ def render_verdict_card(c: dict, thr: float) -> str:
     llm_opinion = c.get("llm_opinion") or ""
     llm_html = ""
     if llm_opinion:
+        is_disagreement = "РАСХОЖДЕНИЕ" in llm_opinion
+        llm_border = "rgba(251,191,36,.48)" if is_disagreement else "rgba(139,92,246,.30)"
+        llm_heading = "⚖️ НЕЗАВИСИМАЯ ОЦЕНКА ИИ" if is_disagreement else "🤖 НЕЗАВИСИМЫЙ ПРОГНОЗ ИИ"
+        llm_bg = "rgba(251,191,36,.08)" if is_disagreement else "rgba(139,92,246,.10)"
         llm_html = (
-            '<div style="background:rgba(139,92,246,.10);'
-            'border:1px solid rgba(139,92,246,.30);border-radius:14px;'
+            '<div style="background:' + llm_bg + ';'
+            'border:1px solid ' + llm_border + ';border-radius:14px;'
             'padding:12px 16px;margin-top:12px;">'
             '<div style="color:#c4b5fd;font-size:.72rem;text-transform:uppercase;'
-            'font-weight:700;margin-bottom:6px;letter-spacing:1.4px;">'
-            '🤖 ИИ-аналитик</div>'
-            '<div style="color:#e9d5ff;font-size:.88rem;line-height:1.55;">'
+            'font-weight:700;margin-bottom:6px;letter-spacing:1.2px;">'
+            + llm_heading + '</div>'
+            '<div style="color:#e9d5ff;font-size:.88rem;line-height:1.65;">'
             + esc(llm_opinion) + '</div></div>')
 
     # Show the fetched price for the model's 1X2 pick even when value gates
