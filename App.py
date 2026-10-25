@@ -580,6 +580,16 @@ with st.sidebar:
         type="password", key="therundown_api_key_input",
         help="Бесплатный ключ: предматчевые коэффициенты 1X2 с задержкой около 5 минут.")
 
+    st.checkbox(
+        "Пробовать публичную линию Prognozist",
+        value=bool(st.session_state.get("prognozist_permission_input", False)),
+        key="prognozist_permission_input",
+        help=(
+            "Включайте только если использование данных разрешено правилами сайта. "
+            "Приложение всё равно проверяет robots.txt и не обращается к запрещённым URL."
+        ),
+    )
+
     st.markdown(
         "<div style='font-size:.72rem;color:#8b93a7;margin-top:14px;"
         "margin-bottom:6px;'>🤖 LLM-аналитик</div>",
