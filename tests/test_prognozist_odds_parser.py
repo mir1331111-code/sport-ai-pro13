@@ -52,6 +52,35 @@ class PrognozistOddsParserTests(unittest.TestCase):
         }
         self.assertIsNone(_prognozist_fixture_from_item(item, today=datetime(2026, 10, 25).date()))
 
+    def test_parses_real_match_centre_heading_and_russian_date(self):
+        from data.sources import _prognozist_parse_detail_heading
+        fixture = _prognozist_parse_detail_heading(
+            "Зенит — Динамо Махачкала прогноз на 25 октября 2026 в 18:30 МСК",
+            {"П1": 1.26, "X": 6.05, "П2": 12.25},
+            today=datetime(2026, 10, 25).date(),
+        )
+        self.assertIsNotNone(fixture)
+        self.assertEqual(fixture["HomeTeam"], "Зенит")
+        self.assertEqual(fixture["AwayTeam"], "Динамо Махачкала")
+        self.assertEqual(fixture["Date"], "2026-10-25")
+        self.assertEqual(fixture["Time"], "18:30")
+        self.assertEqual(fixture["prognozist_odds"]["П2"], 12.25)
+
+    def test_compact_match_centre_row_uses_detail_page_not_guessed_split(self):
+        from data import sources
+        item = {
+            "cells": ["/mc/football/zenit-sankt-peterburg-dinamo-mahachkala-31127120/",
+                      "18:30СкороЗенитДинамо МахачкалаП11.26X6.05П212.25—"],
+            "odds": {"П1": 1.26, "X": 6.05, "П2": 12.25},
+        }
+        expected = {"HomeTeam": "Зенит", "AwayTeam": "Динамо Махачкала",
+                    "Date": "2026-10-25", "Time": "18:30",
+                    "prognozist_odds": {"П1": 1.26, "X": 6.05, "П2": 12.25}}
+        with patch.object(sources, "_prognozist_fetch_detail_fixture", return_value=expected) as fetch:
+            result = sources._prognozist_fixture_from_item(item, today=datetime(2026, 10, 25).date())
+        self.assertEqual(result, expected)
+        fetch.assert_called_once()
+
     def test_american_odds_conversion(self):
         from data.sources import _american_to_decimal
         self.assertAlmostEqual(_american_to_decimal(-110), 1.9090909, places=5)
