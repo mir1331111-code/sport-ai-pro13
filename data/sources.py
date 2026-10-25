@@ -1088,9 +1088,11 @@ def _prognozist_fetch_detail_fixture(href, odds=None, today=None):
         return None
 
 
-def _prognozist_line_index():
+def _prognozist_line_index(logs=None):
     """Download and parse the line only when explicitly permitted by the operator and robots.txt."""
     if not prognozist_permission_enabled():
+        if logs is not None:
+            logs.append("Prognozist: источник выключен переключателем разрешения.")
         _prognozist_allowed(_PROGNOZIST_URL)
         return []
     # Check the current permission/robots decision before consulting the
@@ -1100,10 +1102,14 @@ def _prognozist_line_index():
         if _prognozist_allowed(url)
     ]
     if not allowed_urls:
+        if logs is not None:
+            logs.append("Prognozist: оба адреса линии заблокированы robots.txt или недоступны.")
         return []
     key = "prognozist_marathon_line_index_v6"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
+        if logs is not None:
+            logs.append(f"Prognozist: кэш линии содержит {len(cached)} строк с коэффициентами.")
         return cached
     headers = {
         "User-Agent": "Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)",
@@ -1115,8 +1121,10 @@ def _prognozist_line_index():
         try:
             response = _sess.get(url, headers=headers, timeout=(3, 6), proxies=NO_PROXY)
             if response.status_code != 200 or not response.text:
-                log.warning("Prognozist source %s: HTTP %s, body_len=%s",
-                            url, response.status_code, len(response.text or ""))
+                msg = f"Prognozist: HTTP {response.status_code} на {url}, body={len(response.text or '')} bytes."
+                log.warning(msg)
+                if logs is not None:
+                    logs.append(msg)
                 continue
             body = response.text
             parser = _PrognozistHTMLParser()
@@ -1138,15 +1146,20 @@ def _prognozist_line_index():
                     })
             parsed_count = len(indexed) - before_count
             if parsed_count == 0:
-                log.warning("Prognozist source %s: HTTP %s, body_len=%s, rows=%s, odds_rows=0",
-                            url, response.status_code, len(body), len(candidates))
+                msg = f"Prognozist: HTTP 200 на {url}, HTML={len(body)} bytes, строк={len(candidates)}, 1X2=0."
+                log.warning(msg)
             else:
-                log.info("Prognozist source %s: HTTP %s, body_len=%s, rows=%s, odds_rows=%s",
-                         url, response.status_code, len(body), len(candidates), parsed_count)
+                msg = f"Prognozist: HTTP 200 на {url}, строк={len(candidates)}, 1X2={parsed_count}."
+                log.info(msg)
+            if logs is not None:
+                logs.append(msg)
             # Keep rows from both feeds: the first endpoint can return a partial
             # line that does not include the fixture being searched.
         except Exception as exc:
-            log.warning("Prognozist request failed (%s): %s", url, type(exc).__name__)
+            msg = f"Prognozist: запрос {url} завершился ошибкой {type(exc).__name__}."
+            log.warning(msg)
+            if logs is not None:
+                logs.append(msg)
     cache_put(key, indexed)
     return indexed
 
@@ -1273,7 +1286,7 @@ def prognozist_matches(days: int = 7, logs=None) -> list:
         return []
     today = datetime.now().date()
     end_date = today + timedelta(days=max(1, min(int(days), 14)) - 1)
-    line_index = _prognozist_line_index()
+    line_index = _prognozist_line_index(logs=logs)
     fixtures, seen = [], set()
     compact_items, structured_items = [], []
     for item in line_index:
