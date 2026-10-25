@@ -73,17 +73,50 @@ def _response_json(content: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _append_model_comparison(base_result: str, model_pick_code: str = "") -> str:
+    """Attach comparison after the blind LLM answer, never inside its prompt/cache."""
+    model_pick = _pick_code(model_pick_code)
+    if not base_result or not model_pick:
+        return base_result or ""
+    match = re.search(
+        r"Оценка ИИ:\s*П1\s+(\d+(?:\.\d+)?)%\s*[·|]\s*X\s+"
+        r"(\d+(?:\.\d+)?)%\s*[·|]\s*П2\s+(\d+(?:\.\d+)?)%",
+        base_result,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return base_result
+    probs = {
+        "П1": float(match.group(1)),
+        "X": float(match.group(2)),
+        "П2": float(match.group(3)),
+    }
+    order = ("П1", "X", "П2")
+    ai_pick = max(order, key=lambda code: (probs[code], -order.index(code)))
+    if ai_pick == model_pick:
+        return base_result + (
+            f" Сверка с основной моделью: исход совпадает ({model_pick}); "
+            "это не доказывает правильность прогноза."
+        )
+    return base_result + (
+        f" РАСХОЖДЕНИЕ с основной моделью: ИИ выбирает {ai_pick}, "
+        f"основная модель — {model_pick}. Причину расхождения стоит проверить отдельно."
+    )
+
+
 def _parse_llm_response(content: str, model_pick_code: str = "") -> Optional[str]:
-    """Validate an independent 1X2 estimate and compare it outside the LLM prompt."""
+    """Validate the independent probability distribution; the chosen pick is never trusted blindly."""
     parsed = _response_json(content)
     if not parsed or not str(parsed.get("opinion") or "").strip():
         return None
-
     raw = parsed.get("probabilities")
     if not isinstance(raw, dict):
         return None
-    aliases = {"П1": ("П1", "p1", "home"), "X": ("X", "px", "draw"),
-               "П2": ("П2", "p2", "away")}
+    aliases = {
+        "П1": ("П1", "p1", "home"),
+        "X": ("X", "px", "draw"),
+        "П2": ("П2", "p2", "away"),
+    }
     probs = {}
     for code, keys in aliases.items():
         val = next((raw[k] for k in keys if k in raw), None)
@@ -94,45 +127,40 @@ def _parse_llm_response(content: str, model_pick_code: str = "") -> Optional[str
         if not 0 <= number <= 100:
             return None
         probs[code] = number
-
     total = sum(probs.values())
     if total <= 0:
         return None
-
-    normalized = {code: int(round(value * 100.0 / total))
-                  for code, value in probs.items()}
+    normalized = {
+        code: int(round(value * 100.0 / total))
+        for code, value in probs.items()
+    }
     drift = 100 - sum(normalized.values())
     largest = max(probs, key=probs.get)
     normalized[largest] += drift
     order = ("П1", "X", "П2")
     chosen = max(order, key=lambda code: (normalized[code], -order.index(code)))
-
-    labels = {"П1": "победа хозяев (П1)", "X": "ничья (X)", "П2": "победа гостей (П2)"}
+    labels = {
+        "П1": "победа хозяев (П1)",
+        "X": "ничья (X)",
+        "П2": "победа гостей (П2)",
+    }
     quality_raw = str(parsed.get("data_quality") or "low").strip().lower()
-    quality = {"high": "высокое", "medium": "среднее", "low": "низкое"}.get(quality_raw, "низкое")
+    quality = {
+        "high": "высокое",
+        "medium": "среднее",
+        "low": "низкое",
+    }.get(quality_raw, "низкое")
     opinion = re.sub(r"\s+", " ", str(parsed.get("opinion") or "").strip())[:600]
     risks = re.sub(r"\s+", " ", str(parsed.get("risks") or "").strip())[:300]
-
     result = (
         f"САМОСТОЯТЕЛЬНЫЙ ПРОГНОЗ ИИ: {labels[chosen]}. "
-        f"Оценка ИИ: П1 {normalized['П1']}% · X {normalized['X']}% · П2 {normalized['П2']}%. "
+        f"Оценка ИИ: П1 {normalized['П1']}% · X {normalized['X']}% · "
+        f"П2 {normalized['П2']}%. "
         f"Качество исходных данных: {quality}. {opinion}"
     )
     if risks:
         result += f" Риски: {risks}"
-
-    model_pick = _pick_code(model_pick_code)
-    if model_pick:
-        if chosen == model_pick:
-            result += f" Сверка с основной моделью: исход совпадает ({model_pick}); это не доказывает правильность прогноза."
-        else:
-            result += (
-                f" РАСХОЖДЕНИЕ с основной моделью: ИИ выбирает {chosen}, "
-                f"основная модель — {model_pick}. Причину расхождения стоит проверить отдельно."
-            )
-    return result
-
-
+    return _append_model_comparison(result, model_pick_code)
 def analyze_match(ctx: dict) -> Optional[str]:
     api_key = ctx.get("api_key")
     if not api_key:
@@ -146,36 +174,53 @@ def analyze_match(ctx: dict) -> Optional[str]:
     model = ctx.get("model") or cfg["model"]
     base = cfg["base"]
 
+    # The primary model's pick is intentionally excluded from the LLM prompt and
+    # cache key. Cached independent analysis can be compared to a fresh model pick.
     cache_context = {
         key: ctx.get(key) for key in (
-            "home", "away", "league", "date", "lam_h", "lam_a", "fh", "fa",
-            "model_pick_code", "provider", "model",
+            "home", "away", "league", "date", "fh", "fa",
+            "independent_features", "provider", "model",
         )
     }
     cache_context.update({"provider_resolved": provider, "model_resolved": model})
     ctx_hash = hashlib.sha256(
         json.dumps(cache_context, sort_keys=True, default=str).encode()
     ).hexdigest()
-    ck = f"llm_v5_blind_{ctx_hash}"
+    ck = f"llm_v6_blind_{ctx_hash}"
     cached = cache_get(ck, CACHE_TTL["llm"])
     if cached is not None:
         _log(f"CACHE HIT: {ctx_hash[:8]}")
-        return cached or None
+        return _append_model_comparison(str(cached), ctx.get("model_pick_code", ""))
 
     if usage.llm_remaining() <= 0:
         _log("ERROR: лимит LLM исчерпан")
         return None
 
-    # Deliberately omit model probabilities, pick, confidence, EV and all bookmaker odds.
+    features = ctx.get("independent_features")
+    features = features if isinstance(features, dict) else {}
+    def fmt(name: str) -> str:
+        value = features.get(name)
+        try:
+            number = float(value)
+            return f"{number:.2f}" if number == number and abs(number) != float("inf") else "нет данных"
+        except (TypeError, ValueError):
+            return "нет данных"
+
     user_msg = (
         f"Матч: {ctx.get('home', '—')} — {ctx.get('away', '—')}\n"
         f"Лига: {ctx.get('league', '—')}\n"
-        f"Дата: {ctx.get('date', '—')}\n"
-        f"Ожидаемые голы по предматчевой статистике (λ): хозяева "
-        f"{_as_number(ctx.get('lam_h')):.2f}, гости {_as_number(ctx.get('lam_a')):.2f}\n"
+        f"Дата матча: {ctx.get('date', '—')}\n"
+        "Независимые исторические показатели (фактические голы, не прогноз основной модели):\n"
+        f"Голы хозяев дома за матч, среднее: {fmt('home_scored_at_home_avg')} "
+        f"(выборка {features.get('home_home_sample', 0)} матчей)\n"
+        f"Пропущенные хозяевами дома за матч, среднее: {fmt('home_conceded_at_home_avg')}\n"
+        f"Голы гостей на выезде за матч, среднее: {fmt('away_scored_away_avg')} "
+        f"(выборка {features.get('away_away_sample', 0)} матчей)\n"
+        f"Пропущенные гостями на выезде за матч, среднее: {fmt('away_conceded_away_avg')}\n"
         f"Последние результаты (В — выигрыш, Н — ничья, П — поражение): "
         f"хозяева {ctx.get('fh') or 'нет данных'}, гости {ctx.get('fa') or 'нет данных'}\n"
-        "Сформируй собственный вероятностный прогноз 1X2, не ссылаясь на отсутствующие данные."
+        "На основе только этих отдельных входных данных оцени 1X2. "
+        "Если выборки малы или данных недостаточно, отрази это в вероятностях и рисках."
     )
 
     url = f"{base}/chat/completions"
@@ -210,7 +255,6 @@ def analyze_match(ctx: dict) -> Optional[str]:
             _log(f"ERROR: нет choices: {str(data)[:300]}")
             cache_put(ck, None)
             return None
-
         content = (choices[0].get("message") or {}).get("content", "")
         if not content:
             _log("ERROR: content пустой")
@@ -218,10 +262,12 @@ def analyze_match(ctx: dict) -> Optional[str]:
             return None
 
         _log(f"CONTENT: {content[:300]}")
-        result = _parse_llm_response(content, ctx.get("model_pick_code", ""))
-        if result:
+        # Cache the blind opinion without any comparison text; the comparison is local.
+        base_result = _parse_llm_response(content, "")
+        if base_result:
+            cache_put(ck, base_result)
+            result = _append_model_comparison(base_result, ctx.get("model_pick_code", ""))
             _log(f"PARSED OK: {result[:120]}")
-            cache_put(ck, result)
             return result
 
         _log("ERROR: ответ не содержит валидного независимого прогноза 1X2")
@@ -232,7 +278,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
         _log("ERROR: timeout 30s")
         return None
     except requests.exceptions.ConnectionError as e:
-        _log(f"ERROR: connection failed: {str(e)[:200]}")
+        _log("ERROR: connection failed: " + str(e)[:200])
         return None
     except Exception as e:
         _log(f"ERROR: {type(e).__name__}: {str(e)[:200]}")
