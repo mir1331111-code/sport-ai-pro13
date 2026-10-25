@@ -13,7 +13,7 @@ from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
                           fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
                           tsdb_matches, espn_matches, therundown_odds_fixture,
-                          prognozist_marathon_odds, prognozist_source_status,
+                          prognozist_marathon_odds, prognozist_matches, prognozist_source_status,
                           prognozist_permission_enabled)
 from data.marathon import marathon_odds
 from data.fixture_merge import merge_fixture_sources
@@ -538,25 +538,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         else:
             logs.append("ℹ️ football-data.org token не задан: использую доступные публичные источники TSDB/ESPN.")
 
-        update_loader("📡 Сбор матчей из всех доступных источников...", 0.05, logs)
-        source_rows = {}
-        for source_name, source_fn in (
-            ("football-data.org", lambda: fdorg_matches(days, token, logs) if token else []),
-            ("TheSportsDB", lambda: tsdb_matches(days, logs)),
-            ("ESPN", lambda: espn_matches(days, logs)),
-        ):
-            try:
-                source_rows[source_name] = source_fn() or []
-                logs.append(f"📡 {source_name}: {len(source_rows[source_name])} матчей")
-            except Exception as exc:
-                source_rows[source_name] = []
-                logs.append(f"⚠️ {source_name}: источник недоступен ({type(exc).__name__})")
-        rows = _safe_filter(merge_fixture_sources(
-            source_rows.get("football-data.org", []),
-            source_rows.get("TheSportsDB", []),
-            source_rows.get("ESPN", []),
-        ))
-        logs.append(f"📡 Всего после объединения: {len(rows)} уникальных матчей")
+        update_loader("📡 Загрузка матчей и линии 1X2 из Prognozist/Marathon...", 0.05, logs)
+        try:
+            rows = _safe_filter(prognozist_matches(days, logs))
+        except Exception as exc:
+            rows = []
+            logs.append(f"⚠️ Prognozist: ошибка получения матчей ({type(exc).__name__})")
+        logs.append(f"📡 Prognozist/Marathon: {len(rows)} матчей после фильтрации")
+        if not rows:
+            logs.append("⚠️ Нет матчей из Prognozist. Проверьте opt-in/robots.txt и формат доступной линии; внешние списки матчей не подставляются.")
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
@@ -640,6 +630,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     total_odds_source = "the_odds_api"
                         except Exception as exc:
                             logs.append(f"⚠️ Odds API totals: {type(exc).__name__}")
+
+                    # The fixture row already carries the exact 1X2 line parsed from Prognozist.
+                    # Reuse it to avoid a second lookup and accidental cross-match.
+                    embedded_line = r.get("prognozist_odds")
+                    if isinstance(embedded_line, dict):
+                        try:
+                            if all(1.01 < float(embedded_line[key]) <= 100 for key in ("П1", "X", "П2")):
+                                candidates.append(("prognozist", {
+                                    key: float(embedded_line[key]) for key in ("П1", "X", "П2")
+                                }))
+                        except (KeyError, TypeError, ValueError):
+                            pass
 
                     # 1. Prognozist is the primary odds source. Search with the
                     # source-native Russian names first to avoid translation mismatch;
