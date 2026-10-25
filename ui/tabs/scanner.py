@@ -499,7 +499,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         prog_status = prognozist_source_status()
         if prog_status == "disabled_permission":
-            logs.append("ℹ️ Prognozist: отключён по умолчанию. Для проверки задайте PROGNOZIST_PERMISSION=1 только если использование разрешено правилами сайта.")
+            logs.append("ℹ️ Prognozist: отключён. В боковой панели можно включить «Пробовать публичную линию Prognozist» только если это разрешено правилами сайта; robots.txt всё равно проверяется.")
         elif prog_status == "blocked_or_unavailable":
             logs.append("⚠️ Prognozist: robots.txt запрещает доступ или недоступен; источник отключён, проверяю остальные источники.")
         else:
@@ -619,7 +619,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     try:
                         prog_odds = prognozist_marathon_odds(h_en, a_en, kickoff=d)
                         if not prog_odds:
-                            prog_odds = prognozist_marathon_odds(h_ru, a_ru, kickoff=d)
+                            # On the second attempt, surface a concise reason for a miss
+                            # (no matching row, parser returned no rows, robots blocked).
+                            prog_odds = prognozist_marathon_odds(
+                                h_ru, a_ru, kickoff=d, logs=logs
+                            )
                         if isinstance(prog_odds, dict):
                             valid_prog = {}
                             for source_key, target_key in (("П1", "П1"), ("X", "X"), ("П2", "П2"),
