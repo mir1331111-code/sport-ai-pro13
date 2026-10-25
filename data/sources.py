@@ -1041,7 +1041,11 @@ def _prognozist_line_index():
                 # Preserve only rows that have explicit 1X2 labels or a table-row
                 # shape with team text plus three plausible decimal prices.
                 if odds:
-                    indexed.append({"text": text, "odds": odds})
+                    indexed.append({
+                        "text": text,
+                        "cells": [str(cell) for cell in row],
+                        "odds": odds,
+                    })
             parsed_count = len(indexed) - before_count
             if parsed_count == 0:
                 log.warning("Prognozist source %s: HTTP %s, body_len=%s, rows=%s, odds_rows=0",
@@ -1104,14 +1108,34 @@ def prognozist_marathon_odds(
             # do not accept a different calendar date. Rows without dates remain
             # eligible, but multiple matching rows are rejected below.
             if day:
-                # First remove explicitly labelled decimal prices. Otherwise text such
-                # as "П1 2.12" can be misread as the calendar date "12.12".
-                date_text = re.sub(
-                    r"(?:П1|П2|X)\s*\d{1,3}(?:[.,]\d{1,4})?",
-                    " ",
-                    row_text,
-                    flags=re.IGNORECASE,
-                )
+                # Parse dates from cells after removing odds. Compact labels such as
+                # "П1 2.12" resemble "12.12"; in separate-cell rows, prices like
+                # "3.10" can also look like a day/month date.
+                row_cells = item.get("cells")
+                if not isinstance(row_cells, list) or not row_cells:
+                    row_cells = [row_text]
+                date_cells = []
+                prices = []
+                for value in odds.values():
+                    try:
+                        prices.append(float(value))
+                    except (TypeError, ValueError):
+                        continue
+                for cell in row_cells:
+                    cell_text = str(cell or "")
+                    cell_number = _prognozist_num(cell_text)
+                    if cell_number is not None and any(
+                        abs(cell_number - price) < 0.0001 for price in prices
+                    ):
+                        continue
+                    cell_text = re.sub(
+                        r"(?:П1|П2|X)\s*\d{1,3}(?:[.,]\d{1,4})?",
+                        " ",
+                        cell_text,
+                        flags=re.IGNORECASE,
+                    )
+                    date_cells.append(cell_text)
+                date_text = " ".join(date_cells)
                 date_tokens = re.findall(
                     r"(?<!\d)(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?(?!\d)",
                     date_text,
