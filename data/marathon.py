@@ -45,6 +45,10 @@ def _permission_enabled() -> bool:
         import streamlit as st
         if bool(st.session_state.get("prognozist_permission_input", False)):
             return True
+        data = st.session_state.get("data") or {}
+        meta = data.get("meta") if isinstance(data, dict) else {}
+        if isinstance(meta, dict) and bool(meta.get("prognozist_permission_enabled", False)):
+            return True
         return str(st.secrets.get("PROGNOZIST_PERMISSION", "") or "").strip() == "1"
     except Exception:
         return False
