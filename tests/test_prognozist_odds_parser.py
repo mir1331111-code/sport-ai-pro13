@@ -334,5 +334,27 @@ class PrognozistOddsParserTests(unittest.TestCase):
         self.assertTrue(any("повторяю запрос только с h2h" in line for line in logs))
 
 
+
+    def test_unlabelled_decimal_odds_cells_are_not_mistaken_for_dates(self):
+        from data import sources
+        odds = {"П1": 2.60, "X": 3.10, "П2": 2.90}
+        item = {
+            "text": "Liverpool Brighton 2.60 3.10 2.90",
+            "cells": ["Liverpool", "Brighton", "2.60", "3.10", "2.90"],
+            "odds": odds,
+        }
+        with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": "1"}):
+            with (
+                patch.object(sources, "_prognozist_allowed", return_value=True),
+                patch.object(sources, "cache_get", return_value=None),
+                patch.object(sources, "_prognozist_line_index", return_value=[item]),
+                patch.object(sources, "cache_put"),
+            ):
+                result = sources.prognozist_marathon_odds(
+                    "Liverpool", "Brighton", kickoff=datetime(2026, 10, 25, 17, 0)
+                )
+        self.assertEqual(result, odds)
+
+
 if __name__ == "__main__":
     unittest.main()
