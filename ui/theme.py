@@ -214,6 +214,52 @@ code, pre { font-family: 'IBM Plex Mono', monospace !important; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* Product-wide finishing pass: consistent cards, spacing, and mobile layouts. */
+.scanner-section-label {
+  color: var(--muted); font-size: .68rem; font-weight: 800;
+  letter-spacing: .14em; margin: 8px 0 10px;
+}
+[data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] { min-width: 0; }
+.stMarkdown p { line-height: 1.6; }
+.stTabs [data-baseweb="tab-panel"] { padding-top: 1.1rem; }
+.team-row {
+  display:flex; align-items:center; flex-wrap:wrap; gap:10px;
+  padding: 4px 0 2px; min-width:0;
+}
+.team-row .team-badge, .team-badge {
+  width:34px; height:34px; object-fit:contain; border-radius:50%;
+  background:#f7faf9; padding:3px; border:1px solid #344a51; flex-shrink:0;
+}
+.team-badge-fallback {
+  display:inline-flex; width:34px; height:34px; align-items:center; justify-content:center;
+  border-radius:50%; font-weight:800; flex-shrink:0;
+}
+.vcard > div { min-width:0; }
+.vcard .league-badge, .vcard .date-badge {
+  display:inline-flex; align-items:center; gap:6px; padding:5px 9px;
+  border-radius:7px; font-size:.68rem; font-weight:750; line-height:1.3;
+}
+.league-badge img { width:15px; height:15px; object-fit:contain; }
+.vcard ul { color:#b9c9ce !important; }
+.vcard li { padding:2px 0; }
+.vcard [style*="JetBrains Mono"] { font-family:'IBM Plex Mono',monospace !important; }
+.betcard { line-height:1.55; overflow-wrap:anywhere; }
+.stDataFrame, [data-testid="stDataFrame"] { background:#0e171e; }
+.stProgress > div > div { background:var(--mint) !important; }
+[data-testid="stStatusWidget"] { border-radius:10px; }
+section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap:.65rem; }
+section[data-testid="stSidebar"] [data-testid="stExpander"] { background:#0e171e !important; }
+button[aria-label="View fullscreen"] { color:var(--muted) !important; }
+@media (max-width: 760px) {
+  .block-container { padding: .85rem .7rem 2rem !important; }
+  [data-testid="stMetricValue"] { font-size:1.35rem !important; }
+  .vcard > div { padding-left:14px !important; padding-right:14px !important; }
+  .team-row { gap:7px; }
+  .team-badge, .team-badge-fallback { width:29px; height:29px; }
+  .team-name { font-size:.93rem !important; }
+  .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
 </style>
 """
 
