@@ -651,14 +651,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             st.warning("Ничего не найдено.")
             return
 
-        # Separate market tabs make the recommendation's market explicit.
+        # Until verified Marathon odds are available for extra markets, keep
+        # the scanner focused on 1X2 only. This prevents model-only totals/BTTS
+        # forecasts from being presented beside winner odds or entering the portfolio.
         market_tabs = st.tabs([
             f"Все матчи ({len(cards_view)})",
             f"Победа / 1X2 ({sum(bool(c.get('market_odds')) for c in cards_view)})",
-            f"Тотал голов ({sum(bool(c.get('total_market_odds')) for c in cards_view)})",
-            f"Обе забьют ({sum(bool(c.get('btts_market_odds')) for c in cards_view)})",
-            f"Угловые ({sum(any(str(k).startswith('Угл Т') for k in (c.get('stat_market_odds') or {})) for c in cards_view)})",
-            f"Карточки ({sum(any(str(k).startswith('Карты Т') for k in (c.get('stat_market_odds') or {})) for c in cards_view)})",
         ])
 
         with market_tabs[0]:
@@ -671,39 +669,31 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     st.markdown(f"### {label} · {len(items)} матч.")
                     for c in items:
                         st.markdown(render_verdict_card(c, min_prob), unsafe_allow_html=True)
-                        _render_manual_odds_block(c, D, kelly_frac, min_prob, min_edge)
+                        _render_manual_odds_block(
+                            c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
+                        )
             else:
                 for c in cards_view:
                     st.markdown(render_verdict_card(c, min_prob), unsafe_allow_html=True)
-                    _render_manual_odds_block(c, D, kelly_frac, min_prob, min_edge)
-
-        category_specs = [
-            (market_tabs[1], "winner", lambda c: c.get("p1") is not None and c.get("p2") is not None, "Модель не сформировала прогноз 1X2."),
-            (market_tabs[2], "goals", lambda c: c.get("over") is not None, "Модель не сформировала прогноз тотала голов."),
-            (market_tabs[3], "btts", lambda c: c.get("btts") is not None, "Модель не сформировала прогноз «Обе забьют»."),
-            (market_tabs[4], "corners", lambda c: bool((c.get("historical_stats") or {}).get("corners")), "Нет достаточных исторических данных для угловых."),
-            (market_tabs[5], "cards", lambda c: bool((c.get("historical_stats") or {}).get("cards")), "Нет достаточных исторических данных для карточек."),
-        ]
-        for tab, market_filter, has_market_forecast, empty_message in category_specs:
-            with tab:
-                # Market tabs show model forecasts even when the bookmaker has no
-                # verified quote. Odds availability must not hide the prediction.
-                market_cards = [c for c in cards_view if has_market_forecast(c)]
-                if not market_cards:
-                    st.info(empty_message)
-                    continue
-                for c in market_cards:
-                    st.markdown(
-                        f"#### {c.get('match_ru', c.get('match', 'Матч'))}  \\n"
-                        f"<span style='color:#8b93a7'>{c.get('league', '')} · {c.get('date', '')}</span>",
-                        unsafe_allow_html=True,
-                    )
                     _render_manual_odds_block(
-                        c, D, kelly_frac, min_prob, min_edge,
-                        market_filter=market_filter,
+                        c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
                     )
 
-        st.caption("Котировки показываются отдельно от прогнозов: если кэф конкретного рынка не подтверждён источником, прогноз остаётся виден, а ставка/value не рассчитываются.")
+        with market_tabs[1]:
+            winner_cards = [c for c in cards_view if c.get("p1") is not None and c.get("p2") is not None]
+            if not winner_cards:
+                st.info("Модель не сформировала прогноз 1X2.")
+            for c in winner_cards:
+                st.markdown(
+                    f"#### {c.get('match_ru', c.get('match', 'Матч'))}  \\n"
+                    f"<span style='color:#8b93a7'>{c.get('league', '')} · {c.get('date', '')}</span>",
+                    unsafe_allow_html=True,
+                )
+                _render_manual_odds_block(
+                    c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
+                )
+
+        st.caption("Пока доступны только подтверждённые коэффициенты 1X2. Тоталы, «Обе забьют», угловые и карточки временно скрыты до проверки реальных котировок Marathon.")
         st.caption("✅ Показано " + str(len(cards_view)) + " из "
                    + str(len(all_cards)))
         return
