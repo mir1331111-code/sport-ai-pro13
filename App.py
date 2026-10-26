@@ -53,7 +53,7 @@ SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)
 RETRY_EVERY = timedelta(minutes=60)
 STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 20
-SECRET_KEYS = ("fdorg_token", "odds_api_key", "therundown_api_key", "api_football_key", "llm_api_key")
+SECRET_KEYS = ("fdorg_token", "highlightly_api_key", "llm_api_key")
 
 
 def _configured_secret(*keys):
@@ -213,7 +213,7 @@ D.setdefault("meta", {})
 _saved_ui_secrets = load_local_secrets()
 # API credentials are session/env/secrets-only, never persisted in local state.
 _secret_keys = ("fdorg_token", "odds_api_key", "api_football_key",
-                "therundown_api_key", "rundown_key", "llm_api_key")
+                "highlightly_api_key", "llm_api_key")
 _secrets_removed = False
 for _key in _secret_keys:
     if D["meta"].pop(_key, None) is not None:
@@ -565,47 +565,11 @@ with st.sidebar:
         "football-data.org token",
         value=_api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token"),
         type="password", key="fdorg_token_input")
-    odds_key = st.text_input(
-        "The Odds API key (опц.)",
-        value=_api_key_default("odds_api_key", "ODDS_API_KEY", "odds_api_key"),
-        type="password", key="odds_api_key_input")
     highlightly_key = st.text_input(
         "Highlightly API key (коэффициенты; нужен платный тариф)",
         value=_api_key_default("highlightly_api_key", "HIGHLIGHTLY_API_KEY", "highlightly_api_key"),
         type="password", key="highlightly_api_key_input",
         help="Реальные prematch odds из Highlightly. На Free/Basic endpoint коэффициентов недоступен.")
-    api_football_key = st.text_input(
-        "API-Football key",
-        value=_api_key_default("api_football_key", "API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY"),
-        type="password", key="api_football_key_input",
-        help="API-Football v3: реальные предматчевые коэффициенты. Доступность зависит от тарифа и матча.")
-    rundown_key = st.text_input(
-        "TheRundown free soccer odds key (опц.)",
-        value=_api_key_default("therundown_api_key", "THERUNDOWN_API_KEY", "therundown_api_key", "rundown_key"),
-        type="password", key="therundown_api_key_input",
-        help="Бесплатный ключ: предматчевые коэффициенты 1X2 с задержкой около 5 минут.")
-
-    _prognozist_configured = (
-        os.environ.get("PROGNOZIST_PERMISSION", "").strip() == "1"
-        or str(_configured_secret("PROGNOZIST_PERMISSION") or "").strip() == "1"
-    )
-    _prognozist_default = bool(st.session_state.get(
-        "prognozist_permission_input",
-        D["meta"].get("prognozist_permission_enabled", _prognozist_configured),
-    ))
-    _prognozist_opt_in = st.checkbox(
-        "Пробовать публичную линию Prognozist",
-        value=_prognozist_default,
-        key="prognozist_permission_input",
-        help=(
-            "Включайте только если использование данных разрешено правилами сайта. "
-            "Выбор сохраняется в настройках; приложение всё равно проверяет robots.txt "
-            "и не обращается к запрещённым URL."
-        ),
-    )
-    if D["meta"].get("prognozist_permission_enabled") is not bool(_prognozist_opt_in):
-        D["meta"]["prognozist_permission_enabled"] = bool(_prognozist_opt_in)
-        usage.set_local_data(D)
 
     st.markdown(
         "<div style='font-size:.72rem;color:#8b93a7;margin-top:14px;"
@@ -622,10 +586,7 @@ with st.sidebar:
     # Save only UI-entered keys, separate from portfolio data and its Gist sync.
     _widget_key_map = {
         "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
-        "odds_api_key": ("odds_api_key_input", ("ODDS_API_KEY",), ("ODDS_API_KEY", "odds_api_key")),
         "highlightly_api_key": ("highlightly_api_key_input", ("HIGHLIGHTLY_API_KEY",), ("HIGHLIGHTLY_API_KEY", "highlightly_api_key")),
-        "api_football_key": ("api_football_key_input", ("API_FOOTBALL_KEY",), ("API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY")),
-        "therundown_api_key": ("therundown_api_key_input", ("THERUNDOWN_API_KEY",), ("THERUNDOWN_API_KEY", "therundown_api_key", "rundown_key")),
         "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
     }
     _user_entered_keys = {}
