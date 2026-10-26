@@ -130,6 +130,7 @@ class PrognozistOddsParserTests(unittest.TestCase):
     def test_extracts_total_corners_and_cards_as_distinct_markets(self):
         from data.sources import _prognozist_extract_extra_markets
         html = """
+        <h2>Коэффициенты Marathon</h2>
         <h2>Тотал угловых</h2><div>Больше 9.5 1.87 Меньше 9.5 1.93</div>
         <h2>Тотал желтых карточек</h2><div>Больше 4.5 1.90 Меньше 4.5 1.90</div>
         """
