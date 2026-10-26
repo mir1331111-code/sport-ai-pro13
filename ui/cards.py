@@ -151,7 +151,7 @@ def render_fixture_header(c: dict) -> str:
         "https://images.unsplash.com/photo-1522778119026-d647f0596c20?auto=format&fit=crop&w=1400&q=75&sat=-20",
         "https://images.unsplash.com/photo-1459865264687-595d652de67e?auto=format&fit=crop&w=1400&q=80",
     ]
-    seed = hashlib.sha256(f"{c.get('date_iso','')}|{home}|{away}".encode()).digest()
+    seed = hashlib.sha256((str(c.get("date_iso") or "") + "|" + home + "|" + away).encode()).digest()
     stadium_photo = stadium_photo or stadium_pool[seed[0] % len(stadium_pool)]
     date = esc(str(c.get("date") or "Время уточняется"))
     stadium = esc(str(c.get("venue") or c.get("stadium") or "СТАДИОН · MATCHDAY"))
