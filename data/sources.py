@@ -777,20 +777,30 @@ _PROGNOZIST_MATCH_CENTRE = "https://prognozist.ru/mc/football/"
 
 
 class _PrognozistHTMLParser(__import__("html.parser", fromlist=["HTMLParser"]).HTMLParser):
-    """Collect table rows and links from Prognozist pages."""
+    """Collect table rows, keeping match-detail links attached to their odds."""
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.rows, self.row, self.cell = [], None, None
+        self.row_hrefs = []
         self.links, self.link = [], None
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "tr":
             self.row = []
+            self.row_hrefs = []
         elif tag in ("td", "th") and self.row is not None:
             self.cell = []
         if tag == "a":
-            self.link = {"href": attrs.get("href", ""), "text": []}
+            href = str(attrs.get("href", "") or "").strip()
+            self.link = {"href": href, "text": []}
+            # Keep the event detail URL with its parent table row. Odds often
+            # live in sibling cells, not inside the anchor text itself.
+            if self.row is not None and (
+                href.startswith("/mc/football/")
+                or href.startswith("https://prognozist.ru/mc/football/")
+            ):
+                self.row_hrefs.append(href)
 
     def handle_data(self, data):
         if self.cell is not None:
@@ -804,8 +814,11 @@ class _PrognozistHTMLParser(__import__("html.parser", fromlist=["HTMLParser"]).H
             self.cell = None
         elif tag == "tr" and self.row is not None:
             if self.row:
-                self.rows.append(self.row)
+                # Put the match-detail URL first so the fixture parser can
+                # fetch the H1 for authoritative team names and kickoff date.
+                self.rows.append(list(dict.fromkeys(self.row_hrefs)) + self.row)
             self.row = None
+            self.row_hrefs = []
         elif tag == "a" and self.link is not None:
             self.link["text"] = " ".join(" ".join(self.link["text"]).split())
             self.links.append(self.link)
