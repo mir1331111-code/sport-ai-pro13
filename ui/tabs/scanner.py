@@ -395,7 +395,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     if source_odd is not None:
         manual_odd = source_odd
         source_label = str((
-            c.get("total_odds_source") if market_type(pick) == "OU"
+            c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"}
             else c.get("odds_source")
         ) or "Prognozist/Marathon")
         col_input.success(f"Кэф загружен автоматически ({source_label}): **{manual_odd:.2f}**")
