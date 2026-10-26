@@ -663,13 +663,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
         if not shortlist:
             st.warning(
-                "Пока нет матчей с полной подтверждённой линией 1X2. "
-                "Не показываю модельные fair-odds как букмекерские."
+                "Нет матчей с подтверждённой линией 1X2. Ниже показаны найденные матчи без кэфов; "
+                "модельные fair-odds не выдаются за букмекерские."
             )
-            with st.expander("🔌 Диагностика"):
-                for line in D.get("report", []):
-                    st.text(line)
-            return
 
         for rank, card in enumerate(shortlist, start=1):
             v = card.get("verdict") or {}
@@ -701,10 +697,39 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 card, D, kelly_frac, min_prob, min_edge, market_filter="winner"
             )
 
+        unpriced = [
+            card for card in all_cards
+            if not (isinstance(card.get("market_odds"), dict)
+                    and all(k in card.get("market_odds", {}) for k in ("П1", "X", "П2")))
+        ]
+        if unpriced:
+            st.markdown("## 📅 Найденные матчи без коэффициентов")
+            st.caption(
+                f"Найдено {len(unpriced)} матчей без полной линии 1X2. "
+                "Показываю их отдельно, чтобы отсутствие API-котировок не скрывало расписание."
+            )
+            for card in unpriced[:50]:
+                v = card.get("verdict") or {}
+                try:
+                    probs = (
+                        f"П1 {float(card.get('p1') or 0)*100:.1f}% · "
+                        f"X {float(card.get('px') or 0)*100:.1f}% · "
+                        f"П2 {float(card.get('p2') or 0)*100:.1f}%"
+                    )
+                except (TypeError, ValueError):
+                    probs = "вероятности недоступны"
+                st.markdown(
+                    f"**{card.get('match_ru', card.get('match', 'Матч'))}** — "
+                    f"{card.get('league', '')} · {card.get('date', '')}  \\n"
+                    f"Модель: {probs} · Кэфы: **нет подтверждённой линии**"
+                )
+                _render_manual_odds_block(
+                    card, D, kelly_frac, min_prob, min_edge, market_filter="winner"
+                )
+
         st.caption(
-            "Коэффициенты для 1X2, тоталов, BTTS, угловых и карточек загружаются только "
-            "из Highlightly и только для реально возвращённых рынков. Если цена отсутствует, "
-            "она не заменяется коэффициентом другого рынка или справочным кэфом модели."
+            "Автоматические котировки доступны только если тариф Highlightly разрешает odds API. "
+            "Ручной импорт применяется к совпавшему матчу и дате; модельные fair-odds не подставляются."
         )
         with st.expander("🔌 Диагностика"):
             for line in D.get("report", []):
@@ -887,14 +912,20 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 or (min(len(fixture_away_key), len(quote_away_key)) >= 5
                                     and (fixture_away_key in quote_away_key or quote_away_key in fixture_away_key))
                             )
-                            if quote.get("date") == fixture_date and home_match and away_match:
+                            quote_date = str(quote.get("date") or "")
+                            try:
+                                date_delta = abs((datetime.strptime(quote_date, "%Y-%m-%d").date()
+                                                  - d.date()).days)
+                            except ValueError:
+                                date_delta = 999
+                            if date_delta <= 1 and home_match and away_match:
                                 imported = dict(quote.get("odds") or {})
                                 if all(key in imported and 1.01 < float(imported[key]) <= 100
                                        for key in ("П1", "X", "П2")):
                                     market_odds = {key: float(imported[key]) for key in ("П1", "X", "П2")}
                                     odds_source = str(quote.get("source") or "manual_import")
                                     logs.append(
-                                        f"📥 Ручной импорт коэффициентов ({odds_source}): "
+                                        f"📥 Ручной импорт коэффициентов ({odds_source}, дата ±{date_delta} дн.): "
                                         f"{h_en} — {a_en} | П1 {market_odds['П1']:.2f} / "
                                         f"X {market_odds['X']:.2f} / П2 {market_odds['П2']:.2f}"
                                     )
