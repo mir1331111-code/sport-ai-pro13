@@ -301,6 +301,12 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 
     def quote_for(candidate_pick):
         kind = market_type(candidate_pick)
+        # Extra markets are usable only when the detail page explicitly labels
+        # the odds block as Marathon. A page-wide bookmaker mention is not proof
+        # that every parsed price belongs to that bookmaker.
+        extra_source = str(c.get("extra_market_source") or "prognozist_unverified").casefold()
+        if kind in {"OU", "BTTS", "STAT"} and extra_source != "prognozist_marathon":
+            return None
         if kind == "1X2":
             raw = source_odds.get(candidate_pick)
         elif kind == "OU":
@@ -372,9 +378,10 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # Only markets with an actual bookmaker quote can be auto-priced.
     # Model fair odds are not a substitute for a real quote.
     st.info(
-        "Коэффициент берётся из линии Prognozist/Marathon, если источник вернул "
-        "именно выбранный рынок и исход. Справочный коэффициент модели не является "
-        "букмекерским коэффициентом."
+        "Коэффициент берётся только для совпадающего исхода и линии. Для тоталов, "
+        "«Обе забьют», угловых и карточек принимается только блок, явно помеченный "
+        "«Коэффициенты Марафон/Marathon». Цены с неподтверждённым источником не участвуют "
+        "в выборе прогноза и расчёте value. Справочный коэффициент модели — не букмекерский."
     )
 
     examples = {
