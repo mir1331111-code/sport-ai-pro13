@@ -593,6 +593,69 @@ section.stButton > button[kind="primary"] {
         box-shadow: 0 12px 36px rgba(139,92,246,.60), 0 0 30px rgba(34,211,238,.35), inset 0 0 0 1px rgba(255,255,255,.20);
     }
 }
+
+/* ============ PRODUCT UI REFRESH · CLEAN CONTROL ROOM ============ */
+.block-container { max-width: 1440px !important; padding-top: 1.35rem !important; padding-bottom: 3rem !important; }
+html, body, .stApp, [data-testid="stAppViewContainer"], section.main,
+section.main > div, .main, .main > div, .block-container {
+    background-color:#080d16 !important;
+    background-image:radial-gradient(900px 480px at 6% -10%,rgba(30,115,145,.12),transparent 60%),
+                     radial-gradient(780px 420px at 100% 0%,rgba(87,74,150,.10),transparent 58%) !important;
+    color:#e7edf6 !important;
+}
+section[data-testid="stSidebar"] {
+    background:#0b111c !important; border-right:1px solid #202b3b !important;
+    min-width:270px !important; max-width:270px !important;
+}
+.scanner-hero {
+    position:relative; overflow:hidden; padding:28px 30px 22px; margin:2px 0 18px;
+    border-radius:20px; border:1px solid #26364b;
+    background:linear-gradient(115deg,#111d2b 0%,#111827 58%,#17182b 100%);
+    box-shadow:0 14px 36px rgba(0,0,0,.18);
+}
+.scanner-hero:after {
+    content:"";position:absolute;width:280px;height:280px;right:-100px;top:-155px;
+    border-radius:50%;background:rgba(45,212,191,.09);filter:blur(12px);pointer-events:none;
+}
+.scanner-kicker {font-size:.68rem;font-weight:800;letter-spacing:1.7px;color:#70d8ce;margin-bottom:8px;}
+.scanner-title {font-size:clamp(1.7rem,3vw,2.35rem);font-weight:800;letter-spacing:-.8px;color:#f7fafc;line-height:1.15;}
+.scanner-subtitle {color:#aab8ca;font-size:.94rem;margin-top:8px;max-width:760px;line-height:1.55;}
+.scanner-steps {display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:20px;color:#c6d2e1;font-size:.76rem;font-weight:650;}
+.scanner-steps span {padding:7px 10px;border-radius:9px;background:#182536;border:1px solid #293a4e;}
+.scanner-steps i {color:#4f7184;font-style:normal;}
+.scanner-help-pill {padding:10px 12px;margin-bottom:4px;border:1px solid #254a43;border-radius:10px;background:#10251f;color:#a6e8ce;font-size:.78rem;font-weight:650;text-align:center;}
+div[data-testid="stExpander"] {border:1px solid #263448 !important;border-radius:14px !important;background:rgba(15,23,35,.7) !important;overflow:hidden;}
+div[data-testid="stExpander"] details summary {padding:12px 15px !important;}
+.stTabs [data-baseweb="tab-list"] {background:#0f1724 !important;border:1px solid #253246 !important;border-radius:12px !important;padding:5px !important;}
+.stTabs [data-baseweb="tab"] {border-radius:8px !important;color:#aebbd0 !important;}
+.stTabs [aria-selected="true"] {background:#1b3442 !important;color:#f4fbff !important;box-shadow:inset 0 0 0 1px #31596a !important;transform:none !important;}
+section.stButton > button, section.stDownloadButton > button {
+    background:#167d79 !important;background-image:none !important;border:1px solid #299c94 !important;
+    border-radius:10px !important;box-shadow:none !important;padding:10px 16px !important;
+    letter-spacing:0 !important;transition:background .15s ease,border-color .15s ease,transform .15s ease !important;
+}
+section.stButton > button::before {display:none !important;}
+section.stButton > button:hover, section.stDownloadButton > button:hover {
+    background:#1b938a !important;box-shadow:0 5px 16px rgba(22,125,121,.2) !important;transform:translateY(-1px);
+}
+section.stButton > button[kind="primary"] {animation:none !important;}
+input[type="text"], input[type="password"], textarea,
+[data-baseweb="select"] > div {
+    background:#0c1420 !important;border:1px solid #2a394c !important;border-radius:10px !important;color:#e7edf6 !important;
+}
+input:focus, textarea:focus {border-color:#3a9b98 !important;box-shadow:0 0 0 2px rgba(45,180,166,.12) !important;}
+[data-testid="stMetric"] {background:#101a28;border:1px solid #253449;border-radius:13px;padding:13px 15px;}
+[data-testid="stMetricLabel"] {color:#9fb0c5 !important;}
+[data-testid="stMetricValue"] {color:#f2f7fc !important;}
+[data-testid="stAlert"] {border-radius:12px !important;}
+hr {border-color:#263449 !important;}
+@media(max-width:760px) {
+ .scanner-hero {padding:22px 18px;}
+ .scanner-steps {gap:6px;}
+ .scanner-steps i {display:none;}
+ section[data-testid="stSidebar"] {min-width:0 !important;max-width:none !important;}
+}
+
 </style>"""
 
 
