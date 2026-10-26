@@ -2091,10 +2091,21 @@ def highlightly_odds_fixture(match_date: str, home: str, away: str,
                     timeout=20, proxies=NO_PROXY,
                 )
                 if response.status_code != 200:
+                    body = (response.text or "")[:140]
+                    if response.status_code == 401 and "not available in basic plan" in body.casefold():
+                        _HIGHLIGHTLY_ODDS_DISABLED_REASON = "basic_plan"
+                        if logs is not None and not _HIGHLIGHTLY_ODDS_401_LOGGED:
+                            logs.append(
+                                "⛔ Highlightly Odds недоступен на тарифе Basic (HTTP 401); "
+                                "дальнейшие запросы к /odds остановлены до перезапуска "
+                                "или смены тарифа."
+                            )
+                            _HIGHLIGHTLY_ODDS_401_LOGGED = True
+                        return None
                     if logs is not None:
                         logs.append(
                             f"⚠️ Highlightly odds matchId={missing_id} HTTP "
-                            f"{response.status_code}: {(response.text or '')[:120]}"
+                            f"{response.status_code}: {body}"
                         )
                     continue
                 payload = response.json() or {}
