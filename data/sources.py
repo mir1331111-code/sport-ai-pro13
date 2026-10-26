@@ -2049,6 +2049,53 @@ def highlightly_odds_fixture(match_date: str, home: str, away: str,
             return None
 
     wanted_ids = {mid for mid, _, _ in match_ids}
+    # The date-wide odds response is paginated and can omit a fixture when the
+    # provider returns more than one page. Retry missing fixture IDs directly:
+    # Highlightly documents matchId as the preferred odds lookup parameter.
+    returned_ids = {
+        str(entry.get("matchId", ""))
+        for entry in odds_entries
+        if isinstance(entry, dict) and entry.get("matchId") is not None
+    }
+    for missing_id in sorted(wanted_ids - returned_ids):
+        per_match_key = f"highlightly_odds_match_v1_{missing_id}"
+        per_match = cache_get(per_match_key, 900)
+        if per_match is None:
+            try:
+                response = _sess.get(
+                    "https://sports.highlightly.net/football/odds",
+                    params={"matchId": missing_id, "oddsType": "prematch",
+                            "limit": 100, "offset": 0},
+                    headers={"x-rapidapi-key": api_key, "Accept": "application/json"},
+                    timeout=20, proxies=NO_PROXY,
+                )
+                if response.status_code != 200:
+                    if logs is not None:
+                        logs.append(
+                            f"⚠️ Highlightly odds matchId={missing_id} HTTP "
+                            f"{response.status_code}: {(response.text or '')[:120]}"
+                        )
+                    continue
+                payload = response.json() or {}
+                plan = payload.get("plan") or {} if isinstance(payload, dict) else {}
+                if str(plan.get("tier", "")).lower() in ("free", "basic"):
+                    if logs is not None:
+                        logs.append("⚠️ Highlightly: тариф Free/Basic не предоставляет коэффициенты.")
+                    return None
+                per_match = payload.get("data", []) if isinstance(payload, dict) else []
+                if not isinstance(per_match, list):
+                    per_match = []
+                cache_put(per_match_key, per_match)
+            except Exception as exc:
+                if logs is not None:
+                    logs.append(f"⚠️ Highlightly odds matchId={missing_id} error: {type(exc).__name__}")
+                continue
+        if isinstance(per_match, list):
+            odds_entries.extend(
+                entry for entry in per_match
+                if isinstance(entry, dict) and str(entry.get("matchId", "")) == missing_id
+            )
+
     found = []
     for entry in odds_entries:
         if not isinstance(entry, dict) or str(entry.get("matchId", "")) not in wanted_ids:
