@@ -67,9 +67,9 @@ class PrognozistExtraMarketTests(unittest.TestCase):
 
     def test_does_not_invent_quotes_when_market_is_missing(self):
         result = _prognozist_extract_extra_markets("<h2>Обе забьют?</h2><div>Только текст</div>")
-        self.assertNotIn("btts_market_odds", result)
-        self.assertNotIn("total_market_odds", result)
-        self.assertNotIn("stat_market_odds", result)
+        self.assertEqual(result["btts_market_odds"], {})
+        self.assertEqual(result["total_market_odds"], {})
+        self.assertEqual(result["stat_market_odds"], {})
 
 
 if __name__ == "__main__":
