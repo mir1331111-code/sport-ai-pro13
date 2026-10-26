@@ -1912,8 +1912,14 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
                         elif on == "No":
                             acc["BTTS нет"].append(odd)
         out = {k: sum(v) / len(v) for k, v in acc.items() if v}
+        # Keep any complete exact totals line, not only 2.5: otherwise a
+        # valid market such as 3.5 would be silently discarded by this guard.
+        has_totals_pair = any(
+            key.startswith("ТБ ") and f"ТМ {key[3:]}" in out
+            for key in out
+        )
         if not (("П1" in out and "X" in out and "П2" in out) or
-                ("ТБ 2.5" in out and "ТМ 2.5" in out) or
+                has_totals_pair or
                 ("BTTS да" in out and "BTTS нет" in out)):
             out = {}
         cache_put(ck, out or None)
