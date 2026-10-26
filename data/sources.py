@@ -1808,7 +1808,7 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
     # Odds move much faster than historical fixtures; a two-hour cache
     # can make a visible "real" price misleadingly stale. Keep live lines short.
     odds_cache_ttl = 300
-    ck = f"odds_v2_{sport_key}_{_norm_name(home)}_{_norm_name(away)}"
+    ck = f"odds_v3_{sport_key}_{_norm_name(home)}_{_norm_name(away)}"
     cached = cache_get(ck, odds_cache_ttl)
     if cached is not None:
         if logs:
@@ -1816,7 +1816,7 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
         return cached or None
     # Check the per-sport cache before the local quota: one API request provides
     # the whole league's events, so every fixture must reuse that response.
-    events_key = f"odds_events_v2_{sport_key}"
+    events_key = f"odds_events_v3_{sport_key}"
     events = cache_get(events_key, odds_cache_ttl)
     if events is None:
         if usage.odds_remaining() <= 0:
