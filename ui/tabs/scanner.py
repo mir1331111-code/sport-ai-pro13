@@ -567,52 +567,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         help="Автоматически добавляет в виртуальный портфель только прогнозы с реальными коэффициентами, прошедшие строгие value-фильтры. ТБ/ТМ 2.5 — только после исторической проверки. Это виртуальный учёт, не размещение ставки у букмекера.",
     )
 
-    with st.expander("📥 Импорт коэффициентов из SofaScore / другого разрешённого источника", expanded=False):
-        st.caption(
-            "Вставь JSON с котировками, которые ты получил вручную. Автоматического сбора с SofaScore здесь нет. "
-            "Импортированные коэффициенты используются только для точного матча и даты; автодобавление в портфель "
-            "всё равно требует прохождения всех value-фильтров."
-        )
-        odds_json = st.text_area(
-            "Котировки JSON",
-            key="scanner_manual_odds_json",
-            height=140,
-            placeholder='[{"date":"2026-10-26","home":"Santa Clara","away":"Benfica","П1":9.0,"X":5.0,"П2":1.3}]',
-        )
-        if odds_json.strip():
-            try:
-                parsed_quotes = json.loads(odds_json)
-                if isinstance(parsed_quotes, dict):
-                    parsed_quotes = [parsed_quotes]
-                if not isinstance(parsed_quotes, list):
-                    raise ValueError("ожидается JSON-объект или список объектов")
-                normalized_quotes = []
-                for quote in parsed_quotes:
-                    if not isinstance(quote, dict):
-                        continue
-                    quote_date = str(quote.get("date") or "").strip()[:10]
-                    home_quote = str(quote.get("home") or "").strip()
-                    away_quote = str(quote.get("away") or "").strip()
-                    try:
-                        prices = {key: float(quote[key]) for key in ("П1", "X", "П2")}
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    if (len(quote_date) != 10 or not home_quote or not away_quote
-                            or not all(1.01 < price <= 100 for price in prices.values())):
-                        continue
-                    normalized_quotes.append({
-                        "date": quote_date, "home": home_quote, "away": away_quote,
-                        "odds": prices, "source": str(quote.get("source") or "manual_import"),
-                    })
-                st.session_state["_scanner_manual_odds_quotes"] = normalized_quotes
-                st.success(f"Подготовлено котировок: {len(normalized_quotes)}")
-                if not normalized_quotes:
-                    st.warning("Не нашёл корректных записей. Нужны date, home, away, П1, X, П2.")
-            except (json.JSONDecodeError, ValueError) as exc:
-                st.error(f"Не удалось прочитать JSON: {exc}")
-        else:
-            st.session_state["_scanner_manual_odds_quotes"] = []
-
     if not scan:
         fn = D.get("funnel")
         if fn:
