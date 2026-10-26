@@ -449,6 +449,12 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             f"- Edge модели: **{edge * 100:+.1f}%**  \n"
             f"- EV по вероятности модели: **{ev * 100:+.1f}%**"
         )
+        if abs(model_prob - market_implied) >= 0.20:
+            col_metrics.warning(
+                "Сильное расхождение модели и котировки (20 п.п. или больше). "
+                "Проверьте матч, выбранный исход и линию. Не используйте этот кэф "
+                "для ставки, пока причина расхождения не выяснена."
+            )
         if market_is_validated:
             col_metrics.caption(f"Предварительный размер по дробному Kelly: {stake:.2f} у.е. (лимит 2% банка).")
 
