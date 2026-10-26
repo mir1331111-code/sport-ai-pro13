@@ -275,6 +275,37 @@ def _tsdb_league_meta(league_name: str):
     return ("G", "club", False, False)
 
 
+def _tsdb_venue_metadata(venue_id: str, logs=None) -> dict:
+    """Return venue name and its own stadium image, cached to avoid repeat requests."""
+    venue_id = str(venue_id or "").strip()
+    if not venue_id:
+        return {}
+    key = "tsdb_venue_v1_" + venue_id
+    cached = cache_get(key, 86400 * 14)
+    if isinstance(cached, dict):
+        return cached
+    try:
+        response = _sess.get(
+            "https://www.thesportsdb.com/api/v1/json/3/lookupvenue.php",
+            params={"id": venue_id}, timeout=(3, 6), proxies=NO_PROXY,
+        )
+        if response.status_code != 200:
+            return {}
+        venues = (response.json() or {}).get("venues") or []
+        venue = venues[0] if venues and isinstance(venues[0], dict) else {}
+        result = {
+            "venue": str(venue.get("strVenue") or ""),
+            "stadium_image": str(venue.get("strThumb") or venue.get("strFanart1") or ""),
+        }
+        if result.get("venue") or result.get("stadium_image"):
+            cache_put(key, result)
+        return result
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"TSDB venue {venue_id}: {type(exc).__name__}")
+        return {}
+
+
 def tsdb_matches(days: int = 7, logs=None) -> list:
     """Сбор матчей из TheSportsDB на N дней вперёд."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -331,6 +362,8 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "HomeTeam": h,
                     "AwayTeam": a,
                     "fixture_id": e.get("idEvent"),
+                    "venue": e.get("strVenue") or "",
+                    "stadium_image": e.get("strVenueThumb") or "",
                     "home_badge": e.get("strHomeTeamBadge"),
                     "away_badge": e.get("strAwayTeamBadge"),
                     "league_badge": e.get("strLeagueBadge"),
@@ -338,10 +371,23 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "national": national,
                     "kind": kind,
                 })
+            # Enrich a small number of unique venues per scan with official stadium photos.
+            # Successful results are cached for 14 days; the limit keeps the free feed responsive.
+            enriched_venues = 0
+            for row in rows:
+                venue_id = str(next((event.get("idVenue") for event in ev
+                                     if isinstance(event, dict)
+                                     and str(event.get("idEvent") or "") == str(row.get("fixture_id") or "")), "") or "")
+                if venue_id and not row.get("stadium_image") and enriched_venues < 6:
+                    venue_meta = _tsdb_venue_metadata(venue_id, logs)
+                    row.update({k: v for k, v in venue_meta.items() if v and not row.get(k)})
+                    enriched_venues += 1
             out += rows
             cache_put(ck, rows)
             if logs:
-                logs.append(f"TSDB {dstr}: {len(rows)}")
+                logos_count = sum(bool(x.get("home_badge")) + bool(x.get("away_badge")) for x in rows)
+                stadium_count = sum(bool(x.get("stadium_image")) for x in rows)
+                logs.append(f"TSDB {dstr}: {len(rows)} | team badges={logos_count} | stadium photos={stadium_count}")
         except Exception as e:
             if logs:
                 logs.append(f"TSDB {dstr}: ошибка {type(e).__name__}")
