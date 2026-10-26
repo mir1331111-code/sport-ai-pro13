@@ -394,10 +394,10 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 
     if source_odd is not None:
         manual_odd = source_odd
-        source_label = str(
+        source_label = str((
             c.get("total_odds_source") if market_type(pick) == "OU"
-            else c.get("odds_source") or "Prognozist/Marathon"
-        )
+            else c.get("odds_source")
+        ) or "Prognozist/Marathon")
         col_input.success(f"Кэф загружен автоматически ({source_label}): **{manual_odd:.2f}**")
     else:
         manual_odd = None
@@ -427,7 +427,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 
         passed = (
             market_is_validated
-            and prob >= min_prob
+            and prob >= max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB)
             and edge >= min_edge
             and ev >= min_ev
             and stake > 0
@@ -453,7 +453,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                     "market_implied_raw": market_implied,
                     "probability_method": "market_blend_0.4_model_delta",
                     "status": "pending", "strat": "scanner_auto_recommendation",
-                    "odds_source": str(c.get("total_odds_source") if market_type(pick) == "OU" else c.get("odds_source") or "Prognozist/Marathon"),
+                    "odds_source": str((c.get("total_odds_source") if market_type(pick) == "OU" else c.get("odds_source")) or "Prognozist/Marathon"),
                     "mode": "real",
                     "date": (parse_date(c.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": c.get("date_iso"),
