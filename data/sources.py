@@ -1209,13 +1209,25 @@ def _prognozist_extract_extra_markets(html):
                 "Угл П1": values[0], "Угл X": values[1], "Угл П2": values[2],
             })
 
-    # Extra detail markets may be Winline, while the compact 1X2 line is Marathon.
-    if re.search(r"Коэффициенты\s+Winline|Winline", text, re.I):
-        found["extra_market_source"] = "prognozist_winline"
-    elif re.search(r"Коэффициенты\s+Марафон|Marathon", text, re.I):
-        found["extra_market_source"] = "prognozist_marathon"
-    else:
-        found["extra_market_source"] = "prognozist_unverified"
+    # Do not infer a bookmaker from a name anywhere on the page: rating lists
+    # mention many firms and can be unrelated to the parsed prices. Only tag a
+    # source when an explicit bookmaker odds heading is followed by a market
+    # block containing a price-like token before the next bookmaker heading.
+    source = "prognozist_unverified"
+    source_headings = list(re.finditer(
+        r"Коэффициенты\s+(Winline|Марафон|Marathon)\b", text, re.I
+    ))
+    for idx, heading in enumerate(source_headings):
+        section_end = source_headings[idx + 1].start() if idx + 1 < len(source_headings) else len(text)
+        section = text[heading.end():section_end]
+        has_market_prices = bool(
+            re.search(r"\b(?:Больше|Меньше|Бол\.?|Мен\.?|Да|Нет)\b.{0,24}\b\d{1,3}[.,]\d{1,4}\b", section, re.I)
+            or re.search(r"\b\d{1,3}[.,]\d{1,4}\b.{0,24}\b(?:Больше|Меньше|Бол\.?|Мен\.?)\b", section, re.I)
+        )
+        if has_market_prices:
+            source = "prognozist_winline" if heading.group(1).casefold() == "winline" else "prognozist_marathon"
+            break
+    found["extra_market_source"] = source
     return {key: value for key, value in found.items() if value}
 
 def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_granted=False):
