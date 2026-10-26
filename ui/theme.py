@@ -176,6 +176,22 @@ div[data-testid="stExpander"] details summary { padding: 12px 15px !important; }
 .nbr-bar { height:5px; background:#26343a; border-radius:99px; overflow:hidden; margin-top:9px; }
 .nbr-bar-fill { height:100%; background:var(--mint-strong); border-radius:99px; transition:width .25s ease; }
 
+/* Legacy overview components use the same unified surfaces. */
+.hero {
+  padding: 27px 30px; border-radius: 18px; margin-bottom: 20px;
+  border: 1px solid #2b4944; background: linear-gradient(115deg,#12231f,#101b22 58%,#121b27);
+  box-shadow: 0 12px 34px rgba(0,0,0,.16);
+}
+.hero h1 { color:#f3faf8 !important; -webkit-text-fill-color: initial !important; background:none !important; }
+.hero p { color:#a9bbc1 !important; }
+.hero-eyebrow { color:var(--mint) !important; letter-spacing:.14em; font-size:.68rem; font-weight:800; }
+.hero-status { color:#a9e9d1; background:#12271f; border:1px solid #31564b; border-radius:99px; padding:6px 10px; }
+.status-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--mint); margin-right:6px; }
+.kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:16px 0; }
+.kpi .t { color:var(--muted); font-size:.68rem; text-transform:uppercase; letter-spacing:.09em; font-weight:800; margin-bottom:6px; }
+.kpi .v { color:var(--text); font-family:'IBM Plex Mono',monospace; font-size:1.65rem; font-weight:700; }
+.kpi .v.g { color:var(--mint); } .kpi .v.y { color:var(--amber); } .kpi .v.r { color:var(--red); }
+
 /* Tables and code should remain readable. */
 [data-testid="stDataFrame"], [data-testid="stTable"] { border: 1px solid #263640; border-radius: 12px; overflow: hidden; }
 code, pre { font-family: 'IBM Plex Mono', monospace !important; }
