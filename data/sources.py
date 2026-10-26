@@ -1243,9 +1243,10 @@ def _prognozist_extract_extra_markets(html):
                 "Угл П1": values[0], "Угл X": values[1], "Угл П2": values[2],
             })
 
-    # Every parsed price above came from this explicitly labelled section.
+    # Keep a stable response schema: downstream callers and tests expect every
+    # market key to exist even when that market is absent from this bookmaker block.
     found["extra_market_source"] = source_label
-    return {key: value for key, value in found.items() if value}
+    return found
 
 def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_granted=False):
     href = str(href or "").strip()
