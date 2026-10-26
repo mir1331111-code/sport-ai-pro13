@@ -643,6 +643,7 @@ with st.sidebar:
     min_prob = st.slider("Мин. P %", 30, 85, 40, 1) / 100
     min_edge = st.slider("Мин. Edge %", 0, 15, 3, 1) / 100
     kelly_frac = st.slider("Kelly", 0.05, 0.40, 0.25, 0.05)
+    st.caption(f"Версия приложения: {APP_VERSION} · build 2026-10-26")
     matrix_n = st.slider("Матрица", 6, 15, 12, 1)
 
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
