@@ -232,7 +232,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         warn = ('<div style="color:#fde68a;font-size:.78rem;margin-top:10px;'
                 'padding:8px 12px;background:rgba(251,191,36,.08);'
                 'border-radius:10px;border:1px solid rgba(251,191,36,.25);">'
-                '⚠️ Реального кэфа для выбранного исхода нет — введи его вручную ниже, чтобы проверить value.</div>')
+                '⚠️ Реальный коэффициент именно на этот исход не получен. Ставка и value не подтверждены; проверь вкладку соответствующего рынка.</div>')
 
     # ============ КОНТЕКСТ ============
     context_html = ""
