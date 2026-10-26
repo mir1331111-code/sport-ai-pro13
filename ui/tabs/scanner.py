@@ -435,18 +435,19 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 
     if manual_odd is not None and manual_odd > 1.01 and 0.0 < model_prob < 1.0:
         market_implied = 1.0 / manual_odd
-        prob = max(1e-6, min(1.0 - 1e-6,
-                             market_implied + 0.40 * (model_prob - market_implied)))
+        # Do not blend bookmaker implied probability into the model probability:
+        # that can make a bad quote look like a stronger prediction than the model.
+        prob = model_prob
         ev = prob * manual_odd - 1
         edge = prob - market_implied
         stake = kelly(prob, manual_odd, D["bank"], kelly_frac, cap=0.02)
 
         col_metrics.markdown(
             f"**Расчёт для выбранного исхода**  \n"
-            f"- Вероятность после смешивания: **{prob * 100:.1f}%**  \n"
+            f"- Вероятность модели (без подмешивания кэфа): **{prob * 100:.1f}%**  \n"
             f"- Вероятность из кэфа (без снятия маржи): **{market_implied * 100:.1f}%**  \n"
-            f"- Edge: **{edge * 100:+.1f}%**  \n"
-            f"- EV: **{ev * 100:+.1f}%**"
+            f"- Edge модели: **{edge * 100:+.1f}%**  \n"
+            f"- EV по вероятности модели: **{ev * 100:+.1f}%**"
         )
         if market_is_validated:
             col_metrics.caption(f"Предварительный размер по дробному Kelly: {stake:.2f} у.е. (лимит 2% банка).")
