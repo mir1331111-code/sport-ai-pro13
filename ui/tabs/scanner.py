@@ -633,115 +633,127 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             st.info("Нажми ⚡ СКАН.")
             return
 
-        # One unified daily shortlist: only fixtures with a verified bookmaker
-        # 1X2 line, ranked primarily by the model probability of the selected pick.
-        priced = [
-            c for c in all_cards
-            if isinstance(c.get("market_odds"), dict)
-            and all(k in c.get("market_odds", {}) for k in ("П1", "X", "П2"))
-            and (c.get("verdict") or {}).get("real_odds")
-            and (c.get("verdict") or {}).get("odd") is not None
-        ]
-        def _rank_probability(card):
-            v = card.get("verdict") or {}
-            try:
-                prob = float(v.get("prob") or 0)
-            except (TypeError, ValueError):
-                prob = 0.0
-            try:
-                ev = float(v.get("ev") or -1)
-            except (TypeError, ValueError):
-                ev = -1.0
-            try:
-                edge = float(v.get("edge") or -1)
-            except (TypeError, ValueError):
-                edge = -1.0
-            # Probability leads; EV/edge break ties. Do not call a negative-EV
-            # pick a value bet, even when its raw probability is high.
-            return (prob, ev, edge)
+        qualified = [c for c in all_cards
+                     if c.get("best") is not None
+                     and (c.get("verdict") or {}).get("real_odds")
+                     and (c.get("verdict") or {}).get("value_passed")]
+        try:
+            from betting.ranking import rank_score
+            qualified.sort(key=lambda c: (
+                -rank_score(c),
+                -float((c.get("verdict") or {}).get("ev") or -1),
+                -float((c.get("verdict") or {}).get("prob") or 0),
+            ))
+        except Exception:
+            qualified.sort(key=lambda c: -float(
+                (c.get("verdict") or {}).get("ev") or -1))
 
-        priced.sort(key=_rank_probability, reverse=True)
-        shortlist = priced[:50]
-
-        st.markdown("## 🏆 Лучшие матчи дня")
-        st.caption(
-            f"Единый список без вкладок по рынкам. Проверены {len(all_cards)} матчей; "
-            f"в шорт-лист попали {len(shortlist)} матчей с подтверждёнными реальными коэффициентами. "
-            "Сначала вероятность прогноза, затем EV и преимущество над рынком."
-        )
-        if not shortlist:
-            st.warning(
-                "Нет матчей с подтверждённой линией 1X2. Ниже показаны найденные матчи без кэфов; "
-                "модельные fair-odds не выдаются за букмекерские."
-            )
-
-        for rank, card in enumerate(shortlist, start=1):
-            v = card.get("verdict") or {}
-            label = v.get("label", "Прогноз")
-            try:
-                prob_pct = float(v.get("prob") or 0) * 100
-            except (TypeError, ValueError):
-                prob_pct = 0.0
-            try:
-                odd = float(v.get("odd"))
-                odd_text = f"{odd:.2f}"
-            except (TypeError, ValueError):
-                odd_text = "—"
-            ev = v.get("ev")
-            try:
-                ev_text = f"{float(ev) * 100:+.1f}%" if ev is not None else "нет value"
-            except (TypeError, ValueError):
-                ev_text = "нет value"
-            st.markdown(
-                f"### #{rank} · {card.get('match_ru', card.get('match', 'Матч'))}  \\n"
-                f"<span style='color:#8b93a7'>{card.get('league', '')} · {card.get('date', '')}</span>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f"**Прогноз:** {label} · **вероятность модели:** {prob_pct:.1f}% · "
-                f"**реальный коэффициент:** {odd_text} · **EV:** {ev_text}"
-            )
-            _render_manual_odds_block(
-                card, D, kelly_frac, min_prob, min_edge, market_filter="winner"
-            )
-
-        unpriced = [
-            card for card in all_cards
-            if not (isinstance(card.get("market_odds"), dict)
-                    and all(k in card.get("market_odds", {}) for k in ("П1", "X", "П2")))
-        ]
-        if unpriced:
-            st.markdown("## 📅 Найденные матчи без коэффициентов")
+        with st.expander("🏆 Лучшие варианты дня · все лиги", expanded=True):
             st.caption(
-                f"Найдено {len(unpriced)} матчей без полной линии 1X2. "
-                "Показываю их отдельно, чтобы отсутствие API-котировок не скрывало расписание."
+                "Единый рейтинг матчей по вероятности, реальному коэффициенту, "
+                "EV и преимуществу над рынком."
             )
-            for card in unpriced[:50]:
-                v = card.get("verdict") or {}
-                try:
-                    probs = (
-                        f"П1 {float(card.get('p1') or 0)*100:.1f}% · "
-                        f"X {float(card.get('px') or 0)*100:.1f}% · "
-                        f"П2 {float(card.get('p2') or 0)*100:.1f}%"
+            if not qualified:
+                st.info("Пока нет подтверждённых value-вариантов.")
+            else:
+                for rank, card in enumerate(qualified[:5], start=1):
+                    st.markdown(f"### #{rank} · {card.get('league', 'Лига')}")
+                    st.markdown(render_verdict_card(card, min_prob),
+                                unsafe_allow_html=True)
+
+        c1, c2, c3 = st.columns([2, 2, 2])
+        sort_mode = c1.selectbox(
+            "Сортировка",
+            ["По общему рейтингу",
+             "По EV (высокие сначала)",
+             "По вероятности (высокие сначала)",
+             "По дате (ближайшие сначала)"],
+            key="scanner_sort")
+        show_hidden = c2.checkbox("Только сильные модели", False,
+                                   key="scanner_show_hidden")
+        group_by_day = c3.checkbox("Группировать по дням", True,
+                                    key="scanner_group_by_day")
+
+        if show_hidden:
+            cards_view = [c for c in all_cards
+                          if (c.get("verdict") or {}).get("is_action")]
+        else:
+            # Manual bookmaker odds should be available for every scanned fixture.
+            cards_view = all_cards
+
+        if sort_mode.startswith("По дате"):
+            cards_view.sort(key=lambda c: parse_card_date(c))
+        elif sort_mode.startswith("По вероятности"):
+            cards_view.sort(
+                key=lambda c: -(c.get("verdict", {}).get("prob") or 0))
+        elif sort_mode.startswith("По EV"):
+            cards_view.sort(
+                key=lambda c: -(c.get("verdict", {}).get("ev") or -1))
+        else:
+            try:
+                from betting.ranking import rank_score
+                cards_view.sort(key=lambda c: -rank_score(c))
+            except Exception:
+                cards_view.sort(key=lambda c: -float(
+                    (c.get("verdict", {}).get("prob") or 0)))
+
+        if not cards_view:
+            st.warning("Ничего не найдено.")
+            return
+
+        # Until verified Marathon odds are available for extra markets, keep
+        # the scanner focused on 1X2 only. This prevents model-only totals/BTTS
+        # forecasts from being presented beside winner odds or entering the portfolio.
+        market_tabs = st.tabs([
+            f"Все матчи ({len(cards_view)})",
+            f"Победа / 1X2 ({sum(bool(c.get('market_odds')) for c in cards_view)})",
+        ])
+
+        with market_tabs[0]:
+            if group_by_day:
+                grouped = {}
+                for c in cards_view:
+                    grouped.setdefault(day_label(parse_card_date(c)), []).append(c)
+                sorted_groups = sorted(grouped.items(), key=lambda kv: parse_card_date(kv[1][0]))
+                for label, items in sorted_groups:
+                    st.markdown(f"### {label} · {len(items)} матч.")
+                    for c in items:
+                        st.markdown(
+                            f"#### {c.get('match_ru', c.get('match', 'Матч'))}  \\n"
+                            f"<span style='color:#8b93a7'>{c.get('league', '')} · {c.get('date', '')}</span>",
+                            unsafe_allow_html=True,
+                        )
+                        _render_manual_odds_block(
+                            c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
+                        )
+            else:
+                for c in cards_view:
+                    st.markdown(
+                        f"#### {c.get('match_ru', c.get('match', 'Матч'))}  \\n"
+                        f"<span style='color:#8b93a7'>{c.get('league', '')} · {c.get('date', '')}</span>",
+                        unsafe_allow_html=True,
                     )
-                except (TypeError, ValueError):
-                    probs = "вероятности недоступны"
+                    _render_manual_odds_block(
+                        c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
+                    )
+
+        with market_tabs[1]:
+            winner_cards = [c for c in cards_view if c.get("p1") is not None and c.get("p2") is not None]
+            if not winner_cards:
+                st.info("Модель не сформировала прогноз 1X2.")
+            for c in winner_cards:
                 st.markdown(
-                    f"**{card.get('match_ru', card.get('match', 'Матч'))}** — "
-                    f"{card.get('league', '')} · {card.get('date', '')}  \\n"
-                    f"Модель: {probs} · Кэфы: **нет подтверждённой линии**"
+                    f"#### {c.get('match_ru', c.get('match', 'Матч'))}  \\n"
+                    f"<span style='color:#8b93a7'>{c.get('league', '')} · {c.get('date', '')}</span>",
+                    unsafe_allow_html=True,
                 )
                 _render_manual_odds_block(
-                    card, D, kelly_frac, min_prob, min_edge, market_filter="winner"
+                    c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
                 )
 
-        st.caption(
-            "Автоматические котировки доступны только если тариф Highlightly разрешает odds API. "
-            "Ручной импорт применяется к совпавшему матчу и дате; модельные fair-odds не подставляются."
-        )
-        with st.expander("🔌 Диагностика"):
-            for line in D.get("report", []):
-                st.text(line)
+        st.caption("Пока доступны только подтверждённые коэффициенты 1X2. Тоталы, «Обе забьют», угловые и карточки временно скрыты до проверки реальных котировок Marathon.")
+        st.caption("✅ Показано " + str(len(cards_view)) + " из "
+                   + str(len(all_cards)))
         return
 
     # ==================== СКАН ====================
