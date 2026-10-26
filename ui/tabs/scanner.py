@@ -795,7 +795,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"<article class='pick-story' style='animation-delay:{min(rank-1,5)*55}ms'>"
                     f"<div class='pick-story-top'><span class='pick-league'>{html.escape(league_name)}</span>"
                     f"<span class='pick-status{status_class}'>{status_text}</span></div>"
-                    f"<div class='pick-match'>{html.escape(match_name)}</div>"
+                    render_fixture_header(card) + f"<div class='pick-match'>{html.escape(match_name)}</div>"
                     f"<div class='pick-time'>{html.escape(kickoff or 'Время начала уточняется')}</div>"
                     f"<div class='pick-divider'></div><div class='pick-choice-label'>Наш выбор</div>"
                     f"<div class='pick-choice'>{html.escape(pick_name)}</div>"
@@ -1206,6 +1206,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
+                "venue": r.get("venue") or r.get("stadium") or "",
+                "stadium_image": r.get("stadium_image") or r.get("venue_image") or "",
                 "context": {},
             })
 
