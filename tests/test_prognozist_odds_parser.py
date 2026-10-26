@@ -101,6 +101,29 @@ class PrognozistOddsParserTests(unittest.TestCase):
         self.assertEqual(result, expected)
         fetch.assert_called_once()
 
+    def test_extracts_btts_and_main_goal_total_prices(self):
+        from data.sources import _prognozist_extract_extra_markets
+        html = """
+        <h2>Тотал голов</h2><div>Больше 2.5 1.91 Меньше 2.5 1.89</div>
+        <h2>Обе забьют?</h2><div>Да 1.72 Нет 2.05</div>
+        <h2>1 тайм Тотал</h2><div>Больше 2.5 8.00 Меньше 2.5 1.05</div>
+        """
+        result = _prognozist_extract_extra_markets(html)
+        self.assertEqual(result["btts_market_odds"], {"BTTS Да": 1.72, "BTTS Нет": 2.05})
+        self.assertEqual(result["total_market_odds"], {"ТБ 2.5": 1.91, "ТМ 2.5": 1.89})
+
+    def test_extracts_total_corners_and_cards_as_distinct_markets(self):
+        from data.sources import _prognozist_extract_extra_markets
+        html = """
+        <h2>Тотал угловых</h2><div>Больше 9.5 1.87 Меньше 9.5 1.93</div>
+        <h2>Тотал желтых карточек</h2><div>Больше 4.5 1.90 Меньше 4.5 1.90</div>
+        """
+        result = _prognozist_extract_extra_markets(html)
+        self.assertEqual(result["stat_market_odds"]["Угл ТБ 9.5"], 1.87)
+        self.assertEqual(result["stat_market_odds"]["Угл ТМ 9.5"], 1.93)
+        self.assertEqual(result["stat_market_odds"]["Карты ТБ 4.5"], 1.90)
+        self.assertEqual(result["stat_market_odds"]["Карты ТМ 4.5"], 1.90)
+
     def test_american_odds_conversion(self):
         from data.sources import _american_to_decimal
         self.assertAlmostEqual(_american_to_decimal(-110), 1.9090909, places=5)
