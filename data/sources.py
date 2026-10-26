@@ -311,11 +311,12 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     out = []
     total_days = min(max(1, int(days)), 14)
+    venue_lookup_budget = 6
 
     for off in range(total_days):
         d = today + timedelta(days=off)
         dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_day_v9_{dstr}"
+        ck = f"tsdb_day_v10_{dstr}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -378,10 +379,11 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                 venue_id = str(next((event.get("idVenue") for event in ev
                                      if isinstance(event, dict)
                                      and str(event.get("idEvent") or "") == str(row.get("fixture_id") or "")), "") or "")
-                if venue_id and not row.get("stadium_image") and enriched_venues < 6:
+                if venue_id and not row.get("stadium_image") and venue_lookup_budget > 0:
                     venue_meta = _tsdb_venue_metadata(venue_id, logs)
                     row.update({k: v for k, v in venue_meta.items() if v and not row.get(k)})
                     enriched_venues += 1
+                    venue_lookup_budget -= 1
             out += rows
             cache_put(ck, rows)
             if logs:
