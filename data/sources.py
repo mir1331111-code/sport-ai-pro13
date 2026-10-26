@@ -1209,6 +1209,13 @@ def _prognozist_extract_extra_markets(html):
                 "Угл П1": values[0], "Угл X": values[1], "Угл П2": values[2],
             })
 
+    # Extra detail markets may be Winline, while the compact 1X2 line is Marathon.
+    if re.search(r"Коэффициенты\s+Winline|Winline", text, re.I):
+        found["extra_market_source"] = "prognozist_winline"
+    elif re.search(r"Коэффициенты\s+Марафон|Marathon", text, re.I):
+        found["extra_market_source"] = "prognozist_marathon"
+    else:
+        found["extra_market_source"] = "prognozist_unverified"
     return {key: value for key, value in found.items() if value}
 
 def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_granted=False):
@@ -1631,6 +1638,8 @@ def prognozist_marathon_odds(
                         market_values = detail.get(market_key)
                         if isinstance(market_values, dict) and market_values:
                             result[market_key] = market_values
+                    if detail.get("extra_market_source"):
+                        result["extra_market_source"] = str(detail["extra_market_source"])
             cache_put(cache_key, result)
             return result
         if len(unique) > 1:
