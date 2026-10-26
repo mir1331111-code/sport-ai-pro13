@@ -1960,3 +1960,86 @@ def team_logo_url(team_name: str) -> Optional[str]:
 
 def league_logo_url(div_code: str) -> Optional[str]:
     return None
+
+
+# ============ HIGHLIGHTLY ODDS API ============
+def highlightly_odds_fixture(match_date: str, home: str, away: str,
+                             api_key: str, logs=None) -> Optional[dict]:
+    """Fetch exact-match prematch odds from Highlightly; cache one date-wide response."""
+    if not api_key or not match_date or not home or not away:
+        if logs is not None and not api_key:
+            logs.append("ℹ️ Highlightly: API-ключ не задан")
+        return None
+    ck = f"highlightly_odds_v1_{match_date}"
+    events = cache_get(ck, 900)
+    if events is None:
+        try:
+            response = _sess.get(
+                "https://sports.highlightly.net/football/odds",
+                params={"date": match_date, "timezone": "Europe/Moscow",
+                        "oddsType": "prematch", "limit": 100, "offset": 0},
+                headers={"x-rapidapi-key": api_key, "Accept": "application/json"},
+                timeout=20, proxies=NO_PROXY,
+            )
+            if response.status_code != 200:
+                if logs is not None:
+                    logs.append(f"⚠️ Highlightly odds HTTP {response.status_code}: {(response.text or '')[:140]}")
+                return None
+            payload = response.json() or {}
+            events = payload.get("data", []) if isinstance(payload, dict) else []
+            if isinstance(payload, dict):
+                plan = payload.get("plan") or {}
+                if str(plan.get("tier", "")).lower() in ("free", "basic"):
+                    if logs is not None:
+                        logs.append("⚠️ Highlightly: тариф не предоставляет доступ к коэффициентам.")
+                    return None
+            if not isinstance(events, list):
+                events = []
+            cache_put(ck, events)
+            if logs is not None:
+                logs.append(f"Highlightly: получено записей линии {len(events)} за {match_date}")
+        except Exception as exc:
+            if logs is not None:
+                logs.append(f"⚠️ Highlightly network/JSON error: {type(exc).__name__}: {str(exc)[:100]}")
+            return None
+    hn, an = _norm_name(home), _norm_name(away)
+    found = []
+    for entry in events:
+        match = entry.get("match") or {}
+        ht = (match.get("homeTeam") or {}).get("name", "")
+        at = (match.get("awayTeam") or {}).get("name", "")
+        if not ht or not at or _norm_name(ht) != hn or _norm_name(at) != an:
+            continue
+        bookmaker = entry.get("bookmaker") or {}
+        bname = str(bookmaker.get("name") or "")
+        result = {}
+        for market in entry.get("markets") or []:
+            mname = str(market.get("name") or "").casefold()
+            if not any(term in mname for term in ("full time result", "match result", "1x2", "3-way")):
+                continue
+            for outcome in market.get("odds") or []:
+                label = str(outcome.get("label") or "").strip().casefold()
+                raw = outcome.get("value")
+                try:
+                    price = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if not 1.01 < price <= 100:
+                    continue
+                if label in ("home", "1"):
+                    result["П1"] = price
+                elif label in ("draw", "x", "tie"):
+                    result["X"] = price
+                elif label in ("away", "2"):
+                    result["П2"] = price
+        if all(key in result for key in ("П1", "X", "П2")):
+            found.append((bname, result))
+    if not found:
+        if logs is not None:
+            logs.append(f"Highlightly: нет полной 1X2-линии для {home} — {away}")
+        return None
+    bookmaker, prices = found[0]
+    prices["source"] = f"highlightly · {bookmaker}" if bookmaker else "highlightly"
+    if logs is not None:
+        logs.append(f"✅ Highlightly: полная линия 1X2 ({bookmaker or 'букмекер не указан'}) для {home} — {away}")
+    return prices
