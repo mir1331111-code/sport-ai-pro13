@@ -251,7 +251,7 @@ def _load_engine(matrix_n, logs, update_loader):
             pass
         return engine
 
-def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, min_ev=0.03):
+def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, min_ev=0.03, market_filter=None):
     """Понятный ввод букмекерского коэффициента для выбранного рынка."""
     v = c.get("verdict", {})
     stat_preds = c.get("historical_stats") or {}
@@ -260,11 +260,22 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         "Победа хозяев (П1)": ("П1", float(c.get("p1") or 0)),
         "Ничья (X)": ("X", float(c.get("px") or 0)),
         "Победа гостей (П2)": ("П2", float(c.get("p2") or 0)),
-        "Тотал голов больше 2.5 (ТБ 2.5)": ("ТБ 2.5", float(c.get("over") or 0)),
-        "Тотал голов меньше 2.5 (ТМ 2.5)": ("ТМ 2.5", 1.0 - float(c.get("over") or 0)),
         "Обе команды забьют — да": ("BTTS Да", float(c.get("btts") or 0)),
         "Обе команды забьют — нет": ("BTTS Нет", 1.0 - float(c.get("btts") or 0)),
     }
+    # Evaluate every common full-match goals line, not only 2.5.
+    try:
+        total_mean = max(0.05, float(c.get("lam_h") or 0) + float(c.get("lam_a") or 0))
+    except (TypeError, ValueError):
+        total_mean = 0.0
+    for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5):
+        over_p = (float(c.get("over") or 0) if line == 2.5 else
+                  poisson_over_probability(total_mean, line) if total_mean else None)
+        if over_p is None or not 0.0 < over_p < 1.0:
+            continue
+        line_label = f"{line:.1f}"
+        market_options[f"Тотал голов больше {line_label}"] = (f"ТБ {line_label}", over_p)
+        market_options[f"Тотал голов меньше {line_label}"] = (f"ТМ {line_label}", 1.0 - over_p)
     for stat_market, lines in (("corners", (8.5, 9.5, 10.5)), ("cards", (3.5, 4.5, 5.5))):
         pred = stat_preds.get(stat_market) or {}
         if pred.get("total") is not None and pred.get("history_matches", 0) >= 30:
@@ -299,9 +310,27 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         except (TypeError, ValueError):
             return None
 
+    filter_types = {
+        "winner": {"1X2"},
+        "goals": {"OU"},
+        "btts": {"BTTS"},
+        "corners": {"STAT"},
+        "cards": {"STAT"},
+    }
+    candidate_options = {
+        label: item for label, item in market_options.items()
+        if market_filter is None or market_type(item[0]) in filter_types.get(market_filter, set())
+    }
+    if market_filter == "corners":
+        candidate_options = {label: item for label, item in candidate_options.items()
+                             if item[0].startswith("Угл ")}
+    elif market_filter == "cards":
+        candidate_options = {label: item for label, item in candidate_options.items()
+                             if item[0].startswith("Карты ")}
+
     quoted_candidates = [
         (label, item[0], item[1], quote_for(item[0]))
-        for label, item in market_options.items()
+        for label, item in candidate_options.items()
         if quote_for(item[0]) is not None and 0 < item[1] < 1
     ]
     if quoted_candidates:
@@ -310,9 +339,14 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         )
         auto_quote_exists = True
     else:
-        selected_label, (pick, model_prob) = max(
-            market_options.items(), key=lambda row: row[1][1]
-        )
+        if candidate_options:
+            selected_label, (pick, model_prob) = max(
+                candidate_options.items(), key=lambda row: row[1][1]
+            )
+        else:
+            selected_label, (pick, model_prob) = max(
+                market_options.items(), key=lambda row: row[1][1]
+            )
         auto_quote_exists = False
 
     st.markdown("**🎯 Лучший прогноз модели для этого матча**")
