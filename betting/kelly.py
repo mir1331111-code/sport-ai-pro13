@@ -118,7 +118,10 @@ def market_type(pick: str) -> str:
     if pick in ("П1", "X", "П2"):
         return "1X2"
 
-    if pick in ("ТБ 2.5", "ТМ 2.5"):
+    # Any explicit total line is the same market family; do not restrict
+    # real bookmaker quotes to only the 2.5 line.
+    import re
+    if re.fullmatch(r"Т[БМ]\s+\d+(?:[.,]\d+)?", pick, re.I):
         return "OU"
 
     if pick.upper().startswith("BTTS"):
