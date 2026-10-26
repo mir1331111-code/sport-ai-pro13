@@ -110,6 +110,11 @@ def _session() -> requests.Session:
 _sess = _session()
 NO_PROXY = {"http": None, "https": None, "all": None}
 
+# Circuit breaker: Basic-plan 401 means odds are unavailable for this process.
+# Avoid issuing one guaranteed-to-fail odds request per fixture.
+_HIGHLIGHTLY_ODDS_DISABLED_REASON = ""
+_HIGHLIGHTLY_ODDS_401_LOGGED = False
+
 
 def _f(v):
     try:
@@ -1971,9 +1976,15 @@ def highlightly_odds_fixture(match_date: str, home: str, away: str,
         "total_market_odds": {}, "btts_market_odds": {}, "stat_market_odds": {},
         "extra_market_source": "highlightly",
     }
+    global _HIGHLIGHTLY_ODDS_DISABLED_REASON, _HIGHLIGHTLY_ODDS_401_LOGGED
     if not api_key or not match_date or not home or not away:
         if logs is not None and not api_key:
             logs.append("ℹ️ Highlightly: API-ключ не задан")
+        return None
+
+    if _HIGHLIGHTLY_ODDS_DISABLED_REASON:
+        # The first 401 already logged the exact provider response. Stay quiet
+        # for subsequent fixtures to keep scan logs readable.
         return None
 
     hn, an = _norm_name(home), _norm_name(away)
@@ -2030,8 +2041,18 @@ def highlightly_odds_fixture(match_date: str, home: str, away: str,
                 timeout=20, proxies=NO_PROXY,
             )
             if response.status_code != 200:
-                if logs is not None:
-                    logs.append(f"⚠️ Highlightly odds HTTP {response.status_code}: {(response.text or '')[:140]}")
+                body = (response.text or "")[:140]
+                if response.status_code == 401 and "not available in basic plan" in body.casefold():
+                    _HIGHLIGHTLY_ODDS_DISABLED_REASON = "basic_plan"
+                    if logs is not None and not _HIGHLIGHTLY_ODDS_401_LOGGED:
+                        logs.append(
+                            "⛔ Highlightly Odds отключён на текущем тарифе (Basic): "
+                            "получен HTTP 401. Повторные запросы к /odds остановлены "
+                            "до перезапуска приложения или смены тарифа."
+                        )
+                        _HIGHLIGHTLY_ODDS_401_LOGGED = True
+                elif logs is not None:
+                    logs.append(f"⚠️ Highlightly odds HTTP {response.status_code}: {body}")
                 return None
             payload = response.json() or {}
             odds_entries = payload.get("data", []) if isinstance(payload, dict) else []
