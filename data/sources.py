@@ -1166,7 +1166,7 @@ def _prognozist_extract_extra_markets(html):
         start = max(0, match.start() - 90)
         context = text[start:match.start()]
         # Do not assign first/second-half totals to the full-match market.
-        if re.search(r"(?:1\s*[-.]?\s*тайм|перв(?:ый|ого)\s+тайм|2\s*[-.]?\s*тайм|втор(?:ой|ого)\s+тайм)", context, re.I):
+        if re.search(r"(?:1\s*[-.]?\s*(?:й\s*)?тайм|перв(?:ый|ого)\s+тайм|2\s*[-.]?\s*(?:й\s*)?тайм|втор(?:ой|ого)\s+тайм)", context, re.I):
             continue
         line = match.group("line").replace(",", ".")
         over, under = valid_price(match.group("over")), valid_price(match.group("under"))
@@ -1185,7 +1185,7 @@ def _prognozist_extract_extra_markets(html):
     )
     for match in compact_side.finditer(text):
         context = text[max(0, match.start() - 100):match.start()]
-        if re.search(r"(?:1\s*[-.]?\s*тайм|перв(?:ый|ого)\s+тайм|2\s*[-.]?\s*тайм|втор(?:ой|ого)\s+тайм)", context, re.I):
+        if re.search(r"(?:1\s*[-.]?\s*(?:й\s*)?тайм|перв(?:ый|ого)\s+тайм|2\s*[-.]?\s*(?:й\s*)?тайм|втор(?:ой|ого)\s+тайм)", context, re.I):
             continue
         line = match.group("line").replace(",", ".")
         side = match.group("side").casefold()
