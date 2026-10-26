@@ -330,9 +330,13 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         "corners": {"STAT"},
         "cards": {"STAT"},
     }
+    # The default scanner view is winner-only (1X2). Do not mix in
+    # model-only BTTS/totals/corners/cards forecasts when their real odds
+    # are not available; those markets are shown only in their own tabs.
+    allowed_types = filter_types.get(market_filter, {"1X2"}) if market_filter is not None else {"1X2"}
     candidate_options = {
         label: item for label, item in market_options.items()
-        if market_filter is None or market_type(item[0]) in filter_types.get(market_filter, set())
+        if market_type(item[0]) in allowed_types
     }
     if market_filter == "corners":
         candidate_options = {label: item for label, item in candidate_options.items()
