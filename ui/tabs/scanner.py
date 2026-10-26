@@ -724,6 +724,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
                           "model_only": 0, "estimated": 0, "real": 0}
+        if not highlightly_key:
+            logs.append(
+                "❌ Highlightly API-ключ не найден: odds-запросы не выполнялись. "
+                "Добавьте ключ в поле Highlightly API key или секрет HIGHLIGHTLY_API_KEY."
+            )
 
         for match_idx, r in enumerate(rows, 1):
             if match_idx == 1 or match_idx % 5 == 0:
@@ -786,6 +791,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
                     # Highlightly is the sole permitted bookmaker-odds source.
                     if highlightly_key:
+                        funnel_counts["market_req"] += 1
                         try:
                             highlighted = highlightly_odds_fixture(
                                 d.strftime("%Y-%m-%d"), h_en, a_en, highlightly_key, logs
