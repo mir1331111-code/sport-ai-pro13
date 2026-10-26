@@ -112,6 +112,20 @@ class PrognozistOddsParserTests(unittest.TestCase):
         self.assertEqual(result["btts_market_odds"], {"BTTS Да": 1.72, "BTTS Нет": 2.05})
         self.assertEqual(result["total_market_odds"], {"ТБ 2.5": 1.91, "ТМ 2.5": 1.89})
 
+    def test_parses_compact_marathon_line_total_formats(self):
+        from data.sources import _prognozist_extract_extra_markets
+        html = """
+        <div>Тотал бол. (3.5) 2.375; Тотал мен. (3.5) 1.60</div>
+        <div>Дополнительный тотал: (2.5) Бол. 1.181; Мен. 3.95</div>
+        <div>Тотал голов, 1-й тайм: Тотал бол. (1.5) 2.10; Тотал мен. (1.5) 1.70</div>
+        """
+        result = _prognozist_extract_extra_markets(html)
+        self.assertEqual(result["total_market_odds"]["ТБ 3.5"], 2.375)
+        self.assertEqual(result["total_market_odds"]["ТМ 3.5"], 1.60)
+        self.assertEqual(result["total_market_odds"]["ТБ 2.5"], 1.181)
+        self.assertEqual(result["total_market_odds"]["ТМ 2.5"], 3.95)
+        self.assertNotIn("ТБ 1.5", result["total_market_odds"])
+
     def test_extracts_total_corners_and_cards_as_distinct_markets(self):
         from data.sources import _prognozist_extract_extra_markets
         html = """
