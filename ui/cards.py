@@ -144,7 +144,7 @@ def render_fixture_header(c: dict) -> str:
         f'<span style="font-size:1.1rem">{flag}</span>{league_icon}'
         f'<span style="font-size:.76rem;color:#a8bbc1;font-weight:700;letter-spacing:.02em">{esc(league)}</span>'
         '</div>'
-        f'<span style="font:500 .74rem "IBM Plex Mono",monospace;color:#8ea4aa">{date}</span>'
+        f'<span style="font:500 .74rem monospace;color:#8ea4aa">{date}</span>'
         '</div>'
         '<div style="display:grid;grid-template-columns:minmax(0,1fr) 34px minmax(0,1fr);'
         'align-items:center;gap:8px;">'
