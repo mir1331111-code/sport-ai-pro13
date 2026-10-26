@@ -332,7 +332,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     }
     # In "all matches" mode, compare every modeled market. Dedicated tabs
     # restrict the list to their own market type.
-    allowed_types = filter_types.get(market_filter, set(filter_types.values().__iter__().__next__())) if market_filter is not None else {"1X2", "OU", "BTTS", "STAT"}
+    allowed_types = filter_types.get(market_filter, {"1X2", "OU", "BTTS", "STAT"})
     candidate_options = {
         label: item for label, item in market_options.items()
         if market_type(item[0]) in allowed_types
