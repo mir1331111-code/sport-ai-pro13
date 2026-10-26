@@ -549,23 +549,91 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
-    c1, c2 = st.columns([4, 1])
-    days = c1.slider("Период матчей: 1 = только сегодня", 1, 14, 1)
-    scan = c2.button("⚡ СКАН", type="primary",
+    # Modern scanner header and clear workflow: fixtures -> odds -> value -> portfolio.
+    st.markdown(
+        "<div class='scanner-hero'>"
+        "<div class='scanner-kicker'>NEURO BET PRO · MATCH INTELLIGENCE</div>"
+        "<div class='scanner-title'>Футбольный сканер</div>"
+        "<div class='scanner-subtitle'>Матчи, рыночные коэффициенты и value-сигналы — в одном рабочем пространстве.</div>"
+        "<div class='scanner-steps'><span>01 Матчи</span><i>→</i><span>02 Коэффициенты</span><i>→</i><span>03 Проверка value</span><i>→</i><span>04 Виртуальный портфель</span></div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    c1, c2, c3 = st.columns([2.2, 1, 1.2], vertical_alignment="bottom")
+    days = c1.slider("Период", 1, 14, 3, help="Сколько дней вперёд проверять расписание.")
+    scan = c2.button("⚡ Запустить скан", type="primary", use_container_width=True,
                      disabled=st.session_state.get("_scan_in_progress", False))
-    st.checkbox(
-        "Использовать реальные кэфы Prognozist / Marathon",
-        value=False,
-        key="prognozist_permission_input",
-        help="Источник включается только после явного согласия; парсер проверяет robots.txt и условия сайта. Если доступ запрещён, источник отключится.",
-    )
+    c3.markdown("<div class='scanner-help-pill'>🟢 Режим анализа · без реальных ставок</div>",
+                unsafe_allow_html=True)
 
-    auto_add = st.checkbox(
-        "Автоматически добавлять прошедшие фильтры прогнозы в виртуальный портфель",
-        value=True,
-        key="scanner_auto_add_qualified_v3",
-        help="Автоматически добавляет в виртуальный портфель только прогнозы с реальными коэффициентами, прошедшие строгие value-фильтры. ТБ/ТМ 2.5 — только после исторической проверки. Это виртуальный учёт, не размещение ставки у букмекера.",
-    )
+    with st.expander("📥 Импорт коэффициентов", expanded=False):
+        st.markdown(
+            "Вставь котировки, полученные вручную или из разрешённого API. "
+            "Они сопоставляются с найденными матчами по командам и дате. "
+            "Импорт не размещает ставки у букмекера."
+        )
+        odds_json = st.text_area(
+            "Котировки в JSON",
+            key="scanner_manual_odds_json",
+            height=130,
+            placeholder='[{"date":"2026-10-26","home":"Santa Clara","away":"Benfica","П1":9.0,"X":5.0,"П2":1.3,"source":"manual"}]',
+        )
+        if odds_json.strip():
+            try:
+                parsed_quotes = json.loads(odds_json)
+                if isinstance(parsed_quotes, dict):
+                    parsed_quotes = [parsed_quotes]
+                if not isinstance(parsed_quotes, list):
+                    raise ValueError("Нужен JSON-объект или список объектов.")
+                normalized_quotes = []
+                for quote in parsed_quotes:
+                    if not isinstance(quote, dict):
+                        continue
+                    quote_date = str(quote.get("date") or "").strip()[:10]
+                    home_quote = str(quote.get("home") or "").strip()
+                    away_quote = str(quote.get("away") or "").strip()
+                    raw_prices = quote.get("odds") if isinstance(quote.get("odds"), dict) else quote
+                    try:
+                        prices = {key: float(raw_prices[key]) for key in ("П1", "X", "П2")}
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    try:
+                        datetime.strptime(quote_date, "%Y-%m-%d")
+                    except ValueError:
+                        continue
+                    if (not home_quote or not away_quote
+                            or not all(1.01 < price <= 100 for price in prices.values())):
+                        continue
+                    normalized_quotes.append({
+                        "date": quote_date, "home": home_quote, "away": away_quote,
+                        "odds": prices, "source": str(quote.get("source") or "manual_import"),
+                    })
+                st.session_state["_scanner_manual_odds_quotes"] = normalized_quotes
+                if normalized_quotes:
+                    st.success(f"Готово к сопоставлению: {len(normalized_quotes)} набор(а) коэффициентов.")
+                    st.caption("Нажми «Запустить скан», чтобы применить котировки к найденным матчам.")
+                else:
+                    st.warning("Не удалось найти корректные записи. Нужны date, home, away, П1, X и П2.")
+            except (json.JSONDecodeError, ValueError) as exc:
+                st.error(f"JSON не прочитан: {exc}")
+        elif "_scanner_manual_odds_quotes" not in st.session_state:
+            st.session_state["_scanner_manual_odds_quotes"] = []
+
+    source_col, portfolio_col = st.columns([1, 1])
+    with source_col:
+        st.checkbox(
+            "Разрешить источник Prognozist / Marathon",
+            value=False,
+            key="prognozist_permission_input",
+            help="Источник используется только в рамках доступных условий и разрешений.",
+        )
+    with portfolio_col:
+        auto_add = st.checkbox(
+            "Автодобавление подходящих прогнозов в виртуальный портфель",
+            value=True,
+            key="scanner_auto_add_qualified_v3",
+            help="Только при наличии реального коэффициента и прохождении всех value-фильтров. Не размещает реальные ставки.",
+        )
 
     if not scan:
         fn = D.get("funnel")
