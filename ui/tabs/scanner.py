@@ -289,15 +289,34 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     btn_key = f"btn_{key_base}"
 
     col_input, col_metrics, col_btn = st.columns([2, 2, 1])
-    manual_odd = col_input.number_input(
-        "3. Коэффициент букмекера",
-        min_value=1.01,
-        max_value=100.0,
-        value=1.01,
-        step=0.01,
-        key=input_key,
-        help="Введите десятичный кэф, например 1.85 или 2.10. Значение 1.01 означает, что кэф ещё не введён.",
-    )
+
+    # Reuse the exact 1X2 quote already attached to this fixture by Prognozist/Marathon.
+    # Never make the user retype a price the scanner already has, and never treat a
+    # model fair price as a bookmaker quote.
+    source_odd = None
+    source_odds = c.get("market_odds") or {}
+    if market_type(pick) == "1X2":
+        try:
+            candidate_odd = float(source_odds.get(pick) or 0)
+            if 1.01 < candidate_odd <= 100:
+                source_odd = candidate_odd
+        except (TypeError, ValueError):
+            source_odd = None
+
+    if source_odd is not None:
+        manual_odd = source_odd
+        source_label = str(c.get("odds_source") or "Prognozist/Marathon")
+        col_input.success(f"Кэф загружен автоматически ({source_label}): **{manual_odd:.2f}**")
+    else:
+        manual_odd = col_input.number_input(
+            "3. Коэффициент букмекера",
+            min_value=1.01,
+            max_value=100.0,
+            value=1.01,
+            step=0.01,
+            key=input_key,
+            help="Автоматическая линия для этого рынка не найдена. Введите десятичный кэф букмекера, например 1.85 или 2.10.",
+        )
 
     if manual_odd > 1.01 and 0.0 < model_prob < 1.0:
         market_implied = 1.0 / manual_odd
@@ -334,6 +353,12 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             )
             if existing:
                 col_btn.caption("Этот исход уже находится в портфеле.")
+            elif source_odd is not None:
+                col_btn.caption(
+                    "Коэффициент уже загружен. Сканер добавляет такие ставки в портфель "
+                    "автоматически только при включённом авто-добавлении и прохождении "
+                    "строгих фильтров value."
+                )
             else:
                 D2 = dict(D)
                 new_bet = {
@@ -931,6 +956,27 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 available_bank -= stake_value
                 total_stake += stake_value
                 logs.append(f"🤖 AUTO-PORTFOLIO: {card.get('match_ru', card.get('match', ''))} | {pick} @ {odds_value:.2f} | stake {stake_value:.2f}")
+
+        # Explain why the portfolio stayed empty instead of silently showing zero additions.
+        if auto_add and not new_bets:
+            pending_count = len(existing_keys)
+            priced_count = sum(1 for card in cards if card.get("market_odds"))
+            qualified_count = sum(
+                1 for card in cards
+                if card.get("best")
+                and (card.get("verdict") or {}).get("real_odds")
+                and (card.get("verdict") or {}).get("value_passed")
+            )
+            logs.append(
+                "ℹ️ AUTO-PORTFOLIO: новых ставок 0; "
+                f"матчей с реальными кэфами 1X2={priced_count}/{len(cards)}, "
+                f"прошедших value-фильтры={qualified_count}, "
+                f"текущих ожидающих ставок в ключах={pending_count}. "
+                "Если кэфы есть, но value=0, ни один исход не прошёл пороги "
+                "вероятности/edge/EV/Kelly; ставки без value не добавляются."
+            )
+        elif not auto_add:
+            logs.append("ℹ️ AUTO-PORTFOLIO выключен переключателем; ставки автоматически не добавлялись.")
 
         # Totals are auto-added only after the historical market benchmark passes.
         if auto_add:
