@@ -569,6 +569,11 @@ with st.sidebar:
         "The Odds API key (опц.)",
         value=_api_key_default("odds_api_key", "ODDS_API_KEY", "odds_api_key"),
         type="password", key="odds_api_key_input")
+    highlightly_key = st.text_input(
+        "Highlightly API key (коэффициенты; нужен платный тариф)",
+        value=_api_key_default("highlightly_api_key", "HIGHLIGHTLY_API_KEY", "highlightly_api_key"),
+        type="password", key="highlightly_api_key_input",
+        help="Реальные prematch odds из Highlightly. На Free/Basic endpoint коэффициентов недоступен.")
     api_football_key = st.text_input(
         "API-Football key",
         value=_api_key_default("api_football_key", "API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY"),
@@ -618,6 +623,7 @@ with st.sidebar:
     _widget_key_map = {
         "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
         "odds_api_key": ("odds_api_key_input", ("ODDS_API_KEY",), ("ODDS_API_KEY", "odds_api_key")),
+        "highlightly_api_key": ("highlightly_api_key_input", ("HIGHLIGHTLY_API_KEY",), ("HIGHLIGHTLY_API_KEY", "highlightly_api_key")),
         "api_football_key": ("api_football_key_input", ("API_FOOTBALL_KEY",), ("API_FOOTBALL_KEY", "api_football_key", "APIFOOTBALL_KEY")),
         "therundown_api_key": ("therundown_api_key_input", ("THERUNDOWN_API_KEY",), ("THERUNDOWN_API_KEY", "therundown_api_key", "rundown_key")),
         "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
