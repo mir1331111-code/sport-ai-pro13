@@ -582,7 +582,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
         st.download_button(
             "⬇️ Скачать шаблон CSV",
-            data="date,home,away,П1,X,П2,source\\n2026-10-26,Santa Clara,Benfica,9.00,5.00,1.30,manual\\n",
+            data="date,home,away,П1,X,П2,source\\n,,,,,,\\n",
             file_name="neuro_bet_odds_template.csv",
             mime="text/csv",
             use_container_width=False,
