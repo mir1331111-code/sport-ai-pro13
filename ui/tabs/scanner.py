@@ -330,10 +330,9 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         "corners": {"STAT"},
         "cards": {"STAT"},
     }
-    # The default scanner view is winner-only (1X2). Do not mix in
-    # model-only BTTS/totals/corners/cards forecasts when their real odds
-    # are not available; those markets are shown only in their own tabs.
-    allowed_types = filter_types.get(market_filter, {"1X2"}) if market_filter is not None else {"1X2"}
+    # In "all matches" mode, compare every modeled market. Dedicated tabs
+    # restrict the list to their own market type.
+    allowed_types = filter_types.get(market_filter, set(filter_types.values().__iter__().__next__())) if market_filter is not None else {"1X2", "OU", "BTTS", "STAT"}
     candidate_options = {
         label: item for label, item in market_options.items()
         if market_type(item[0]) in allowed_types
@@ -345,13 +344,11 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         candidate_options = {label: item for label, item in candidate_options.items()
                              if item[0].startswith("Карты ")}
 
-    # Show the full exact-market quote map, not just the single price selected
-    # for the model's top forecast. This makes the outcome/line pairing auditable.
+    # Show all available exact-market prices in the current market view.
     displayed_quotes = [
         (item[0], quote_for(item[0]))
         for item in candidate_options.values()
-        if (market_filter is not None or market_type(item[0]) == "1X2")
-        and quote_for(item[0]) is not None
+        if quote_for(item[0]) is not None
     ]
     if displayed_quotes:
         quote_text = " · ".join(f"{pick}: **{odd:.2f}**" for pick, odd in displayed_quotes)
@@ -367,11 +364,9 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         for label, item in candidate_options.items()
         if quote_for(item[0]) is not None and 0 < item[1] < 1
     ]
-    # In the all-markets view, never let an available 1X2 price force the
-    # selection away from a higher-probability BTTS/total forecast. A quote is
-    # displayed as the price for the selected pick only if its market matches.
-    if market_filter is None:
-        quoted_candidates = []
+    # Prefer the strongest model forecast among markets with a real,
+    # exact-market quote. If none is priced, keep the best model forecast
+    # visible but mark it as unpriced and do not allow value/portfolio actions.
     if not candidate_options:
         st.info("Для этого рынка модель пока не сформировала прогноз с достаточными данными.")
         return
