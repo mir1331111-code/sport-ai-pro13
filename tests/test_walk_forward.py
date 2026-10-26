@@ -24,6 +24,11 @@ class WalkForwardTests(unittest.TestCase):
         self.assertEqual(result["candidate"]["n"], 24)
         self.assertIsNotNone(result["delta_candidate_minus_baseline"]["brier"])
         self.assertIn("untouched chronological holdout", result["interpretation"])
+        self.assertEqual(set(result["goals_totals_by_line"]), {"0.5", "1.5", "2.5", "3.5", "4.5", "5.5"})
+        for line_report in result["goals_totals_by_line"].values():
+            self.assertEqual(line_report["n"], 24)
+            self.assertIsNotNone(line_report["metrics"]["brier"])
+            self.assertIsNotNone(line_report["metrics"]["log_loss"])
 
     def test_skips_rows_without_valid_dates_or_scores(self):
         result = walk_forward_compare([
