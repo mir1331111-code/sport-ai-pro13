@@ -1079,16 +1079,14 @@ def _prognozist_extract_extra_markets(html):
     text = re.sub(r"\s+", " ", text).strip()
     found = {"btts_market_odds": {}, "total_market_odds": {}, "stat_market_odds": {}}
 
-    # Parse prices only inside the explicitly labelled Marathon block. Previously
-    # markets were extracted page-wide and a bookmaker label elsewhere on the page
-    # could incorrectly be applied to those prices.
+    # Parse prices only inside one explicitly labelled bookmaker block. Never
+    # collect prices page-wide and then attach an unrelated bookmaker name to them.
     source_headings = list(re.finditer(
         r"Коэффициенты\s+(Winline|Марафон|Marathon)\b", text, re.I
     ))
-    marathon_section = None
+    bookmaker_section = None
+    source_label = "prognozist_unverified"
     for idx, heading in enumerate(source_headings):
-        if heading.group(1).casefold() not in {"марафон", "marathon"}:
-            continue
         section_end = source_headings[idx + 1].start() if idx + 1 < len(source_headings) else len(text)
         section = text[heading.end():section_end]
         has_prices = bool(re.search(
@@ -1099,12 +1097,14 @@ def _prognozist_extract_extra_markets(html):
             section, re.I
         ))
         if has_prices:
-            marathon_section = section
+            bookmaker_section = section
+            source_label = ("prognozist_winline" if heading.group(1).casefold() == "winline"
+                            else "prognozist_marathon")
             break
-    if marathon_section is None:
+    if bookmaker_section is None:
         found["extra_market_source"] = "prognozist_unverified"
         return found
-    text = marathon_section
+    text = bookmaker_section
 
     def valid_price(raw):
         odd = _prognozist_num(raw)
@@ -1237,7 +1237,7 @@ def _prognozist_extract_extra_markets(html):
             })
 
     # Every parsed price above came from this explicitly labelled section.
-    found["extra_market_source"] = "prognozist_marathon"
+    found["extra_market_source"] = source_label
     return {key: value for key, value in found.items() if value}
 
 def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_granted=False):
