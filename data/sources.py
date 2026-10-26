@@ -1152,6 +1152,48 @@ def _prognozist_extract_extra_markets(html):
             )[0]
             collect_totals(section, found["stat_market_odds"], prefix, lines)
 
+    # Prognozist/Marathon's betting-line page often renders additional totals
+    # as compact labels, e.g. "Дополнительный тотал: (2.5) Бол. 1.181; Мен. 3.95".
+    # Parse those explicit paired quotes as well as the prose-style detail page.
+    compact_total = re.compile(
+        r"(?:Дополнительный\s+)?Тотал(?:\s+голов)?\s*[:,-]?\s*"
+        r"\(?\s*(?P<line>\d{1,2}[.,]\d)\s*\)?\s*"
+        r"(?:Бол(?:ьше)?\.?|ТБ)\s*[:=]?\s*(?P<over>\d{1,3}(?:[.,]\d{1,4})?)"
+        r"\s*[;,|]?\s*(?:Мен(?:ьше)?\.?|ТМ)\s*[:=]?\s*(?P<under>\d{1,3}(?:[.,]\d{1,4})?)",
+        re.I,
+    )
+    for match in compact_total.finditer(text):
+        start = max(0, match.start() - 90)
+        context = text[start:match.start()]
+        # Do not assign first/second-half totals to the full-match market.
+        if re.search(r"(?:1\s*[-.]?\s*тайм|перв(?:ый|ого)\s+тайм|2\s*[-.]?\s*тайм|втор(?:ой|ого)\s+тайм)", context, re.I):
+            continue
+        line = match.group("line").replace(",", ".")
+        over, under = valid_price(match.group("over")), valid_price(match.group("under"))
+        if over:
+            found["total_market_odds"][f"ТБ {line}"] = over
+        if under:
+            found["total_market_odds"][f"ТМ {line}"] = under
+
+    # A common layout puts "Больше/Меньше" before the line and price, while
+    # another uses "Тотал бол. (3.5) 2.375; Тотал мен. (3.5) 1.60".
+    compact_side = re.compile(
+        r"Тотал\s*(?:голов\s*)?(?P<side>бол(?:ьше)?\.?|мен(?:ьше)?\.?|ТБ|ТМ)"
+        r"\s*\(?\s*(?P<line>\d{1,2}[.,]\d)\s*\)?\s*"
+        r"[:=]?\s*(?P<price>\d{1,3}(?:[.,]\d{1,4})?)",
+        re.I,
+    )
+    for match in compact_side.finditer(text):
+        context = text[max(0, match.start() - 100):match.start()]
+        if re.search(r"(?:1\s*[-.]?\s*тайм|перв(?:ый|ого)\s+тайм|2\s*[-.]?\s*тайм|втор(?:ой|ого)\s+тайм)", context, re.I):
+            continue
+        line = match.group("line").replace(",", ".")
+        side = match.group("side").casefold()
+        key = f"ТБ {line}" if side.startswith(("бол", "тб")) else f"ТМ {line}"
+        price = valid_price(match.group("price"))
+        if price:
+            found["total_market_odds"][key] = price
+
     # The source also offers corner 1X2 on some matches. Do not confuse this
     # with a total-corners market.
     corners = re.search(
