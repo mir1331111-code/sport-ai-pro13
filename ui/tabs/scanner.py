@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 import hashlib
+import threading
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -173,16 +174,21 @@ def _train_engine(matrix_n, logs, update_loader):
     return engine
 
 
+@st.cache_resource(show_spinner=False)
+def _shared_engine_cache():
+    # Shared across Streamlit reruns and browser sessions in the same process.
+    return {"engines": {}, "lock": threading.RLock()}
+
+
 def _load_engine(matrix_n, logs, update_loader):
-    """Reuse the trained model for repeated scans in the same Streamlit session."""
+    """Reuse a fitted model across reruns/sessions; rebuild only on cache miss."""
     import pickle, gzip, os
     from config import DISK_CACHE_DIR
 
-    cache_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}"
-    # Streamlit reruns the script after every interaction. Keep the fitted model
-    # in session_state so pressing SCAN again never rebuilds the same history.
+    cache_key = f"{APP_VERSION}:{int(matrix_n)}"
+    session_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}"
     try:
-        session_engine = st.session_state.get(cache_key)
+        session_engine = st.session_state.get(session_key)
         if (session_engine is not None
                 and hasattr(session_engine, "match_stats")
                 and getattr(session_engine, "trained_n", 0) > 0):
@@ -194,36 +200,56 @@ def _load_engine(matrix_n, logs, update_loader):
     except Exception:
         pass
 
-    p = os.path.join(DISK_CACHE_DIR, f"engine_{matrix_n}.pkl.gz")
-    if os.path.exists(p):
+    shared = _shared_engine_cache()
+    with shared["lock"]:
+        cached = shared["engines"].get(cache_key)
+        if (cached is not None and hasattr(cached, "match_stats")
+                and getattr(cached, "trained_n", 0) > 0):
+            try:
+                st.session_state[session_key] = cached
+            except Exception:
+                pass
+            logs.append(
+                f"🧠 Модель из общего кэша ({cached.trained_n} матчей; "
+                "повторного обучения нет)"
+            )
+            return cached
+
+        p = os.path.join(DISK_CACHE_DIR, f"engine_{APP_VERSION}_{matrix_n}.pkl.gz")
+        if os.path.exists(p):
+            try:
+                with open(p, "rb") as f:
+                    data = pickle.loads(gzip.decompress(f.read()))
+                cached_engine = data.get("engine")
+                if (data.get("fp") == APP_VERSION
+                        and hasattr(cached_engine, "match_stats")
+                        and getattr(cached_engine, "trained_n", 0) > 0):
+                    shared["engines"][cache_key] = cached_engine
+                    try:
+                        st.session_state[session_key] = cached_engine
+                    except Exception:
+                        pass
+                    logs.append(
+                        f"🧠 Модель из дискового кэша "
+                        f"({cached_engine.trained_n} матчей; повторного обучения нет)"
+                    )
+                    return cached_engine
+            except Exception as exc:
+                logs.append(f"⚠️ Кэш модели не прочитан ({type(exc).__name__}); создаю заново.")
+
+        engine = _train_engine(matrix_n, logs, update_loader)
         try:
-            with open(p, "rb") as f:
-                data = pickle.loads(gzip.decompress(f.read()))
-            cached_engine = data.get("engine")
-            if (data.get("fp") == APP_VERSION
-                    and hasattr(cached_engine, "match_stats")):
-                try:
-                    st.session_state[cache_key] = cached_engine
-                except Exception:
-                    pass
-                logs.append("Engine из дискового кэша (включая историю угловых/карточек)")
-                return cached_engine
+            with open(p, "wb") as f:
+                f.write(gzip.compress(pickle.dumps(
+                    {"fp": APP_VERSION, "engine": engine})))
+        except Exception as exc:
+            logs.append(f"ℹ️ Дисковый кэш недоступен ({type(exc).__name__}); модель сохранена в памяти.")
+        shared["engines"][cache_key] = engine
+        try:
+            st.session_state[session_key] = engine
         except Exception:
             pass
-
-    engine = _train_engine(matrix_n, logs, update_loader)
-    try:
-        with open(p, "wb") as f:
-            f.write(gzip.compress(pickle.dumps(
-                {"fp": APP_VERSION, "engine": engine})))
-    except Exception:
-        pass
-    try:
-        st.session_state[cache_key] = engine
-    except Exception:
-        pass
-    return engine
-
+        return engine
 
 def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, min_ev=0.03):
     """Понятный ввод букмекерского коэффициента для выбранного рынка."""
