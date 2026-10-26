@@ -1297,7 +1297,7 @@ def _prognozist_line_index(days=1, logs=None):
     # Check the current permission/robots decision before consulting the
     # odds cache; a previously cached line must not bypass a newly blocked source.
     today = datetime.now().date()
-    page_urls = [_PROGNOZIST_URL, _PROGNOZIST_MATCH_CENTRE]
+    page_urls = [_PROGNOZIST_URL, "https://prognozist.ru/line/marathon/output_line.php", _PROGNOZIST_MATCH_CENTRE]
     for offset in range(1, max(1, min(int(days), 14))):
         if offset == 1:
             page_urls.append("https://prognozist.ru/mc/football/tomorrow/")
@@ -1308,7 +1308,7 @@ def _prognozist_line_index(days=1, logs=None):
         if logs is not None:
             logs.append("Prognozist: все адреса заблокированы robots.txt или недоступны.")
         return []
-    key = f"prognozist_marathon_line_index_v7_{max(1, min(int(days), 14))}"
+    key = f"prognozist_marathon_line_index_v8_{max(1, min(int(days), 14))}"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         if logs is not None:
@@ -1317,7 +1317,7 @@ def _prognozist_line_index(days=1, logs=None):
     headers = {
         "User-Agent": "Sport-AI-Pro13/1.0 (+contact the repository maintainer; research client)",
         "Accept": "text/html,application/json,text/plain,*/*",
-        "Referer": "https://prognozist.ru/mc/football/",
+        "Referer": _PROGNOZIST_URL,
     }
     indexed = []
     for url in allowed_urls:
