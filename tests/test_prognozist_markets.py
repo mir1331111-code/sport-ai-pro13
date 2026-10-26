@@ -52,7 +52,7 @@ class PrognozistExtraMarketTests(unittest.TestCase):
         result = _prognozist_extract_extra_markets(html)
         self.assertEqual(result["extra_market_source"], "prognozist_unverified")
 
-    def test_tags_only_explicit_bookmaker_market_block(self):
+    def test_prefers_marathon_block_when_multiple_bookmakers_are_present(self):
         html = """
         <h2>Коэффициенты Winline</h2>
         <h3>Обе забьют?</h3><div>Да 1.82 Нет 1.98</div>
@@ -60,7 +60,10 @@ class PrognozistExtraMarketTests(unittest.TestCase):
         <h3>Тотал</h3><div>Больше 2.5 1.91 Меньше 2.5 1.89</div>
         """
         result = _prognozist_extract_extra_markets(html)
-        self.assertEqual(result["extra_market_source"], "prognozist_winline")
+        self.assertEqual(result["extra_market_source"], "prognozist_marathon")
+        self.assertEqual(result["total_market_odds"]["ТБ 2.5"], 1.91)
+        self.assertEqual(result["total_market_odds"]["ТМ 2.5"], 1.89)
+        self.assertEqual(result["btts_market_odds"], {})
 
     def test_does_not_invent_quotes_when_market_is_missing(self):
         result = _prognozist_extract_extra_markets("<h2>Обе забьют?</h2><div>Только текст</div>")
