@@ -1535,7 +1535,7 @@ def prognozist_marathon_odds(
         if logs is not None:
             logs.append("Prognozist: доступ заблокирован robots.txt или robots.txt недоступен; линия не загружается.")
         return None
-    cache_key = f"prognozist_marathon_v4_{day}_{hn}_{an}"
+    cache_key = f"prognozist_marathon_v5_{day}_{hn}_{an}"
     cached = cache_get(cache_key, 180)
     if cached is not None:
         return cached or None
