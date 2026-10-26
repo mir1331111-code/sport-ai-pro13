@@ -130,16 +130,16 @@ def render_fixture_header(c: dict) -> str:
         "C1":"🌍","EL":"🌍","EC":"🌍","NT_UNL":"🇪🇺","NT_EURO":"🇪🇺","NT_WC":"🌍",
     }.get(div, "⚽")
     def badge(url, label, fallback):
-        if url:
-            return (f'<img class="fixture-team-logo" src="{esc(url)}" alt="{esc(label)}" loading="lazy" '
-                    'referrerpolicy="no-referrer" '
-                    'style="width:46px;height:46px;object-fit:contain;flex:0 0 46px;'
-                    'filter:drop-shadow(0 3px 8px rgba(0,0,0,.35));" '
-                    f'onerror="this.outerHTML=\'<span class=\\\"fixture-logo-fallback\\\">{esc(fallback[:1].upper() or "?")}</span>\'"/>')
-        return (f'<span class="fixture-logo-fallback" style="width:46px;height:46px;display:grid;place-items:center;'
-                'border-radius:50%;background:rgba(148,163,184,.15);'
-                'border:1px solid rgba(148,163,184,.25);color:#e7f1f2;font-weight:800;flex:0 0 46px">'
-                f'{esc(fallback[:1].upper() or "?")}</span>')
+        letter = esc((fallback or "?")[:1].upper())
+        inner = (f'<img src="{esc(url)}" alt="{esc(label)}" loading="lazy" '
+                 'referrerpolicy="no-referrer" '
+                 'style="position:absolute;inset:0;width:46px;height:46px;object-fit:contain;'
+                 'filter:drop-shadow(0 3px 8px rgba(0,0,0,.35));" '
+                 'onerror="this.remove()"/>') if url else ""
+        return ('<span style="position:relative;width:46px;height:46px;display:grid;place-items:center;'
+                'flex:0 0 46px;border-radius:50%;background:rgba(148,163,184,.15);'
+                'border:1px solid rgba(148,163,184,.25);color:#e7f1f2;font-weight:800;">'
+                f'{letter}{inner}</span>')
     league_icon = (f'<img src="{esc(league_logo)}" alt="" loading="lazy" '
                    'referrerpolicy="no-referrer" style="width:22px;height:22px;object-fit:contain" '
                    'onerror="this.style.display=\'none\'"/>') if league_logo else ""
