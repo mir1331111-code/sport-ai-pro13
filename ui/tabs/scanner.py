@@ -29,6 +29,7 @@ from ui.cards import (render_verdict_card, translate_team,
 
 LLM_TOP_N = 8
 MAX_STAKE_PCT = 0.05
+AUTO_PORTFOLIO_MIN_PROB = 0.65  # Hard confidence gate for virtual-portfolio additions.
 
 
 def _runtime_secret(session_key: str, *names: str) -> str:
@@ -1031,6 +1032,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     )
                 except (TypeError, ValueError, IndexError):
                     continue
+                # High confidence is a hard portfolio gate, in addition to value/EV.
+                if probability < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB):
+                    continue
                 if stake_value <= 0 or stake_value > available_bank:
                     continue
                 new_bet = {
@@ -1112,7 +1116,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         stake = kelly(prob, odd, available_bank, kelly_frac, cap=0.02)
                     except (TypeError, ValueError, ZeroDivisionError):
                         continue
-                    if prob < float(min_prob) or edge_value < float(min_edge) or ev_value < 0.03 or stake <= 0 or stake > available_bank:
+                    if (prob < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB)
+                            or edge_value < float(min_edge) or ev_value < 0.03
+                            or stake <= 0 or stake > available_bank):
                         continue
                     new_bets.append({
                         "match": card.get("match", ""), "match_ru": card.get("match_ru", card.get("match", "")),
