@@ -1898,11 +1898,14 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
                             acc["X"].append(odd)
                     elif name == "totals":
                         pt = _f(out.get("point"))
-                        if pt is not None and abs(pt - 2.5) < 0.01:
+                        # Preserve the exact line supplied by the bookmaker API;
+                        # never collapse alternate totals into the 2.5 market.
+                        if pt is not None and 0.5 <= pt <= 10.5:
+                            line = f"{pt:g}"
                             if on == "Over":
-                                acc["ТБ 2.5"].append(odd)
+                                acc[f"ТБ {line}"].append(odd)
                             elif on == "Under":
-                                acc["ТМ 2.5"].append(odd)
+                                acc[f"ТМ {line}"].append(odd)
                     elif name == "btts":
                         if on == "Yes":
                             acc["BTTS да"].append(odd)
