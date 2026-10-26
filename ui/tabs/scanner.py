@@ -2,6 +2,8 @@
 from __future__ import annotations
 import os
 import json
+import csv
+import io
 import time
 import hashlib
 import threading
@@ -572,52 +574,93 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "Они сопоставляются с найденными матчами по командам и дате. "
             "Импорт не размещает ставки у букмекера."
         )
+        odds_file = st.file_uploader(
+            "Загрузить файл коэффициентов (.csv или .json)",
+            type=["csv", "json"],
+            key="scanner_odds_file",
+            help="CSV: date, home, away, П1, X, П2. Также распознаются home_team, away_team, commence_time, home_odds, draw_odds, away_odds.",
+        )
         odds_json = st.text_area(
-            "Котировки в JSON",
+            "Или вставь JSON",
             key="scanner_manual_odds_json",
-            height=130,
+            height=100,
             placeholder='[{"date":"2026-10-26","home":"Santa Clara","away":"Benfica","П1":9.0,"X":5.0,"П2":1.3,"source":"manual"}]',
         )
-        if odds_json.strip():
-            try:
-                parsed_quotes = json.loads(odds_json)
-                if isinstance(parsed_quotes, dict):
-                    parsed_quotes = [parsed_quotes]
-                if not isinstance(parsed_quotes, list):
-                    raise ValueError("Нужен JSON-объект или список объектов.")
-                normalized_quotes = []
-                for quote in parsed_quotes:
-                    if not isinstance(quote, dict):
-                        continue
-                    quote_date = str(quote.get("date") or "").strip()[:10]
-                    home_quote = str(quote.get("home") or "").strip()
-                    away_quote = str(quote.get("away") or "").strip()
-                    raw_prices = quote.get("odds") if isinstance(quote.get("odds"), dict) else quote
-                    try:
-                        prices = {key: float(raw_prices[key]) for key in ("П1", "X", "П2")}
-                    except (KeyError, TypeError, ValueError):
-                        continue
-                    try:
-                        datetime.strptime(quote_date, "%Y-%m-%d")
-                    except ValueError:
-                        continue
-                    if (not home_quote or not away_quote
-                            or not all(1.01 < price <= 100 for price in prices.values())):
-                        continue
-                    normalized_quotes.append({
-                        "date": quote_date, "home": home_quote, "away": away_quote,
-                        "odds": prices, "source": str(quote.get("source") or "manual_import"),
-                    })
-                st.session_state["_scanner_manual_odds_quotes"] = normalized_quotes
-                if normalized_quotes:
-                    st.success(f"Готово к сопоставлению: {len(normalized_quotes)} набор(а) коэффициентов.")
-                    st.caption("Нажми «Запустить скан», чтобы применить котировки к найденным матчам.")
+        try:
+            parsed_quotes = []
+            import_source_label = "JSON"
+            if odds_file is not None:
+                raw_file = odds_file.getvalue().decode("utf-8-sig", errors="replace")
+                if odds_file.name.lower().endswith(".json"):
+                    parsed_quotes = json.loads(raw_file)
+                    import_source_label = odds_file.name
                 else:
-                    st.warning("Не удалось найти корректные записи. Нужны date, home, away, П1, X и П2.")
-            except (json.JSONDecodeError, ValueError) as exc:
-                st.error(f"JSON не прочитан: {exc}")
-        elif "_scanner_manual_odds_quotes" not in st.session_state:
-            st.session_state["_scanner_manual_odds_quotes"] = []
+                    reader = csv.DictReader(io.StringIO(raw_file))
+                    for row in reader:
+                        lower = {str(k or "").strip().casefold(): v for k, v in row.items()}
+                        def _csv_value(*names):
+                            for name in names:
+                                value = lower.get(name.casefold())
+                                if value is not None and str(value).strip():
+                                    return str(value).strip()
+                            return ""
+                        parsed_quotes.append({
+                            "date": _csv_value("date", "match_date", "commence_time", "datetime", "kickoff")[:10],
+                            "home": _csv_value("home", "home_team", "hometeam", "host"),
+                            "away": _csv_value("away", "away_team", "awayteam", "visitor"),
+                            "П1": _csv_value("П1", "1", "home_odds", "home_win", "odds_home"),
+                            "X": _csv_value("X", "draw", "draw_odds", "odds_draw"),
+                            "П2": _csv_value("П2", "2", "away_odds", "away_win", "odds_away"),
+                            "source": _csv_value("source", "bookmaker") or odds_file.name,
+                        })
+                    import_source_label = odds_file.name
+            elif odds_json.strip():
+                parsed_quotes = json.loads(odds_json)
+            else:
+                parsed_quotes = []
+
+            if isinstance(parsed_quotes, dict):
+                parsed_quotes = [parsed_quotes]
+            if not isinstance(parsed_quotes, list):
+                raise ValueError("Нужен JSON-объект, список объектов или CSV-файл.")
+            normalized_quotes = []
+            for quote in parsed_quotes:
+                if not isinstance(quote, dict):
+                    continue
+                quote_date = str(quote.get("date") or quote.get("commence_time") or "").strip()[:10]
+                home_quote = str(quote.get("home") or quote.get("home_team") or "").strip()
+                away_quote = str(quote.get("away") or quote.get("away_team") or "").strip()
+                raw_prices = quote.get("odds") if isinstance(quote.get("odds"), dict) else quote
+                aliases = {
+                    "П1": ("П1", "1", "home_odds", "home_win", "odds_home"),
+                    "X": ("X", "draw", "draw_odds", "odds_draw"),
+                    "П2": ("П2", "2", "away_odds", "away_win", "odds_away"),
+                }
+                prices = {}
+                for market, keys in aliases.items():
+                    value = next((raw_prices[k] for k in keys if raw_prices.get(k) not in (None, "")), None)
+                    prices[market] = float(str(value).replace(",", ".")) if value is not None else 0.0
+                try:
+                    datetime.strptime(quote_date, "%Y-%m-%d")
+                except ValueError:
+                    continue
+                if (not home_quote or not away_quote
+                        or not all(1.01 < price <= 100 for price in prices.values())):
+                    continue
+                normalized_quotes.append({
+                    "date": quote_date, "home": home_quote, "away": away_quote,
+                    "odds": prices, "source": str(quote.get("source") or quote.get("bookmaker") or "manual_import"),
+                })
+            st.session_state["_scanner_manual_odds_quotes"] = normalized_quotes
+            if normalized_quotes:
+                st.success(f"Готово: {len(normalized_quotes)} набор(а) коэффициентов из {import_source_label}.")
+                st.caption("Нажми «Запустить скан», чтобы сопоставить котировки с матчами.")
+            elif odds_file is not None or odds_json.strip():
+                st.warning("Не удалось прочитать валидные записи. Проверь дату, названия команд и коэффициенты П1 / X / П2.")
+            elif "_scanner_manual_odds_quotes" not in st.session_state:
+                st.session_state["_scanner_manual_odds_quotes"] = []
+        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+            st.error(f"Импорт не прочитан: {exc}")
 
     source_col, portfolio_col = st.columns([1, 1])
     with source_col:
