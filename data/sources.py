@@ -1243,7 +1243,14 @@ def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_gra
         from html import unescape
         fixture = _prognozist_parse_detail_heading(unescape(heading), odds, today=today)
         if fixture:
-            fixture.update(_prognozist_extract_extra_markets(response.text))
+            extra = _prognozist_extract_extra_markets(response.text)
+            fixture.update(extra)
+            market_counts = {
+                "totals": len(fixture.get("total_market_odds") or {}),
+                "btts": len(fixture.get("btts_market_odds") or {}),
+                "stats": len(fixture.get("stat_market_odds") or {}),
+            }
+            log.info("Prognozist detail markets %s: %s", href, market_counts)
             cache_put(cache_key, {k:v for k,v in fixture.items() if k != "prognozist_odds"})
         return fixture
     except Exception as exc:
