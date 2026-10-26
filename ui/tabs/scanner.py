@@ -270,10 +270,12 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         f"Вероятность модели: {model_prob * 100:.1f}% · "
         + (f"справочный кэф модели: {fair_odd:.2f}" if fair_odd else "справочный кэф модели: нет расчёта")
     )
+    # Only markets with an actual bookmaker quote can be auto-priced.
+    # Model fair odds are not a substitute for a real quote.
     st.info(
-        "2. Введите десятичный коэффициент именно из линии букмекера для выбранного исхода. "
-        "Например, если у букмекера рядом с «ТБ 2.5» написано 1.85 — вводите 1.85. "
-        "Не вводите справочный кэф модели и не вводите сумму ставки."
+        "Коэффициент берётся из линии Prognozist/Marathon, если источник вернул "
+        "именно выбранный рынок и исход. Справочный коэффициент модели не является "
+        "букмекерским коэффициентом."
     )
 
     examples = {
@@ -295,30 +297,42 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # model fair price as a bookmaker quote.
     source_odd = None
     source_odds = c.get("market_odds") or {}
+    total_odds = c.get("total_market_odds") or {}
+    # Use only a quote for the exact selected market/outcome.
+    # 1X2 odds must never be shown as BTTS, totals, corners, or cards odds.
     if market_type(pick) == "1X2":
-        try:
-            candidate_odd = float(source_odds.get(pick) or 0)
-            if 1.01 < candidate_odd <= 100:
-                source_odd = candidate_odd
-        except (TypeError, ValueError):
-            source_odd = None
+        raw_odd = source_odds.get(pick)
+    elif market_type(pick) == "OU":
+        raw_odd = total_odds.get(pick)
+    elif market_type(pick) == "BTTS":
+        raw_odd = (c.get("btts_market_odds") or {}).get(pick)
+    elif market_type(pick) == "STAT":
+        raw_odd = (c.get("stat_market_odds") or {}).get(pick)
+    else:
+        raw_odd = None
+    try:
+        candidate_odd = float(raw_odd or 0)
+        if 1.01 < candidate_odd <= 100:
+            source_odd = candidate_odd
+    except (TypeError, ValueError):
+        source_odd = None
 
     if source_odd is not None:
         manual_odd = source_odd
-        source_label = str(c.get("odds_source") or "Prognozist/Marathon")
+        source_label = str(
+            c.get("total_odds_source") if market_type(pick) == "OU"
+            else c.get("odds_source") or "Prognozist/Marathon"
+        )
         col_input.success(f"Кэф загружен автоматически ({source_label}): **{manual_odd:.2f}**")
     else:
-        manual_odd = col_input.number_input(
-            "3. Коэффициент букмекера",
-            min_value=1.01,
-            max_value=100.0,
-            value=1.01,
-            step=0.01,
-            key=input_key,
-            help="Автоматическая линия для этого рынка не найдена. Введите десятичный кэф букмекера, например 1.85 или 2.10.",
+        manual_odd = None
+        col_input.warning(
+            "Реальный коэффициент именно на этот рынок не получен из Prognozist/Marathon. "
+            "Расчёт value и добавление в портфель отключены — коэффициент 1X2 нельзя "
+            "использовать для «Обе забьют», тоталов, угловых или карточек."
         )
 
-    if manual_odd > 1.01 and 0.0 < model_prob < 1.0:
+    if manual_odd is not None and manual_odd > 1.01 and 0.0 < model_prob < 1.0:
         market_implied = 1.0 / manual_odd
         prob = max(1e-6, min(1.0 - 1e-6,
                              market_implied + 0.40 * (model_prob - market_implied)))
@@ -386,8 +400,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                 st.rerun()
         else:
             col_btn.caption("Автодобавление не сработало: не пройдены пороги вероятности, Edge, EV или Kelly.")
-    else:
-        col_metrics.caption("Введите коэффициент выше 1.01, чтобы увидеть расчёт.")
+    elif source_odd is None:
+        col_metrics.caption("Ожидается реальный коэффициент выбранного рынка из Prognozist/Marathon.")
 
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
