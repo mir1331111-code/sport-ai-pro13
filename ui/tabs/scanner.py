@@ -370,24 +370,57 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     if not candidate_options:
         st.info("Для этого рынка модель пока не сформировала прогноз с достаточными данными.")
         return
-    if quoted_candidates:
-        selected_label, pick, model_prob, _ = max(
-            quoted_candidates, key=lambda row: (row[2], row[3] * 0.0001)
+    # Rank priced picks by expected value, not raw probability. A 38% outcome
+    # at 2.36 is not a recommendation when its EV is negative. Keep unpriced
+    # model forecasts visible in market-specific views, but never present them
+    # as a bet recommendation.
+    priced_metrics = [
+        (label, pick_name, probability, odd, probability * odd - 1,
+         probability - (1.0 / odd))
+        for label, pick_name, probability, odd in quoted_candidates
+    ]
+    positive_value = [row for row in priced_metrics if row[4] > 0 and row[5] > 0]
+    if positive_value:
+        selected_label, pick, model_prob, selected_odd, selected_ev, selected_edge = max(
+            positive_value, key=lambda row: (row[4], row[5], row[2])
         )
         auto_quote_exists = True
+        has_positive_value = True
+    elif priced_metrics:
+        selected_label, pick, model_prob, selected_odd, selected_ev, selected_edge = max(
+            priced_metrics, key=lambda row: (row[4], row[5], row[2])
+        )
+        auto_quote_exists = True
+        has_positive_value = False
     else:
         selected_label, (pick, model_prob) = max(
             candidate_options.items(), key=lambda row: row[1][1]
         )
+        selected_odd = None
+        selected_ev = None
+        selected_edge = None
         auto_quote_exists = False
+        has_positive_value = False
 
-    st.markdown("**🎯 Лучший прогноз модели для этого матча**")
-    st.markdown(f"### {selected_label}")
-    st.caption(
-        "Исход выбран автоматически по максимальной вероятности модели"
-        + (" среди рынков с реальным коэффициентом источника." if auto_quote_exists
-           else ". Реального коэффициента на доступные исходы не получено.")
-    )
+    if has_positive_value:
+        st.markdown("**🎯 Лучший вариант с положительным value**")
+        st.markdown(f"### {selected_label}")
+        st.caption(
+            f"Выбран по EV среди рынков с реальным коэффициентом: "
+            f"EV {selected_ev * 100:+.1f}% · Edge {selected_edge * 100:+.1f}%."
+        )
+    elif auto_quote_exists:
+        st.markdown("**📊 Прогноз модели — ставки с положительным value не найдено**")
+        st.markdown(f"### {selected_label}")
+        st.warning(
+            f"Лучший из проверенных коэффициентов всё ещё без преимущества: "
+            f"EV {selected_ev * 100:+.1f}% · Edge {selected_edge * 100:+.1f}%. "
+            "Это прогноз для анализа, не рекомендация к ставке."
+        )
+    else:
+        st.markdown("**📊 Прогноз модели — без подтверждённого коэффициента**")
+        st.markdown(f"### {selected_label}")
+        st.caption("Реального коэффициента на выбранный исход не получено; ставку и value подтвердить нельзя.")
     market_is_validated = (market_type(pick) == "1X2" or
                            (market_type(pick) == "OU" and bool(c.get("total_market_validation"))))
     fair_odd = (1.0 / model_prob) if model_prob > 0 else None
