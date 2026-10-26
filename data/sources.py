@@ -1066,6 +1066,52 @@ def _prognozist_parse_detail_heading(heading, odds=None, today=None):
     return fixture
 
 
+def _prognozist_extract_extra_markets(html):
+    """Extract only explicitly labelled full-match markets from a Prognozist detail page."""
+    from html import unescape
+    text = unescape(re.sub(r"<[^>]+>", " ", str(html or "")))
+    text = re.sub(r"\\s+", " ", text)
+    found = {"btts_market_odds": {}, "total_market_odds": {}, "stat_market_odds": {}}
+
+    # Prognozist labels: "Обе забьют? Да 1.48 Нет 2.63".
+    m = re.search(
+        r"Обе\s+забьют\??.{0,100}?Да\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)"
+        r".{0,50}?Нет\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)",
+        text, re.I,
+    )
+    if m:
+        yes, no = (_prognozist_num(x) for x in m.groups())
+        if yes and no:
+            found["btts_market_odds"] = {"BTTS Да": yes, "BTTS Нет": no}
+
+    # Full-match totals only; skip "1 тайм Тотал" and "2 тайм Тотал".
+    total_block = re.search(
+        r"(?<!тайм )Тотал\s+(?:(?:голов)\s*)?(.{0,700}?)(?=Обе\s+забьют|1\s*тайм|2\s*тайм|1X2|Двойной шанс|Фора|Точный счет|Какая команда забьет|$)",
+        text, re.I,
+    )
+    if total_block:
+        block = total_block.group(1)
+        for side, label in (("Больше", "ТБ"), ("Меньше", "ТМ")):
+            for line, price in re.findall(
+                rf"{side}\s*\(?\s*(2\.5)\s*\)?\s*([0-9]{{1,3}}(?:[.,][0-9]{{1,4}})?)",
+                block, re.I,
+            ):
+                odd = _prognozist_num(price)
+                if odd:
+                    found["total_market_odds"][f"{label} {line}"] = odd
+
+    # The source publishes 1X2 corners prices on many match pages.
+    corners = re.search(r"1X2\s+Угловые\s*1\s*([0-9.,]+)\s*X\s*([0-9.,]+)\s*2\s*([0-9.,]+)", text, re.I)
+    if corners:
+        values = [_prognozist_num(x) for x in corners.groups()]
+        if all(values):
+            found["stat_market_odds"].update({
+                "Угл П1": values[0], "Угл X": values[1], "Угл П2": values[2],
+            })
+
+    return {key: value for key, value in found.items() if value}
+
+
 def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_granted=False):
     href = str(href or "").strip()
     if href.startswith("/"):
@@ -1097,6 +1143,7 @@ def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_gra
         from html import unescape
         fixture = _prognozist_parse_detail_heading(unescape(heading), odds, today=today)
         if fixture:
+            fixture.update(_prognozist_extract_extra_markets(response.text))
             cache_put(cache_key, {k:v for k,v in fixture.items() if k != "prognozist_odds"})
         return fixture
     except Exception as exc:
