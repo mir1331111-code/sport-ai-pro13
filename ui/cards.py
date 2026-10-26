@@ -108,7 +108,8 @@ _LEAGUE_FLAGS = {
 
 
 def render_fixture_header(c: dict) -> str:
-    """Premium compact fixture header with provider logos and a league/country marker."""
+    """Fixture header: real badges, competition flag, and match-specific stadium backdrop."""
+    import hashlib
     parts = str(c.get("match") or "").split(" vs ", 1)
     home = parts[0] if parts else "—"
     away = parts[1] if len(parts) > 1 else "—"
@@ -118,46 +119,69 @@ def render_fixture_header(c: dict) -> str:
     league_logo = str(c.get("league_badge") or "")
     home_logo = str(c.get("home_badge") or "")
     away_logo = str(c.get("away_badge") or "")
-    flag = _LEAGUE_FLAGS.get(div, "⚽")
+    country = {
+        "E0":"🏴","E1":"🏴","E2":"🏴","E3":"🏴","SC1":"🏴",
+        "SP1":"🇪🇸","SP2":"🇪🇸","I1":"🇮🇹","I2":"🇮🇹",
+        "D1":"🇩🇪","D2":"🇩🇪","F1":"🇫🇷","F2":"🇫🇷","N1":"🇳🇱",
+        "B1":"🇧🇪","P1":"🇵🇹","T1":"🇹🇷","G1":"🇬🇷","R1":"🇷🇺",
+        "MLS1":"🇺🇸","BR1":"🇧🇷","AR1":"🇦🇷","AT1":"🇦🇹","CH1":"🇨🇭",
+        "NO1":"🇳🇴","SE1":"🇸🇪","DK1":"🇩🇰","PL1":"🇵🇱","JP1":"🇯🇵",
+        "KR1":"🇰🇷","MX1":"🇲🇽","CO1":"🇨🇴",
+        "C1":"🌍","EL":"🌍","EC":"🌍","NT_UNL":"🇪🇺","NT_EURO":"🇪🇺","NT_WC":"🌍",
+    }.get(div, "⚽")
     def badge(url, label, fallback):
         if url:
-            return (f'<img src="{esc(url)}" alt="{esc(label)}" loading="lazy" '
+            return (f'<img class="fixture-team-logo" src="{esc(url)}" alt="{esc(label)}" loading="lazy" '
                     'referrerpolicy="no-referrer" '
-                    'style="width:38px;height:38px;object-fit:contain;flex:0 0 38px;'
-                    'filter:drop-shadow(0 3px 8px rgba(0,0,0,.25));" '
-                    f'onerror="this.style.display=\'none\'"/>')
-        return (f'<span style="width:38px;height:38px;display:grid;place-items:center;'
-                'border-radius:50%;background:rgba(148,163,184,.12);'
-                'border:1px solid rgba(148,163,184,.2);color:#dbe7e9;font-weight:800;'
-                f'flex:0 0 38px">{esc(fallback[:1].upper() or "?")}</span>')
+                    'style="width:46px;height:46px;object-fit:contain;flex:0 0 46px;'
+                    'filter:drop-shadow(0 3px 8px rgba(0,0,0,.35));" '
+                    f'onerror="this.outerHTML=\'<span class=\\\"fixture-logo-fallback\\\">{esc(fallback[:1].upper() or "?")}</span>\'"/>')
+        return (f'<span class="fixture-logo-fallback" style="width:46px;height:46px;display:grid;place-items:center;'
+                'border-radius:50%;background:rgba(148,163,184,.15);'
+                'border:1px solid rgba(148,163,184,.25);color:#e7f1f2;font-weight:800;flex:0 0 46px">'
+                f'{esc(fallback[:1].upper() or "?")}</span>')
     league_icon = (f'<img src="{esc(league_logo)}" alt="" loading="lazy" '
-                   'referrerpolicy="no-referrer" style="width:20px;height:20px;object-fit:contain" '
+                   'referrerpolicy="no-referrer" style="width:22px;height:22px;object-fit:contain" '
                    'onerror="this.style.display=\'none\'"/>') if league_logo else ""
+    stadium_photo = str(c.get("stadium_image") or c.get("venue_image") or "")
+    # Different tasteful stadium backdrops per fixture when no verified venue image is provided.
+    stadium_pool = [
+        "https://images.unsplash.com/photo-1522778119026-d647f0596c20?auto=format&fit=crop&w=1400&q=80",
+        "https://images.unsplash.com/photo-1508098682722-e99c643e7f0b?auto=format&fit=crop&w=1400&q=80",
+        "https://images.unsplash.com/photo-1522778119026-d647f0596c20?auto=format&fit=crop&w=1400&q=75&sat=-20",
+        "https://images.unsplash.com/photo-1459865264687-595d652de67e?auto=format&fit=crop&w=1400&q=80",
+    ]
+    seed = hashlib.sha256(f"{c.get('date_iso','')}|{home}|{away}".encode()).digest()
+    stadium_photo = stadium_photo or stadium_pool[seed[0] % len(stadium_pool)]
     date = esc(str(c.get("date") or "Время уточняется"))
+    stadium = esc(str(c.get("venue") or c.get("stadium") or "СТАДИОН · MATCHDAY"))
     return (
-        '<section class="fixture-premium" style="margin:8px 0 10px;padding:15px 16px;'
-        'border:1px solid rgba(148,163,184,.17);border-radius:16px;'
-        'background:linear-gradient(120deg,rgba(22,35,43,.95),rgba(13,22,29,.96));">'
-        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;'
-        'margin-bottom:15px;">'
+        '<section class="fixture-premium" style="position:relative;isolation:isolate;overflow:hidden;'
+        'margin:10px 0 12px;border:1px solid rgba(148,163,184,.22);border-radius:18px;'
+        'background:#111b20;box-shadow:0 12px 30px rgba(0,0,0,.18);">'
+        f'<div aria-hidden="true" style="position:absolute;inset:0;z-index:-1;background-image:linear-gradient(90deg,rgba(8,15,20,.94),rgba(8,15,20,.69) 52%,rgba(8,15,20,.86)),url(&quot;{esc(stadium_photo)}&quot;);background-size:cover;background-position:center 58%;transform:scale(1.02)"></div>'
+        '<div style="padding:15px 17px 17px;">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:17px;">'
         '<div style="display:flex;align-items:center;gap:8px;min-width:0;">'
-        f'<span style="font-size:1.1rem">{flag}</span>{league_icon}'
-        f'<span style="font-size:.76rem;color:#a8bbc1;font-weight:700;letter-spacing:.02em">{esc(league)}</span>'
+        f'<span style="font-size:1.18rem">{country}</span>{league_icon}'
+        f'<span style="font-size:.76rem;color:#d1e0e3;font-weight:750;letter-spacing:.035em">{esc(league)}</span>'
         '</div>'
-        f'<span style="font:500 .74rem monospace;color:#8ea4aa">{date}</span>'
+        f'<span style="font:600 .72rem monospace;color:#c0d0d3">{date}</span>'
         '</div>'
-        '<div style="display:grid;grid-template-columns:minmax(0,1fr) 34px minmax(0,1fr);'
-        'align-items:center;gap:8px;">'
-        '<div style="display:flex;align-items:center;gap:10px;min-width:0;">'
+        '<div style="display:grid;grid-template-columns:minmax(0,1fr) 36px minmax(0,1fr);align-items:center;gap:9px;">'
+        '<div style="display:flex;align-items:center;gap:11px;min-width:0;">'
         + badge(home_logo, home_ru, home_ru) +
-        f'<span style="font-weight:750;color:#f1f7f7;font-size:1rem;line-height:1.25;overflow-wrap:anywhere">{esc(home_ru)}</span>'
+        f'<span style="font-weight:800;color:#fff;font-size:1.02rem;line-height:1.25;text-shadow:0 2px 9px #000;overflow-wrap:anywhere">{esc(home_ru)}</span>'
         '</div>'
-        '<span style="display:grid;place-items:center;width:32px;height:32px;border-radius:10px;'
-        'background:rgba(148,163,184,.08);color:#7f969d;font-size:.7rem;font-weight:800">VS</span>'
-        '<div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;min-width:0;">'
-        f'<span style="font-weight:750;color:#f1f7f7;font-size:1rem;line-height:1.25;text-align:right;overflow-wrap:anywhere">{esc(away_ru)}</span>'
+        '<span style="display:grid;place-items:center;width:34px;height:34px;border-radius:11px;'
+        'background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.15);'
+        'color:#e4eeee;font-size:.68rem;font-weight:900;backdrop-filter:blur(6px)">VS</span>'
+        '<div style="display:flex;align-items:center;justify-content:flex-end;gap:11px;min-width:0;">'
+        f'<span style="font-weight:800;color:#fff;font-size:1.02rem;line-height:1.25;text-align:right;text-shadow:0 2px 9px #000;overflow-wrap:anywhere">{esc(away_ru)}</span>'
         + badge(away_logo, away_ru, away_ru) +
-        '</div></div></section>'
+        '</div></div>'
+        f'<div style="margin-top:13px;font-size:.65rem;letter-spacing:.12em;color:#c0d0d3;font-weight:700">{stadium}</div>'
+        '</div></section>'
     )
 
 
