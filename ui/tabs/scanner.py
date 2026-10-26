@@ -4,6 +4,7 @@ import os
 import json
 import csv
 import io
+import html
 import time
 import hashlib
 import threading
