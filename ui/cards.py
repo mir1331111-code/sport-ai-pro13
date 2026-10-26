@@ -91,6 +91,76 @@ def _league_badge_html(div: str, fallback_name: str, badge_from_card: str = "") 
     return '<span class="league-badge">' + icon + esc(name) + '</span>'
 
 
+
+# ============ PREMIUM FIXTURE HEADER ============
+_LEAGUE_FLAGS = {
+    "E0": "🏴", "E1": "🏴", "E2": "🏴", "E3": "🏴",
+    "SP1": "🇪🇸", "SP2": "🇪🇸", "I1": "🇮🇹", "I2": "🇮🇹",
+    "D1": "🇩🇪", "D2": "🇩🇪", "D3": "🇩🇪", "F1": "🇫🇷", "F2": "🇫🇷",
+    "N1": "🇳🇱", "B1": "🇧🇪", "P1": "🇵🇹", "T1": "🇹🇷", "G1": "🇬🇷",
+    "R1": "🇷🇺", "SC1": "🏴", "C1": "🌍", "EL": "🌍", "EC": "🌍",
+    "US_MLS": "🇺🇸", "US_USL": "🇺🇸", "US_L1": "🇺🇸",
+    "AU_": "🇦🇺", "JP_": "🇯🇵", "KR_": "🇰🇷", "CN_": "🇨🇳",
+    "MX_": "🇲🇽", "BR_": "🇧🇷", "AR_": "🇦🇷",
+    "NT": "🌍", "NT_WC": "🌍", "NT_EURO": "🇪🇺", "NT_UNL": "🇪🇺",
+    "W_": "🌍",
+}
+
+
+def render_fixture_header(c: dict) -> str:
+    """Premium compact fixture header with provider logos and a league/country marker."""
+    parts = str(c.get("match") or "").split(" vs ", 1)
+    home = parts[0] if parts else "—"
+    away = parts[1] if len(parts) > 1 else "—"
+    home_ru, away_ru = translate_team(home), translate_team(away)
+    div = str(c.get("div") or "")
+    league = str(c.get("league") or DIV_NAMES.get(div) or "Футбол")
+    league_logo = str(c.get("league_badge") or "")
+    home_logo = str(c.get("home_badge") or "")
+    away_logo = str(c.get("away_badge") or "")
+    flag = _LEAGUE_FLAGS.get(div, "⚽")
+    def badge(url, label, fallback):
+        if url:
+            return (f'<img src="{esc(url)}" alt="{esc(label)}" loading="lazy" '
+                    'referrerpolicy="no-referrer" '
+                    'style="width:38px;height:38px;object-fit:contain;flex:0 0 38px;'
+                    'filter:drop-shadow(0 3px 8px rgba(0,0,0,.25));" '
+                    f'onerror="this.style.display=\'none\'"/>')
+        return (f'<span style="width:38px;height:38px;display:grid;place-items:center;'
+                'border-radius:50%;background:rgba(148,163,184,.12);'
+                'border:1px solid rgba(148,163,184,.2);color:#dbe7e9;font-weight:800;'
+                f'flex:0 0 38px">{esc(fallback[:1].upper() or "?")}</span>')
+    league_icon = (f'<img src="{esc(league_logo)}" alt="" loading="lazy" '
+                   'referrerpolicy="no-referrer" style="width:20px;height:20px;object-fit:contain" '
+                   'onerror="this.style.display=\'none\'"/>') if league_logo else ""
+    date = esc(str(c.get("date") or "Время уточняется"))
+    return (
+        '<section class="fixture-premium" style="margin:8px 0 10px;padding:15px 16px;'
+        'border:1px solid rgba(148,163,184,.17);border-radius:16px;'
+        'background:linear-gradient(120deg,rgba(22,35,43,.95),rgba(13,22,29,.96));">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;'
+        'margin-bottom:15px;">'
+        '<div style="display:flex;align-items:center;gap:8px;min-width:0;">'
+        f'<span style="font-size:1.1rem">{flag}</span>{league_icon}'
+        f'<span style="font-size:.76rem;color:#a8bbc1;font-weight:700;letter-spacing:.02em">{esc(league)}</span>'
+        '</div>'
+        f'<span style="font:500 .74rem "IBM Plex Mono",monospace;color:#8ea4aa">{date}</span>'
+        '</div>'
+        '<div style="display:grid;grid-template-columns:minmax(0,1fr) 34px minmax(0,1fr);'
+        'align-items:center;gap:8px;">'
+        '<div style="display:flex;align-items:center;gap:10px;min-width:0;">'
+        + badge(home_logo, home_ru, home_ru) +
+        f'<span style="font-weight:750;color:#f1f7f7;font-size:1rem;line-height:1.25;overflow-wrap:anywhere">{esc(home_ru)}</span>'
+        '</div>'
+        '<span style="display:grid;place-items:center;width:32px;height:32px;border-radius:10px;'
+        'background:rgba(148,163,184,.08);color:#7f969d;font-size:.7rem;font-weight:800">VS</span>'
+        '<div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;min-width:0;">'
+        f'<span style="font-weight:750;color:#f1f7f7;font-size:1rem;line-height:1.25;text-align:right;overflow-wrap:anywhere">{esc(away_ru)}</span>'
+        + badge(away_logo, away_ru, away_ru) +
+        '</div></div></section>'
+    )
+
+
 # ============ ГЛАВНЫЙ РЕНДЕР ============
 def render_verdict_card(c: dict, thr: float) -> str:
     v = c.get("verdict") or {}
