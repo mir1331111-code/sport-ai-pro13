@@ -1125,7 +1125,7 @@ def _prognozist_line_index(days=1, logs=None):
         if logs is not None:
             logs.append("Prognozist: все адреса заблокированы robots.txt или недоступны.")
         return []
-    key = f"prognozist_marathon_line_index_v6_{max(1, min(int(days), 14))}"
+    key = f"prognozist_marathon_line_index_v7_{max(1, min(int(days), 14))}"
     cached = cache_get(key, 180)
     if isinstance(cached, list):
         if logs is not None:
