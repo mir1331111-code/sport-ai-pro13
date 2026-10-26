@@ -1,10 +1,10 @@
-"""data/sources.py — TheSportsDB + football-data.org + Odds API + logos (v4).
+"""data/sources.py — Fixture feeds + Highlightly odds + logos (v4).
 
 Совместим с App.py v13:
   * parse_date, fdorg_match_result    — для авто-сеттла
   * fdorg_matches, tsdb_matches       — для сканера
   * load_seasonal, season_str         — для обучения модели
-  * odds_api_fixture                  — для реальных кэфов
+  * highlightly_odds_fixture           — единственный источник реальных кэфов
 
 Что изменено в v4:
   * USL Championship (США) больше не мапится на English Championship (E1).
