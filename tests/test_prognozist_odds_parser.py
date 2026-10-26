@@ -116,6 +116,7 @@ class PrognozistOddsParserTests(unittest.TestCase):
     def test_parses_compact_marathon_line_total_formats(self):
         from data.sources import _prognozist_extract_extra_markets
         html = """
+        <h2>Коэффициенты Marathon</h2>
         <div>Тотал бол. (3.5) 2.375; Тотал мен. (3.5) 1.60</div>
         <div>Дополнительный тотал: (2.5) Бол. 1.181; Мен. 3.95</div>
         <div>Тотал голов, 1-й тайм: Тотал бол. (1.5) 2.10; Тотал мен. (1.5) 1.70</div>
