@@ -561,12 +561,30 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         "</div>",
         unsafe_allow_html=True,
     )
-    c1, c2, c3 = st.columns([2.2, 1, 1.2], vertical_alignment="bottom")
-    days = c1.slider("Период", 1, 14, 3, help="Сколько дней вперёд проверять расписание.")
-    scan = c2.button("⚡ Запустить скан", type="primary", use_container_width=True,
-                     disabled=st.session_state.get("_scan_in_progress", False))
-    c3.markdown("<div class='scanner-help-pill'>🟢 Режим анализа · без реальных ставок</div>",
+    # Compact dashboard summary keeps the first screen useful before and after a scan.
+    previous_cards = [c for c in (D.get("cards") or []) if isinstance(c, dict)]
+    priced_count = sum(bool(c.get("market_odds")) for c in previous_cards)
+    qualified_count = sum(
+        bool(c.get("best") is not None
+             and (c.get("verdict") or {}).get("real_odds")
+             and (c.get("verdict") or {}).get("value_passed"))
+        for c in previous_cards
+    )
+    pending_count = sum(1 for b in (D.get("bets") or []) if b.get("status") == "pending")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Матчи в последнем скане", len(previous_cards))
+    k2.metric("С реальными кэфами", priced_count)
+    k3.metric("Value-проходы", qualified_count)
+    k4.metric("Виртуальный портфель", pending_count)
+
+    st.markdown("<div class='scanner-section-label'>БЫСТРЫЙ ЗАПУСК</div>",
                 unsafe_allow_html=True)
+    c1, c2 = st.columns([1.25, 1], vertical_alignment="bottom")
+    days = c1.slider("Горизонт матчей", 1, 14, 3,
+                     help="На сколько дней вперёд искать расписание.")
+    scan = c2.button("⚡ Запустить сканирование", type="primary",
+                     use_container_width=True,
+                     disabled=st.session_state.get("_scan_in_progress", False))
 
     with st.expander("📥 Импорт коэффициентов", expanded=False):
         st.markdown(
@@ -669,21 +687,24 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
             st.error(f"Импорт не прочитан: {exc}")
 
-    source_col, portfolio_col = st.columns([1, 1])
-    with source_col:
-        st.checkbox(
-            "Разрешить источник Prognozist / Marathon",
-            value=False,
-            key="prognozist_permission_input",
-            help="Источник используется только в рамках доступных условий и разрешений.",
-        )
-    with portfolio_col:
-        auto_add = st.checkbox(
-            "Автодобавление подходящих прогнозов в виртуальный портфель",
-            value=True,
-            key="scanner_auto_add_qualified_v3",
-            help="Только при наличии реального коэффициента и прохождении всех value-фильтров. Не размещает реальные ставки.",
-        )
+    with st.expander("⚙️ Настройки сканера", expanded=False):
+        st.caption("Дополнительные параметры скрыты, чтобы не перегружать основной экран.")
+        source_col, portfolio_col = st.columns(2)
+        with source_col:
+            st.checkbox(
+                "Разрешить источник Prognozist / Marathon",
+                value=False,
+                key="prognozist_permission_input",
+                help="Источник используется только в рамках доступных условий и разрешений.",
+            )
+        with portfolio_col:
+            auto_add = st.checkbox(
+                "Автодобавление в виртуальный портфель",
+                value=True,
+                key="scanner_auto_add_qualified_v3",
+                help="Добавляются только прогнозы с реальными коэффициентами, прошедшие value-фильтры. Реальные ставки не размещаются.",
+            )
+    auto_add = st.session_state.get("scanner_auto_add_qualified_v3", True)
 
     if not scan:
         fn = D.get("funnel")
