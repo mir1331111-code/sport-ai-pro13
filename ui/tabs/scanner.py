@@ -447,7 +447,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 
     col_input, col_metrics, col_btn = st.columns([2, 2, 1])
 
-    # Reuse the exact 1X2 quote already attached to this fixture by Prognozist/Marathon.
+    # Reuse only the exact-market quote fetched from Highlightly.
     # Never make the user retype a price the scanner already has, and never treat a
     # model fair price as a bookmaker quote.
     # Automatic selection and pricing use the same exact-market quote lookup.
@@ -655,9 +655,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
 
         st.caption(
-            "Сейчас подтверждённые котировки в сканере доступны для 1X2. "
-            "Тоталы, обе забьют, угловые и карточки появятся в общем рейтинге только "
-            "после подключения и проверки реальных коэффициентов именно этих рынков."
+            "Коэффициенты для 1X2, тоталов, BTTS, угловых и карточек загружаются только "
+            "из Highlightly и только для реально возвращённых рынков. Если цена отсутствует, "
+            "она не заменяется коэффициентом другого рынка или справочным кэфом модели."
         )
         with st.expander("🔌 Диагностика"):
             for line in D.get("report", []):
