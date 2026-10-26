@@ -748,6 +748,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             stat_market_odds = dict(r.get("stat_market_odds") or {})
             total_odds_source = "prognozist" if total_market_odds else "no_market"
             extra_market_source = str(r.get("extra_market_source") or "prognozist_unverified")
+            # Fail closed: do not expose or evaluate secondary-market prices unless
+            # the parser verified an explicit Marathon odds block for this fixture.
+            if extra_market_source.casefold() != "prognozist_marathon":
+                total_market_odds = {}
+                btts_market_odds = {}
+                stat_market_odds = {}
             api_market_data = None
             odds_source = "no_market"
 
