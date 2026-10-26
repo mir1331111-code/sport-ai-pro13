@@ -850,9 +850,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                                 continue
                                             if 1.01 < price <= 100:
                                                 target[market_key] = price
-                                if total_market_odds:
-                                    total_odds_source = str(prog_odds.get("extra_market_source") or "prognozist_unverified")
-                                    extra_market_source = str(prog_odds.get("extra_market_source") or "prognozist_unverified")
+                                if total_market_odds or btts_market_odds or stat_market_odds:
+                                    # Source verification applies to every extra-market
+                                    # family, not only totals. Previously BTTS-only
+                                    # quotes could be discarded because the source label
+                                    # was copied only when totals were present.
+                                    verified_source = str(
+                                        prog_odds.get("extra_market_source") or "prognozist_unverified"
+                                    )
+                                    extra_market_source = verified_source
+                                    if total_market_odds:
+                                        total_odds_source = verified_source
                                 logs.append(f"✅ Prognozist нашёл линию: {h_ru} — {a_ru}")
                             else:
                                 logs.append("ℹ️ Prognozist: линия неполная или коэффициенты некорректны")
