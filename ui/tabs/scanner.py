@@ -733,7 +733,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             total_market_odds = dict(r.get("total_market_odds") or {})
             btts_market_odds = dict(r.get("btts_market_odds") or {})
             stat_market_odds = dict(r.get("stat_market_odds") or {})
-            total_odds_source = "prognozist" if total_market_odds else "no_market"
+            total_odds_source = str(prog_odds.get("extra_market_source") or "prognozist_unverified") if total_market_odds else "no_market"
             api_market_data = None
             odds_source = "no_market"
 
@@ -915,7 +915,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "odds_source": odds_source,
                 "market_odds": dict(market_odds),
                 "total_market_odds": dict(total_market_odds),
-                "total_odds_source": total_odds_source if total_market_odds else ("prognozist" if r.get("total_market_odds") else total_odds_source),
+                "total_odds_source": total_odds_source if total_market_odds else (str(r.get("extra_market_source") or "prognozist_unverified") if r.get("total_market_odds") else total_odds_source),
+                "extra_market_source": str(r.get("extra_market_source") or "prognozist_unverified"),
                 "btts_market_odds": dict(btts_market_odds),
                 "stat_market_odds": dict(stat_market_odds),
                 "home_badge": r.get("home_badge") or "",
