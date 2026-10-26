@@ -350,15 +350,23 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     ]
     if displayed_quotes:
         quote_text = " · ".join(f"{pick}: **{odd:.2f}**" for pick, odd in displayed_quotes)
-        st.caption("Коэффициенты букмекера по исходам и линиям: " + quote_text)
+        if market_filter is None:
+            st.caption("Отдельная справочная линия 1X2 (это НЕ коэффициенты «Обе забьют»/тоталов): " + quote_text)
+        else:
+            st.caption("Коэффициенты букмекера именно для выбранного рынка: " + quote_text)
     elif market_filter in {"goals", "btts", "corners", "cards"}:
-        st.caption("Подтверждённые коэффициенты Marathon для этого рынка не найдены; цены других рынков не подставляются.")
+        st.caption("Подтверждённые коэффициенты Marathon именно для этого рынка не найдены; цены 1X2 не подставляются.")
 
     quoted_candidates = [
         (label, item[0], item[1], quote_for(item[0]))
         for label, item in candidate_options.items()
         if quote_for(item[0]) is not None and 0 < item[1] < 1
     ]
+    # In the all-markets view, never let an available 1X2 price force the
+    # selection away from a higher-probability BTTS/total forecast. A quote is
+    # displayed as the price for the selected pick only if its market matches.
+    if market_filter is None:
+        quoted_candidates = []
     if not candidate_options:
         st.info("Для этого рынка модель пока не сформировала прогноз с достаточными данными.")
         return
