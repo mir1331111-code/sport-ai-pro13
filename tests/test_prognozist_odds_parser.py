@@ -30,6 +30,26 @@ class PrognozistOddsParserTests(unittest.TestCase):
             {"П1": 2.60, "X": 3.10, "П2": 2.90},
         )
 
+    def test_match_detail_href_stays_attached_to_row_odds(self):
+        from data.sources import _prognozist_rows
+
+        html = (
+            '<table><tr>'
+            '<td><a href="/mc/football/zenit-dinamo-123/">'
+            '18:30 Скоро Зенит Динамо Махачкала'
+            '</a></td>'
+            '<td>П1</td><td>1.26</td><td>X</td><td>6.05</td>'
+            '<td>П2</td><td>12.25</td>'
+            '</tr></table>'
+        )
+        rows = _prognozist_rows(html)
+        row = next(row for row in rows if row and str(row[0]).startswith("/mc/football/"))
+        self.assertEqual(row[0], "/mc/football/zenit-dinamo-123/")
+        self.assertEqual(
+            _prognozist_extract_row_odds(row),
+            {"П1": 1.26, "X": 6.05, "П2": 12.25},
+        )
+
     def test_prognozist_fixture_requires_clear_teams_date_and_full_line(self):
         from data.sources import _prognozist_fixture_from_item
         item = {
