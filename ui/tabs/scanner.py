@@ -741,18 +741,68 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             qualified.sort(key=lambda c: -float(
                 (c.get("verdict") or {}).get("ev") or -1))
 
-        with st.expander("🏆 Лучшие варианты дня · все лиги", expanded=True):
-            st.caption(
-                "Единый рейтинг матчей по вероятности, реальному коэффициенту, "
-                "EV и преимуществу над рынком."
+        st.markdown(
+            "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:8px 0 4px'>"
+            "<div><div class='scanner-kicker'>SHORTLIST · AI MATCH DESK</div>"
+            "<h2 style='margin:0'>Что играем</h2>"
+            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>Только отобранные исходы. Расчёты — внутри, здесь главное решение и причина.</div></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        if not qualified:
+            st.markdown(
+                "<div class='pick-story' style='animation:none'><div class='pick-choice'>Пока нет ставки, которую можно подтвердить</div>"
+                "<div class='pick-ai'><b>Почему так?</b>Для рекомендации нужны совпавшие реальные коэффициенты и пройденные фильтры. "
+                "Сканер не будет придумывать котировки или добавлять слабый вариант ради заполнения списка.</div></div>",
+                unsafe_allow_html=True,
             )
-            if not qualified:
-                st.info("Пока нет подтверждённых value-вариантов.")
-            else:
-                for rank, card in enumerate(qualified[:5], start=1):
-                    st.markdown(f"### #{rank} · {card.get('league', 'Лига')}")
-                    st.markdown(render_verdict_card(card, min_prob),
-                                unsafe_allow_html=True)
+        else:
+            st.markdown("<div class='pick-feed'>", unsafe_allow_html=True)
+            for rank, card in enumerate(qualified[:6], start=1):
+                verdict = card.get("verdict") or {}
+                match_name = str(card.get("match_ru") or card.get("match") or "Матч")
+                league_name = str(card.get("league") or "Футбол")
+                pick_name = str(card.get("best") or verdict.get("pick") or verdict.get("best_pick") or "Исход выбран моделью")
+                odd = verdict.get("real_odds") or verdict.get("odds") or card.get("best_odds")
+                try:
+                    odd_text = f"Коэффициент {float(odd):.2f}" if odd is not None else ""
+                except (TypeError, ValueError):
+                    odd_text = ""
+                date_text = str(card.get("date") or "")
+                time_text = str(card.get("time") or "")
+                kickoff = " · ".join(v for v in (date_text, time_text) if v)
+                comment = next((str(card.get(k)).strip() for k in (
+                    "ai_comment", "ai_analysis", "llm_comment", "commentary",
+                    "explanation", "reason", "analysis_text", "why_pick"
+                ) if card.get(k) and str(card.get(k)).strip()), "")
+                status_text = "ОТОБРАНО" if verdict.get("value_passed") else "НА ПРОВЕРКЕ"
+                status_class = "" if verdict.get("value_passed") else " watch"
+                probability = verdict.get("prob")
+                prob_chip = ""
+                try:
+                    if probability is not None:
+                        prob_chip = f"<span class='pick-chip'>Оценка модели {float(probability)*100:.0f}%</span>"
+                except (TypeError, ValueError):
+                    pass
+                comment_html = (
+                    "<div class='pick-ai'><b>Комментарий ИИ</b>" + html.escape(comment) + "</div>"
+                    if comment else
+                    "<div class='pick-ai pick-ai-empty'><b>Комментарий</b>Отдельный текстовый комментарий ИИ для этого матча пока не сформирован.</div>"
+                )
+                odd_html = f"<span class='pick-chip'>{html.escape(odd_text)}</span>" if odd_text else ""
+                st.markdown(
+                    f"<article class='pick-story' style='animation-delay:{min(rank-1,5)*55}ms'>"
+                    f"<div class='pick-story-top'><span class='pick-league'>{html.escape(league_name)}</span>"
+                    f"<span class='pick-status{status_class}'>{status_text}</span></div>"
+                    f"<div class='pick-match'>{html.escape(match_name)}</div>"
+                    f"<div class='pick-time'>{html.escape(kickoff or 'Время начала уточняется')}</div>"
+                    f"<div class='pick-divider'></div><div class='pick-choice-label'>Наш выбор</div>"
+                    f"<div class='pick-choice'>{html.escape(pick_name)}</div>"
+                    f"<div class='pick-meta'>{odd_html}{prob_chip}</div>"
+                    f"{comment_html}</article>",
+                    unsafe_allow_html=True,
+                )
+            st.markdown("</div>", unsafe_allow_html=True)
 
         c1, c2, c3 = st.columns([2, 2, 2])
         sort_mode = c1.selectbox(
