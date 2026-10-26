@@ -353,7 +353,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     if displayed_quotes:
         quote_text = " · ".join(f"{pick}: **{odd:.2f}**" for pick, odd in displayed_quotes)
         if market_filter is None:
-            st.caption("Отдельная справочная линия 1X2 (это НЕ коэффициенты «Обе забьют»/тоталов): " + quote_text)
+            st.caption("Найденные реальные коэффициенты по рынкам (каждая цена относится только к указанному исходу/линии): " + quote_text)
         else:
             st.caption("Коэффициенты букмекера именно для выбранного рынка: " + quote_text)
     elif market_filter in {"goals", "btts", "corners", "cards"}:
