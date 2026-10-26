@@ -2049,9 +2049,9 @@ def highlightly_odds_fixture(match_date: str, home: str, away: str,
                 try:
                     line = float(point)
                 except (TypeError, ValueError):
-                    nums = re.findall(r"(?<![a-z])(?:over|under|total)\\s*([0-9]+(?:\\.[0-9]+)?)", label)
+                    nums = re.findall(r"(?<![a-z])(?:over|under|total)\s*([0-9]+(?:\.[0-9]+)?)", label)
                     if not nums:
-                        nums = re.findall(r"\\b([0-9]+\\.[05])\\b", str(market.get("name") or ""))
+                        nums = re.findall(r"\b([0-9]+\.[05])\b", str(market.get("name") or ""))
                     line = float(nums[0]) if nums else None
                 is_over = label in ("over", "more", "больше", "o") or label.startswith(("over ", "больше "))
                 is_under = label in ("under", "less", "меньше", "u") or label.startswith(("under ", "меньше "))
