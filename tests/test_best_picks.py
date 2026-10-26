@@ -1,6 +1,7 @@
 import unittest
 
 from betting.best_picks import best_value_market
+from betting.kelly import market_type
 
 
 def _verdict():
@@ -45,6 +46,11 @@ class BestValueMarketTests(unittest.TestCase):
         self.assertEqual(chosen["confidence_basis"],
                          "market_blended_probability_not_historical_hit_rate")
         self.assertNotEqual(chosen["confidence"], "высокая")
+
+    def test_market_type_recognizes_all_goal_total_lines(self):
+        for pick in ("ТБ 0.5", "ТМ 1.5", "ТБ 2.5", "ТМ 3.5", "ТБ 4.5", "ТМ 5.5"):
+            with self.subTest(pick=pick):
+                self.assertEqual(market_type(pick), "OU")
 
     def test_non_1x2_markets_never_become_automatic_candidates(self):
         chosen, best = best_value_market(
