@@ -1084,8 +1084,7 @@ def _prognozist_extract_extra_markets(html):
     source_headings = list(re.finditer(
         r"Коэффициенты\s+(Winline|Марафон|Marathon)\b", text, re.I
     ))
-    bookmaker_section = None
-    source_label = "prognozist_unverified"
+    bookmaker_sections = []
     for idx, heading in enumerate(source_headings):
         section_end = source_headings[idx + 1].start() if idx + 1 < len(source_headings) else len(text)
         section = text[heading.end():section_end]
@@ -1097,10 +1096,18 @@ def _prognozist_extract_extra_markets(html):
             section, re.I
         ))
         if has_prices:
-            bookmaker_section = section
-            source_label = ("prognozist_winline" if heading.group(1).casefold() == "winline"
-                            else "prognozist_marathon")
-            break
+            source = ("prognozist_winline" if heading.group(1).casefold() == "winline"
+                      else "prognozist_marathon")
+            bookmaker_sections.append((source, section))
+    # The requested source is Marathon. If both bookmaker blocks are present,
+    # prefer the explicitly labelled Marathon block regardless of page order.
+    bookmaker_section = next(
+        (section for source, section in bookmaker_sections if source == "prognozist_marathon"),
+        None,
+    )
+    source_label = "prognozist_marathon" if bookmaker_section is not None else "prognozist_unverified"
+    if bookmaker_section is None and bookmaker_sections:
+        source_label, bookmaker_section = bookmaker_sections[0]
     if bookmaker_section is None:
         found["extra_market_source"] = "prognozist_unverified"
         return found
