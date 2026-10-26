@@ -383,12 +383,6 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             )
             if existing:
                 col_btn.caption("Этот исход уже находится в портфеле.")
-            elif source_odd is not None:
-                col_btn.caption(
-                    "Коэффициент уже загружен. Сканер добавляет такие ставки в портфель "
-                    "автоматически только при включённом авто-добавлении и прохождении "
-                    "строгих фильтров value."
-                )
             else:
                 D2 = dict(D)
                 new_bet = {
@@ -399,8 +393,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                     "prob": prob, "model_prob": model_prob,
                     "market_implied_raw": market_implied,
                     "probability_method": "market_blend_0.4_model_delta",
-                    "status": "pending", "strat": "manual",
-                    "odds_source": "manual",
+                    "status": "pending", "strat": "scanner_auto_recommendation",
+                    "odds_source": str(c.get("total_odds_source") if market_type(pick) == "OU" else c.get("odds_source") or "Prognozist/Marathon"),
                     "mode": "real",
                     "date": (parse_date(c.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": c.get("date_iso"),
@@ -411,8 +405,12 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                 D2["bets"] = list(D.get("bets") or []) + [new_bet]
                 D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - stake)
                 st.session_state.data = D2
+                if db.SQLITE_BOOT_OK:
+                    db.insert_bets_batch([new_bet])
+                    db.log_bank(D2["bank"], event="scanner_auto_recommendation")
+                    db.invalidate_caches()
                 usage.set_local_data(D2)
-                st.toast("✅ Условия выполнены — автоматически добавлено в виртуальный портфель.", icon="✅")
+                st.toast("✅ Прогноз прошёл фильтры и добавлен в виртуальный портфель.", icon="✅")
                 st.rerun()
         else:
             col_btn.caption("Автодобавление не сработало: не пройдены пороги вероятности, Edge, EV или Kelly.")
