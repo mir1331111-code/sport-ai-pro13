@@ -344,7 +344,8 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             total_outcome = "over" if hg + ag >= 3 else "under"
             over_prob = max(1e-6, min(1.0 - 1e-6, float(pred_candidate.get("over", 0.5))))
             records["goals_over25"].append(({"over": over_prob, "under": 1.0 - over_prob}, total_outcome))
-            total_mean = float(pred_candidate.get("lam_h", 0.0) or 0.0) + float(pred_candidate.get("lam_a", 0.0) or 0.0)
+            lambdas = pred_candidate.get("lams") or (0.0, 0.0)
+            total_mean = float(lambdas[0] or 0.0) + float(lambdas[1] or 0.0)
             actual_total = hg + ag
             for line, line_records in goals_line_records.items():
                 line_over = _poisson_over_probability(total_mean, line)
