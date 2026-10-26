@@ -333,20 +333,18 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         for label, item in candidate_options.items()
         if quote_for(item[0]) is not None and 0 < item[1] < 1
     ]
+    if not candidate_options:
+        st.info("Для этого рынка модель пока не сформировала прогноз с достаточными данными.")
+        return
     if quoted_candidates:
         selected_label, pick, model_prob, _ = max(
             quoted_candidates, key=lambda row: (row[2], row[3] * 0.0001)
         )
         auto_quote_exists = True
     else:
-        if candidate_options:
-            selected_label, (pick, model_prob) = max(
-                candidate_options.items(), key=lambda row: row[1][1]
-            )
-        else:
-            selected_label, (pick, model_prob) = max(
-                market_options.items(), key=lambda row: row[1][1]
-            )
+        selected_label, (pick, model_prob) = max(
+            candidate_options.items(), key=lambda row: row[1][1]
+        )
         auto_quote_exists = False
 
     st.markdown("**🎯 Лучший прогноз модели для этого матча**")
@@ -578,36 +576,55 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             st.warning("Ничего не найдено.")
             return
 
-        if group_by_day:
-            grouped = {}
-            for c in cards_view:
-                dt = parse_card_date(c)
-                label = day_label(dt)
-                grouped.setdefault(label, []).append(c)
+        # Separate market tabs make the recommendation's market explicit.
+        market_tabs = st.tabs([
+            f"Все матчи ({len(cards_view)})",
+            f"Победа / 1X2 ({sum(bool(c.get('market_odds')) for c in cards_view)})",
+            f"Тотал голов ({sum(bool(c.get('total_market_odds')) for c in cards_view)})",
+            f"Обе забьют ({sum(bool(c.get('btts_market_odds')) for c in cards_view)})",
+            f"Угловые ({sum(any(str(k).startswith('Угл Т') for k in (c.get('stat_market_odds') or {})) for c in cards_view)})",
+            f"Карточки ({sum(any(str(k).startswith('Карты Т') for k in (c.get('stat_market_odds') or {})) for c in cards_view)})",
+        ])
 
-            sorted_groups = sorted(
-                grouped.items(),
-                key=lambda kv: parse_card_date(kv[1][0]))
-
-            for label, items in sorted_groups:
-                st.markdown(
-                    "<div style='margin-top:20px;margin-bottom:12px;"
-                    "padding:8px 16px;background:rgba(34,211,238,.08);"
-                    "border-left:3px solid #22d3ee;border-radius:8px;"
-                    "color:#a5f3fc;font-weight:800;font-size:1.05rem;"
-                    "letter-spacing:1px;'>" + label + " · "
-                    "<span style='color:#8b93a7;font-weight:500;'>"
-                    + str(len(items)) + " матч.</span></div>",
-                    unsafe_allow_html=True)
-                for c in items:
-                    st.markdown(render_verdict_card(c, min_prob),
-                                unsafe_allow_html=True)
+        with market_tabs[0]:
+            if group_by_day:
+                grouped = {}
+                for c in cards_view:
+                    grouped.setdefault(day_label(parse_card_date(c)), []).append(c)
+                sorted_groups = sorted(grouped.items(), key=lambda kv: parse_card_date(kv[1][0]))
+                for label, items in sorted_groups:
+                    st.markdown(f"### {label} · {len(items)} матч.")
+                    for c in items:
+                        st.markdown(render_verdict_card(c, min_prob), unsafe_allow_html=True)
+                        _render_manual_odds_block(c, D, kelly_frac, min_prob, min_edge)
+            else:
+                for c in cards_view:
+                    st.markdown(render_verdict_card(c, min_prob), unsafe_allow_html=True)
                     _render_manual_odds_block(c, D, kelly_frac, min_prob, min_edge)
-        else:
-            for c in cards_view:
-                st.markdown(render_verdict_card(c, min_prob),
-                            unsafe_allow_html=True)
-                _render_manual_odds_block(c, D, kelly_frac, min_prob, min_edge)
+
+        category_specs = [
+            (market_tabs[1], "winner", lambda c: bool(c.get("market_odds")), "Реальная линия 1X2 не найдена."),
+            (market_tabs[2], "goals", lambda c: bool(c.get("total_market_odds")), "Источник не вернул подтверждённые коэффициенты тотала голов."),
+            (market_tabs[3], "btts", lambda c: bool(c.get("btts_market_odds")), "Источник не вернул отдельные коэффициенты «Обе забьют»."),
+            (market_tabs[4], "corners", lambda c: any(str(k).startswith("Угл Т") for k in (c.get("stat_market_odds") or {})), "Котировки тотала угловых не найдены. Угловые 1X2 не считаются тоталом угловых."),
+            (market_tabs[5], "cards", lambda c: any(str(k).startswith("Карты Т") for k in (c.get("stat_market_odds") or {})), "Котировки тотала карточек не найдены."),
+        ]
+        for tab, market_filter, has_market_quote, empty_message in category_specs:
+            with tab:
+                market_cards = [c for c in cards_view if has_market_quote(c)]
+                if not market_cards:
+                    st.info(empty_message)
+                    continue
+                for c in market_cards:
+                    st.markdown(
+                        f"#### {c.get('match_ru', c.get('match', 'Матч'))}  \\n"
+                        f"<span style='color:#8b93a7'>{c.get('league', '')} · {c.get('date', '')}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    _render_manual_odds_block(
+                        c, D, kelly_frac, min_prob, min_edge,
+                        market_filter=market_filter,
+                    )
 
         st.caption("✅ Показано " + str(len(cards_view)) + " из "
                    + str(len(all_cards)))
