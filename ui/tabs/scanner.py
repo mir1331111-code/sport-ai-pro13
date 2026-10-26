@@ -346,7 +346,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     displayed_quotes = [
         (item[0], quote_for(item[0]))
         for item in candidate_options.values()
-        if quote_for(item[0]) is not None
+        if (market_filter is not None or market_type(item[0]) == "1X2")
+        and quote_for(item[0]) is not None
     ]
     if displayed_quotes:
         quote_text = " · ".join(f"{pick}: **{odd:.2f}**" for pick, odd in displayed_quotes)
