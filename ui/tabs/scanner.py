@@ -144,6 +144,12 @@ def _train_engine(matrix_n, logs, update_loader):
             if engine.total_market_validation else
             "Тоталы не допущены: нужно ≥500 парных матчей и статистически подтверждённое улучшение Brier и LogLoss."
         )
+        for line, line_report in (totals_backtest.get("goals_totals_by_line") or {}).items():
+            metric = line_report.get("metrics") or {}
+            logs.append(
+                f"ТБ/ТМ {line}: walk-forward n={metric.get('n', 0)}, "
+                f"Brier={metric.get('brier')}, LogLoss={metric.get('log_loss')}"
+            )
     except Exception as exc:
         engine.total_market_validation = False
         engine.total_market_validation_report = {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
