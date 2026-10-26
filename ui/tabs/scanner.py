@@ -15,6 +15,7 @@ from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture)
 from data.fixture_merge import merge_fixture_sources
+from data.marathon import marathon_odds
 from model.engine import Engine
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
@@ -552,6 +553,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     days = c1.slider("Период матчей: 1 = только сегодня", 1, 14, 1)
     scan = c2.button("⚡ СКАН", type="primary",
                      disabled=st.session_state.get("_scan_in_progress", False))
+    st.checkbox(
+        "Использовать реальные кэфы Prognozist / Marathon",
+        value=False,
+        key="prognozist_permission_input",
+        help="Источник включается только после явного согласия; парсер проверяет robots.txt и условия сайта. Если доступ запрещён, источник отключится.",
+    )
+
     auto_add = st.checkbox(
         "Автоматически добавлять прошедшие фильтры прогнозы в виртуальный портфель",
         value=True,
@@ -880,6 +888,32 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 extra_market_source = "highlightly"
                         except Exception as exc:
                             logs.append(f"⚠️ Highlightly lookup failed: {type(exc).__name__}: {str(exc)[:120]}")
+
+                    # Fallback: Prognozist/Marathon real 1X2 line, using strict team and date matching.
+                    # This runs when Highlightly is unavailable or has no line for this fixture.
+                    if not market_odds:
+                        try:
+                            marathon_line = marathon_odds(
+                                h_en, a_en, d.strftime("%Y-%m-%d"), lg
+                            )
+                            if isinstance(marathon_line, dict) and all(
+                                key in marathon_line for key in ("П1", "X", "П2")
+                            ):
+                                candidate = {}
+                                for key in ("П1", "X", "П2"):
+                                    value = float(marathon_line[key])
+                                    if not 1.01 < value <= 100:
+                                        raise ValueError(f"invalid {key} odds")
+                                    candidate[key] = value
+                                market_odds = candidate
+                                odds_source = "prognozist_marathon"
+                                funnel_counts["market_req"] += 1
+                                logs.append(
+                                    f"🏁 Prognozist/Marathon: {h_ru} — {a_ru} | "
+                                    f"П1 {candidate['П1']:.2f} / X {candidate['X']:.2f} / П2 {candidate['П2']:.2f}"
+                                )
+                        except Exception as exc:
+                            logs.append(f"⚠️ Prognozist/Marathon: {type(exc).__name__}: {str(exc)[:100]}")
 
                     # User-provided/manual quote import: exact date + exact home/away
                     # names only. Highlightly remains preferred; manual prices are a fallback.
