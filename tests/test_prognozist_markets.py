@@ -43,6 +43,24 @@ class PrognozistExtraMarketTests(unittest.TestCase):
         self.assertEqual(result["total_market_odds"]["ТМ 3.5"], 1.54)
         self.assertEqual(result["btts_market_odds"]["BTTS Да"], 1.54)
         self.assertEqual(result["btts_market_odds"]["BTTS Нет"], 2.36)
+    def test_does_not_claim_bookmaker_from_unrelated_rating_list(self):
+        html = """
+        <h2>Рейтинг букмекеров</h2><div>Winline Marathon</div>
+        <h2>Обе забьют?</h2><div>Да 1.82 Нет 1.98</div>
+        """
+        result = _prognozist_extract_extra_markets(html)
+        self.assertEqual(result["extra_market_source"], "prognozist_unverified")
+
+    def test_tags_only_explicit_bookmaker_market_block(self):
+        html = """
+        <h2>Коэффициенты Winline</h2>
+        <h3>Обе забьют?</h3><div>Да 1.82 Нет 1.98</div>
+        <h2>Коэффициенты Marathon</h2>
+        <h3>Тотал</h3><div>Больше 2.5 1.91 Меньше 2.5 1.89</div>
+        """
+        result = _prognozist_extract_extra_markets(html)
+        self.assertEqual(result["extra_market_source"], "prognozist_winline")
+
     def test_does_not_invent_quotes_when_market_is_missing(self):
         result = _prognozist_extract_extra_markets("<h2>Обе забьют?</h2><div>Только текст</div>")
         self.assertNotIn("btts_market_odds", result)
