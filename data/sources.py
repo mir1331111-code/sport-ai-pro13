@@ -1067,50 +1067,102 @@ def _prognozist_parse_detail_heading(heading, odds=None, today=None):
 
 
 def _prognozist_extract_extra_markets(html):
-    """Extract only explicitly labelled full-match markets from a Prognozist detail page."""
+    """Extract only explicitly labelled prices for the exact full-match market."""
     from html import unescape
-    text = unescape(re.sub(r"<[^>]+>", " ", str(html or "")))
-    text = re.sub(r"\\s+", " ", text)
+
+    # Keep boundaries between HTML elements so headings and adjacent odds do not
+    # get accidentally concatenated into unrelated numbers.
+    text = unescape(str(html or ""))
+    text = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", " ", text)
+    text = re.sub(r"(?i)<br\s*/?>|</(?:p|div|tr|td|th|li|h[1-6])\s*>", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
     found = {"btts_market_odds": {}, "total_market_odds": {}, "stat_market_odds": {}}
 
-    # Prognozist labels: "Обе забьют? Да 1.48 Нет 2.63".
-    m = re.search(
-        r"Обе\s+забьют\??.{0,100}?Да\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)"
-        r".{0,50}?Нет\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)",
+    def valid_price(raw):
+        odd = _prognozist_num(raw)
+        return odd if odd is not None and 1.01 < odd <= 100 else None
+
+    # Only pair the explicit Да/Нет prices belonging to the BTTS label.
+    btts = re.search(
+        r"Обе\s+забьют\??\s*.{0,140}?\bДа\b\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)"
+        r".{0,80}?\bНет\b\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)",
         text, re.I,
     )
-    if m:
-        yes, no = (_prognozist_num(x) for x in m.groups())
+    if btts:
+        yes, no = (valid_price(x) for x in btts.groups())
         if yes and no:
             found["btts_market_odds"] = {"BTTS Да": yes, "BTTS Нет": no}
 
-    # Full-match totals only; skip "1 тайм Тотал" and "2 тайм Тотал".
-    total_block = re.search(
-        r"(?<!тайм )Тотал\s+(?:(?:голов)\s*)?(.{0,700}?)(?=Обе\s+забьют|1\s*тайм|2\s*тайм|1X2|Двойной шанс|Фора|Точный счет|Какая команда забьет|$)",
+    # Work within the relevant market section, not across the whole page. This
+    # prevents first/second-half prices being attached to full-match totals.
+    def collect_totals(section, target, prefix, lines):
+        for line in lines:
+            line_pattern = re.escape(str(line)).replace(r"\.5", r"[.,]5")
+            # Support both common layouts:
+            # "Тотал 2.5 Больше 1.90 Меньше 1.90" and
+            # "Больше 2.5 1.90 Меньше 2.5 1.90".
+            for side, label in (("Больше", "ТБ"), ("Меньше", "ТМ")):
+                patterns = (
+                    rf"\b{side}\b\s*\(?\s*{line_pattern}\s*\)?\s*[:\-]?\s*([0-9]{{1,3}}(?:[.,][0-9]{{1,4}})?)",
+                    rf"\b{side}\b\s*[:\-]?\s*([0-9]{{1,3}}(?:[.,][0-9]{{1,4}})?)\s*\(?\s*{line_pattern}\s*\)?",
+                )
+                for pattern in patterns:
+                    match = re.search(pattern, section, re.I)
+                    if match:
+                        odd = valid_price(match.group(1))
+                        if odd:
+                            target[f"{prefix} {label} {line}"] = odd
+                            break
+
+    # Main goals total, explicitly stop at period-specific or next-market headings.
+    total_sections = list(re.finditer(
+        r"\bТотал(?:\s+голов)?\b(?!\s*(?:угловых|углов|карточек|желтых|жёлтых))"
+        r"(?P<body>.{0,900}?)(?=\b(?:1-й?\s*тайм|1\s*тайм|2-й?\s*тайм|2\s*тайм|"
+        r"Обе\s+забьют|Угловые|Тотал\s+угловых|Карточки|Желтые карточки|Жёлтые карточки|"
+        r"1X2|Двойной шанс|Фора|Точный счет)\b|$)",
+        text, re.I,
+    ))
+    for section_match in total_sections:
+        collect_totals(section_match.group("body"), found["total_market_odds"], "", (2.5,))
+    # Clean keys after using a shared helper.
+    found["total_market_odds"] = {
+        key.strip(): value for key, value in found["total_market_odds"].items()
+    }
+
+    # Total corners and cards are separate markets from corner 1X2. Parse only
+    # explicit totals/lines and store keys identical to those used by the scanner.
+    market_specs = (
+        (r"(?:Тотал\s+угловых|Угловые\s*[-:]?\s*Тотал|Угловые\s+тотал)", "Угл", (8.5, 9.5, 10.5)),
+        (r"(?:Тотал\s+(?:желтых|жёлтых)\s+карточек|Тотал\s+карточек|Желтые карточки\s*[-:]?\s*Тотал|Жёлтые карточки\s*[-:]?\s*Тотал)", "Карты", (3.5, 4.5, 5.5)),
+    )
+    for heading_pattern, prefix, lines in market_specs:
+        for heading in re.finditer(heading_pattern, text, re.I):
+            section = text[heading.end():heading.end() + 800]
+            section = re.split(
+                r"\b(?:Обе\s+забьют|Тотал\s+голов|1X2|Двойной шанс|Фора|Точный счет|"
+                r"Угловые\s*[-:]?\s*Тотал|Тотал\s+угловых|Тотал\s+карточек|"
+                r"Тотал\s+(?:желтых|жёлтых)\s+карточек)\b",
+                section, maxsplit=1, flags=re.I,
+            )[0]
+            collect_totals(section, found["stat_market_odds"], prefix, lines)
+
+    # The source also offers corner 1X2 on some matches. Do not confuse this
+    # with a total-corners market.
+    corners = re.search(
+        r"1X2\s+Угловые\s*1\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)"
+        r"\s*X\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)"
+        r"\s*2\s*([0-9]{1,3}(?:[.,][0-9]{1,4})?)",
         text, re.I,
     )
-    if total_block:
-        block = total_block.group(1)
-        for side, label in (("Больше", "ТБ"), ("Меньше", "ТМ")):
-            for line, price in re.findall(
-                rf"{side}\s*\(?\s*(2\.5)\s*\)?\s*([0-9]{{1,3}}(?:[.,][0-9]{{1,4}})?)",
-                block, re.I,
-            ):
-                odd = _prognozist_num(price)
-                if odd:
-                    found["total_market_odds"][f"{label} {line}"] = odd
-
-    # The source publishes 1X2 corners prices on many match pages.
-    corners = re.search(r"1X2\s+Угловые\s*1\s*([0-9.,]+)\s*X\s*([0-9.,]+)\s*2\s*([0-9.,]+)", text, re.I)
     if corners:
-        values = [_prognozist_num(x) for x in corners.groups()]
+        values = [valid_price(x) for x in corners.groups()]
         if all(values):
             found["stat_market_odds"].update({
                 "Угл П1": values[0], "Угл X": values[1], "Угл П2": values[2],
             })
 
     return {key: value for key, value in found.items() if value}
-
 
 def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_granted=False):
     href = str(href or "").strip()
