@@ -1124,7 +1124,12 @@ def _prognozist_extract_extra_markets(html):
         text, re.I,
     ))
     for section_match in total_sections:
-        collect_totals(section_match.group("body"), found["total_market_odds"], "", (2.5,))
+        preceding = text[max(0, section_match.start() - 100):section_match.start()]
+        if re.search(r"(?:1\s*[-.]?\s*тайм|перв(?:ый|ого)\s+тайм|2\s*[-.]?\s*тайм|втор(?:ой|ого)\s+тайм|перв(?:ая|ого)\s*половин|втор(?:ая|ого)\s*половин)", preceding, re.I):
+            continue
+        body = section_match.group("body")
+        body = re.split(r"\b(?:1\s*[-.]?\s*тайм|перв(?:ый|ого)\s+тайм|2\s*[-.]?\s*тайм|втор(?:ой|ого)\s+тайм|перв(?:ая|ого)\s*половин|втор(?:ая|ого)\s*половин)\b", body, maxsplit=1, flags=re.I)[0]
+        collect_totals(body, found["total_market_odds"], "", (2.5,))
     # Clean keys after using a shared helper.
     found["total_market_odds"] = {
         key.strip(): value for key, value in found["total_market_odds"].items()
