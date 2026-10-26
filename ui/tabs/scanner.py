@@ -14,7 +14,7 @@ from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str,
                           fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
                           tsdb_matches, espn_matches, therundown_odds_fixture,
-                          prognozist_marathon_odds, prognozist_matches, prognozist_source_status,
+                          prognozist_marathon_odds, prognozist_matches, prognozist_source_status, highlightly_odds_fixture,
                           prognozist_permission_enabled)
 from data.marathon import marathon_odds
 from data.fixture_merge import merge_fixture_sources
@@ -762,6 +762,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         matches_with_best = 0
         xg_used_count = 0
         odds_key = _runtime_secret("odds_api_key_input", "ODDS_API_KEY", "odds_api_key")
+        highlightly_key = _runtime_secret("highlightly_api_key_input", "HIGHLIGHTLY_API_KEY", "highlightly_api_key")
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
@@ -916,7 +917,21 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         except Exception as exc:
                             logs.append(f"ℹ️ Marathon lookup failed: {type(exc).__name__}")
                     
-                    # No fallback odds providers: a missing Prognozist/Marathon line stays missing.
+                    # Highlightly fallback: accept only exact home/away matches and a
+                    # complete 1X2 market from one bookmaker.
+                    if not candidates and highlightly_key:
+                        try:
+                            highlighted = highlightly_odds_fixture(
+                                d.strftime("%Y-%m-%d"), h_en, a_en, highlightly_key, logs
+                            )
+                            if isinstance(highlighted, dict) and all(
+                                key in highlighted for key in ("П1", "X", "П2")
+                            ):
+                                candidates.append((highlighted.get("source", "highlightly"), highlighted))
+                        except Exception as exc:
+                            logs.append(f"⚠️ Highlightly lookup failed: {type(exc).__name__}")
+
+                    # If no provider has a verified line, leave odds empty.
 
                     for source_name, candidate in candidates:
                         if not isinstance(candidate, dict):
