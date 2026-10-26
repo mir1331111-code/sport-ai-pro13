@@ -104,7 +104,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
     source_label = {
         "market": "BOOKMAKER API", "grok_web": "GROK WEB",
         "manual": "MANUAL", "fdorg": "FOOTBALL-DATA",
-        "prognozist": "PROGNOZIST", "marathon_category": "MARATHON",
+        "prognozist": "PROGNOZIST / MARATHON 1X2", "prognozist_winline": "PROGNOZIST / WINLINE", "prognozist_marathon": "PROGNOZIST / MARATHON", "prognozist_unverified": "SOURCE UNVERIFIED", "marathon_category": "MARATHON",
         "therundown": "THE RUNDOWN", "the_odds_api": "THE ODDS API",
     }.get(odds_source, "MARKET")
     market_odds = c.get("market_odds") or {}
