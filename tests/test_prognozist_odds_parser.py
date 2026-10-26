@@ -104,6 +104,7 @@ class PrognozistOddsParserTests(unittest.TestCase):
     def test_extracts_btts_and_main_goal_total_prices(self):
         from data.sources import _prognozist_extract_extra_markets
         html = """
+        <h2>Коэффициенты Marathon</h2>
         <h2>Тотал голов</h2><div>Больше 2.5 1.91 Меньше 2.5 1.89</div>
         <h2>Обе забьют?</h2><div>Да 1.72 Нет 2.05</div>
         <h2>1 тайм Тотал</h2><div>Больше 2.5 8.00 Меньше 2.5 1.05</div>
