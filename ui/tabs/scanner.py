@@ -341,6 +341,19 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         candidate_options = {label: item for label, item in candidate_options.items()
                              if item[0].startswith("Карты ")}
 
+    # Show the full exact-market quote map, not just the single price selected
+    # for the model's top forecast. This makes the outcome/line pairing auditable.
+    displayed_quotes = [
+        (item[0], quote_for(item[0]))
+        for item in candidate_options.values()
+        if quote_for(item[0]) is not None
+    ]
+    if displayed_quotes:
+        quote_text = " · ".join(f"{pick}: **{odd:.2f}**" for pick, odd in displayed_quotes)
+        st.caption("Коэффициенты букмекера по исходам и линиям: " + quote_text)
+    elif market_filter in {"goals", "btts", "corners", "cards"}:
+        st.caption("Подтверждённые коэффициенты Marathon для этого рынка не найдены; цены других рынков не подставляются.")
+
     quoted_candidates = [
         (label, item[0], item[1], quote_for(item[0]))
         for label, item in candidate_options.items()
