@@ -329,13 +329,9 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # Reuse the exact 1X2 quote already attached to this fixture by Prognozist/Marathon.
     # Never make the user retype a price the scanner already has, and never treat a
     # model fair price as a bookmaker quote.
+    # Automatic selection and pricing use the same exact-market quote lookup.
+    # There is deliberately no manual-odds fallback.
     source_odd = quote_for(pick)
-    try:
-        candidate_odd = float(raw_odd or 0)
-        if 1.01 < candidate_odd <= 100:
-            source_odd = candidate_odd
-    except (TypeError, ValueError):
-        source_odd = None
 
     if source_odd is not None:
         manual_odd = source_odd
