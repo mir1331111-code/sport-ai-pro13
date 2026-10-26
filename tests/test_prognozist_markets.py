@@ -1,75 +1,50 @@
 import unittest
+from unittest.mock import patch
 
-from data.sources import _prognozist_extract_extra_markets
+from data.sources import highlightly_odds_fixture
 
 
-class PrognozistExtraMarketTests(unittest.TestCase):
-    def test_extracts_goals_btts_corners_and_cards_from_detail_page(self):
-        html = """
-        <h2>Коэффициенты Marathon</h2>
-        <h2>Тотал голов</h2>
-        <div>Больше 2.5 1.91 Меньше 2.5 1.89</div>
-        <h2>Обе забьют?</h2>
-        <div>Да 1.82 Нет 1.98</div>
-        <h2>Тотал угловых</h2>
-        <div>Больше 9.5 1.90 Меньше 9.5 1.90</div>
-        <h2>Тотал желтых карточек</h2>
-        <div>Больше 4.5 1.87 Меньше 4.5 1.93</div>
-        """
-        result = _prognozist_extract_extra_markets(html)
-        self.assertEqual(result["total_market_odds"]["ТБ 2.5"], 1.91)
-        self.assertEqual(result["total_market_odds"]["ТМ 2.5"], 1.89)
-        self.assertEqual(result["btts_market_odds"]["BTTS Да"], 1.82)
-        self.assertEqual(result["btts_market_odds"]["BTTS Нет"], 1.98)
-        self.assertEqual(result["stat_market_odds"]["Угл ТБ 9.5"], 1.90)
-        self.assertEqual(result["stat_market_odds"]["Угл ТМ 9.5"], 1.90)
-        self.assertEqual(result["stat_market_odds"]["Карты ТБ 4.5"], 1.87)
-        self.assertEqual(result["stat_market_odds"]["Карты ТМ 4.5"], 1.93)
+class HighlightlyMarketTests(unittest.TestCase):
+    @patch("data.sources.cache_get", return_value=[{
+        "match": {"homeTeam": {"name": "Team A"}, "awayTeam": {"name": "Team B"}},
+        "bookmaker": {"name": "TestBook"},
+        "markets": [
+            {"name": "Full Time Result", "odds": [
+                {"label": "Home", "value": 2.1}, {"label": "Draw", "value": 3.2},
+                {"label": "Away", "value": 3.8}]},
+            {"name": "Total Goals", "odds": [
+                {"label": "Over", "point": 2.5, "value": 1.9},
+                {"label": "Under", "point": 2.5, "value": 1.95}]},
+            {"name": "Total Corners", "odds": [
+                {"label": "Over", "point": 9.5, "value": 1.88},
+                {"label": "Under", "point": 9.5, "value": 1.92}]},
+            {"name": "Total Cards", "odds": [
+                {"label": "Over", "point": 4.5, "value": 1.85},
+                {"label": "Under", "point": 4.5, "value": 1.98}]},
+            {"name": "Both Teams To Score", "odds": [
+                {"label": "Yes", "value": 1.7}, {"label": "No", "value": 2.1}]},
+        ],
+    }])
+    def test_extracts_1x2_goals_corners_cards_and_btts(self, _cache):
+        result = highlightly_odds_fixture("2026-10-27", "Team A", "Team B", "test-key")
+        self.assertEqual(result["П1"], 2.1)
+        self.assertEqual(result["X"], 3.2)
+        self.assertEqual(result["П2"], 3.8)
+        self.assertEqual(result["total_market_odds"]["ТБ 2.5"], 1.9)
+        self.assertEqual(result["total_market_odds"]["ТМ 2.5"], 1.95)
+        self.assertEqual(result["stat_market_odds"]["Угл ТБ 9.5"], 1.88)
+        self.assertEqual(result["stat_market_odds"]["Карты ТБ 4.5"], 1.85)
+        self.assertEqual(result["btts_market_odds"]["BTTS Да"], 1.7)
+        self.assertTrue(result["source"].startswith("highlightly"))
 
-    def test_parses_prognozist_rendered_market_layout(self):
-        # Mirrors compact labels visible in Prognozist's bookmaker market block.
-        html = """
-        <h2>Коэффициенты Winline</h2>
-        <h3>Тотал</h3>
-        <div>Больше (2.5)1.56 Меньше (2.5)2.32 Больше (3.5)2.37 Меньше (3.5)1.54</div>
-        <h3>Какая команда забьет?</h3>
-        <div>Ни одна 17.00 Только Хозяева 3.45 Только Гости 9.00 Обе 1.55</div>
-        <h3>Обе забьют?</h3>
-        <div>Да 1.54 Нет 2.36</div>
-        """
-        result = _prognozist_extract_extra_markets(html)
-        self.assertEqual(result["total_market_odds"]["ТБ 2.5"], 1.56)
-        self.assertEqual(result["total_market_odds"]["ТМ 2.5"], 2.32)
-        self.assertEqual(result["total_market_odds"]["ТБ 3.5"], 2.37)
-        self.assertEqual(result["total_market_odds"]["ТМ 3.5"], 1.54)
-        self.assertEqual(result["btts_market_odds"]["BTTS Да"], 1.54)
-        self.assertEqual(result["btts_market_odds"]["BTTS Нет"], 2.36)
-    def test_does_not_claim_bookmaker_from_unrelated_rating_list(self):
-        html = """
-        <h2>Рейтинг букмекеров</h2><div>Winline Marathon</div>
-        <h2>Обе забьют?</h2><div>Да 1.82 Нет 1.98</div>
-        """
-        result = _prognozist_extract_extra_markets(html)
-        self.assertEqual(result["extra_market_source"], "prognozist_unverified")
-
-    def test_prefers_marathon_block_when_multiple_bookmakers_are_present(self):
-        html = """
-        <h2>Коэффициенты Winline</h2>
-        <h3>Обе забьют?</h3><div>Да 1.82 Нет 1.98</div>
-        <h2>Коэффициенты Marathon</h2>
-        <h3>Тотал</h3><div>Больше 2.5 1.91 Меньше 2.5 1.89</div>
-        """
-        result = _prognozist_extract_extra_markets(html)
-        self.assertEqual(result["extra_market_source"], "prognozist_marathon")
-        self.assertEqual(result["total_market_odds"]["ТБ 2.5"], 1.91)
-        self.assertEqual(result["total_market_odds"]["ТМ 2.5"], 1.89)
-        self.assertEqual(result["btts_market_odds"], {})
-
-    def test_does_not_invent_quotes_when_market_is_missing(self):
-        result = _prognozist_extract_extra_markets("<h2>Обе забьют?</h2><div>Только текст</div>")
-        self.assertEqual(result["btts_market_odds"], {})
-        self.assertEqual(result["total_market_odds"], {})
-        self.assertEqual(result["stat_market_odds"], {})
+    @patch("data.sources.cache_get", return_value=[{
+        "match": {"homeTeam": {"name": "Other"}, "awayTeam": {"name": "Team B"}},
+        "bookmaker": {}, "markets": [],
+    }])
+    def test_rejects_different_fixture(self, _cache):
+        self.assertIsNone(highlightly_odds_fixture(
+            "2026-10-27", "Team A", "Team B", "test-key"
+        ))
 
 
 if __name__ == "__main__":
