@@ -26,7 +26,7 @@ from betting.kelly import kelly, market_type
 from llm.analyst import analyze_match
 from model.independent_forecasts import historical_features, record_scan_forecasts
 from ui.cards import (render_verdict_card, translate_team,
-                      parse_card_date, day_label)
+                      parse_card_date, day_label, render_fixture_header)
 
 LLM_TOP_N = 8
 MAX_STAKE_PCT = 0.05
@@ -862,21 +862,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 for label, items in sorted_groups:
                     st.markdown(f"### {label} · {len(items)} матч.")
                     for c in items:
-                        st.markdown(
-                            f"#### {c.get('match_ru', c.get('match', 'Матч'))}  \\n"
-                            f"<span style='color:#8b93a7'>{c.get('league', '')} · {c.get('date', '')}</span>",
-                            unsafe_allow_html=True,
-                        )
+                        st.markdown(render_fixture_header(c), unsafe_allow_html=True)
                         _render_manual_odds_block(
                             c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
                         )
             else:
                 for c in cards_view:
-                    st.markdown(
-                        f"#### {c.get('match_ru', c.get('match', 'Матч'))}  \\n"
-                        f"<span style='color:#8b93a7'>{c.get('league', '')} · {c.get('date', '')}</span>",
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown(render_fixture_header(c), unsafe_allow_html=True)
                     _render_manual_odds_block(
                         c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
                     )
@@ -886,11 +878,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if not winner_cards:
                 st.info("Модель не сформировала прогноз 1X2.")
             for c in winner_cards:
-                st.markdown(
-                    f"#### {c.get('match_ru', c.get('match', 'Матч'))}  \\n"
-                    f"<span style='color:#8b93a7'>{c.get('league', '')} · {c.get('date', '')}</span>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown(render_fixture_header(c), unsafe_allow_html=True)
                 _render_manual_odds_block(
                     c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
                 )
