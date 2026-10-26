@@ -1966,7 +1966,7 @@ def league_logo_url(div_code: str) -> Optional[str]:
 # ============ HIGHLIGHTLY ODDS API ============
 def highlightly_odds_fixture(match_date: str, home: str, away: str,
                              api_key: str, logs=None) -> Optional[dict]:
-    """Fetch exact-match pre-match odds and supported markets from Highlightly only."""
+    """Fetch exact-fixture prematch odds from Highlightly's documented response schema."""
     empty = {
         "total_market_odds": {}, "btts_market_odds": {}, "stat_market_odds": {},
         "extra_market_source": "highlightly",
@@ -1976,9 +1976,51 @@ def highlightly_odds_fixture(match_date: str, home: str, away: str,
             logs.append("ℹ️ Highlightly: API-ключ не задан")
         return None
 
-    ck = f"highlightly_odds_v2_{match_date}"
-    events = cache_get(ck, 900)
-    if events is None:
+    hn, an = _norm_name(home), _norm_name(away)
+    # Highlightly's documented /odds response contains matchId + odds[].market/values,
+    # not embedded team names. Resolve IDs against the same-day /matches feed first.
+    matches_key = f"highlightly_matches_v1_{match_date}"
+    matches = cache_get(matches_key, 900)
+    if matches is None:
+        try:
+            response = _sess.get(
+                "https://sports.highlightly.net/football/matches",
+                params={"date": match_date, "timezone": "Europe/Berlin", "limit": 100, "offset": 0},
+                headers={"x-rapidapi-key": api_key, "Accept": "application/json"},
+                timeout=20, proxies=NO_PROXY,
+            )
+            if response.status_code != 200:
+                if logs is not None:
+                    logs.append(f"⚠️ Highlightly matches HTTP {response.status_code}: {(response.text or '')[:120]}")
+                return None
+            payload = response.json() or {}
+            matches = payload.get("data", []) if isinstance(payload, dict) else []
+            if not isinstance(matches, list):
+                matches = []
+            cache_put(matches_key, matches)
+        except Exception as exc:
+            if logs is not None:
+                logs.append(f"⚠️ Highlightly matches error: {type(exc).__name__}")
+            return None
+
+    match_ids = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        ht = (match.get("homeTeam") or {}).get("name") or match.get("homeTeamName") or ""
+        at = (match.get("awayTeam") or {}).get("name") or match.get("awayTeamName") or ""
+        if ht and at and _norm_name(ht) == hn and _norm_name(at) == an:
+            mid = match.get("id", match.get("matchId"))
+            if mid is not None:
+                match_ids.append((str(mid), str(ht), str(at)))
+    if not match_ids:
+        if logs is not None:
+            logs.append(f"Highlightly: матч не найден в /matches за {match_date}: {home} — {away}")
+        return None
+
+    odds_key = f"highlightly_odds_v3_{match_date}"
+    odds_entries = cache_get(odds_key, 900)
+    if odds_entries is None:
         try:
             response = _sess.get(
                 "https://sports.highlightly.net/football/odds",
@@ -1992,48 +2034,44 @@ def highlightly_odds_fixture(match_date: str, home: str, away: str,
                     logs.append(f"⚠️ Highlightly odds HTTP {response.status_code}: {(response.text or '')[:140]}")
                 return None
             payload = response.json() or {}
-            events = payload.get("data", []) if isinstance(payload, dict) else []
+            odds_entries = payload.get("data", []) if isinstance(payload, dict) else []
             plan = payload.get("plan") or {} if isinstance(payload, dict) else {}
             if str(plan.get("tier", "")).lower() in ("free", "basic"):
                 if logs is not None:
                     logs.append("⚠️ Highlightly: тариф Free/Basic не предоставляет коэффициенты.")
                 return None
-            if not isinstance(events, list):
-                events = []
-            cache_put(ck, events)
-            if logs is not None:
-                logs.append(f"Highlightly: получено записей коэффициентов {len(events)} за {match_date}")
+            if not isinstance(odds_entries, list):
+                odds_entries = []
+            cache_put(odds_key, odds_entries)
         except Exception as exc:
             if logs is not None:
-                logs.append(f"⚠️ Highlightly network/JSON error: {type(exc).__name__}: {str(exc)[:100]}")
+                logs.append(f"⚠️ Highlightly odds error: {type(exc).__name__}")
             return None
 
-    hn, an = _norm_name(home), _norm_name(away)
+    wanted_ids = {mid for mid, _, _ in match_ids}
     found = []
-    for entry in events:
-        if not isinstance(entry, dict):
+    for entry in odds_entries:
+        if not isinstance(entry, dict) or str(entry.get("matchId", "")) not in wanted_ids:
             continue
-        match = entry.get("match") or {}
-        ht = (match.get("homeTeam") or {}).get("name", "")
-        at = (match.get("awayTeam") or {}).get("name", "")
-        if not ht or not at or _norm_name(ht) != hn or _norm_name(at) != an:
-            continue
-        bookmaker = entry.get("bookmaker") or {}
-        bname = str(bookmaker.get("name") or "")
-        result = dict(empty)
-        for market in entry.get("markets") or []:
-            mname = str(market.get("name") or market.get("key") or "").casefold()
-            for outcome in market.get("odds") or market.get("outcomes") or []:
-                label = str(outcome.get("label") or outcome.get("name") or "").strip().casefold()
-                raw = outcome.get("value", outcome.get("price"))
+        result = {
+            "total_market_odds": {}, "btts_market_odds": {}, "stat_market_odds": {},
+            "extra_market_source": "highlightly",
+        }
+        for market in entry.get("odds") or []:
+            if not isinstance(market, dict):
+                continue
+            mname = str(market.get("market") or market.get("name") or "").casefold()
+            for outcome in market.get("values") or market.get("odds") or market.get("outcomes") or []:
+                if not isinstance(outcome, dict):
+                    continue
+                label = str(outcome.get("value") or outcome.get("label") or outcome.get("name") or "").strip().casefold()
+                raw = outcome.get("odd", outcome.get("price", outcome.get("odds")))
                 try:
                     price = float(raw)
                 except (TypeError, ValueError):
                     continue
                 if not 1.01 < price <= 100:
                     continue
-
-                # Full-time 1X2
                 if any(term in mname for term in ("full time result", "match result", "1x2", "3-way", "winner")):
                     if label in ("home", "1", "home win"):
                         result["П1"] = price
@@ -2042,56 +2080,46 @@ def highlightly_odds_fixture(match_date: str, home: str, away: str,
                     elif label in ("away", "2", "away win"):
                         result["П2"] = price
                     continue
-
-                # Totals. Accept only a market name that explicitly denotes the market
-                # and a numeric line supplied by the API; never guess a line from a price.
-                point = outcome.get("point", outcome.get("handicap", market.get("point")))
-                try:
-                    line = float(point)
-                except (TypeError, ValueError):
-                    nums = re.findall(r"(?<![a-z])(?:over|under|total)\s*([0-9]+(?:\.[0-9]+)?)", label)
-                    if not nums:
-                        nums = re.findall(r"\b([0-9]+\.[05])\b", str(market.get("name") or ""))
-                    line = float(nums[0]) if nums else None
+                # The API may encode the line in market name, e.g. "Totals 2.5".
+                line_match = re.search(r"(?:total|totals|over/under|corners|cards|booking|goals?)\s*([0-9]+(?:\.[05])?)", mname)
+                line = float(line_match.group(1)) if line_match else None
+                if line is None:
+                    point = outcome.get("point", outcome.get("handicap", market.get("point")))
+                    try:
+                        line = float(point)
+                    except (TypeError, ValueError):
+                        line = None
                 is_over = label in ("over", "more", "больше", "o") or label.startswith(("over ", "больше "))
                 is_under = label in ("under", "less", "меньше", "u") or label.startswith(("under ", "меньше "))
-                if line is not None and is_over or line is not None and is_under:
+                if line is not None and (is_over or is_under):
                     line_txt = f"{line:g}"
-                    if "corner" in mname or "corners" in mname or "углов" in mname:
+                    if "corner" in mname or "углов" in mname:
                         result["stat_market_odds"][("Угл ТБ " if is_over else "Угл ТМ ") + line_txt] = price
                     elif "card" in mname or "booking" in mname or "карточ" in mname:
                         result["stat_market_odds"][("Карты ТБ " if is_over else "Карты ТМ ") + line_txt] = price
                     elif "total" in mname or "goal" in mname or "гол" in mname or "over/under" in mname:
                         result["total_market_odds"][("ТБ " if is_over else "ТМ ") + line_txt] = price
                     continue
-
                 if "both teams" in mname or "btts" in mname or "обе заб" in mname:
                     if label in ("yes", "да", "both", "true"):
                         result["btts_market_odds"]["BTTS Да"] = price
                     elif label in ("no", "нет", "false"):
                         result["btts_market_odds"]["BTTS Нет"] = price
-
-        result["source"] = f"highlightly · {bname}" if bname else "highlightly"
-        if all(key in result for key in ("П1", "X", "П2")) or any(
-            result[k] for k in ("total_market_odds", "btts_market_odds", "stat_market_odds")
-        ):
+        result["source"] = "highlightly"
+        if all(k in result for k in ("П1", "X", "П2")) or any(result[k] for k in ("total_market_odds", "btts_market_odds", "stat_market_odds")):
             found.append(result)
 
     if not found:
         if logs is not None:
             logs.append(f"Highlightly: нет подходящих коэффициентов для точного матча {home} — {away}")
         return None
-
-    # Merge market families from exact fixture rows, preferring a complete 1X2 quote.
     result = dict(empty)
     result.update({"source": "highlightly"})
     for item in found:
-        if all(key in item for key in ("П1", "X", "П2")):
-            for key in ("П1", "X", "П2"):
-                result[key] = item[key]
-            result["source"] = item["source"]
+        if all(k in item for k in ("П1", "X", "П2")):
+            result.update({k: item[k] for k in ("П1", "X", "П2")})
         for key in ("total_market_odds", "btts_market_odds", "stat_market_odds"):
             result[key].update(item.get(key) or {})
     if logs is not None:
-        logs.append(f"✅ Highlightly: рынки получены для {home} — {away} ({result['source']})")
+        logs.append(f"✅ Highlightly: рынки получены для {home} — {away}")
     return result
