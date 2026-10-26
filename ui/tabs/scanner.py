@@ -859,18 +859,46 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     # User-provided/manual quote import: exact date + exact home/away
                     # names only. Highlightly remains preferred; manual prices are a fallback.
                     if not market_odds:
+                        def _team_key(value):
+                            # Ignore punctuation, accents and common club prefixes.
+                            import unicodedata
+                            raw = unicodedata.normalize("NFKD", str(value or ""))
+                            raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+                            key = "".join(ch.lower() for ch in raw if ch.isalnum())
+                            for prefix in ("clubde", "cd", "fc", "sc", "cf", "sporting"):
+                                if key.startswith(prefix) and len(key) > len(prefix) + 3:
+                                    key = key[len(prefix):]
+                            return key
+
+                        fixture_home_key, fixture_away_key = _team_key(h_en), _team_key(a_en)
+                        fixture_date = d.strftime("%Y-%m-%d")
                         for quote in st.session_state.get("_scanner_manual_odds_quotes", []):
-                            if (quote.get("date") == d.strftime("%Y-%m-%d")
-                                    and str(quote.get("home", "")).casefold() == h_en.casefold()
-                                    and str(quote.get("away", "")).casefold() == a_en.casefold()):
-                                market_odds = dict(quote.get("odds") or {})
-                                odds_source = str(quote.get("source") or "manual_import")
-                                logs.append(
-                                    f"📥 Ручной импорт коэффициентов ({odds_source}): "
-                                    f"{h_en} — {a_en} | П1 {market_odds['П1']:.2f} / "
-                                    f"X {market_odds['X']:.2f} / П2 {market_odds['П2']:.2f}"
-                                )
-                                break
+                            quote_home_key = _team_key(quote.get("home"))
+                            quote_away_key = _team_key(quote.get("away"))
+                            # Exact normalized match first; allow a clear containment
+                            # match for harmless prefixes such as "CD Santa Clara".
+                            home_match = (
+                                fixture_home_key == quote_home_key
+                                or (min(len(fixture_home_key), len(quote_home_key)) >= 5
+                                    and (fixture_home_key in quote_home_key or quote_home_key in fixture_home_key))
+                            )
+                            away_match = (
+                                fixture_away_key == quote_away_key
+                                or (min(len(fixture_away_key), len(quote_away_key)) >= 5
+                                    and (fixture_away_key in quote_away_key or quote_away_key in fixture_away_key))
+                            )
+                            if quote.get("date") == fixture_date and home_match and away_match:
+                                imported = dict(quote.get("odds") or {})
+                                if all(key in imported and 1.01 < float(imported[key]) <= 100
+                                       for key in ("П1", "X", "П2")):
+                                    market_odds = {key: float(imported[key]) for key in ("П1", "X", "П2")}
+                                    odds_source = str(quote.get("source") or "manual_import")
+                                    logs.append(
+                                        f"📥 Ручной импорт коэффициентов ({odds_source}): "
+                                        f"{h_en} — {a_en} | П1 {market_odds['П1']:.2f} / "
+                                        f"X {market_odds['X']:.2f} / П2 {market_odds['П2']:.2f}"
+                                    )
+                                    break
 
                     # If no provider has a verified line, leave odds empty.
 
