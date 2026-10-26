@@ -646,15 +646,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     _render_manual_odds_block(c, D, kelly_frac, min_prob, min_edge)
 
         category_specs = [
-            (market_tabs[1], "winner", lambda c: bool(c.get("market_odds")), "Реальная линия 1X2 не найдена."),
-            (market_tabs[2], "goals", lambda c: bool(c.get("total_market_odds")), "Источник не вернул подтверждённые коэффициенты тотала голов."),
-            (market_tabs[3], "btts", lambda c: bool(c.get("btts_market_odds")), "Источник не вернул отдельные коэффициенты «Обе забьют»."),
-            (market_tabs[4], "corners", lambda c: any(str(k).startswith("Угл Т") for k in (c.get("stat_market_odds") or {})), "Котировки тотала угловых не найдены. Угловые 1X2 не считаются тоталом угловых."),
-            (market_tabs[5], "cards", lambda c: any(str(k).startswith("Карты Т") for k in (c.get("stat_market_odds") or {})), "Котировки тотала карточек не найдены."),
+            (market_tabs[1], "winner", lambda c: c.get("p1") is not None and c.get("p2") is not None, "Модель не сформировала прогноз 1X2."),
+            (market_tabs[2], "goals", lambda c: c.get("over") is not None, "Модель не сформировала прогноз тотала голов."),
+            (market_tabs[3], "btts", lambda c: c.get("btts") is not None, "Модель не сформировала прогноз «Обе забьют»."),
+            (market_tabs[4], "corners", lambda c: bool((c.get("historical_stats") or {}).get("corners")), "Нет достаточных исторических данных для угловых."),
+            (market_tabs[5], "cards", lambda c: bool((c.get("historical_stats") or {}).get("cards")), "Нет достаточных исторических данных для карточек."),
         ]
-        for tab, market_filter, has_market_quote, empty_message in category_specs:
+        for tab, market_filter, has_market_forecast, empty_message in category_specs:
             with tab:
-                market_cards = [c for c in cards_view if has_market_quote(c)]
+                # Market tabs show model forecasts even when the bookmaker has no
+                # verified quote. Odds availability must not hide the prediction.
+                market_cards = [c for c in cards_view if has_market_forecast(c)]
                 if not market_cards:
                     st.info(empty_message)
                     continue
@@ -669,6 +671,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         market_filter=market_filter,
                     )
 
+        st.caption("Котировки показываются отдельно от прогнозов: если кэф конкретного рынка не подтверждён источником, прогноз остаётся виден, а ставка/value не рассчитываются.")
         st.caption("✅ Показано " + str(len(cards_view)) + " из "
                    + str(len(all_cards)))
         return
