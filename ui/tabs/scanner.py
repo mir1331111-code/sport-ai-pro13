@@ -249,19 +249,53 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                     market_options[f"{prefix}: больше {line}"] = (f"{'Угл' if stat_market == 'corners' else 'Карты'} ТБ {line}", over_p)
                     market_options[f"{prefix}: меньше {line}"] = (f"{'Угл' if stat_market == 'corners' else 'Карты'} ТМ {line}", 1.0 - over_p)
 
-    default_label = next(
-        (name for name, item in market_options.items()
-         if item[0].casefold() == str(v.get("pick") or "").casefold()),
-        "Победа хозяев (П1)",
+    # Automatically select the strongest forecast; no manual market cycling.
+    source_odds = c.get("market_odds") or {}
+    total_odds = c.get("total_market_odds") or {}
+    btts_odds = c.get("btts_market_odds") or {}
+    stat_odds = c.get("stat_market_odds") or {}
+
+    def quote_for(candidate_pick):
+        kind = market_type(candidate_pick)
+        if kind == "1X2":
+            raw = source_odds.get(candidate_pick)
+        elif kind == "OU":
+            raw = total_odds.get(candidate_pick)
+        elif kind == "BTTS":
+            raw = btts_odds.get(candidate_pick)
+        elif kind == "STAT":
+            raw = stat_odds.get(candidate_pick)
+        else:
+            raw = None
+        try:
+            value = float(raw or 0)
+            return value if 1.01 < value <= 100 else None
+        except (TypeError, ValueError):
+            return None
+
+    quoted_candidates = [
+        (label, item[0], item[1], quote_for(item[0]))
+        for label, item in market_options.items()
+        if quote_for(item[0]) is not None and 0 < item[1] < 1
+    ]
+    if quoted_candidates:
+        selected_label, pick, model_prob, _ = max(
+            quoted_candidates, key=lambda row: (row[2], row[3] * 0.0001)
+        )
+        auto_quote_exists = True
+    else:
+        selected_label, (pick, model_prob) = max(
+            market_options.items(), key=lambda row: row[1][1]
+        )
+        auto_quote_exists = False
+
+    st.markdown("**🎯 Лучший прогноз модели для этого матча**")
+    st.markdown(f"### {selected_label}")
+    st.caption(
+        "Исход выбран автоматически по максимальной вероятности модели"
+        + (" среди рынков с реальным коэффициентом источника." if auto_quote_exists
+           else ". Реального коэффициента на доступные исходы не получено.")
     )
-    labels = list(market_options)
-    selected_label = st.selectbox(
-        "1. Выберите исход, на который смотрите коэффициент",
-        labels,
-        index=labels.index(default_label),
-        key=f"market_{c.get('match','').replace(' ','_')}",
-    )
-    pick, model_prob = market_options[selected_label]
     market_is_validated = (market_type(pick) == "1X2" or
                            (market_type(pick) == "OU" and bool(c.get("total_market_validation"))))
     fair_odd = (1.0 / model_prob) if model_prob > 0 else None
@@ -295,21 +329,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # Reuse the exact 1X2 quote already attached to this fixture by Prognozist/Marathon.
     # Never make the user retype a price the scanner already has, and never treat a
     # model fair price as a bookmaker quote.
-    source_odd = None
-    source_odds = c.get("market_odds") or {}
-    total_odds = c.get("total_market_odds") or {}
-    # Use only a quote for the exact selected market/outcome.
-    # 1X2 odds must never be shown as BTTS, totals, corners, or cards odds.
-    if market_type(pick) == "1X2":
-        raw_odd = source_odds.get(pick)
-    elif market_type(pick) == "OU":
-        raw_odd = total_odds.get(pick)
-    elif market_type(pick) == "BTTS":
-        raw_odd = (c.get("btts_market_odds") or {}).get(pick)
-    elif market_type(pick) == "STAT":
-        raw_odd = (c.get("stat_market_odds") or {}).get(pick)
-    else:
-        raw_odd = None
+    source_odd = quote_for(pick)
     try:
         candidate_odd = float(raw_odd or 0)
         if 1.01 < candidate_odd <= 100:
