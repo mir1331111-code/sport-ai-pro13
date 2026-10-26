@@ -11,12 +11,8 @@ import streamlit as st
 from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE
 from storage import usage
 from storage import sqlite_store as db
-from data.sources import (load_seasonal, season_str,
-                          fdorg_matches, fdorg_match_result, odds_api_fixture, parse_date,
-                          tsdb_matches, espn_matches, therundown_odds_fixture,
-                          prognozist_marathon_odds, prognozist_matches, prognozist_source_status, highlightly_odds_fixture,
-                          prognozist_permission_enabled)
-from data.marathon import marathon_odds
+from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
+                          parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture)
 from data.fixture_merge import merge_fixture_sources
 from model.engine import Engine
 from betting.verdict import build_verdict
@@ -304,8 +300,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         # Extra markets are usable only when the detail page explicitly labels
         # the odds block as Marathon. A page-wide bookmaker mention is not proof
         # that every parsed price belongs to that bookmaker.
-        extra_source = str(c.get("extra_market_source") or "prognozist_unverified").casefold()
-        if kind in {"OU", "BTTS", "STAT"} and extra_source != "prognozist_marathon":
+        extra_source = str(c.get("extra_market_source") or "").casefold()
+        if kind in {"OU", "BTTS", "STAT"} and extra_source != "highlightly":
             return None
         if kind == "1X2":
             raw = source_odds.get(candidate_pick)
@@ -432,10 +428,9 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # Only markets with an actual bookmaker quote can be auto-priced.
     # Model fair odds are not a substitute for a real quote.
     st.info(
-        "Коэффициент берётся только для совпадающего исхода и линии. Для тоталов, "
-        "«Обе забьют», угловых и карточек принимается только блок, явно помеченный "
-        "«Коэффициенты Марафон/Marathon». Цены с неподтверждённым источником не участвуют "
-        "в выборе прогноза и расчёте value. Справочный коэффициент модели — не букмекерский."
+        "Все реальные коэффициенты берутся только из Highlightly и только для точного матча "
+        "и совпадающего рынка/линии. Если Highlightly не вернул цену, система не подставляет "
+        "коэффициенты с других сайтов или справочный кэф модели."
     )
 
     examples = {
@@ -469,7 +464,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     else:
         manual_odd = None
         col_input.warning(
-            "Реальный коэффициент именно на этот рынок не получен из Prognozist/Marathon. "
+            "Highlightly не вернул реальный коэффициент именно на этот рынок и линию. "
             "Расчёт value и добавление в портфель отключены — коэффициент 1X2 нельзя "
             "использовать для «Обе забьют», тоталов, угловых или карточек."
         )
@@ -693,7 +688,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
 
-        prog_status = prognozist_source_status()
         if prog_status == "disabled_permission":
             logs.append("ℹ️ Prognozist: отключён. В боковой панели можно включить «Пробовать публичную линию Prognozist» только если это разрешено правилами сайта; robots.txt всё равно проверяется.")
         elif prog_status == "blocked_or_unavailable":
@@ -709,7 +703,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         update_loader("📡 Загрузка матчей и линии 1X2 из Prognozist/Marathon...", 0.05, logs)
         try:
-            rows = _safe_filter(prognozist_matches(days, logs))
         except Exception as exc:
             rows = []
             logs.append(f"⚠️ Prognozist: ошибка получения матчей ({type(exc).__name__})")
@@ -791,108 +784,24 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 try:
                     candidates = []
 
-                    # Only Prognozist/Marathon is enabled for live prices. External odds APIs are disabled.
-
-                    # The fixture row already carries the exact 1X2 line parsed from Prognozist.
-                    # Reuse it to avoid a second lookup and accidental cross-match.
-                    embedded_line = r.get("prognozist_odds")
-                    if isinstance(embedded_line, dict):
-                        try:
-                            if all(1.01 < float(embedded_line[key]) <= 100 for key in ("П1", "X", "П2")):
-                                candidates.append(("prognozist", {
-                                    key: float(embedded_line[key]) for key in ("П1", "X", "П2")
-                                }))
-                        except (KeyError, TypeError, ValueError):
-                            pass
-
-                    # 1. Prognozist is the primary odds source. Search with the
-                    # source-native Russian names first to avoid translation mismatch;
-                    # use provider English names only as a fallback.
-                    try:
-                        prog_odds = prognozist_marathon_odds(
-                            h_ru, a_ru, kickoff=d, logs=logs
-                        )
-                        if not prog_odds and (h_en, a_en) != (h_ru, a_ru):
-                            prog_odds = prognozist_marathon_odds(
-                                h_en, a_en, kickoff=d, logs=logs
-                            )
-                        if isinstance(prog_odds, dict):
-                            valid_prog = {}
-                            for source_key, target_key in (("П1", "П1"), ("X", "X"), ("П2", "П2"),
-                                                           ("1", "П1"), ("2", "П2")):
-                                if target_key in valid_prog or source_key not in prog_odds:
-                                    continue
-                                try:
-                                    value = float(prog_odds[source_key])
-                                except (TypeError, ValueError):
-                                    continue
-                                if 1.01 < value < 100:
-                                    valid_prog[target_key] = value
-                            if all(key in valid_prog for key in ("П1", "X", "П2")):
-                                candidates.append(("prognozist", valid_prog))
-                                # The odds lookup also returns exact-match detail-page markets.
-                                for field, target in (
-                                    ("total_market_odds", total_market_odds),
-                                    ("btts_market_odds", btts_market_odds),
-                                    ("stat_market_odds", stat_market_odds),
-                                ):
-                                    extra = prog_odds.get(field)
-                                    if isinstance(extra, dict):
-                                        for market_key, raw_price in extra.items():
-                                            try:
-                                                price = float(raw_price)
-                                            except (TypeError, ValueError):
-                                                continue
-                                            if 1.01 < price <= 100:
-                                                target[market_key] = price
-                                if total_market_odds or btts_market_odds or stat_market_odds:
-                                    # Source verification applies to every extra-market
-                                    # family, not only totals. Previously BTTS-only
-                                    # quotes could be discarded because the source label
-                                    # was copied only when totals were present.
-                                    verified_source = str(
-                                        prog_odds.get("extra_market_source") or "prognozist_unverified"
-                                    )
-                                    extra_market_source = verified_source
-                                    if total_market_odds:
-                                        total_odds_source = verified_source
-                                logs.append(f"✅ Prognozist нашёл линию: {h_ru} — {a_ru}")
-                            else:
-                                logs.append("ℹ️ Prognozist: линия неполная или коэффициенты некорректны")
-                        else:
-                            if prognozist_permission_enabled():
-                                logs.append("ℹ️ Prognozist: матч/линия не найдены или неоднозначны, проверяю другие источники")
-                    except Exception as exc:
-                        logs.append(f"⚠️ Prognozist error: {type(exc).__name__}")
-
-                    # 2. Если Prognozist не дал — пробуем Marathon
-                    if not candidates:
-                        try:
-                            marathon_line = marathon_odds(
-                                h_en, a_en, d.strftime("%Y-%m-%d"), lg
-                            )
-                            if isinstance(marathon_line, dict) and all(
-                                key in marathon_line for key in ("П1", "X", "П2")
-                            ):
-                                candidates.append(("marathon_category", marathon_line))
-                            else:
-                                logs.append("ℹ️ Marathon: линия для матча не найдена, проверяю следующие источники")
-                        except Exception as exc:
-                            logs.append(f"ℹ️ Marathon lookup failed: {type(exc).__name__}")
-                    
-                    # Highlightly fallback: accept only exact home/away matches and a
-                    # complete 1X2 market from one bookmaker.
-                    if not candidates and highlightly_key:
+                    # Highlightly is the sole permitted bookmaker-odds source.
+                    if highlightly_key:
                         try:
                             highlighted = highlightly_odds_fixture(
                                 d.strftime("%Y-%m-%d"), h_en, a_en, highlightly_key, logs
                             )
-                            if isinstance(highlighted, dict) and all(
-                                key in highlighted for key in ("П1", "X", "П2")
-                            ):
-                                candidates.append((highlighted.get("source", "highlightly"), highlighted))
+                            if isinstance(highlighted, dict):
+                                if all(key in highlighted for key in ("П1", "X", "П2")):
+                                    candidates.append((highlighted.get("source", "highlightly"), highlighted))
+                                    market_odds = {key: highlighted[key] for key in ("П1", "X", "П2")}
+                                    odds_source = highlighted.get("source", "highlightly")
+                                total_market_odds = dict(highlighted.get("total_market_odds") or {})
+                                btts_market_odds = dict(highlighted.get("btts_market_odds") or {})
+                                stat_market_odds = dict(highlighted.get("stat_market_odds") or {})
+                                total_odds_source = "highlightly" if total_market_odds else "no_market"
+                                extra_market_source = "highlightly"
                         except Exception as exc:
-                            logs.append(f"⚠️ Highlightly lookup failed: {type(exc).__name__}")
+                            logs.append(f"⚠️ Highlightly lookup failed: {type(exc).__name__}: {str(exc)[:120]}")
 
                     # If no provider has a verified line, leave odds empty.
 
@@ -984,7 +893,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "odds_source": odds_source,
                 "market_odds": dict(market_odds),
                 "total_market_odds": dict(total_market_odds),
-                "total_odds_source": total_odds_source if total_market_odds else (str(r.get("extra_market_source") or "prognozist_unverified") if r.get("total_market_odds") else total_odds_source),
+                "total_odds_source": total_odds_source if total_market_odds else (str(r.get("extra_market_source") or "") if r.get("total_market_odds") else total_odds_source),
                 "extra_market_source": extra_market_source,
                 "btts_market_odds": dict(btts_market_odds),
                 "stat_market_odds": dict(stat_market_odds),
@@ -1246,7 +1155,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         # Surface source diagnostics in deployment logs, not only the in-app report.
         for source_line in logs:
-            if "Prognozist" in source_line or "Marathon" in source_line or "матчей после фильтрации" in source_line:
+            if "Highlightly" in source_line or "матчей после фильтрации" in source_line:
                 _print_log(f"SOURCE: {source_line}")
 
         _print_log(f"FUNNEL: {funnel_counts}")
