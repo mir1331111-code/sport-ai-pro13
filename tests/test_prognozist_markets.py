@@ -6,6 +6,7 @@ from data.sources import _prognozist_extract_extra_markets
 class PrognozistExtraMarketTests(unittest.TestCase):
     def test_extracts_goals_btts_corners_and_cards_from_detail_page(self):
         html = """
+        <h2>Коэффициенты Marathon</h2>
         <h2>Тотал голов</h2>
         <div>Больше 2.5 1.91 Меньше 2.5 1.89</div>
         <h2>Обе забьют?</h2>
