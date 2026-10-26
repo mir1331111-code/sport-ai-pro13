@@ -1541,6 +1541,7 @@ def prognozist_marathon_odds(
         return cached or None
     try:
         matches = []
+        matched_items = []
         line_index = _prognozist_line_index()
         for item in line_index:
             row_text = item.get("text", "")
@@ -1599,11 +1600,29 @@ def prognozist_marathon_odds(
                 if dated and day not in dated:
                     continue
             matches.append({"П1": float(odds["П1"]), "X": float(odds["X"]), "П2": float(odds["П2"])})
+            matched_items.append(item)
         # Same team names can occur in youth/cup/league fixtures. Without a
         # unique fixture identity, fail closed instead of attaching the wrong line.
         unique = {tuple(round(item[k], 4) for k in ("П1", "X", "П2")) for item in matches}
         if len(unique) == 1 and matches:
-            result = matches[0]
+            result = dict(matches[0])
+            # Fetch the detail page linked to this exact 1X2 row.
+            matched_item = matched_items[0] if matched_items else {}
+            href = str(matched_item.get("href") or "").strip()
+            cells = matched_item.get("cells")
+            if not href and isinstance(cells, list) and cells:
+                href = str(cells[0] or "").strip()
+            if href.startswith("/mc/football/") or href.startswith("https://prognozist.ru/mc/football/"):
+                detail = _prognozist_fetch_detail_fixture(
+                    href, odds=result,
+                    today=datetime.strptime(day, "%Y-%m-%d").date() if day else None,
+                    permission_granted=True,
+                )
+                if isinstance(detail, dict):
+                    for market_key in ("total_market_odds", "btts_market_odds", "stat_market_odds"):
+                        market_values = detail.get(market_key)
+                        if isinstance(market_values, dict) and market_values:
+                            result[market_key] = market_values
             cache_put(cache_key, result)
             return result
         if len(unique) > 1:
