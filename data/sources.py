@@ -1221,7 +1221,8 @@ def _prognozist_fetch_detail_fixture(href, odds=None, today=None, permission_gra
         return None
     if not _prognozist_allowed(href, permission_granted=permission_granted):
         return None
-    cache_key = "prognozist_detail_" + hashlib.sha256(href.encode("utf-8")).hexdigest()[:24]
+    # Versioned cache: old builds cached fixtures without extra market prices.
+    cache_key = "prognozist_detail_v2_" + hashlib.sha256(href.encode("utf-8")).hexdigest()[:24]
     cached = cache_get(cache_key, 1800)
     if isinstance(cached, dict):
         fixture = dict(cached)
