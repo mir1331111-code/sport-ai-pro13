@@ -25,6 +25,24 @@ class PrognozistExtraMarketTests(unittest.TestCase):
         self.assertEqual(result["stat_market_odds"]["Карты ТБ 4.5"], 1.87)
         self.assertEqual(result["stat_market_odds"]["Карты ТМ 4.5"], 1.93)
 
+    def test_parses_prognozist_rendered_market_layout(self):
+        # Mirrors compact labels visible in Prognozist's bookmaker market block.
+        html = """
+        <h2>Коэффициенты Winline</h2>
+        <h3>Тотал</h3>
+        <div>Больше (2.5)1.56 Меньше (2.5)2.32 Больше (3.5)2.37 Меньше (3.5)1.54</div>
+        <h3>Какая команда забьет?</h3>
+        <div>Ни одна 17.00 Только Хозяева 3.45 Только Гости 9.00 Обе 1.55</div>
+        <h3>Обе забьют?</h3>
+        <div>Да 1.54 Нет 2.36</div>
+        """
+        result = _prognozist_extract_extra_markets(html)
+        self.assertEqual(result["total_market_odds"]["ТБ 2.5"], 1.56)
+        self.assertEqual(result["total_market_odds"]["ТМ 2.5"], 2.32)
+        self.assertEqual(result["total_market_odds"]["ТБ 3.5"], 2.37)
+        self.assertEqual(result["total_market_odds"]["ТМ 3.5"], 1.54)
+        self.assertEqual(result["btts_market_odds"]["BTTS Да"], 1.54)
+        self.assertEqual(result["btts_market_odds"]["BTTS Нет"], 2.36)
     def test_does_not_invent_quotes_when_market_is_missing(self):
         result = _prognozist_extract_extra_markets("<h2>Обе забьют?</h2><div>Только текст</div>")
         self.assertNotIn("btts_market_odds", result)
