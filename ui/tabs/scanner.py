@@ -730,8 +730,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             best = None
             odds_source = "model_only"
             market_odds = {}
-            total_market_odds = {}
-            total_odds_source = "no_market"
+            total_market_odds = dict(r.get("total_market_odds") or {})
+            btts_market_odds = dict(r.get("btts_market_odds") or {})
+            stat_market_odds = dict(r.get("stat_market_odds") or {})
+            total_odds_source = "prognozist" if total_market_odds else "no_market"
             api_market_data = None
             odds_source = "no_market"
 
@@ -782,6 +784,23 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     valid_prog[target_key] = value
                             if all(key in valid_prog for key in ("П1", "X", "П2")):
                                 candidates.append(("prognozist", valid_prog))
+                                # The odds lookup also returns exact-match detail-page markets.
+                                for field, target in (
+                                    ("total_market_odds", total_market_odds),
+                                    ("btts_market_odds", btts_market_odds),
+                                    ("stat_market_odds", stat_market_odds),
+                                ):
+                                    extra = prog_odds.get(field)
+                                    if isinstance(extra, dict):
+                                        for market_key, raw_price in extra.items():
+                                            try:
+                                                price = float(raw_price)
+                                            except (TypeError, ValueError):
+                                                continue
+                                            if 1.01 < price <= 100:
+                                                target[market_key] = price
+                                if total_market_odds:
+                                    total_odds_source = "prognozist"
                                 logs.append(f"✅ Prognozist нашёл линию: {h_ru} — {a_ru}")
                             else:
                                 logs.append("ℹ️ Prognozist: линия неполная или коэффициенты некорректны")
@@ -895,10 +914,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
                 "market_odds": dict(market_odds),
-                "total_market_odds": dict(total_market_odds or r.get("total_market_odds") or {}),
+                "total_market_odds": dict(total_market_odds),
                 "total_odds_source": total_odds_source if total_market_odds else ("prognozist" if r.get("total_market_odds") else total_odds_source),
-                "btts_market_odds": dict(r.get("btts_market_odds") or {}),
-                "stat_market_odds": dict(r.get("stat_market_odds") or {}),
+                "btts_market_odds": dict(btts_market_odds),
+                "stat_market_odds": dict(stat_market_odds),
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
