@@ -298,7 +298,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     def quote_for(candidate_pick):
         kind = market_type(candidate_pick)
         # Extra markets are usable only when the detail page explicitly labels
-        # the odds block as Marathon. A page-wide bookmaker mention is not proof
+        # a quote belongs to the exact market. A page-wide bookmaker mention is not proof
         # that every parsed price belongs to that bookmaker.
         extra_source = str(c.get("extra_market_source") or "").casefold()
         if kind in {"OU", "BTTS", "STAT"} and extra_source != "highlightly":
@@ -688,27 +688,29 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
 
-        if prog_status == "disabled_permission":
-            logs.append("ℹ️ Prognozist: отключён. В боковой панели можно включить «Пробовать публичную линию Prognozist» только если это разрешено правилами сайта; robots.txt всё равно проверяется.")
-        elif prog_status == "blocked_or_unavailable":
-            logs.append("⚠️ Prognozist: robots.txt запрещает доступ или недоступен; источник отключён, проверяю остальные источники.")
-        else:
-            logs.append("📡 Prognozist: доступ разрешён robots.txt; проверяю линию матчей.")
-
         token = _runtime_secret("fdorg_token_input", "FDORG_TOKEN", "fdorg_token")
-        if token:
-            logs.append(f"🔑 football-data.org: {usage.fdorg_remaining()} запросов")
-        else:
-            logs.append("ℹ️ football-data.org token не задан: использую доступные публичные источники TSDB/ESPN.")
-
-        update_loader("📡 Загрузка матчей и коэффициентов из Highlightly...", 0.05, logs)
+        fixture_sources = []
         try:
+            fixture_sources.extend(tsdb_matches(days, logs))
         except Exception as exc:
-            rows = []
-            logs.append(f"⚠️ Prognozist: ошибка получения матчей ({type(exc).__name__})")
-        logs.append(f"📡 Матчи для анализа: {len(rows)}")
+            logs.append(f"⚠️ TheSportsDB fixtures: {type(exc).__name__}")
+        try:
+            fixture_sources.extend(espn_matches(days, logs))
+        except Exception as exc:
+            logs.append(f"⚠️ ESPN fixtures: {type(exc).__name__}")
+        if token:
+            try:
+                fixture_sources.extend(fdorg_matches(days, token, logs))
+            except Exception as exc:
+                logs.append(f"⚠️ football-data.org fixtures: {type(exc).__name__}")
+        try:
+            rows = _safe_filter(merge_fixture_sources(fixture_sources))
+        except Exception:
+            # Keep scanner usable even if cross-provider deduplication fails.
+            rows = _safe_filter(fixture_sources)
+        logs.append(f"📡 Матчи для анализа из футбольных источников: {len(rows)}")
         if not rows:
-            logs.append("⚠️ Нет матчей из Prognozist. Проверьте opt-in/robots.txt и формат доступной линии; внешние списки матчей не подставляются.")
+            logs.append("⚠️ Матчи не найдены. Проверьте доступность источников расписания.")
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(matrix_n, logs, update_loader)
@@ -717,7 +719,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         cards = []
         matches_with_best = 0
         xg_used_count = 0
-        odds_key = _runtime_secret("odds_api_key_input", "ODDS_API_KEY", "odds_api_key")
         highlightly_key = _runtime_secret("highlightly_api_key_input", "HIGHLIGHTLY_API_KEY", "highlightly_api_key")
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
@@ -767,8 +768,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             stat_market_odds = dict(r.get("stat_market_odds") or {})
             total_odds_source = "highlightly" if total_market_odds else "no_market"
             extra_market_source = str(r.get("extra_market_source") or "")
-            # Fail closed: do not expose or evaluate secondary-market prices unless
-            # the parser verified an explicit Marathon odds block for this fixture.
+            # Fail closed: secondary-market odds are accepted only from Highlightly.
             if extra_market_source.casefold() != "highlightly":
                 total_market_odds = {}
                 btts_market_odds = {}
