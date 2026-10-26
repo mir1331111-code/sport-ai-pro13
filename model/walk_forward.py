@@ -159,6 +159,23 @@ def _probs(prediction):
     return {"H": prediction["p1"], "D": prediction["x"], "A": prediction["p2"]}
 
 
+def _poisson_over_probability(mean, line):
+    """P(total goals > half-goal line) from a Poisson total-goals approximation."""
+    try:
+        mean, line = float(mean), float(line)
+        if not math.isfinite(mean) or mean <= 0 or not math.isfinite(line):
+            return None
+        cutoff = math.floor(line) + 1
+        term = math.exp(-mean)
+        cdf = term
+        for k in range(1, cutoff):
+            term *= mean / k
+            cdf += term
+        return min(1.0, max(0.0, 1.0 - cdf))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _binary_metrics(records, *, bootstrap_samples=1000, seed=31415):
     """Brier/log-loss and fixture-bootstrap intervals for binary markets."""
     if not records:
@@ -297,6 +314,9 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
                "market": [], "candidate_on_market": [],
                "goals_over25": [], "goals_over25_market": [],
                "goals_over25_candidate_on_market": []}
+    # Separate binary evaluation for each common goals line. This measures
+    # forecast quality, not merely whether the 1X2 model predicts the winner.
+    goals_line_records = {line: [] for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)}
     market_sources = {}
     total_market_sources = {}
     xg_forecasts = xg_eligible_rows = 0
@@ -324,6 +344,13 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             total_outcome = "over" if hg + ag >= 3 else "under"
             over_prob = max(1e-6, min(1.0 - 1e-6, float(pred_candidate.get("over", 0.5))))
             records["goals_over25"].append(({"over": over_prob, "under": 1.0 - over_prob}, total_outcome))
+            total_mean = float(pred_candidate.get("lam_h", 0.0) or 0.0) + float(pred_candidate.get("lam_a", 0.0) or 0.0)
+            actual_total = hg + ag
+            for line, line_records in goals_line_records.items():
+                line_over = _poisson_over_probability(total_mean, line)
+                if line_over is not None:
+                    line_outcome = "over" if actual_total > line else "under"
+                    line_records.append(({"over": line_over, "under": 1.0 - line_over}, line_outcome))
             total_market_p, total_market_source = _total_market_probs(row_copy)
             if total_market_p:
                 records["goals_over25_market"].append((total_market_p, total_outcome))
@@ -369,6 +396,15 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
     goals_over25_metrics = _binary_metrics(records["goals_over25"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_market_metrics = _binary_metrics(records["goals_over25_market"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_candidate_market_metrics = _binary_metrics(records["goals_over25_candidate_on_market"], bootstrap_samples=totals_bs, seed=31415)
+    goals_totals_by_line = {
+        str(line): {
+            "line": line,
+            "n": len(line_records),
+            "metrics": _binary_metrics(line_records, bootstrap_samples=totals_bs, seed=31415 + int(line * 10)),
+            "interpretation": "Poisson total-goals probability evaluated against the observed full-time goal total; no bookmaker comparison unless paired line odds are available."
+        }
+        for line, line_records in goals_line_records.items()
+    }
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
     delta = lambda left, right, key: (
@@ -388,6 +424,7 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
         "goals_over25": goals_over25_metrics,
         "goals_over25_market": goals_over25_market_metrics,
         "goals_over25_candidate_on_market": goals_over25_candidate_market_metrics,
+        "goals_totals_by_line": goals_totals_by_line,
         "goals_over25_market_sources": total_market_sources,
         "goals_over25_candidate_minus_market": _binary_paired_differences(
             records["goals_over25_candidate_on_market"], records["goals_over25_market"],
