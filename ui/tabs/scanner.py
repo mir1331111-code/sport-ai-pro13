@@ -1125,7 +1125,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "prob": prob, "model_prob": model_p, "market_implied_raw": implied,
                         "probability_method": "market_blend_0.4_model_delta",
                         "status": "pending", "strat": "scanner_auto_totals",
-                        "odds_source": card.get("total_odds_source", "the_odds_api"), "mode": "real",
+                        "odds_source": card.get("total_odds_source", "highlightly"), "mode": "real",
                         "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                         "date_iso": card.get("date_iso"), "match_time": card.get("time", ""),
                         "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
