@@ -353,7 +353,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         else:
             st.caption("Коэффициенты букмекера именно для выбранного рынка: " + quote_text)
     elif market_filter in {"goals", "btts", "corners", "cards"}:
-        st.caption("Подтверждённые коэффициенты Marathon именно для этого рынка не найдены; цены 1X2 не подставляются.")
+        st.caption("Highlightly не вернул цену именно для этого рынка; цены 1X2 не подставляются.")
 
     quoted_candidates = [
         (label, item[0], item[1], quote_for(item[0]))
@@ -459,7 +459,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         source_label = str((
             c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"}
             else c.get("odds_source")
-        ) or "Prognozist/Marathon")
+        ) or "Highlightly")
         col_input.success(f"Кэф загружен автоматически ({source_label}): **{manual_odd:.2f}**")
     else:
         manual_odd = None
@@ -522,7 +522,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                     "market_implied_raw": market_implied,
                     "probability_method": "market_blend_0.4_model_delta",
                     "status": "pending", "strat": "scanner_auto_recommendation",
-                    "odds_source": str((c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"} else c.get("odds_source")) or "Prognozist/Marathon"),
+                    "odds_source": str((c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"} else c.get("odds_source")) or "Highlightly"),
                     "mode": "real",
                     "date": (parse_date(c.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": c.get("date_iso"),
@@ -543,7 +543,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         else:
             col_btn.caption("Автодобавление не сработало: не пройдены пороги вероятности, Edge, EV или Kelly.")
     elif source_odd is None:
-        col_metrics.caption("Ожидается реальный коэффициент выбранного рынка из Prognozist/Marathon.")
+        col_metrics.caption("Ожидается реальный коэффициент выбранного рынка из Highlightly.")
 
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
@@ -701,12 +701,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         else:
             logs.append("ℹ️ football-data.org token не задан: использую доступные публичные источники TSDB/ESPN.")
 
-        update_loader("📡 Загрузка матчей и линии 1X2 из Prognozist/Marathon...", 0.05, logs)
+        update_loader("📡 Загрузка матчей и коэффициентов из Highlightly...", 0.05, logs)
         try:
         except Exception as exc:
             rows = []
             logs.append(f"⚠️ Prognozist: ошибка получения матчей ({type(exc).__name__})")
-        logs.append(f"📡 Prognozist/Marathon: {len(rows)} матчей после фильтрации")
+        logs.append(f"📡 Матчи для анализа: {len(rows)}")
         if not rows:
             logs.append("⚠️ Нет матчей из Prognozist. Проверьте opt-in/robots.txt и формат доступной линии; внешние списки матчей не подставляются.")
 
@@ -765,11 +765,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             total_market_odds = dict(r.get("total_market_odds") or {})
             btts_market_odds = dict(r.get("btts_market_odds") or {})
             stat_market_odds = dict(r.get("stat_market_odds") or {})
-            total_odds_source = "prognozist" if total_market_odds else "no_market"
-            extra_market_source = str(r.get("extra_market_source") or "prognozist_unverified")
+            total_odds_source = "highlightly" if total_market_odds else "no_market"
+            extra_market_source = str(r.get("extra_market_source") or "")
             # Fail closed: do not expose or evaluate secondary-market prices unless
             # the parser verified an explicit Marathon odds block for this fixture.
-            if extra_market_source.casefold() != "prognozist_marathon":
+            if extra_market_source.casefold() != "highlightly":
                 total_market_odds = {}
                 btts_market_odds = {}
                 stat_market_odds = {}
@@ -780,7 +780,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             # the model already crosses the probability threshold. The strict
             # value gates below decide whether a bet is eligible; odds display
             # and source diagnostics must not depend on model confidence.
-            if rows_ is not None or (odds_key and getattr(engine, "total_market_validation", False)):
+            if rows_ is not None:
                 try:
                     candidates = []
 
