@@ -657,13 +657,27 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 elif raw_file:
                     # Accept generic odds CSVs plus Football-Data.co.uk fixtures/results
                     # exports (Date/HomeTeam/AwayTeam/B365H/B365D/B365A, AvgH/AvgD/AvgA, PSH/PSD/PSA).
+                    # Parse explicitly instead of relying on DictReader.fieldnames timing.
+                    # Some feeds prepend blank lines or use semicolons despite a CSV extension.
+                    csv_text = raw_file.lstrip("\ufeff")
+                    nonempty_lines = [line for line in csv_text.splitlines() if line.strip()]
                     try:
-                        dialect = csv.Sniffer().sniff(raw_file[:8192], delimiters=",;\t")
+                        dialect = csv.Sniffer().sniff("\n".join(nonempty_lines[:20]), delimiters=",;\t|")
                     except csv.Error:
                         dialect = csv.excel
-                    reader = csv.DictReader(io.StringIO(raw_file.lstrip("\ufeff")), dialect=dialect)
-                    csv_rows = list(reader)
-                    csv_headers = list(reader.fieldnames or [])
+                    csv_reader = csv.reader(nonempty_lines, dialect=dialect)
+                    parsed_table = list(csv_reader)
+                    csv_headers = [str(h).strip().lstrip("\ufeff") for h in parsed_table[0]] if parsed_table else []
+                    csv_rows = []
+                    if csv_headers:
+                        for values in parsed_table[1:]:
+                            # Ignore fully blank lines and preserve short/long rows safely.
+                            if not values or not any(str(v).strip() for v in values):
+                                continue
+                            row = {header: values[i] if i < len(values) else "" for i, header in enumerate(csv_headers) if header}
+                            if len(values) > len(csv_headers):
+                                row["_extra_columns"] = values[len(csv_headers):]
+                            csv_rows.append(row)
                     csv_rows_seen = len(csv_rows)
                     def _clean_date(value):
                         value = str(value or "").strip()
