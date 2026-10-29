@@ -434,9 +434,9 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # Only markets with an actual bookmaker quote can be auto-priced.
     # Model fair odds are not a substitute for a real quote.
     st.info(
-        "Все реальные коэффициенты берутся только из Highlightly и только для точного матча "
-        "и совпадающего рынка/линии. Если Highlightly не вернул цену, система не подставляет "
-        "коэффициенты с других сайтов или справочный кэф модели."
+        "Для расчёта value используются только реальные котировки, сопоставленные с точным матчем "
+        "и выбранным рынком/линией. Источником может быть Highlightly, Prognozist/Marathon или "
+        "импортированный CSV/JSON. Справочный коэффициент модели не считается букмекерской ценой."
     )
 
     examples = {
@@ -453,11 +453,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 
     col_input, col_metrics, col_btn = st.columns([2, 2, 1])
 
-    # Reuse only the exact-market quote fetched from Highlightly.
-    # Never make the user retype a price the scanner already has, and never treat a
-    # model fair price as a bookmaker quote.
-    # Automatic selection and pricing use the same exact-market quote lookup.
-    # There is deliberately no manual-odds fallback.
+    # Reuse the exact-market quote from any accepted real-odds source, including imported CSV/JSON.
+    # Never treat the model's fair price as a bookmaker quote.
     source_odd = quote_for(pick)
 
     if source_odd is not None:
@@ -470,7 +467,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     else:
         manual_odd = None
         col_input.warning(
-            "Highlightly не вернул реальный коэффициент именно на этот рынок и линию. "
+            "Нет реального коэффициента именно на этот рынок и линию из доступных источников. "
             "Расчёт value и добавление в портфель отключены — коэффициент 1X2 нельзя "
             "использовать для «Обе забьют», тоталов, угловых или карточек."
         )
@@ -1079,8 +1076,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                           "model_only": 0, "estimated": 0, "real": 0}
         if not highlightly_key:
             logs.append(
-                "❌ Highlightly API-ключ не найден: odds-запросы не выполнялись. "
-                "Добавьте ключ в поле Highlightly API key или секрет HIGHLIGHTLY_API_KEY."
+                "ℹ️ Highlightly не настроен; сканер продолжит работу через Prognozist/Marathon "
+                "и импортированные CSV/JSON-котировки."
             )
 
         for match_idx, r in enumerate(rows, 1):
@@ -1126,11 +1123,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             stat_market_odds = dict(r.get("stat_market_odds") or {})
             total_odds_source = "highlightly" if total_market_odds else "no_market"
             extra_market_source = str(r.get("extra_market_source") or "")
-            # Fail closed: secondary-market odds are accepted only from Highlightly.
-            if extra_market_source.casefold() != "highlightly":
-                total_market_odds = {}
-                btts_market_odds = {}
-                stat_market_odds = {}
+            # Keep secondary-market quotes from verified providers and imported CSV/JSON.
+            # Only accept prices explicitly attached to this fixture and market/line.
             api_market_data = None
             odds_source = "no_market"
 
@@ -1142,7 +1136,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 try:
                     candidates = []
 
-                    # Highlightly is the sole permitted bookmaker-odds source.
+                    # Highlightly is optional; free/public providers and imported quotes are fallbacks.
                     if highlightly_key:
                         funnel_counts["market_req"] += 1
                         try:
@@ -1188,8 +1182,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         except Exception as exc:
                             logs.append(f"⚠️ Prognozist/Marathon: {type(exc).__name__}: {str(exc)[:100]}")
 
-                    # User-provided/manual quote import: exact date + exact home/away
-                    # names only. Highlightly remains preferred; manual prices are a fallback.
+                    # Imported CSV/JSON quote: match by normalized teams and date.
                     if not market_odds:
                         def _team_key(value):
                             # Ignore punctuation, accents and common club prefixes.
