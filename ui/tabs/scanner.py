@@ -622,7 +622,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         try:
             parsed_quotes = []
             import_source_label = "JSON"
-            if odds_file is not None or download_odds:
+            if odds_file is not None or download_odds or st.session_state.get("_scanner_downloaded_odds_csv"):
                 if download_odds:
                     @st.cache_data(ttl=4 * 24 * 60 * 60, show_spinner=False)
                     def _fetch_public_fixture_csv():
@@ -637,17 +637,21 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         return response.content.decode("utf-8-sig", errors="replace")
                     try:
                         raw_file = _fetch_public_fixture_csv()
+                        st.session_state["_scanner_downloaded_odds_csv"] = raw_file
                     except Exception as exc:
                         st.error(f"Не удалось скачать коэффициенты: {exc}")
                         raw_file = ""
                     import_source_label = "Football-Data (CSV, кэш до 4 дней)"
-                elif odds_file.name.lower().endswith(".json"):
+                elif odds_file is not None and odds_file.name.lower().endswith(".json"):
                     raw_file = odds_file.getvalue().decode("utf-8-sig", errors="replace")
                     parsed_quotes = json.loads(raw_file)
                     import_source_label = odds_file.name
-                else:
+                elif odds_file is not None:
                     raw_file = odds_file.getvalue().decode("utf-8-sig", errors="replace")
                     import_source_label = odds_file.name
+                else:
+                    raw_file = st.session_state.get("_scanner_downloaded_odds_csv", "")
+                    import_source_label = "Football-Data (CSV, сохранён в сессии)"
                 if odds_file is not None and odds_file.name.lower().endswith(".json"):
                     pass
                 elif raw_file:
