@@ -688,9 +688,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             "П1": home_price,
                             "X": draw_price,
                             "П2": away_price,
-                            "source": _csv_value("source", "bookmaker") or odds_file.name,
+                            "source": _csv_value("source", "bookmaker") or import_source_label,
                         })
-                    import_source_label = odds_file.name
+                    import_source_label = import_source_label or (odds_file.name if odds_file is not None else "CSV import")
             elif odds_json.strip():
                 parsed_quotes = json.loads(odds_json)
             else:
