@@ -8,6 +8,7 @@ import html
 import time
 import hashlib
 import threading
+import requests
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -599,6 +600,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             key="scanner_odds_file",
             help="Принимает обычный CSV и Football-Data: Date, HomeTeam, AwayTeam, AvgH/AvgD/AvgA, B365H/B365D/B365A, PSH/PSD/PSA. Даты dd/mm/yy распознаются автоматически.",
         )
+        download_odds = st.button(
+            "🌐 Скачать и применить доступные коэффициенты",
+            key="scanner_fetch_football_data",
+            help="Загружает актуальный CSV Football-Data при нажатии. Покрытие ограничено доступными лигами и матчами источника.",
+            use_container_width=True,
+        )
         st.download_button(
             "⬇️ Скачать шаблон CSV",
             data="date,home,away,П1,X,П2,source\\n,,,,,,\\n",
@@ -615,20 +622,37 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         try:
             parsed_quotes = []
             import_source_label = "JSON"
-            if odds_file is not None:
-                raw_file = odds_file.getvalue().decode("utf-8-sig", errors="replace")
-                if odds_file.name.lower().endswith(".json"):
+            if odds_file is not None or download_odds:
+                if download_odds:
+                    @st.cache_data(ttl=4 * 24 * 60 * 60, show_spinner=False)
+                    def _fetch_public_fixture_csv():
+                        response = requests.get(
+                            "https://www.football-data.co.uk/matches/resources/fixtures.csv",
+                            timeout=(5, 20),
+                            headers={"User-Agent": "Sport-AI-Pro13/1.0 (user-triggered fixture import)"},
+                        )
+                        response.raise_for_status()
+                        if len(response.content) > 8_000_000:
+                            raise ValueError("Файл источника неожиданно большой; импорт остановлен.")
+                        return response.content.decode("utf-8-sig", errors="replace")
+                    try:
+                        raw_file = _fetch_public_fixture_csv()
+                    except Exception as exc:
+                        st.error(f"Не удалось скачать коэффициенты: {exc}")
+                        raw_file = ""
+                    import_source_label = "Football-Data (CSV, кэш до 4 дней)"
+                elif odds_file.name.lower().endswith(".json"):
+                    raw_file = odds_file.getvalue().decode("utf-8-sig", errors="replace")
                     parsed_quotes = json.loads(raw_file)
                     import_source_label = odds_file.name
                 else:
+                    raw_file = odds_file.getvalue().decode("utf-8-sig", errors="replace")
+                    import_source_label = odds_file.name
+                if odds_file is not None and odds_file.name.lower().endswith(".json"):
+                    pass
+                elif raw_file:
                     # Accept generic odds CSVs plus Football-Data.co.uk fixtures/results
                     # exports (Date/HomeTeam/AwayTeam/B365H/B365D/B365A, AvgH/AvgD/AvgA, PSH/PSD/PSA).
-                    for encoding in ("utf-8-sig", "cp1252"):
-                        try:
-                            raw_file = odds_file.getvalue().decode(encoding)
-                            break
-                        except UnicodeDecodeError:
-                            continue
                     reader = csv.DictReader(io.StringIO(raw_file))
                     def _clean_date(value):
                         value = str(value or "").strip()
@@ -704,8 +728,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if normalized_quotes:
                 st.success(f"Готово: {len(normalized_quotes)} набор(а) коэффициентов из {import_source_label}.")
                 st.caption("Нажми «Запустить скан», чтобы сопоставить котировки с матчами.")
-            elif odds_file is not None or odds_json.strip():
-                st.warning("Не удалось прочитать валидные записи. Проверь дату, названия команд и коэффициенты П1 / X / П2.")
+            elif odds_file is not None or odds_json.strip() or download_odds:
+                st.warning("Источник не вернул подходящие коэффициенты или файл не содержит валидных записей для импорта.")
             elif "_scanner_manual_odds_quotes" not in st.session_state:
                 st.session_state["_scanner_manual_odds_quotes"] = []
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
