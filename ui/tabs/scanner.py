@@ -657,7 +657,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 elif raw_file:
                     # Accept generic odds CSVs plus Football-Data.co.uk fixtures/results
                     # exports (Date/HomeTeam/AwayTeam/B365H/B365D/B365A, AvgH/AvgD/AvgA, PSH/PSD/PSA).
-                    reader = csv.DictReader(io.StringIO(raw_file))
+                    try:
+                        dialect = csv.Sniffer().sniff(raw_file[:8192], delimiters=",;\\t")
+                    except csv.Error:
+                        dialect = csv.excel
+                    reader = csv.DictReader(io.StringIO(raw_file.lstrip("\\ufeff")), dialect=dialect)
                     def _clean_date(value):
                         value = str(value or "").strip()
                         if not value:
@@ -678,13 +682,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     return str(value).strip()
                             return ""
                         # Prefer market-average prices; fall back to a named bookmaker.
-                        home_price = _csv_value("П1", "1", "home_odds", "home_win", "odds_home", "avgh", "b365h", "psh", "maxh", "bwh")
-                        draw_price = _csv_value("X", "draw", "draw_odds", "odds_draw", "avgd", "b365d", "psd", "maxd", "bwd")
-                        away_price = _csv_value("П2", "2", "away_odds", "away_win", "odds_away", "avga", "b365a", "psa", "maxa", "bwa")
+                        home_price = _csv_value("П1", "1", "home_odds", "home_win", "odds_home", "odds1", "oddsh", "avgh", "b365h", "psh", "maxh", "bwh")
+                        draw_price = _csv_value("X", "draw", "draw_odds", "odds_draw", "oddsx", "oddsd", "avgd", "b365d", "psd", "maxd", "bwd")
+                        away_price = _csv_value("П2", "2", "away_odds", "away_win", "odds_away", "odds2", "oddsa", "avga", "b365a", "psa", "maxa", "bwa")
                         parsed_quotes.append({
-                            "date": _clean_date(_csv_value("date", "match_date", "commence_time", "datetime", "kickoff")),
-                            "home": _csv_value("home", "home_team", "hometeam", "host"),
-                            "away": _csv_value("away", "away_team", "awayteam", "visitor"),
+                            "date": _clean_date(_csv_value("date", "match_date", "commence_time", "datetime", "kickoff", "matchdate")),
+                            "home": _csv_value("home", "home_team", "hometeam", "host", "team1"),
+                            "away": _csv_value("away", "away_team", "awayteam", "visitor", "team2"),
                             "П1": home_price,
                             "X": draw_price,
                             "П2": away_price,
