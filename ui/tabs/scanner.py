@@ -662,6 +662,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     except csv.Error:
                         dialect = csv.excel
                     reader = csv.DictReader(io.StringIO(raw_file.lstrip("\ufeff")), dialect=dialect)
+                    csv_headers = list(reader.fieldnames or [])
+                    csv_rows_seen = 0
                     def _clean_date(value):
                         value = str(value or "").strip()
                         if not value:
@@ -674,6 +676,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 continue
                         return value[:10] if len(value) >= 10 and value[4:5] == "-" else ""
                     for row in reader:
+                        csv_rows_seen += 1
                         lower = {str(k or "").strip().lstrip("\ufeff").casefold(): v for k, v in row.items()}
                         def _csv_value(*names):
                             for name in names:
@@ -738,6 +741,21 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 st.caption("Нажми «Запустить скан», чтобы сопоставить котировки с матчами.")
             elif odds_file is not None or odds_json.strip() or download_odds:
                 st.warning("Источник не вернул подходящие коэффициенты или файл не содержит валидных записей для импорта.")
+                if "csv_headers" in locals():
+                    with st.expander("Диагностика импорта CSV", expanded=True):
+                        st.write(f"Строк данных в CSV: {csv_rows_seen}; заголовков: {len(csv_headers)}.")
+                        st.code(", ".join(csv_headers) if csv_headers else "Заголовки CSV не обнаружены")
+                        if csv_headers:
+                            normalized_headers = {str(h).strip().casefold() for h in csv_headers}
+                            odds_groups = {
+                                "П1": {"п1", "1", "home_odds", "home_win", "odds_home", "odds1", "oddsh", "avgh", "b365h", "psh", "maxh", "bwh"},
+                                "X": {"x", "draw", "draw_odds", "odds_draw", "oddsx", "oddsd", "avgd", "b365d", "psd", "maxd", "bwd"},
+                                "П2": {"п2", "2", "away_odds", "away_win", "odds_away", "odds2", "oddsa", "avga", "b365a", "psa", "maxa", "bwa"},
+                            }
+                            missing_groups = [label for label, aliases in odds_groups.items() if not normalized_headers.intersection(aliases)]
+                            if missing_groups:
+                                st.info("В CSV не найдены колонки коэффициентов: " + ", ".join(missing_groups) + ". Возможно, источник отдал только список матчей без котировок.")
+                        st.caption("Пришли скриншот этого блока — по заголовкам будет видно, что именно вернул источник.")
             elif "_scanner_manual_odds_quotes" not in st.session_state:
                 st.session_state["_scanner_manual_odds_quotes"] = []
         except (json.JSONDecodeError, ValueError, TypeError) as exc:
