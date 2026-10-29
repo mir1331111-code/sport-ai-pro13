@@ -307,7 +307,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         # a quote belongs to the exact market. A page-wide bookmaker mention is not proof
         # that every parsed price belongs to that bookmaker.
         extra_source = str(c.get("extra_market_source") or "").casefold()
-        if kind in {"OU", "BTTS", "STAT"} and extra_source != "highlightly":
+        if kind in {"OU", "BTTS", "STAT"} and extra_source not in {"highlightly", "manual_import"}:
             return None
         if kind == "1X2":
             raw = source_odds.get(candidate_pick)
@@ -617,7 +617,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "Или вставь JSON",
             key="scanner_manual_odds_json",
             height=100,
-            placeholder='[{"date":"2026-10-26","home":"Santa Clara","away":"Benfica","П1":9.0,"X":5.0,"П2":1.3,"source":"manual"}]',
+            placeholder='[{"date":"2026-10-26","home":"Santa Clara","away":"Benfica","П1":9.0,"X":5.0,"П2":1.3,"ТБ 2.5":1.9,"ТМ 2.5":1.9,"BTTS Да":1.8,"BTTS Нет":2.0,"source":"manual"}]',
         )
         try:
             parsed_quotes = []
