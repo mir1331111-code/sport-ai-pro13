@@ -658,10 +658,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     # Accept generic odds CSVs plus Football-Data.co.uk fixtures/results
                     # exports (Date/HomeTeam/AwayTeam/B365H/B365D/B365A, AvgH/AvgD/AvgA, PSH/PSD/PSA).
                     try:
-                        dialect = csv.Sniffer().sniff(raw_file[:8192], delimiters=",;\\t")
+                        dialect = csv.Sniffer().sniff(raw_file[:8192], delimiters=",;\t")
                     except csv.Error:
                         dialect = csv.excel
-                    reader = csv.DictReader(io.StringIO(raw_file.lstrip("\\ufeff")), dialect=dialect)
+                    reader = csv.DictReader(io.StringIO(raw_file.lstrip("\ufeff")), dialect=dialect)
                     def _clean_date(value):
                         value = str(value or "").strip()
                         if not value:
