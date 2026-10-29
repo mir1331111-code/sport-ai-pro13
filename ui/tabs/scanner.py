@@ -719,6 +719,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             "П1": home_price,
                             "X": draw_price,
                             "П2": away_price,
+                            "ТБ 0.5": _csv_value("ТБ 0.5", "over 0.5", "over0.5", "o0.5"),
+                            "ТМ 0.5": _csv_value("ТМ 0.5", "under 0.5", "under0.5", "u0.5"),
+                            "ТБ 1.5": _csv_value("ТБ 1.5", "over 1.5", "over1.5", "o1.5"),
+                            "ТМ 1.5": _csv_value("ТМ 1.5", "under 1.5", "under1.5", "u1.5"),
+                            "ТБ 2.5": _csv_value("ТБ 2.5", "over 2.5", "over2.5", "o2.5"),
+                            "ТМ 2.5": _csv_value("ТМ 2.5", "under 2.5", "under2.5", "u2.5"),
+                            "ТБ 3.5": _csv_value("ТБ 3.5", "over 3.5", "over3.5", "o3.5"),
+                            "ТМ 3.5": _csv_value("ТМ 3.5", "under 3.5", "under3.5", "u3.5"),
+                            "BTTS Да": _csv_value("BTTS Да", "btts yes", "both teams to score yes"),
+                            "BTTS Нет": _csv_value("BTTS Нет", "btts no", "both teams to score no"),
+                            "Угл ТБ 9.5": _csv_value("Угл ТБ 9.5", "corners over 9.5"),
+                            "Угл ТМ 9.5": _csv_value("Угл ТМ 9.5", "corners under 9.5"),
                             "source": _csv_value("source", "bookmaker") or import_source_label,
                         })
                     import_source_label = import_source_label or (odds_file.name if odds_file is not None else "CSV import")
@@ -743,21 +755,36 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "П1": ("П1", "1", "home_odds", "home_win", "odds_home"),
                     "X": ("X", "draw", "draw_odds", "odds_draw"),
                     "П2": ("П2", "2", "away_odds", "away_win", "odds_away"),
+                    "ТБ 0.5": ("ТБ 0.5", "over_0_5", "over0.5"),
+                    "ТМ 0.5": ("ТМ 0.5", "under_0_5", "under0.5"),
+                    "ТБ 1.5": ("ТБ 1.5", "over_1_5", "over1.5"),
+                    "ТМ 1.5": ("ТМ 1.5", "under_1_5", "under1.5"),
+                    "ТБ 2.5": ("ТБ 2.5", "over_2_5", "over2.5"),
+                    "ТМ 2.5": ("ТМ 2.5", "under_2_5", "under2.5"),
+                    "ТБ 3.5": ("ТБ 3.5", "over_3_5", "over3.5"),
+                    "ТМ 3.5": ("ТМ 3.5", "under_3_5", "under3.5"),
+                    "BTTS Да": ("BTTS Да", "btts_yes", "btts yes"),
+                    "BTTS Нет": ("BTTS Нет", "btts_no", "btts no"),
+                    "Угл ТБ 9.5": ("Угл ТБ 9.5", "corners_over_9_5"),
+                    "Угл ТМ 9.5": ("Угл ТМ 9.5", "corners_under_9_5"),
                 }
                 prices = {}
                 for market, keys in aliases.items():
                     value = next((raw_prices[k] for k in keys if raw_prices.get(k) not in (None, "")), None)
-                    prices[market] = float(str(value).replace(",", ".")) if value is not None else 0.0
+                    try:
+                        prices[market] = float(str(value).replace(",", ".")) if value is not None else 0.0
+                    except (TypeError, ValueError):
+                        prices[market] = 0.0
                 try:
                     datetime.strptime(quote_date, "%Y-%m-%d")
                 except ValueError:
                     continue
-                if (not home_quote or not away_quote
-                        or not all(1.01 < price <= 100 for price in prices.values())):
+                valid_prices = {key: price for key, price in prices.items() if 1.01 < price <= 100}
+                if not home_quote or not away_quote or not valid_prices:
                     continue
                 normalized_quotes.append({
                     "date": quote_date, "home": home_quote, "away": away_quote,
-                    "odds": prices, "source": str(quote.get("source") or quote.get("bookmaker") or "manual_import"),
+                    "odds": valid_prices, "source": str(quote.get("source") or quote.get("bookmaker") or "manual_import"),
                 })
             st.session_state["_scanner_manual_odds_quotes"] = normalized_quotes
             if normalized_quotes:
@@ -1200,14 +1227,29 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 date_delta = 999
                             if date_delta <= 1 and home_match and away_match:
                                 imported = dict(quote.get("odds") or {})
-                                if all(key in imported and 1.01 < float(imported[key]) <= 100
-                                       for key in ("П1", "X", "П2")):
-                                    market_odds = {key: float(imported[key]) for key in ("П1", "X", "П2")}
-                                    odds_source = str(quote.get("source") or "manual_import")
+                                valid_imported = {}
+                                for key, raw_value in imported.items():
+                                    try:
+                                        value = float(raw_value)
+                                        if 1.01 < value <= 100:
+                                            valid_imported[str(key)] = value
+                                    except (TypeError, ValueError):
+                                        continue
+                                if valid_imported:
+                                    if all(key in valid_imported for key in ("П1", "X", "П2")):
+                                        market_odds = {key: valid_imported[key] for key in ("П1", "X", "П2")}
+                                        odds_source = str(quote.get("source") or "manual_import")
+                                    total_market_odds.update({k: v for k, v in valid_imported.items()
+                                                              if k.startswith(("ТБ ", "ТМ "))})
+                                    btts_market_odds.update({k: v for k, v in valid_imported.items()
+                                                             if k.startswith("BTTS ")})
+                                    stat_market_odds.update({k: v for k, v in valid_imported.items()
+                                                             if k.startswith(("Угл ", "Карты "))})
+                                    if total_market_odds or btts_market_odds or stat_market_odds:
+                                        extra_market_source = "manual_import"
                                     logs.append(
-                                        f"📥 Ручной импорт коэффициентов ({odds_source}, дата ±{date_delta} дн.): "
-                                        f"{h_en} — {a_en} | П1 {market_odds['П1']:.2f} / "
-                                        f"X {market_odds['X']:.2f} / П2 {market_odds['П2']:.2f}"
+                                        f"📥 Импорт коэффициентов ({quote.get('source') or 'manual_import'}, дата ±{date_delta} дн.): "
+                                        f"{h_en} — {a_en} | рынки: {', '.join(valid_imported.keys())}"
                                     )
                                     break
 
