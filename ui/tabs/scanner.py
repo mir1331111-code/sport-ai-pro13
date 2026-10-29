@@ -662,8 +662,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     except csv.Error:
                         dialect = csv.excel
                     reader = csv.DictReader(io.StringIO(raw_file.lstrip("\ufeff")), dialect=dialect)
+                    csv_rows = list(reader)
                     csv_headers = list(reader.fieldnames or [])
-                    csv_rows_seen = 0
+                    csv_rows_seen = len(csv_rows)
                     def _clean_date(value):
                         value = str(value or "").strip()
                         if not value:
@@ -675,8 +676,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             except ValueError:
                                 continue
                         return value[:10] if len(value) >= 10 and value[4:5] == "-" else ""
-                    for row in reader:
-                        csv_rows_seen += 1
+                    for row in csv_rows:
                         lower = {str(k or "").strip().lstrip("\ufeff").casefold(): v for k, v in row.items()}
                         def _csv_value(*names):
                             for name in names:
@@ -745,6 +745,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     with st.expander("Диагностика импорта CSV", expanded=True):
                         st.write(f"Строк данных в CSV: {csv_rows_seen}; заголовков: {len(csv_headers)}.")
                         st.code(", ".join(csv_headers) if csv_headers else "Заголовки CSV не обнаружены")
+                        st.caption("Начало ответа источника (для диагностики):")
+                        st.code(str(raw_file[:500]) if raw_file else "Пустой ответ")
+                        if csv_rows:
+                            st.caption("Первая строка после разбора:")
+                            st.write({str(k): str(v)[:120] for k, v in list(csv_rows[0].items())[:12]})
                         if csv_headers:
                             normalized_headers = {str(h).strip().casefold() for h in csv_headers}
                             odds_groups = {
