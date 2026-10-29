@@ -597,7 +597,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "Загрузить файл коэффициентов (.csv или .json)",
             type=["csv", "json"],
             key="scanner_odds_file",
-            help="CSV: date, home, away, П1, X, П2. Также распознаются home_team, away_team, commence_time, home_odds, draw_odds, away_odds.",
+            help="Принимает обычный CSV и Football-Data: Date, HomeTeam, AwayTeam, AvgH/AvgD/AvgA, B365H/B365D/B365A, PSH/PSD/PSA. Даты dd/mm/yy распознаются автоматически.",
         )
         st.download_button(
             "⬇️ Скачать шаблон CSV",
@@ -621,22 +621,45 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     parsed_quotes = json.loads(raw_file)
                     import_source_label = odds_file.name
                 else:
+                    # Accept generic odds CSVs plus Football-Data.co.uk fixtures/results
+                    # exports (Date/HomeTeam/AwayTeam/B365H/B365D/B365A, AvgH/AvgD/AvgA, PSH/PSD/PSA).
+                    for encoding in ("utf-8-sig", "cp1252"):
+                        try:
+                            raw_file = odds_file.getvalue().decode(encoding)
+                            break
+                        except UnicodeDecodeError:
+                            continue
                     reader = csv.DictReader(io.StringIO(raw_file))
+                    def _clean_date(value):
+                        value = str(value or "").strip()
+                        if not value:
+                            return ""
+                        value = value[:19].replace("Z", "")
+                        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%m/%d/%y"):
+                            try:
+                                return datetime.strptime(value[:len(datetime.now().strftime(fmt))], fmt).strftime("%Y-%m-%d")
+                            except ValueError:
+                                continue
+                        return value[:10] if len(value) >= 10 and value[4:5] == "-" else ""
                     for row in reader:
-                        lower = {str(k or "").strip().casefold(): v for k, v in row.items()}
+                        lower = {str(k or "").strip().lstrip("\ufeff").casefold(): v for k, v in row.items()}
                         def _csv_value(*names):
                             for name in names:
                                 value = lower.get(name.casefold())
                                 if value is not None and str(value).strip():
                                     return str(value).strip()
                             return ""
+                        # Prefer market-average prices; fall back to a named bookmaker.
+                        home_price = _csv_value("П1", "1", "home_odds", "home_win", "odds_home", "avgh", "b365h", "psh", "maxh", "bwh")
+                        draw_price = _csv_value("X", "draw", "draw_odds", "odds_draw", "avgd", "b365d", "psd", "maxd", "bwd")
+                        away_price = _csv_value("П2", "2", "away_odds", "away_win", "odds_away", "avga", "b365a", "psa", "maxa", "bwa")
                         parsed_quotes.append({
-                            "date": _csv_value("date", "match_date", "commence_time", "datetime", "kickoff")[:10],
+                            "date": _clean_date(_csv_value("date", "match_date", "commence_time", "datetime", "kickoff")),
                             "home": _csv_value("home", "home_team", "hometeam", "host"),
                             "away": _csv_value("away", "away_team", "awayteam", "visitor"),
-                            "П1": _csv_value("П1", "1", "home_odds", "home_win", "odds_home"),
-                            "X": _csv_value("X", "draw", "draw_odds", "odds_draw"),
-                            "П2": _csv_value("П2", "2", "away_odds", "away_win", "odds_away"),
+                            "П1": home_price,
+                            "X": draw_price,
+                            "П2": away_price,
                             "source": _csv_value("source", "bookmaker") or odds_file.name,
                         })
                     import_source_label = odds_file.name
