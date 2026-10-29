@@ -627,14 +627,24 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     @st.cache_data(ttl=4 * 24 * 60 * 60, show_spinner=False)
                     def _fetch_public_fixture_csv():
                         response = requests.get(
-                            "https://www.football-data.co.uk/matches/resources/fixtures.csv",
+                            "https://www.football-data.co.uk/fixtures.csv",
                             timeout=(5, 20),
                             headers={"User-Agent": "Sport-AI-Pro13/1.0 (user-triggered fixture import)"},
                         )
                         response.raise_for_status()
                         if len(response.content) > 8_000_000:
                             raise ValueError("Файл источника неожиданно большой; импорт остановлен.")
-                        return response.content.decode("utf-8-sig", errors="replace")
+                        text_body = response.content.decode("utf-8-sig", errors="replace")
+                        # Never treat an HTML landing page / anti-bot response as a CSV.
+                        sample = text_body.lstrip()[:500].casefold()
+                        if sample.startswith("<!doctype html") or sample.startswith("<html") or "<head>" in sample:
+                            raise ValueError(
+                                "Источник вернул HTML-страницу вместо CSV. Проверьте доступность "
+                                "https://www.football-data.co.uk/fixtures.csv и попробуйте позже."
+                            )
+                        if not text_body.strip():
+                            raise ValueError("Источник вернул пустой файл.")
+                        return text_body
                     try:
                         raw_file = _fetch_public_fixture_csv()
                         st.session_state["_scanner_downloaded_odds_csv"] = raw_file
