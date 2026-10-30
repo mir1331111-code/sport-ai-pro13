@@ -2907,6 +2907,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             "source": "sstats",
             "odds_source": "sstats" if compact_1x2 else "no_market",
             "market_odds": compact_1x2,
+            "bookmaker_by_pick": normalized.get("bookmaker_by_pick") or {},
             "total_market_odds": normalized.get("total_market_odds") or {},
             "btts_market_odds": normalized.get("btts_market_odds") or {},
             "stat_market_odds": normalized.get("stat_market_odds") or {},
