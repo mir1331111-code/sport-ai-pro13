@@ -17,7 +17,8 @@ from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
-                          parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture)
+                          parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture,
+                          sstats_upcoming_matches, sstats_odds_fixture)
 from data.fixture_merge import merge_fixture_sources
 from data.marathon import marathon_odds
 from model.engine import Engine
@@ -49,7 +50,7 @@ def _runtime_secret(session_key: str, *names: str) -> str:
             if value:
                 return value
         # Also accept common nested layouts such as [api] or [highlightly].
-        for section_name in ("api", "apis", "secrets", "highlightly"):
+        for section_name in ("api", "apis", "secrets", "highlightly", "sstats"):
             section = st.secrets.get(section_name, {})
             if hasattr(section, "get"):
                 for name in names:
@@ -315,7 +316,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         # a quote belongs to the exact market. A page-wide bookmaker mention is not proof
         # that every parsed price belongs to that bookmaker.
         extra_source = str(c.get("extra_market_source") or "").casefold()
-        if kind in {"OU", "BTTS", "STAT"} and extra_source not in {"highlightly", "manual_import"}:
+        if kind in {"OU", "BTTS", "STAT"} and extra_source not in {"highlightly", "manual_import", "sstats"}:
             return None
         if kind == "1X2":
             raw = source_odds.get(candidate_pick)
@@ -1054,6 +1055,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         logs = []
 
         token = _runtime_secret("fdorg_token_input", "FDORG_TOKEN", "fdorg_token")
+        sstats_key = _runtime_secret("sstats_api_key_input", "SSTATS_API_KEY", "sstats_api_key")
         fixture_sources = []
         try:
             fixture_sources.extend(tsdb_matches(days, logs))
@@ -1068,6 +1070,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 fixture_sources.extend(fdorg_matches(days, token, logs))
             except Exception as exc:
                 logs.append(f"⚠️ football-data.org fixtures: {type(exc).__name__}")
+        if sstats_key:
+            try:
+                # SStats is appended last: when the same fixture is already in another
+                # schedule feed, merge_fixture_sources preserves that row and fills
+                # its missing bookmaker prices and SStats game ID from this source.
+                fixture_sources.extend(sstats_upcoming_matches(days, sstats_key, logs))
+            except Exception as exc:
+                logs.append(f"⚠️ SStats fixtures/odds: {type(exc).__name__}")
+        else:
+            logs.append("ℹ️ SSTATS_API_KEY не настроен — бесплатный источник SStats пропущен.")
         try:
             rows = _safe_filter(merge_fixture_sources(fixture_sources))
         except Exception:
@@ -1085,6 +1097,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         matches_with_best = 0
         xg_used_count = 0
         highlightly_key = _runtime_secret("highlightly_api_key_input", "HIGHLIGHTLY_API_KEY", "highlightly_api_key")
+        # The compact SStats fixture feed provides 1X2 and main totals in one request.
+        # Full bookmaker markets are requested only for a limited shortlist to respect
+        # the provider's free API quota.
+        sstats_detail_calls = 0
+        SSTATS_DETAIL_MAX_PER_SCAN = 20
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
@@ -1131,13 +1148,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
 
             best = None
-            odds_source = "model_only"
-            market_odds = {}
+            market_odds = dict(r.get("market_odds") or {})
+            odds_source = str(r.get("odds_source") or ("sstats" if market_odds else "no_market"))
             total_market_odds = dict(r.get("total_market_odds") or {})
             btts_market_odds = dict(r.get("btts_market_odds") or {})
             stat_market_odds = dict(r.get("stat_market_odds") or {})
             asian_handicap_market_odds = dict(r.get("asian_handicap_market_odds") or {})
-            total_odds_source = "highlightly" if total_market_odds else "no_market"
+            total_odds_source = str(
+                r.get("total_odds_source") or ("sstats" if total_market_odds else "no_market")
+            )
             extra_market_source = str(r.get("extra_market_source") or "")
             # Keep secondary-market quotes from verified providers and imported CSV/JSON.
             # Only accept prices explicitly attached to this fixture and market/line.
@@ -1164,14 +1183,58 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     candidates.append((highlighted.get("source", "highlightly"), highlighted))
                                     market_odds = {key: highlighted[key] for key in ("П1", "X", "П2")}
                                     odds_source = highlighted.get("source", "highlightly")
-                                total_market_odds = dict(highlighted.get("total_market_odds") or {})
-                                btts_market_odds = dict(highlighted.get("btts_market_odds") or {})
-                                stat_market_odds = dict(highlighted.get("stat_market_odds") or {})
-                                asian_handicap_market_odds = dict(highlighted.get("asian_handicap_market_odds") or {})
-                                total_odds_source = "highlightly" if total_market_odds else "no_market"
-                                extra_market_source = "highlightly"
+                                # Merge market groups rather than replacing SStats lines
+                                # which Highlightly may not cover for this fixture.
+                                total_market_odds.update(highlighted.get("total_market_odds") or {})
+                                btts_market_odds.update(highlighted.get("btts_market_odds") or {})
+                                stat_market_odds.update(highlighted.get("stat_market_odds") or {})
+                                asian_handicap_market_odds.update(highlighted.get("asian_handicap_market_odds") or {})
+                                if highlighted.get("total_market_odds"):
+                                    total_odds_source = "highlightly"
+                                if any(highlighted.get(name) for name in (
+                                    "total_market_odds", "btts_market_odds",
+                                    "stat_market_odds", "asian_handicap_market_odds"
+                                )):
+                                    extra_market_source = "highlightly"
                         except Exception as exc:
                             logs.append(f"⚠️ Highlightly lookup failed: {type(exc).__name__}: {str(exc)[:120]}")
+
+                    # Detailed SStats bookmaker markets for a limited set of likely winners.
+                    # Games/list already supplied compact 1X2 and Total odds; this enriches
+                    # the strongest winner candidates with full bookmakers/BTTS/handicaps.
+                    sstats_game_id = r.get("sstats_game_id")
+                    if (
+                        sstats_key and sstats_game_id not in (None, "")
+                        and sstats_detail_calls < SSTATS_DETAIL_MAX_PER_SCAN
+                        and max(float(P.get("p1") or 0), float(P.get("p2") or 0)) >= 0.58
+                    ):
+                        detailed = sstats_odds_fixture(sstats_game_id, sstats_key, logs)
+                        sstats_detail_calls += 1
+                        if isinstance(detailed, dict):
+                            detailed_1x2 = {
+                                key: detailed[key]
+                                for key in ("П1", "X", "П2")
+                                if detailed.get(key) is not None
+                            }
+                            # Full odds are bookmaker-specific; prefer the best
+                            # available decimal price over the compact close price.
+                            for key, value in detailed_1x2.items():
+                                market_odds[key] = max(float(market_odds.get(key) or 0), float(value))
+                            if detailed_1x2:
+                                odds_source = "sstats"
+                            total_market_odds.update(detailed.get("total_market_odds") or {})
+                            btts_market_odds.update(detailed.get("btts_market_odds") or {})
+                            stat_market_odds.update(detailed.get("stat_market_odds") or {})
+                            asian_handicap_market_odds.update(
+                                detailed.get("asian_handicap_market_odds") or {}
+                            )
+                            if detailed.get("total_market_odds"):
+                                total_odds_source = "sstats"
+                            if any(detailed.get(name) for name in (
+                                "total_market_odds", "btts_market_odds",
+                                "stat_market_odds", "asian_handicap_market_odds"
+                            )):
+                                extra_market_source = "sstats"
 
                     # Fallback: Prognozist/Marathon real 1X2 line, using strict team and date matching.
                     # This runs when Highlightly is unavailable or has no line for this fixture.
@@ -1339,6 +1402,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "verdict": verdict, "best": best,
                 "games": P["games"], "fh": fh, "fa": fa,
                 "fixture_id": r.get("fixture_id"),
+                "sstats_game_id": r.get("sstats_game_id"),
                 "historical_stats": (engine.match_stats.predict(h_en, a_en, lg) if hasattr(engine, "match_stats") else {}),
                 "date_iso": d.strftime("%Y-%m-%d"),
                 "time": r.get("Time") or "",
