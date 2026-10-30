@@ -101,6 +101,45 @@ class HighlightlyOddsTests(unittest.TestCase):
         self.assertEqual(sources._market_number("Total Corners 9.5"), 9.5)
 
     @patch.object(
+        sources,
+        "_highlightly_api_get",
+        side_effect=[
+            (_Response(200, {"data": []}), "https://soccer.highlightly.net"),
+            (_Response(401, text='{"message":"Odds are not available in Basic plan. Please upgrade your plan."}'),
+             "https://soccer.highlightly.net"),
+        ],
+    )
+    def test_reports_basic_plan_denial_as_plan_not_bad_key(self, _get):
+        result = sources.highlightly_connection_check("test-secret")
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["matches_ok"])
+        self.assertIn("тариф Basic/Free", result["message"])
+        self.assertEqual(sources._HIGHLIGHTLY_ODDS_DISABLED_REASON, "basic_plan")
+
+    @patch.object(
+        sources,
+        "_highlightly_api_get",
+        side_effect=[
+            (_Response(200, {"data": []}), "https://soccer.highlightly.net"),
+            (_Response(200, {
+                "data": [{"matchId": 123}],
+                "plan": {"tier": "PRO"},
+            }), "https://soccer.highlightly.net"),
+        ],
+    )
+    def test_paid_plan_check_clears_old_breaker_for_same_key(self, _get):
+        sources._HIGHLIGHTLY_ODDS_DISABLED_REASON = "basic_plan"
+        sources._HIGHLIGHTLY_ODDS_401_LOGGED = True
+        result = sources.highlightly_connection_check("test-secret")
+        self.assertTrue(result["ok"])
+        self.assertEqual(sources._HIGHLIGHTLY_ODDS_DISABLED_REASON, "")
+        self.assertFalse(sources._HIGHLIGHTLY_ODDS_401_LOGGED)
+        self.assertEqual(
+            sources._HIGHLIGHTLY_ODDS_DISABLED_KEY,
+            sources.hashlib.sha256(b"test-secret").hexdigest(),
+        )
+
+    @patch.object(
         sources._sess,
         "get",
         side_effect=[
