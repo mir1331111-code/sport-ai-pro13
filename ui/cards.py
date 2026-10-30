@@ -200,6 +200,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         "manual": "MANUAL", "fdorg": "FOOTBALL-DATA",
         "prognozist": "PROGNOZIST / MARATHON 1X2", "prognozist_winline": "PROGNOZIST / WINLINE", "prognozist_marathon": "PROGNOZIST / MARATHON", "prognozist_unverified": "SOURCE UNVERIFIED", "marathon_category": "MARATHON",
         "therundown": "THE RUNDOWN", "the_odds_api": "THE ODDS API",
+        "sstats": "SSTATS.NET", "highlightly": "HIGHLIGHTLY",
     }.get(odds_source, "MARKET")
     market_odds = c.get("market_odds") or {}
     pick_code = str(v.get("pick") or "")
@@ -229,6 +230,15 @@ def render_verdict_card(c: dict, thr: float) -> str:
                 )
         except (TypeError, ValueError):
             line_html = ""
+    selected_bookmaker = str(
+        (c.get("bookmaker_by_pick") or {}).get(pick_code) or ""
+    ).strip()
+    bookmaker_html = (
+        '<div style="margin-top:7px;font-size:.76rem;color:#cbd5e1;">'
+        'Букмекер лучшей котировки выбранного исхода: <b style="color:#f8fafc;">'
+        + esc(selected_bookmaker) + '</b></div>'
+        if selected_bookmaker else ""
+    )
     conf = v.get("confidence", "средняя")
     cc = v.get("conf_color", "#fbbf24")
     reasons = v.get("reasons", [])
@@ -489,7 +499,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         '<div>Кэф: <b style="color:#a5f3fc;font-size:1.15rem;'
         'font-family:JetBrains Mono,monospace;">' + odd_display + '</b></div>'
         '<div>Уверенность: <b style="color:' + cc + ';">' + esc(conf) + '</b></div>'
-        '</div>' + line_html + warn + market_html + '</div>'
+        '</div>' + line_html + bookmaker_html + warn + market_html + '</div>'
 
         '<div style="padding:16px 24px;">'
         '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
