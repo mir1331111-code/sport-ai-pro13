@@ -57,6 +57,11 @@ def _runtime_secret(session_key: str, *names: str) -> str:
                     value = str(section.get(name, "") or "").strip()
                     if value:
                         return value
+                if section_name == "sstats":
+                    for alias in ("api_key", "key"):
+                        value = str(section.get(alias, "") or "").strip()
+                        if value:
+                            return value
     except Exception:
         pass
     return ""
