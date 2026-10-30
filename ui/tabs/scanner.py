@@ -1522,10 +1522,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             })
 
         if sstats_key:
-            logs.append(
-                f"📚 SStats: детальные запросы Odds выполнены для {sstats_detail_calls} "
-                f"кандидатов (лимит {SSTATS_DETAIL_MAX_PER_SCAN} на скан)."
+            sstats_id_count = sum(
+                1 for row in rows
+                if isinstance(row, dict) and row.get("sstats_game_id") not in (None, "")
             )
+            sstats_compact_odds_count = sum(
+                1 for row in rows
+                if isinstance(row, dict) and row.get("sstats_game_id") not in (None, "")
+                and row.get("market_odds")
+            )
+            logs.append(
+                f"📚 SStats: матчей с game ID — {sstats_id_count}; "
+                f"с компактными 1X2 — {sstats_compact_odds_count}; "
+                f"детальных запросов Odds — {sstats_detail_calls} "
+                f"(лимит {SSTATS_DETAIL_MAX_PER_SCAN} на скан)."
+            )
+            if sstats_id_count and not sstats_compact_odds_count and not sstats_detail_calls:
+                logs.append(
+                    "⚠️ SStats: ID матчей есть, но коэффициенты не загружены. "
+                    "Проверьте ответ /Odds/{gameId} и журнал HTTP-статусов."
+                )
         logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов")
         logs.append(f"🎯 BET: {matches_with_best}")
 
