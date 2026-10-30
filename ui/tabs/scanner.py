@@ -1257,14 +1257,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         except Exception as exc:
                             logs.append(f"⚠️ Highlightly lookup failed: {type(exc).__name__}: {str(exc)[:120]}")
 
-                    # Detailed SStats bookmaker markets for a limited set of likely winners.
-                    # Games/list already supplied compact 1X2 and Total odds; this enriches
-                    # the strongest winner candidates with full bookmakers/BTTS/handicaps.
+                    # Detailed SStats bookmaker markets for a bounded shortlist of fixtures.
+                    # Do not gate API lookup on model probability: that previously meant
+                    # zero real prices were fetched whenever every team probability was < 58%.
+                    # The model/value filters decide whether a bet is eligible only AFTER
+                    # verified market odds have been fetched.
                     sstats_game_id = r.get("sstats_game_id")
                     if (
                         sstats_key and sstats_game_id not in (None, "")
                         and sstats_detail_calls < SSTATS_DETAIL_MAX_PER_SCAN
-                        and max(float(P.get("p1") or 0), float(P.get("p2") or 0)) >= 0.58
                     ):
                         detailed = sstats_odds_fixture(sstats_game_id, sstats_key, logs)
                         sstats_detail_calls += 1
