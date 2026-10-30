@@ -2262,10 +2262,19 @@ def _parse_highlightly_odds(odds_entries: list, wanted_ids: set, logs=None) -> O
 
 
 def highlightly_connection_check(api_key: str) -> dict:
-    """Check key authentication and real /odds access without exposing the key."""
-    if not str(api_key or "").strip():
+    """Check key authentication and real /odds access without exposing the key.
+
+    Also clears a previous Basic-plan circuit breaker after a successful
+    post-upgrade check using the same API key.
+    """
+    global _HIGHLIGHTLY_ODDS_DISABLED_REASON, _HIGHLIGHTLY_ODDS_401_LOGGED
+    global _HIGHLIGHTLY_ODDS_DISABLED_KEY
+
+    api_key = str(api_key or "").strip()
+    if not api_key:
         return {"ok": False, "matches_ok": False, "message": "API-ключ не найден."}
 
+    key_fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
     timezone_name = str(os.environ.get("APP_TIMEZONE", "Europe/Warsaw") or "Europe/Warsaw")
     today = datetime.now().strftime("%Y-%m-%d")
     match_response, match_base = _highlightly_api_get(
@@ -2289,6 +2298,27 @@ def highlightly_connection_check(api_key: str) -> dict:
 
     if odds_response.status_code != 200:
         body = (odds_response.text or "").strip().replace("\n", " ")[:220]
+        is_basic_denial = (
+            odds_response.status_code in (401, 403)
+            and any(term in body.casefold() for term in (
+                "not available in basic plan", "not available on basic",
+                "not available in free plan", "upgrade your plan",
+            ))
+        )
+        if is_basic_denial:
+            _HIGHLIGHTLY_ODDS_DISABLED_REASON = "basic_plan"
+            _HIGHLIGHTLY_ODDS_DISABLED_KEY = key_fingerprint
+            _HIGHLIGHTLY_ODDS_401_LOGGED = True
+            return {
+                "ok": False, "matches_ok": matches_ok,
+                "http_status": odds_response.status_code,
+                "base": odds_base,
+                "message": (
+                    "Ключ дошёл до Highlightly, но тариф Basic/Free не разрешает /odds. "
+                    "Нужен платный план, где доступ к bookmaker odds явно включён. "
+                    "После активации нажми эту проверку ещё раз."
+                ),
+            }
         return {
             "ok": False, "matches_ok": matches_ok,
             "http_status": odds_response.status_code,
@@ -2305,17 +2335,29 @@ def highlightly_connection_check(api_key: str) -> dict:
     data = payload.get("data", []) if isinstance(payload, dict) else []
     count = len(data) if isinstance(data, list) else 0
     if tier.casefold() in ("free", "basic"):
+        _HIGHLIGHTLY_ODDS_DISABLED_REASON = "basic_plan"
+        _HIGHLIGHTLY_ODDS_DISABLED_KEY = key_fingerprint
+        _HIGHLIGHTLY_ODDS_401_LOGGED = True
         return {
             "ok": False, "matches_ok": matches_ok, "http_status": 200,
             "base": odds_base, "tier": tier, "odds_count": count,
             "message": f"Ключ работает, но тариф {tier} не открывает коэффициенты /odds.",
         }
+
+    # A successful post-upgrade check unlocks fetching again even when the
+    # API key itself did not change.
+    _HIGHLIGHTLY_ODDS_DISABLED_REASON = ""
+    _HIGHLIGHTLY_ODDS_401_LOGGED = False
+    _HIGHLIGHTLY_ODDS_DISABLED_KEY = key_fingerprint
+
     return {
         "ok": True, "matches_ok": matches_ok, "http_status": 200,
         "base": odds_base, "tier": tier, "odds_count": count,
-        "message": f"Highlightly подключён; /odds отвечает HTTP 200, тариф {tier}, записей на сегодня в первой странице: {count}.",
+        "message": (
+            f"Highlightly подключён; /odds отвечает HTTP 200, тариф {tier}, "
+            f"записей на сегодня в первой странице: {count}."
+        ),
     }
-
 
 def highlightly_odds_fixture(match_date: str, home: str, away: str,
                              api_key: str, logs=None) -> Optional[dict]:
