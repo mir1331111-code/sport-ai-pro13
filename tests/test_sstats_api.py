@@ -190,5 +190,31 @@ class SStatsTests(unittest.TestCase):
         self.assertNotIn("never-echo-this-key", repr(result))
 
 
+    def test_fixture_alias_matching_and_odds_merge(self):
+        from data.fixture_merge import fixture_key, merge_fixture_sources
+        first = {
+            "Date": "2026-10-30", "HomeTeam": "Manchester United",
+            "AwayTeam": "Brighton & Hove Albion", "market_odds": {"П1": 2.1},
+        }
+        second = {
+            "Date": "2026-10-30", "HomeTeam": "Man Utd", "AwayTeam": "Brighton",
+            "sstats_game_id": 9876, "market_odds": {"X": 3.4, "П1": 2.2},
+        }
+        self.assertEqual(fixture_key(first), fixture_key(second))
+        merged = merge_fixture_sources([first], [second])
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["sstats_game_id"], 9876)
+        self.assertEqual(merged[0]["market_odds"], {"П1": 2.2, "X": 3.4})
+
+    def test_fixture_merge_rejects_different_date_and_home_away_order(self):
+        from data.fixture_merge import merge_fixture_sources
+        base = {
+            "Date": "2026-10-30", "HomeTeam": "Manchester United",
+            "AwayTeam": "Brighton", "market_odds": {"П1": 2.1},
+        }
+        next_day = {**base, "Date": "2026-10-31", "sstats_game_id": 2}
+        reversed_teams = {**base, "HomeTeam": "Brighton", "AwayTeam": "Manchester United"}
+        self.assertEqual(len(merge_fixture_sources([base], [next_day, reversed_teams])), 3)
+
 if __name__ == "__main__":
     unittest.main()
