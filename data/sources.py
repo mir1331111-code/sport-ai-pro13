@@ -2723,8 +2723,12 @@ def sstats_account_check(api_key: str) -> dict:
     try:
         account_payload = response.json() or {}
         account_data = _sstats_unwrap(account_payload) or {}
-    except Exception:
-        return {"ok": False, "message": "SStats вернул некорректный ответ Account/Info."}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "http_status": response.status_code,
+            "message": f"SStats не подтвердил ключ ({type(exc).__name__}).",
+        }
     if not isinstance(account_data, dict) or not account_data.get("userName"):
         message = str(account_payload.get("message") or "SStats не подтвердил аккаунт.")
         return {"ok": False, "message": message[:180]}
