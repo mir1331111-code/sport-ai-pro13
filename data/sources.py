@@ -114,6 +114,7 @@ NO_PROXY = {"http": None, "https": None, "all": None}
 # Avoid issuing one guaranteed-to-fail odds request per fixture.
 _HIGHLIGHTLY_ODDS_DISABLED_REASON = ""
 _HIGHLIGHTLY_ODDS_401_LOGGED = False
+_HIGHLIGHTLY_ODDS_DISABLED_KEY = ""
 
 
 def _f(v):
@@ -2017,236 +2018,455 @@ def league_logo_url(div_code: str) -> Optional[str]:
 
 
 # ============ HIGHLIGHTLY ODDS API ============
+def _highlightly_base_urls():
+    """Try the dedicated Football API first, then the All Sports football route."""
+    configured = str(os.environ.get("HIGHLIGHTLY_BASE_URL", "") or "").strip().rstrip("/")
+    if configured:
+        return [configured]
+    return [
+        "https://soccer.highlightly.net",
+        "https://sports.highlightly.net/football",
+    ]
+
+
+def _highlightly_api_get(path: str, params: dict, api_key: str, preferred_base: str = ""):
+    """GET through the dedicated Football API, with All Sports fallback."""
+    bases = _highlightly_base_urls()
+    if preferred_base:
+        bases = [preferred_base] + [base for base in bases if base != preferred_base]
+    headers = {"x-rapidapi-key": api_key, "Accept": "application/json"}
+    last_response = None
+    last_base = bases[0] if bases else ""
+    for base in bases:
+        last_base = base
+        try:
+            response = _sess.get(
+                f"{base.rstrip('/')}/{path.lstrip('/')}",
+                params=params,
+                headers=headers,
+                timeout=(5, 20),
+                proxies=NO_PROXY,
+            )
+            if response.status_code == 200:
+                return response, base
+            last_response = response
+            body = (response.text or "").casefold()
+            # A Basic/Free plan denial is subscription-wide; another host will not
+            # unlock odds, so stop rather than spending another request.
+            if "not available in basic plan" in body or "not available on basic" in body:
+                return response, base
+            if response.status_code not in (401, 403, 404):
+                return response, base
+        except requests.RequestException:
+            continue
+        except Exception:
+            continue
+    return last_response, last_base
+
+
+def _highlightly_fetch_pages(path: str, params: dict, api_key: str,
+                             preferred_base: str = "", max_pages: int = 15):
+    """Fetch paginated Highlightly data without silently dropping later pages."""
+    all_items = []
+    current = dict(params or {})
+    limit = int(current.get("limit", 100) or 100)
+    offset = int(current.get("offset", 0) or 0)
+    selected_base = preferred_base
+    first_payload = None
+    last_response = None
+    for _ in range(max_pages):
+        page_params = dict(current)
+        page_params["limit"] = limit
+        page_params["offset"] = offset
+        response, used_base = _highlightly_api_get(
+            path, page_params, api_key, preferred_base=selected_base
+        )
+        selected_base = used_base or selected_base
+        last_response = response
+        if response is None or response.status_code != 200:
+            return all_items, first_payload, selected_base, response
+        try:
+            payload = response.json() or {}
+        except Exception:
+            return all_items, first_payload, selected_base, response
+        if first_payload is None:
+            first_payload = payload
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+        if not isinstance(data, list):
+            data = []
+        all_items.extend(item for item in data if isinstance(item, dict))
+        pagination = payload.get("pagination") or {}
+        try:
+            total_count = int(pagination.get("totalCount"))
+        except (TypeError, ValueError, AttributeError):
+            total_count = None
+        if not data:
+            break
+        offset += len(data)
+        if total_count is not None:
+            if offset >= total_count:
+                break
+        elif len(data) < limit:
+            break
+    return all_items, first_payload or {}, selected_base, last_response
+
+
+def _market_number(market_name: str, fallback=None):
+    """Read the line from Highlightly names such as 'Total Goals 2.5'."""
+    patterns = (
+        r"total\s+goals?\s*[:\-]?\s*([+-]?\d+(?:[.,]\d+)?)",
+        r"total\s+corners?\s*[:\-]?\s*([+-]?\d+(?:[.,]\d+)?)",
+        r"total\s+cards?\s*[:\-]?\s*([+-]?\d+(?:[.,]\d+)?)",
+        r"(?:totals?|over/under|corners?|cards?)\s*[:\-]?\s*([+-]?\d+(?:[.,]\d+)?)",
+    )
+    text = str(market_name or "").casefold()
+    for pattern in patterns:
+        found = re.search(pattern, text)
+        if found:
+            try:
+                return float(found.group(1).replace(",", "."))
+            except ValueError:
+                pass
+    try:
+        return float(fallback)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_highlightly_odds(odds_entries: list, wanted_ids: set, logs=None) -> Optional[dict]:
+    """Normalize documented Highlightly markets into NEURO BET PRO market keys.
+
+    If multiple bookmakers quote the same selection, keep the best available price.
+    Never combine prices from different market names or guess a missing outcome.
+    """
+    prices = {
+        "П1": [], "X": [], "П2": [],
+        "total_market_odds": defaultdict(list),
+        "btts_market_odds": defaultdict(list),
+        "stat_market_odds": defaultdict(list),
+        "asian_handicap_market_odds": defaultdict(list),
+    }
+    found_match = False
+
+    for entry in odds_entries or []:
+        if not isinstance(entry, dict) or str(entry.get("matchId", "")) not in wanted_ids:
+            continue
+        found_match = True
+        for market in entry.get("odds") or []:
+            if not isinstance(market, dict):
+                continue
+            market_type = str(market.get("type") or "prematch").casefold()
+            if market_type not in ("prematch", "pre-match", ""):
+                continue
+            market_name = str(market.get("market") or market.get("name") or "").strip()
+            mname = market_name.casefold()
+            selections = market.get("values") or market.get("odds") or market.get("outcomes") or []
+            for outcome in selections:
+                if not isinstance(outcome, dict):
+                    continue
+                label = str(
+                    outcome.get("value") or outcome.get("label") or outcome.get("name") or ""
+                ).strip().casefold()
+                raw_price = outcome.get("odd", outcome.get("price", outcome.get("odds")))
+                try:
+                    price = float(raw_price)
+                except (TypeError, ValueError):
+                    continue
+                if not 1.01 < price <= 100:
+                    continue
+
+                # Full Time Result is the documented 1X2 market.
+                if any(term in mname for term in (
+                    "full time result", "match result", "1x2", "3-way", "winner"
+                )):
+                    if label in ("home", "1", "home win"):
+                        prices["П1"].append(price)
+                    elif label in ("draw", "x", "tie"):
+                        prices["X"].append(price)
+                    elif label in ("away", "2", "away win"):
+                        prices["П2"].append(price)
+                    continue
+
+                # Both Teams to Score has Yes/No selections, not a goals line.
+                if "both teams" in mname or "btts" in mname or "обе заб" in mname:
+                    if label in ("yes", "да", "both", "true"):
+                        prices["btts_market_odds"]["BTTS Да"].append(price)
+                    elif label in ("no", "нет", "false"):
+                        prices["btts_market_odds"]["BTTS Нет"].append(price)
+                    continue
+
+                # Asian Handicap variants carry the home and away line in the
+                # market label, e.g. "Asian Handicap -1.25/+1.25".
+                if "asian handicap" in mname or "asian handicap" in label:
+                    nums = re.findall(r"[+-]?\d+(?:[.,]\d+)?", market_name)
+                    if nums and label in ("home", "1", "home win"):
+                        line = nums[0].replace(",", ".")
+                        prices["asian_handicap_market_odds"][f"Ф1 {line}"].append(price)
+                    elif nums and label in ("away", "2", "away win"):
+                        line = (nums[1] if len(nums) > 1 else str(-float(nums[0].replace(",", ".")))).replace(",", ".")
+                        prices["asian_handicap_market_odds"][f"Ф2 {line}"].append(price)
+                    continue
+
+                is_over = label in ("over", "more", "больше", "o") or label.startswith(("over ", "больше "))
+                is_under = label in ("under", "less", "меньше", "u") or label.startswith(("under ", "меньше "))
+                if not (is_over or is_under):
+                    continue
+
+                fallback_line = outcome.get("point", outcome.get("handicap", market.get("point")))
+                line = _market_number(market_name, fallback_line)
+                if line is None:
+                    continue
+                line_text = f"{line:g}"
+                side = "ТБ " if is_over else "ТМ "
+                if "corner" in mname or "углов" in mname:
+                    prices["stat_market_odds"][("Угл ТБ " if is_over else "Угл ТМ ") + line_text].append(price)
+                elif "card" in mname or "booking" in mname or "карточ" in mname:
+                    prices["stat_market_odds"][("Карты ТБ " if is_over else "Карты ТМ ") + line_text].append(price)
+                elif any(term in mname for term in ("total", "goal", "over/under", "гол")):
+                    prices["total_market_odds"][side + line_text].append(price)
+
+    if not found_match:
+        return None
+
+    result = {
+        "total_market_odds": {},
+        "btts_market_odds": {},
+        "stat_market_odds": {},
+        "asian_handicap_market_odds": {},
+        "extra_market_source": "highlightly",
+        "source": "highlightly",
+    }
+    for key in ("П1", "X", "П2"):
+        if prices[key]:
+            result[key] = max(prices[key])
+    for group in (
+        "total_market_odds", "btts_market_odds", "stat_market_odds",
+        "asian_handicap_market_odds",
+    ):
+        result[group] = {key: max(values) for key, values in prices[group].items() if values}
+
+    has_1x2 = all(key in result for key in ("П1", "X", "П2"))
+    has_other = any(result[key] for key in (
+        "total_market_odds", "btts_market_odds", "stat_market_odds",
+        "asian_handicap_market_odds",
+    ))
+    if not has_1x2 and not has_other:
+        return None
+    if logs is not None:
+        market_count = sum(len(result[key]) for key in (
+            "total_market_odds", "btts_market_odds", "stat_market_odds",
+            "asian_handicap_market_odds",
+        )) + (3 if has_1x2 else 0)
+        logs.append(f"Highlightly: распознано {market_count} исходов/линий для найденного матча")
+    return result
+
+
+def highlightly_connection_check(api_key: str) -> dict:
+    """Check key authentication and real /odds access without exposing the key."""
+    if not str(api_key or "").strip():
+        return {"ok": False, "matches_ok": False, "message": "API-ключ не найден."}
+
+    timezone_name = str(os.environ.get("APP_TIMEZONE", "Europe/Warsaw") or "Europe/Warsaw")
+    today = datetime.now().strftime("%Y-%m-%d")
+    match_response, match_base = _highlightly_api_get(
+        "matches",
+        {"date": today, "timezone": timezone_name, "limit": 1, "offset": 0},
+        api_key,
+    )
+    matches_ok = bool(match_response is not None and match_response.status_code == 200)
+
+    odds_response, odds_base = _highlightly_api_get(
+        "odds",
+        {"date": today, "timezone": timezone_name, "oddsType": "prematch", "limit": 1, "offset": 0},
+        api_key,
+        preferred_base=match_base,
+    )
+    if odds_response is None:
+        return {
+            "ok": False, "matches_ok": matches_ok,
+            "message": "Не удалось соединиться с Highlightly. Проверь доступность API-хоста.",
+        }
+
+    if odds_response.status_code != 200:
+        body = (odds_response.text or "").strip().replace("\n", " ")[:220]
+        return {
+            "ok": False, "matches_ok": matches_ok,
+            "http_status": odds_response.status_code,
+            "base": odds_base,
+            "message": f"Доступ к /odds не подтверждён (HTTP {odds_response.status_code}). {body}",
+        }
+
+    try:
+        payload = odds_response.json() or {}
+    except Exception:
+        payload = {}
+    plan = payload.get("plan") or {} if isinstance(payload, dict) else {}
+    tier = str(plan.get("tier") or "не указан")
+    data = payload.get("data", []) if isinstance(payload, dict) else []
+    count = len(data) if isinstance(data, list) else 0
+    if tier.casefold() in ("free", "basic"):
+        return {
+            "ok": False, "matches_ok": matches_ok, "http_status": 200,
+            "base": odds_base, "tier": tier, "odds_count": count,
+            "message": f"Ключ работает, но тариф {tier} не открывает коэффициенты /odds.",
+        }
+    return {
+        "ok": True, "matches_ok": matches_ok, "http_status": 200,
+        "base": odds_base, "tier": tier, "odds_count": count,
+        "message": f"Highlightly подключён; /odds отвечает HTTP 200, тариф {tier}, записей на сегодня в первой странице: {count}.",
+    }
+
+
 def highlightly_odds_fixture(match_date: str, home: str, away: str,
                              api_key: str, logs=None) -> Optional[dict]:
-    """Fetch exact-fixture prematch odds from Highlightly's documented response schema."""
-    empty = {
-        "total_market_odds": {}, "btts_market_odds": {}, "stat_market_odds": {},
-        "extra_market_source": "highlightly",
-    }
+    """Fetch prematch odds for one exact fixture from Highlightly Football API."""
     global _HIGHLIGHTLY_ODDS_DISABLED_REASON, _HIGHLIGHTLY_ODDS_401_LOGGED
+    global _HIGHLIGHTLY_ODDS_DISABLED_KEY
+
     if not api_key or not match_date or not home or not away:
         if logs is not None and not api_key:
             logs.append("ℹ️ Highlightly: API-ключ не задан")
         return None
 
+    # If the user changes the API key in Streamlit Secrets or the sidebar, do
+    # not keep a circuit-breaker state created by the previous credential.
+    key_fingerprint = hashlib.sha256(str(api_key).encode("utf-8")).hexdigest()
+    if _HIGHLIGHTLY_ODDS_DISABLED_KEY != key_fingerprint:
+        _HIGHLIGHTLY_ODDS_DISABLED_REASON = ""
+        _HIGHLIGHTLY_ODDS_401_LOGGED = False
+        _HIGHLIGHTLY_ODDS_DISABLED_KEY = key_fingerprint
     if _HIGHLIGHTLY_ODDS_DISABLED_REASON:
-        # The first 401 already logged the exact provider response. Stay quiet
-        # for subsequent fixtures to keep scan logs readable.
         return None
 
     hn, an = _norm_name(home), _norm_name(away)
-    # Highlightly's documented /odds response contains matchId + odds[].market/values,
-    # not embedded team names. Resolve IDs against the same-day /matches feed first.
-    matches_key = f"highlightly_matches_v1_{match_date}"
+    timezone_name = str(os.environ.get("APP_TIMEZONE", "Europe/Warsaw") or "Europe/Warsaw")
+
+    matches_key = f"highlightly_matches_v2_{match_date}_{timezone_name}"
     matches = cache_get(matches_key, 900)
+    matches_base = ""
     if matches is None:
-        try:
-            response = _sess.get(
-                "https://sports.highlightly.net/football/matches",
-                params={"date": match_date, "timezone": "Europe/Berlin", "limit": 100, "offset": 0},
-                headers={"x-rapidapi-key": api_key, "Accept": "application/json"},
-                timeout=20, proxies=NO_PROXY,
-            )
-            if response.status_code != 200:
-                if logs is not None:
-                    logs.append(f"⚠️ Highlightly matches HTTP {response.status_code}: {(response.text or '')[:120]}")
-                return None
-            payload = response.json() or {}
-            matches = payload.get("data", []) if isinstance(payload, dict) else []
-            if not isinstance(matches, list):
-                matches = []
-            cache_put(matches_key, matches)
-        except Exception as exc:
+        matches, _match_payload, matches_base, match_response = _highlightly_fetch_pages(
+            "matches",
+            {"date": match_date, "timezone": timezone_name, "limit": 100, "offset": 0},
+            api_key,
+        )
+        if match_response is None or match_response.status_code != 200:
+            status = getattr(match_response, "status_code", "connection error")
+            body = (getattr(match_response, "text", "") or "")[:140]
             if logs is not None:
-                logs.append(f"⚠️ Highlightly matches error: {type(exc).__name__}")
+                logs.append(f"⚠️ Highlightly matches HTTP {status}: {body}")
             return None
+        cache_put(matches_key, matches)
+    else:
+        matches_base = "https://soccer.highlightly.net"
 
     match_ids = []
     for match in matches:
         if not isinstance(match, dict):
             continue
-        ht = (match.get("homeTeam") or {}).get("name") or match.get("homeTeamName") or ""
-        at = (match.get("awayTeam") or {}).get("name") or match.get("awayTeamName") or ""
-        if ht and at and _norm_name(ht) == hn and _norm_name(at) == an:
-            mid = match.get("id", match.get("matchId"))
-            if mid is not None:
-                match_ids.append((str(mid), str(ht), str(at)))
+        home_obj = match.get("homeTeam") or {}
+        away_obj = match.get("awayTeam") or {}
+        home_name = home_obj.get("name") or match.get("homeTeamName") or ""
+        away_name = away_obj.get("name") or match.get("awayTeamName") or ""
+        if home_name and away_name and _norm_name(home_name) == hn and _norm_name(away_name) == an:
+            match_id = match.get("id", match.get("matchId"))
+            if match_id is not None:
+                match_ids.append(str(match_id))
+
     if not match_ids:
         if logs is not None:
             logs.append(f"Highlightly: матч не найден в /matches за {match_date}: {home} — {away}")
         return None
 
-    odds_key = f"highlightly_odds_v3_{match_date}"
+    odds_key = f"highlightly_odds_v4_{match_date}_{timezone_name}"
     odds_entries = cache_get(odds_key, 900)
     if odds_entries is None:
-        try:
-            response = _sess.get(
-                "https://sports.highlightly.net/football/odds",
-                params={"date": match_date, "timezone": "Europe/Berlin",
-                        "oddsType": "prematch", "limit": 100, "offset": 0},
-                headers={"x-rapidapi-key": api_key, "Accept": "application/json"},
-                timeout=20, proxies=NO_PROXY,
-            )
-            if response.status_code != 200:
-                body = (response.text or "")[:140]
-                if response.status_code == 401 and "not available in basic plan" in body.casefold():
-                    _HIGHLIGHTLY_ODDS_DISABLED_REASON = "basic_plan"
-                    if logs is not None and not _HIGHLIGHTLY_ODDS_401_LOGGED:
-                        logs.append(
-                            "⛔ Highlightly Odds отключён на текущем тарифе (Basic): "
-                            "получен HTTP 401. Повторные запросы к /odds остановлены "
-                            "до перезапуска приложения или смены тарифа."
-                        )
-                        _HIGHLIGHTLY_ODDS_401_LOGGED = True
-                elif logs is not None:
-                    logs.append(f"⚠️ Highlightly odds HTTP {response.status_code}: {body}")
-                return None
-            payload = response.json() or {}
-            odds_entries = payload.get("data", []) if isinstance(payload, dict) else []
-            plan = payload.get("plan") or {} if isinstance(payload, dict) else {}
-            if str(plan.get("tier", "")).lower() in ("free", "basic"):
-                if logs is not None:
-                    logs.append("⚠️ Highlightly: тариф Free/Basic не предоставляет коэффициенты.")
-                return None
-            if not isinstance(odds_entries, list):
-                odds_entries = []
-            cache_put(odds_key, odds_entries)
-        except Exception as exc:
-            if logs is not None:
-                logs.append(f"⚠️ Highlightly odds error: {type(exc).__name__}")
+        odds_entries, odds_payload, odds_base, odds_response = _highlightly_fetch_pages(
+            "odds",
+            {"date": match_date, "timezone": timezone_name,
+             "oddsType": "prematch", "limit": 100, "offset": 0},
+            api_key,
+            preferred_base=matches_base,
+        )
+        if odds_response is None or odds_response.status_code != 200:
+            status = getattr(odds_response, "status_code", "connection error")
+            body = (getattr(odds_response, "text", "") or "")[:180]
+            if status in (401, 403) or (
+                odds_response is not None and
+                "not available in basic plan" in (getattr(odds_response, "text", "") or "").casefold()
+            ):
+                _HIGHLIGHTLY_ODDS_DISABLED_REASON = "odds_access_denied"
+            if logs is not None and not _HIGHLIGHTLY_ODDS_401_LOGGED:
+                logs.append(f"⛔ Highlightly /odds не дал доступ (HTTP {status}): {body}")
+                _HIGHLIGHTLY_ODDS_401_LOGGED = True
             return None
+        plan = (odds_payload or {}).get("plan") or {}
+        tier = str(plan.get("tier") or "")
+        if tier.casefold() in ("free", "basic"):
+            _HIGHLIGHTLY_ODDS_DISABLED_REASON = "basic_plan"
+            if logs is not None and not _HIGHLIGHTLY_ODDS_401_LOGGED:
+                logs.append(f"⛔ Highlightly: тариф {tier} не предоставляет /odds.")
+                _HIGHLIGHTLY_ODDS_401_LOGGED = True
+            return None
+        cache_put(odds_key, odds_entries)
 
-    wanted_ids = {mid for mid, _, _ in match_ids}
-    # The date-wide odds response is paginated and can omit a fixture when the
-    # provider returns more than one page. Retry missing fixture IDs directly:
-    # Highlightly documents matchId as the preferred odds lookup parameter.
+    wanted_ids = set(match_ids)
     returned_ids = {
         str(entry.get("matchId", ""))
         for entry in odds_entries
         if isinstance(entry, dict) and entry.get("matchId") is not None
     }
     for missing_id in sorted(wanted_ids - returned_ids):
-        per_match_key = f"highlightly_odds_match_v1_{missing_id}"
+        per_match_key = f"highlightly_odds_match_v2_{missing_id}"
         per_match = cache_get(per_match_key, 900)
         if per_match is None:
-            try:
-                response = _sess.get(
-                    "https://sports.highlightly.net/football/odds",
-                    params={"matchId": missing_id, "oddsType": "prematch",
-                            "limit": 100, "offset": 0},
-                    headers={"x-rapidapi-key": api_key, "Accept": "application/json"},
-                    timeout=20, proxies=NO_PROXY,
-                )
-                if response.status_code != 200:
-                    body = (response.text or "")[:140]
-                    if response.status_code == 401 and "not available in basic plan" in body.casefold():
-                        _HIGHLIGHTLY_ODDS_DISABLED_REASON = "basic_plan"
-                        if logs is not None and not _HIGHLIGHTLY_ODDS_401_LOGGED:
-                            logs.append(
-                                "⛔ Highlightly Odds недоступен на тарифе Basic (HTTP 401); "
-                                "дальнейшие запросы к /odds остановлены до перезапуска "
-                                "или смены тарифа."
-                            )
-                            _HIGHLIGHTLY_ODDS_401_LOGGED = True
-                        return None
-                    if logs is not None:
-                        logs.append(
-                            f"⚠️ Highlightly odds matchId={missing_id} HTTP "
-                            f"{response.status_code}: {body}"
-                        )
-                    continue
-                payload = response.json() or {}
-                plan = payload.get("plan") or {} if isinstance(payload, dict) else {}
-                if str(plan.get("tier", "")).lower() in ("free", "basic"):
-                    if logs is not None:
-                        logs.append("⚠️ Highlightly: тариф Free/Basic не предоставляет коэффициенты.")
-                    return None
-                per_match = payload.get("data", []) if isinstance(payload, dict) else []
-                if not isinstance(per_match, list):
-                    per_match = []
-                cache_put(per_match_key, per_match)
-            except Exception as exc:
-                if logs is not None:
-                    logs.append(f"⚠️ Highlightly odds matchId={missing_id} error: {type(exc).__name__}")
-                continue
-        if isinstance(per_match, list):
-            odds_entries.extend(
-                entry for entry in per_match
-                if isinstance(entry, dict) and str(entry.get("matchId", "")) == missing_id
+            per_match, per_payload, _per_base, per_response = _highlightly_fetch_pages(
+                "odds",
+                {"matchId": missing_id, "oddsType": "prematch", "limit": 100, "offset": 0},
+                api_key,
+                preferred_base=matches_base,
             )
-
-    found = []
-    for entry in odds_entries:
-        if not isinstance(entry, dict) or str(entry.get("matchId", "")) not in wanted_ids:
-            continue
-        result = {
-            "total_market_odds": {}, "btts_market_odds": {}, "stat_market_odds": {},
-            "extra_market_source": "highlightly",
-        }
-        for market in entry.get("odds") or []:
-            if not isinstance(market, dict):
+            if per_response is not None and per_response.status_code in (401, 403):
+                _HIGHLIGHTLY_ODDS_DISABLED_REASON = "odds_access_denied"
+                if logs is not None and not _HIGHLIGHTLY_ODDS_401_LOGGED:
+                    body = (per_response.text or "")[:180]
+                    logs.append(
+                        f"⛔ Highlightly /odds matchId={missing_id}: "
+                        f"HTTP {per_response.status_code}: {body}"
+                    )
+                    _HIGHLIGHTLY_ODDS_401_LOGGED = True
+                return None
+            if per_response is None or per_response.status_code != 200:
+                if logs is not None:
+                    status = getattr(per_response, "status_code", "connection error")
+                    logs.append(f"⚠️ Highlightly odds matchId={missing_id}: HTTP {status}")
                 continue
-            mname = str(market.get("market") or market.get("name") or "").casefold()
-            for outcome in market.get("values") or market.get("odds") or market.get("outcomes") or []:
-                if not isinstance(outcome, dict):
-                    continue
-                label = str(outcome.get("value") or outcome.get("label") or outcome.get("name") or "").strip().casefold()
-                raw = outcome.get("odd", outcome.get("price", outcome.get("odds")))
-                try:
-                    price = float(raw)
-                except (TypeError, ValueError):
-                    continue
-                if not 1.01 < price <= 100:
-                    continue
-                if any(term in mname for term in ("full time result", "match result", "1x2", "3-way", "winner")):
-                    if label in ("home", "1", "home win"):
-                        result["П1"] = price
-                    elif label in ("draw", "x", "tie"):
-                        result["X"] = price
-                    elif label in ("away", "2", "away win"):
-                        result["П2"] = price
-                    continue
-                # The API may encode the line in market name, e.g. "Totals 2.5".
-                line_match = re.search(r"(?:total|totals|over/under|corners|cards|booking|goals?)\s*([0-9]+(?:\.[05])?)", mname)
-                line = float(line_match.group(1)) if line_match else None
-                if line is None:
-                    point = outcome.get("point", outcome.get("handicap", market.get("point")))
-                    try:
-                        line = float(point)
-                    except (TypeError, ValueError):
-                        line = None
-                is_over = label in ("over", "more", "больше", "o") or label.startswith(("over ", "больше "))
-                is_under = label in ("under", "less", "меньше", "u") or label.startswith(("under ", "меньше "))
-                if line is not None and (is_over or is_under):
-                    line_txt = f"{line:g}"
-                    if "corner" in mname or "углов" in mname:
-                        result["stat_market_odds"][("Угл ТБ " if is_over else "Угл ТМ ") + line_txt] = price
-                    elif "card" in mname or "booking" in mname or "карточ" in mname:
-                        result["stat_market_odds"][("Карты ТБ " if is_over else "Карты ТМ ") + line_txt] = price
-                    elif "total" in mname or "goal" in mname or "гол" in mname or "over/under" in mname:
-                        result["total_market_odds"][("ТБ " if is_over else "ТМ ") + line_txt] = price
-                    continue
-                if "both teams" in mname or "btts" in mname or "обе заб" in mname:
-                    if label in ("yes", "да", "both", "true"):
-                        result["btts_market_odds"]["BTTS Да"] = price
-                    elif label in ("no", "нет", "false"):
-                        result["btts_market_odds"]["BTTS Нет"] = price
-        result["source"] = "highlightly"
-        if all(k in result for k in ("П1", "X", "П2")) or any(result[k] for k in ("total_market_odds", "btts_market_odds", "stat_market_odds")):
-            found.append(result)
+            per_plan = (per_payload or {}).get("plan") or {}
+            if str(per_plan.get("tier") or "").casefold() in ("free", "basic"):
+                _HIGHLIGHTLY_ODDS_DISABLED_REASON = "basic_plan"
+                return None
+            cache_put(per_match_key, per_match)
+        odds_entries.extend(
+            entry for entry in per_match
+            if isinstance(entry, dict) and str(entry.get("matchId", "")) == missing_id
+        )
 
-    if not found:
+    result = _parse_highlightly_odds(odds_entries, wanted_ids, logs=logs)
+    if not result:
         if logs is not None:
-            logs.append(f"Highlightly: нет подходящих коэффициентов для точного матча {home} — {away}")
+            logs.append(f"Highlightly: в ответе нет коэффициентов для {home} — {away}")
         return None
-    result = dict(empty)
-    result.update({"source": "highlightly"})
-    for item in found:
-        if all(k in item for k in ("П1", "X", "П2")):
-            result.update({k: item[k] for k in ("П1", "X", "П2")})
-        for key in ("total_market_odds", "btts_market_odds", "stat_market_odds"):
-            result[key].update(item.get(key) or {})
     if logs is not None:
-        logs.append(f"✅ Highlightly: рынки получены для {home} — {away}")
+        markets = (
+            len(result.get("total_market_odds") or {})
+            + len(result.get("btts_market_odds") or {})
+            + len(result.get("stat_market_odds") or {})
+            + len(result.get("asian_handicap_market_odds") or {})
+        )
+        has_1x2 = all(key in result for key in ("П1", "X", "П2"))
+        logs.append(
+            f"✅ Highlightly: {home} — {away} | "
+            f"{'П1/X/П2 + ' if has_1x2 else ''}{markets} доп. рынков/линий"
+        )
     return result
+
