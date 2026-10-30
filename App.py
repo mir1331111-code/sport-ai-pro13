@@ -70,6 +70,11 @@ def _configured_secret(*keys):
                     value = section.get(key, "")
                     if value:
                         return str(value).strip()
+                if section_name == "sstats":
+                    for alias in ("api_key", "key"):
+                        value = section.get(alias, "")
+                        if value:
+                            return str(value).strip()
     except Exception:
         pass
     return ""
@@ -78,7 +83,11 @@ def _api_key_default(storage_key, env_name, *secret_names):
     env_value = os.environ.get(env_name, "").strip()
     if env_value:
         return env_value
-    configured = _configured_secret(env_name, *secret_names)
+    configured = (
+        _configured_secret(env_name, *secret_names, "api_key", "key")
+        if storage_key == "sstats_api_key"
+        else _configured_secret(env_name, *secret_names)
+    )
     if configured:
         return configured
     return _saved_ui_secrets.get(storage_key, "")
@@ -587,8 +596,11 @@ with st.sidebar:
                  use_container_width=True):
         with st.spinner("Проверяю ключ SStats, расписание и Odds…"):
             _sstats_check = sstats_account_check(sstats_key)
-        if _sstats_check.get("ok") and _sstats_check.get("games_ok"):
-            st.success(_sstats_check.get("message", "SStats подключён."))
+        if (_sstats_check.get("ok") and _sstats_check.get("games_ok")
+                and _sstats_check.get("odds_checked")):
+            st.success(_sstats_check.get("message", "SStats подключён, Odds доступны."))
+        elif _sstats_check.get("ok") and _sstats_check.get("games_ok"):
+            st.warning(_sstats_check.get("message", "Ключ и расписание работают, но Odds пока не подтверждён."))
         elif _sstats_check.get("ok"):
             st.warning(_sstats_check.get("message", "Ключ SStats подтверждён, но данные матчей недоступны."))
         else:
