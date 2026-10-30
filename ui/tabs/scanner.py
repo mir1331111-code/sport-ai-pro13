@@ -1257,14 +1257,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         except Exception as exc:
                             logs.append(f"⚠️ Highlightly lookup failed: {type(exc).__name__}: {str(exc)[:120]}")
 
-                    # Detailed SStats bookmaker markets for a limited set of likely winners.
-                    # Games/list already supplied compact 1X2 and Total odds; this enriches
-                    # the strongest winner candidates with full bookmakers/BTTS/handicaps.
+                    # Detailed SStats bookmaker markets for a bounded shortlist of fixtures.
+                    # Do not gate API lookup on model probability: that previously meant
+                    # zero real prices were fetched whenever every team probability was < 58%.
+                    # The model/value filters decide whether a bet is eligible only AFTER
+                    # verified market odds have been fetched.
                     sstats_game_id = r.get("sstats_game_id")
                     if (
                         sstats_key and sstats_game_id not in (None, "")
                         and sstats_detail_calls < SSTATS_DETAIL_MAX_PER_SCAN
-                        and max(float(P.get("p1") or 0), float(P.get("p2") or 0)) >= 0.58
                     ):
                         detailed = sstats_odds_fixture(sstats_game_id, sstats_key, logs)
                         sstats_detail_calls += 1
@@ -1521,10 +1522,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             })
 
         if sstats_key:
-            logs.append(
-                f"📚 SStats: детальные запросы Odds выполнены для {sstats_detail_calls} "
-                f"кандидатов (лимит {SSTATS_DETAIL_MAX_PER_SCAN} на скан)."
+            sstats_id_count = sum(
+                1 for row in rows
+                if isinstance(row, dict) and row.get("sstats_game_id") not in (None, "")
             )
+            sstats_compact_odds_count = sum(
+                1 for row in rows
+                if isinstance(row, dict) and row.get("sstats_game_id") not in (None, "")
+                and row.get("market_odds")
+            )
+            logs.append(
+                f"📚 SStats: матчей с game ID — {sstats_id_count}; "
+                f"с компактными 1X2 — {sstats_compact_odds_count}; "
+                f"детальных запросов Odds — {sstats_detail_calls} "
+                f"(лимит {SSTATS_DETAIL_MAX_PER_SCAN} на скан)."
+            )
+            if sstats_id_count and not sstats_compact_odds_count and not sstats_detail_calls:
+                logs.append(
+                    "⚠️ SStats: ID матчей есть, но коэффициенты не загружены. "
+                    "Проверьте ответ /Odds/{gameId} и журнал HTTP-статусов."
+                )
         logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов")
         logs.append(f"🎯 BET: {matches_with_best}")
 
