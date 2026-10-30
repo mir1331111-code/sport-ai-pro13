@@ -38,7 +38,7 @@ from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
-from data.sources import parse_date, fdorg_match_result, highlightly_connection_check  # noqa: E402
+from data.sources import parse_date, fdorg_match_result, highlightly_connection_check, sstats_account_check  # noqa: E402
 from betting.settlement import determine_outcome  # noqa: E402
 from ui import theme  # noqa: E402
 from ui.tabs import scanner, portfolio, stats, calculator, backtest  # noqa: E402
@@ -53,7 +53,7 @@ SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)
 RETRY_EVERY = timedelta(minutes=60)
 STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 20
-SECRET_KEYS = ("fdorg_token", "highlightly_api_key", "llm_api_key")
+SECRET_KEYS = ("fdorg_token", "highlightly_api_key", "sstats_api_key", "llm_api_key")
 
 
 def _configured_secret(*keys):
@@ -63,7 +63,7 @@ def _configured_secret(*keys):
             value = st.secrets.get(key, "")
             if value:
                 return str(value).strip()
-        for section_name in ("api", "apis", "secrets", "highlightly"):
+        for section_name in ("api", "apis", "secrets", "highlightly", "sstats"):
             section = st.secrets.get(section_name, {})
             if hasattr(section, "get"):
                 for key in keys:
@@ -578,6 +578,22 @@ with st.sidebar:
         type="password", key="highlightly_api_key_input",
         help="Реальные prematch odds из Highlightly. На Free/Basic endpoint коэффициентов недоступен.")
 
+    sstats_key = st.text_input(
+        "SStats.net API key (бесплатные футбольные коэффициенты)",
+        value=_api_key_default("sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"),
+        type="password", key="sstats_api_key_input",
+        help="Ключ SStats.net. Расписание и коэффициенты загружаются автоматически при сканировании.")
+    if st.button("🔎 Проверить подключение SStats.net", key="check_sstats_api",
+                 use_container_width=True):
+        with st.spinner("Проверяю ключ SStats, расписание и Odds…"):
+            _sstats_check = sstats_account_check(sstats_key)
+        if _sstats_check.get("ok") and _sstats_check.get("games_ok"):
+            st.success(_sstats_check.get("message", "SStats подключён."))
+        elif _sstats_check.get("ok"):
+            st.warning(_sstats_check.get("message", "Ключ SStats подтверждён, но данные матчей недоступны."))
+        else:
+            st.error(_sstats_check.get("message", "Не удалось подключиться к SStats.net."))
+
     if st.button("🔎 Проверить доступ к коэффициентам", key="check_highlightly_odds",
                  use_container_width=True):
         with st.spinner("Проверяю ключ и endpoint Highlightly /odds…"):
@@ -606,6 +622,7 @@ with st.sidebar:
     _widget_key_map = {
         "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
         "highlightly_api_key": ("highlightly_api_key_input", ("HIGHLIGHTLY_API_KEY",), ("HIGHLIGHTLY_API_KEY", "highlightly_api_key")),
+        "sstats_api_key": ("sstats_api_key_input", ("SSTATS_API_KEY",), ("SSTATS_API_KEY", "sstats_api_key")),
         "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
     }
     _user_entered_keys = {}
