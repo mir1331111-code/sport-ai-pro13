@@ -1340,9 +1340,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             except (TypeError, ValueError):
                                 continue
                         if all(key in valid for key in ("П1", "X", "П2")):
-                            market_odds = valid
-                            odds_source = source_name
-                            break
+                            # Keep the best available decimal quote across providers
+                            # instead of replacing a better SStats price with a lower one.
+                            improved = False
+                            for key, value in valid.items():
+                                current = float(market_odds.get(key) or 0)
+                                if value > current:
+                                    market_odds[key] = value
+                                    improved = True
+                            if improved or not odds_source:
+                                odds_source = source_name
 
                     if market_odds:
                         funnel_counts["market_got"] += 1
@@ -1430,6 +1437,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "context": {},
             })
 
+        if sstats_key:
+            logs.append(
+                f"📚 SStats: детальные запросы Odds выполнены для {sstats_detail_calls} "
+                f"кандидатов (лимит {SSTATS_DETAIL_MAX_PER_SCAN} на скан)."
+            )
         logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов")
         logs.append(f"🎯 BET: {matches_with_best}")
 
