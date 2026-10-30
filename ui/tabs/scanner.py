@@ -1125,6 +1125,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         except (TypeError, ValueError):
                             continue
                 row["sstats_game_id"] = source_row.get("sstats_game_id")
+                row.setdefault("bookmaker_by_pick", {}).update(
+                    source_row.get("bookmaker_by_pick") or {}
+                )
                 if row.get("market_odds") and row.get("odds_source") in (None, "", "no_market"):
                     row["odds_source"] = "sstats"
                 if row.get("total_market_odds") and row.get("total_odds_source") in (None, "", "no_market"):
@@ -1203,6 +1206,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             best = None
             market_odds = dict(r.get("market_odds") or {})
             odds_source = str(r.get("odds_source") or ("sstats" if market_odds else "no_market"))
+            bookmaker_by_pick = dict(r.get("bookmaker_by_pick") or {})
             if market_odds and odds_source in {"", "no_market", "model_only"}:
                 odds_source = "sstats"
             total_market_odds = dict(r.get("total_market_odds") or {})
@@ -1216,7 +1220,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             # Keep secondary-market quotes from verified providers and imported CSV/JSON.
             # Only accept prices explicitly attached to this fixture and market/line.
             api_market_data = None
-            odds_source = "no_market"
 
             # Fetch real 1X2 odds for every displayed fixture, not only when
             # the model already crosses the probability threshold. The strict
@@ -1227,7 +1230,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     candidates = []
 
                     # Highlightly is optional; free/public providers and imported quotes are fallbacks.
-                    if highlightly_key:
+                    if highlightly_key and not market_odds:
                         funnel_counts["market_req"] += 1
                         try:
                             highlighted = highlightly_odds_fixture(
@@ -1272,17 +1275,40 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 if detailed.get(key) is not None
                             }
                             # Full odds are bookmaker-specific; prefer the best
-                            # available decimal price over the compact close price.
+                            # available decimal price over the compact close price,
+                            # and keep the bookmaker name paired with that best price.
+                            detailed_bookmakers = detailed.get("bookmaker_by_pick") or {}
                             for key, value in detailed_1x2.items():
-                                market_odds[key] = max(float(market_odds.get(key) or 0), float(value))
+                                current = float(market_odds.get(key) or 0)
+                                if float(value) >= current:
+                                    market_odds[key] = float(value)
+                                    if detailed_bookmakers.get(key):
+                                        bookmaker_by_pick[key] = detailed_bookmakers[key]
                             if detailed_1x2:
                                 odds_source = "sstats"
-                            total_market_odds.update(detailed.get("total_market_odds") or {})
-                            btts_market_odds.update(detailed.get("btts_market_odds") or {})
-                            stat_market_odds.update(detailed.get("stat_market_odds") or {})
-                            asian_handicap_market_odds.update(
-                                detailed.get("asian_handicap_market_odds") or {}
-                            )
+                                # SStats detailed quotes are the selected primary line.
+                                # Do not mix in a different provider's line below.
+                                candidates = []
+                            for group in (
+                                "total_market_odds", "btts_market_odds",
+                                "stat_market_odds", "asian_handicap_market_odds",
+                            ):
+                                target = {
+                                    "total_market_odds": total_market_odds,
+                                    "btts_market_odds": btts_market_odds,
+                                    "stat_market_odds": stat_market_odds,
+                                    "asian_handicap_market_odds": asian_handicap_market_odds,
+                                }[group]
+                                for selection, raw_value in (detailed.get(group) or {}).items():
+                                    try:
+                                        value = float(raw_value)
+                                        current = float(target.get(selection) or 0)
+                                        if value >= current:
+                                            target[selection] = value
+                                            if detailed_bookmakers.get(selection):
+                                                bookmaker_by_pick[selection] = detailed_bookmakers[selection]
+                                    except (TypeError, ValueError):
+                                        continue
                             if detailed.get("total_market_odds"):
                                 total_odds_source = "sstats"
                             if any(detailed.get(name) for name in (
@@ -1402,6 +1428,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 current = float(market_odds.get(key) or 0)
                                 if value > current:
                                     market_odds[key] = value
+                                    bookmaker_by_pick.pop(key, None)
                                     improved = True
                             if improved or not odds_source:
                                 odds_source = source_name
@@ -1478,6 +1505,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
                 "market_odds": dict(market_odds),
+                "bookmaker_by_pick": dict(bookmaker_by_pick),
                 "total_market_odds": dict(total_market_odds),
                 "total_odds_source": total_odds_source if total_market_odds else (str(r.get("extra_market_source") or "") if r.get("total_market_odds") else total_odds_source),
                 "extra_market_source": extra_market_source,
