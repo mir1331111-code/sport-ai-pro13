@@ -14,12 +14,14 @@ class LocalSecretStoreTests(unittest.TestCase):
             self.assertTrue(save_local_secrets({
                 "odds_api_key": "  odds-secret  ",
                 "llm_api_key": "llm-secret",
+                "sstats_api_key": "sstats-secret",
                 "bank": "should-not-save",
                 "unknown": "also-not-save",
             }, path))
             self.assertEqual(load_local_secrets(path), {
                 "odds_api_key": "odds-secret",
                 "llm_api_key": "llm-secret",
+                "sstats_api_key": "sstats-secret",
             })
             raw = json.loads(path.read_text(encoding="utf-8"))
             self.assertNotIn("bank", raw)
