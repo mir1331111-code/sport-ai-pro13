@@ -2512,3 +2512,499 @@ def highlightly_odds_fixture(match_date: str, home: str, away: str,
         )
     return result
 
+
+
+# ============ SSTATS.NET FREE FOOTBALL API ============
+SSTATS_API_BASE = "https://api.sstats.net"
+
+
+def _sstats_unwrap(payload):
+    """Unwrap the documented ApiResponse envelope without assuming non-null data."""
+    if isinstance(payload, dict):
+        if str(payload.get("status") or "").casefold() == "error":
+            raise ValueError(str(payload.get("message") or "SStats API returned an error"))
+        return payload.get("data")
+    return payload
+
+
+def _sstats_timezone():
+    """Return app-local date and integer UTC offset required by SStats."""
+    zone_name = str(os.environ.get("APP_TIMEZONE", "Europe/Warsaw") or "Europe/Warsaw")
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo(zone_name))
+        offset = now.utcoffset()
+        offset_hours = int(round(offset.total_seconds() / 3600)) if offset else 3
+        return now, max(-12, min(12, offset_hours))
+    except Exception:
+        return datetime.now(), 3
+
+
+def _sstats_float(value):
+    try:
+        number = float(str(value).replace(",", "."))
+        return number if 1.01 < number <= 100 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _sstats_line(text):
+    found = re.search(r"(?<!\d)(\d{1,2}(?:[.,]\d{1,2})?)(?!\d)", str(text or ""))
+    if not found:
+        return None
+    try:
+        return float(found.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _sstats_flat_bets(odds_payload):
+    """Accept both compact Game.odds and full bookmaker[] -> odds[] responses."""
+    if isinstance(odds_payload, dict):
+        odds_payload = odds_payload.get("data", odds_payload.get("odds", []))
+    if not isinstance(odds_payload, list):
+        return
+    for item in odds_payload:
+        if not isinstance(item, dict):
+            continue
+        # Compact /Games/list response: item itself is ApiSaBet.
+        if "marketName" in item or "marketId" in item:
+            yield item
+            continue
+        # Detailed /Odds/{gameId} response: bookmaker object contains ApiSaBet[].
+        nested = item.get("odds")
+        if isinstance(nested, list):
+            for bet in nested:
+                if isinstance(bet, dict):
+                    yield bet
+
+
+def _sstats_parse_markets(odds_payload):
+    """Normalize SStats marketName + Price(name,value) records to app market keys."""
+    prices = {
+        "П1": [], "X": [], "П2": [],
+        "total_market_odds": {},
+        "btts_market_odds": {},
+        "stat_market_odds": {},
+        "asian_handicap_market_odds": {},
+    }
+    for bet in _sstats_flat_bets(odds_payload):
+        market_name = str(bet.get("marketName") or bet.get("name") or "").strip()
+        market = market_name.casefold()
+        price_rows = bet.get("odds") or bet.get("values") or bet.get("outcomes") or []
+        if not isinstance(price_rows, list):
+            continue
+
+        for price_row in price_rows:
+            if not isinstance(price_row, dict):
+                continue
+            label = str(price_row.get("name") or price_row.get("label") or price_row.get("valueName") or "").strip()
+            label_norm = label.casefold()
+            odd = _sstats_float(price_row.get("value", price_row.get("odd", price_row.get("price"))))
+            if odd is None:
+                continue
+
+            # 1X2 / match-result market.
+            is_1x2 = any(term in market for term in (
+                "1x2", "match result", "full time result", "match winner",
+                "winner", "исход матча", "результат матча",
+            ))
+            if is_1x2:
+                if label_norm in ("1", "home", "home win", "п1", "1 (home)"):
+                    prices["П1"].append(odd)
+                elif label_norm in ("x", "х", "draw", "tie", "ничья"):
+                    prices["X"].append(odd)
+                elif label_norm in ("2", "away", "away win", "п2", "2 (away)"):
+                    prices["П2"].append(odd)
+                continue
+
+            # Both teams to score.
+            if any(term in market for term in ("both teams", "btts", "обе заб", "обе команды забьют")):
+                if label_norm in ("yes", "да", "both", "true"):
+                    prices["btts_market_odds"].setdefault("BTTS Да", []).append(odd)
+                elif label_norm in ("no", "нет", "false"):
+                    prices["btts_market_odds"].setdefault("BTTS Нет", []).append(odd)
+                continue
+
+            # Totals, including corners/cards; the line may be encoded in either
+            # marketName or Price.name (e.g. "Total Goals" + "Over 2.5").
+            is_over = (
+                label_norm in ("over", "more", "больше", "o")
+                or label_norm.startswith(("over ", "больше ", "o "))
+            )
+            is_under = (
+                label_norm in ("under", "less", "меньше", "u")
+                or label_norm.startswith(("under ", "меньше ", "u "))
+            )
+            if is_over or is_under:
+                line = _sstats_line(label) or _sstats_line(market_name)
+                if line is None:
+                    continue
+                line_text = f"{line:g}"
+                if any(term in market for term in ("corner", "corners", "углов")):
+                    key = ("Угл ТБ " if is_over else "Угл ТМ ") + line_text
+                    prices["stat_market_odds"].setdefault(key, []).append(odd)
+                elif any(term in market for term in ("card", "booking", "карточ")):
+                    key = ("Карты ТБ " if is_over else "Карты ТМ ") + line_text
+                    prices["stat_market_odds"].setdefault(key, []).append(odd)
+                elif any(term in market for term in ("total", "goal", "over/under", "тотал", "гол")):
+                    key = ("ТБ " if is_over else "ТМ ") + line_text
+                    prices["total_market_odds"].setdefault(key, []).append(odd)
+                continue
+
+            # Asian/European handicap — kept separately; never treated as 1X2.
+            if any(term in market for term in ("handicap", "asian", "фора")):
+                line = _sstats_line(label) or _sstats_line(market_name)
+                if line is None:
+                    continue
+                if any(term in label_norm for term in ("home", " хозя", "п1", "1")):
+                    key = f"Ф1 {line:g}"
+                elif any(term in label_norm for term in ("away", " гост", "п2", "2")):
+                    key = f"Ф2 {line:g}"
+                else:
+                    continue
+                prices["asian_handicap_market_odds"].setdefault(key, []).append(odd)
+
+    result = {
+        "total_market_odds": {},
+        "btts_market_odds": {},
+        "stat_market_odds": {},
+        "asian_handicap_market_odds": {},
+        "extra_market_source": "sstats",
+        "source": "sstats",
+    }
+    for key in ("П1", "X", "П2"):
+        if prices[key]:
+            result[key] = max(prices[key])
+    for group in (
+        "total_market_odds", "btts_market_odds", "stat_market_odds",
+        "asian_handicap_market_odds",
+    ):
+        result[group] = {
+            key: max(values) for key, values in prices[group].items() if values
+        }
+    return result
+
+
+def _sstats_request(path: str, api_key: str, params=None, timeout=(5, 25)):
+    """GET SStats API using its documented ?apikey= authentication.
+
+    Never include request URLs or exception strings in logs: both can expose
+    the query-string API key.
+    """
+    query = dict(params or {})
+    query["apikey"] = str(api_key or "").strip()
+    return _sess.get(
+        f"{SSTATS_API_BASE}/{str(path).lstrip('/')}",
+        params=query,
+        headers={"Accept": "application/json"},
+        timeout=timeout,
+        proxies=NO_PROXY,
+    )
+
+
+def sstats_account_check(api_key: str) -> dict:
+    """Verify key, upcoming fixtures endpoint and prematch odds endpoint."""
+    key = str(api_key or "").strip()
+    if not key:
+        return {"ok": False, "message": "SStats API-ключ не найден."}
+    try:
+        response = _sstats_request("Account/Info", key)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"Не удалось соединиться с SStats: {type(exc).__name__}.",
+        }
+    if response.status_code != 200:
+        return {
+            "ok": False, "http_status": response.status_code,
+            "message": f"SStats отклонил ключ или запрос: HTTP {response.status_code}.",
+        }
+    try:
+        account_payload = response.json() or {}
+        account_data = _sstats_unwrap(account_payload) or {}
+    except Exception:
+        return {"ok": False, "message": "SStats вернул некорректный ответ Account/Info."}
+    if not isinstance(account_data, dict) or not account_data.get("userName"):
+        message = str(account_payload.get("message") or "SStats не подтвердил аккаунт.")
+        return {"ok": False, "message": message[:180]}
+
+    now, timezone_offset = _sstats_timezone()
+    params = {
+        "From": now.date().isoformat(),
+        "To": (now.date() + timedelta(days=14)).isoformat(),
+        "Upcoming": "true",
+        "Limit": 3,
+        "Offset": 0,
+        "TimeZone": timezone_offset,
+    }
+    try:
+        games_response = _sstats_request("Games/list", key, params=params)
+        if games_response.status_code != 200:
+            return {
+                "ok": True, "games_ok": False,
+                "message": (
+                    f"Ключ SStats подтверждён ({account_data.get('userName')}); "
+                    f"но /Games/list ответил HTTP {games_response.status_code}."
+                ),
+            }
+        games_payload = games_response.json() or {}
+        games = _sstats_unwrap(games_payload) or []
+        if not isinstance(games, list):
+            games = []
+    except Exception as exc:
+        return {
+            "ok": True, "games_ok": False,
+            "message": (
+                f"Ключ SStats подтверждён ({account_data.get('userName')}), "
+                f"но проверка расписания завершилась ошибкой {type(exc).__name__}."
+            ),
+        }
+
+    odds_count = 0
+    odds_checked = False
+    if games and isinstance(games[0], dict):
+        game_id = games[0].get("id")
+        if game_id is not None:
+            try:
+                odds_response = _sstats_request(f"Odds/{game_id}", key, params={"opening": "false"})
+                if odds_response.status_code == 200:
+                    odds_payload = _sstats_unwrap(odds_response.json() or {}) or []
+                    if isinstance(odds_payload, list):
+                        odds_count = sum(
+                            len(item.get("odds") or [])
+                            for item in odds_payload if isinstance(item, dict)
+                        )
+                    odds_checked = True
+            except Exception:
+                pass
+
+    return {
+        "ok": True, "games_ok": True, "games_count": len(games),
+        "odds_checked": odds_checked, "odds_count": odds_count,
+        "message": (
+            f"SStats подключён: ключ подтверждён для {account_data.get('userName')}; "
+            f"расписание отвечает, ближайших матчей в тестовой выборке: {len(games)}; "
+            + (
+                f"в Odds найдены {odds_count} рынков/линий."
+                if odds_checked and odds_count
+                else "проверка Odds прошла, но в тестовом матче котировки не найдены."
+                if odds_checked
+                else "проверка полного Odds для тестового матча пока не подтверждена."
+            )
+        ),
+    }
+
+
+def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
+    """Load upcoming fixtures and compact 1X2/total odds in one SStats request."""
+    key = str(api_key or "").strip()
+    if not key:
+        if logs is not None:
+            logs.append("ℹ️ SStats: API-ключ SSTATS_API_KEY не задан")
+        return []
+    now, timezone_offset = _sstats_timezone()
+    horizon = max(1, min(30, int(days or 3)))
+    cache_key = (
+        f"sstats_upcoming_v1_{now.date().isoformat()}_{horizon}_"
+        f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+    )
+    cached = cache_get(cache_key, 900)
+    if cached is not None:
+        if logs is not None:
+            logs.append(f"SStats: использован кэш расписания ({len(cached)} матчей)")
+        return cached if isinstance(cached, list) else []
+
+    params = {
+        "From": now.date().isoformat(),
+        "To": (now.date() + timedelta(days=horizon)).isoformat(),
+        "Upcoming": "true",
+        "Limit": 1000,
+        "Offset": 0,
+        "TimeZone": timezone_offset,
+        "Order": 1,
+    }
+    try:
+        response = _sstats_request("Games/list", key, params=params, timeout=(5, 30))
+        if response.status_code != 200:
+            if logs is not None:
+                logs.append(f"⚠️ SStats /Games/list HTTP {response.status_code}")
+            return []
+        payload = response.json() or {}
+        records = _sstats_unwrap(payload)
+        if not isinstance(records, list):
+            if logs is not None:
+                logs.append("⚠️ SStats /Games/list: неожиданный формат data")
+            return []
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ SStats /Games/list: {type(exc).__name__}")
+        return []
+
+    rows = []
+    for game in records:
+        if not isinstance(game, dict):
+            continue
+        home_obj = game.get("homeTeam") or {}
+        away_obj = game.get("awayTeam") or {}
+        home = str(home_obj.get("name") or game.get("homeTeamName") or "").strip()
+        away = str(away_obj.get("name") or game.get("awayTeamName") or "").strip()
+        raw_date = str(game.get("date") or "")
+        if not home or not away or not raw_date:
+            continue
+        kickoff = parse_date(raw_date)
+        if not kickoff:
+            continue
+        if not (now.replace(tzinfo=None) - timedelta(minutes=5) <= kickoff.replace(tzinfo=None)
+                < now.replace(tzinfo=None) + timedelta(days=horizon)):
+            continue
+
+        league_obj = (game.get("season") or {}).get("league") or {}
+        league_name = str(
+            league_obj.get("name")
+            or game.get("leagueName")
+            or game.get("league")
+            or "SStats"
+        ).strip()
+        div = _sstats_div_code(league_name)
+        normalized = _sstats_parse_markets(game.get("odds") or [])
+        compact_1x2 = {
+            key: normalized[key]
+            for key in ("П1", "X", "П2")
+            if normalized.get(key) is not None
+        }
+        start_time = raw_date[11:16] if len(raw_date) >= 16 else ""
+        row = {
+            "Date": raw_date[:19],
+            "Time": start_time,
+            "HomeTeam": home,
+            "AwayTeam": away,
+            "Div": div,
+            "League": league_name,
+            "fixture_id": f"sstats:{game.get('id')}",
+            "sstats_game_id": game.get("id"),
+            "source": "sstats",
+            "odds_source": "sstats" if compact_1x2 else "no_market",
+            "market_odds": compact_1x2,
+            "total_market_odds": normalized.get("total_market_odds") or {},
+            "btts_market_odds": normalized.get("btts_market_odds") or {},
+            "stat_market_odds": normalized.get("stat_market_odds") or {},
+            "asian_handicap_market_odds": normalized.get("asian_handicap_market_odds") or {},
+            "total_odds_source": (
+                "sstats" if normalized.get("total_market_odds") else "no_market"
+            ),
+            "extra_market_source": (
+                "sstats"
+                if any(normalized.get(name) for name in (
+                    "total_market_odds", "btts_market_odds", "stat_market_odds",
+                    "asian_handicap_market_odds",
+                ))
+                else ""
+            ),
+            "sstats_status": game.get("status"),
+        }
+        rows.append(row)
+
+    # Deduplicate repeated records by kickoff date and ordered teams.
+    unique = {}
+    for row in rows:
+        key_tuple = (
+            str(row.get("Date") or "")[:10],
+            _norm_name(row.get("HomeTeam") or ""),
+            _norm_name(row.get("AwayTeam") or ""),
+        )
+        if key_tuple not in unique:
+            unique[key_tuple] = row
+            continue
+        current = unique[key_tuple]
+        current["total_market_odds"].update(row.get("total_market_odds") or {})
+        current["market_odds"].update(row.get("market_odds") or {})
+        current["btts_market_odds"].update(row.get("btts_market_odds") or {})
+        current["stat_market_odds"].update(row.get("stat_market_odds") or {})
+    rows = list(unique.values())
+    cache_put(cache_key, rows)
+    if logs is not None:
+        quoted = sum(bool(row.get("market_odds")) for row in rows)
+        totals = sum(bool(row.get("total_market_odds")) for row in rows)
+        logs.append(
+            f"✅ SStats: загружено {len(rows)} предстоящих матчей; "
+            f"1X2 у {quoted}, тоталы у {totals}."
+        )
+    return rows
+
+
+def _sstats_div_code(league_name: str) -> str:
+    """Map common SStats league labels to the model's historical division codes."""
+    name = str(league_name or "").casefold()
+    mappings = (
+        (("premier league", "premier league of england", "england premier"), "E0"),
+        (("championship", "england championship"), "E1"),
+        (("league one", "england league one"), "E2"),
+        (("league two", "england league two"), "E3"),
+        (("la liga", "primera division", "spain primera"), "SP1"),
+        (("segunda division", "la liga 2", "spain segunda"), "SP2"),
+        (("serie a", "italy serie a"), "I1"),
+        (("serie b", "italy serie b"), "I2"),
+        (("bundesliga", "germany bundesliga"), "D1"),
+        (("2. bundesliga", "2 bundesliga"), "D2"),
+        (("ligue 1", "france ligue 1"), "F1"),
+        (("ligue 2", "france ligue 2"), "F2"),
+        (("eredivisie", "netherlands eredivisie"), "N1"),
+        (("primeira liga", "portugal primeira"), "P1"),
+        (("jupiler pro league", "belgian pro league"), "B1"),
+        (("super lig", "turkey super lig"), "T1"),
+    )
+    for tokens, code in mappings:
+        if any(token in name for token in tokens):
+            return code
+    return "G"
+
+
+def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
+    """Fetch full prematch bookmaker markets for one SStats fixture."""
+    key = str(api_key or "").strip()
+    if not key or game_id in (None, ""):
+        return None
+    cache_key = (
+        f"sstats_full_odds_v1_{game_id}_"
+        f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+    )
+    cached = cache_get(cache_key, 1800)
+    if cached is not None:
+        return cached if isinstance(cached, dict) else None
+    try:
+        response = _sstats_request(
+            f"Odds/{game_id}", key, params={"opening": "false"}, timeout=(5, 25)
+        )
+        if response.status_code != 200:
+            if logs is not None:
+                logs.append(f"⚠️ SStats Odds/{game_id}: HTTP {response.status_code}")
+            return None
+        payload = response.json() or {}
+        data = _sstats_unwrap(payload)
+        if not isinstance(data, list):
+            return None
+        result = _sstats_parse_markets(data)
+        result["bookmakers"] = [
+            str(item.get("bookmakerName") or "")
+            for item in data
+            if isinstance(item, dict) and item.get("bookmakerName")
+        ]
+        market_count = sum(
+            len(result.get(group) or {})
+            for group in (
+                "total_market_odds", "btts_market_odds", "stat_market_odds",
+                "asian_handicap_market_odds",
+            )
+        ) + sum(key_name in result for key_name in ("П1", "X", "П2"))
+        cache_put(cache_key, result)
+        if logs is not None:
+            logs.append(
+                f"SStats Odds/{game_id}: {len(data)} букмекеров, "
+                f"{market_count} исходов/линий."
+            )
+        return result
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ SStats Odds/{game_id}: {type(exc).__name__}")
+        return None
