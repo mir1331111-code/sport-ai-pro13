@@ -133,7 +133,8 @@ class SStatsTests(unittest.TestCase):
             }],
         })
 
-        rows = sources.sstats_upcoming_matches(3, "do-not-log-this-key", [])
+        logs = []
+        rows = sources.sstats_upcoming_matches(3, "do-not-log-this-key", logs)
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["HomeTeam"], "Arsenal")
@@ -144,7 +145,7 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(rows[0]["total_market_odds"]["ТБ 2.5"], 1.92)
         params = request_mock.call_args.kwargs["params"]
         self.assertEqual(params["Upcoming"], "true")
-        self.assertNotIn("do-not-log-this-key", repr(request_mock.call_args))
+        self.assertNotIn("do-not-log-this-key", "\\n".join(logs))
         self.assertEqual(request_mock.call_args.args[0], "Games/list")
 
     @patch.object(sources, "_sstats_request")
