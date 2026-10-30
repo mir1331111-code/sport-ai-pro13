@@ -368,6 +368,13 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             st.caption("Коэффициенты букмекера именно для выбранного рынка: " + quote_text)
     elif market_filter in {"goals", "btts", "corners", "cards"}:
         st.caption("Highlightly не вернул цену именно для этого рынка; цены 1X2 не подставляются.")
+    asian_quotes = c.get("asian_handicap_market_odds") or {}
+    if asian_quotes:
+        asian_text = " · ".join(
+            f"{pick}: **{float(odd):.2f}**"
+            for pick, odd in sorted(asian_quotes.items())
+        )
+        st.caption("Азиатские форы Highlightly (информационно): " + asian_text)
 
     quoted_candidates = [
         (label, item[0], item[1], quote_for(item[0]))
@@ -1129,6 +1136,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             total_market_odds = dict(r.get("total_market_odds") or {})
             btts_market_odds = dict(r.get("btts_market_odds") or {})
             stat_market_odds = dict(r.get("stat_market_odds") or {})
+            asian_handicap_market_odds = dict(r.get("asian_handicap_market_odds") or {})
             total_odds_source = "highlightly" if total_market_odds else "no_market"
             extra_market_source = str(r.get("extra_market_source") or "")
             # Keep secondary-market quotes from verified providers and imported CSV/JSON.
@@ -1159,6 +1167,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 total_market_odds = dict(highlighted.get("total_market_odds") or {})
                                 btts_market_odds = dict(highlighted.get("btts_market_odds") or {})
                                 stat_market_odds = dict(highlighted.get("stat_market_odds") or {})
+                                asian_handicap_market_odds = dict(highlighted.get("asian_handicap_market_odds") or {})
                                 total_odds_source = "highlightly" if total_market_odds else "no_market"
                                 extra_market_source = "highlightly"
                         except Exception as exc:
@@ -1348,6 +1357,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "extra_market_source": extra_market_source,
                 "btts_market_odds": dict(btts_market_odds),
                 "stat_market_odds": dict(stat_market_odds),
+                "asian_handicap_market_odds": dict(asian_handicap_market_odds),
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
