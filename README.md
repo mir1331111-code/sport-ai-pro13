@@ -78,6 +78,14 @@ Configure `HIGHLIGHTLY_API_KEY` in the host environment or Streamlit Secrets, or
 
 Official reference: https://highlightly.net/football-api/documentation/ and https://highlightly.net/football-api/documentation/getting-started/pagination/
 
+## Free SStats.net football odds source
+
+The scanner can also use SStats.net with a free personal API key. Configure `SSTATS_API_KEY` in Streamlit Secrets or the sidebar. The scanner requests upcoming games through `/Games/list` and reads the compact match-level 1X2 and totals prices included in the game response. For up to 20 of the strongest home/away winner candidates per scan, it additionally requests `/Odds/{gameId}` to enrich the card with bookmaker-specific markets such as BTTS, totals, corners, cards, and handicap where supplied.
+
+The key is sent only as the documented `apikey` query parameter. It is kept out of logs, portfolio data, and Gist synchronization; UI-entered keys are stored in the private local secrets file. The API refreshes prematch match information approximately every three hours, so one daily scan is sufficient for this workflow but is not a live odds feed. A detailed card identifies the bookmaker for the selected outcome when the provider supplies that mapping. Compact match-list prices may not include bookmaker attribution.
+
+Official documentation: https://api.sstats.net/docs/
+
 ## Independent AI forecast and paired outcome tracking
 
 The LLM analyst now works blind to the primary model's selected outcome, probabilities, confidence, EV, and bookmaker line. It receives separate historical features calculated from observed same-venue team goals (home teams' recent home scoring/conceding averages; away teams' recent away scoring/conceding averages), sample sizes, and recent W/D/L form. The LLM returns its own 1X2 distribution; the app derives the displayed pick from the largest validated probability rather than trusting the LLM's label. The model-versus-AI disagreement is attached after the blind response and is not part of the LLM prompt or cached answer. Data quality is capped at low for fewer than five observed same-venue matches per team, otherwise at medium; the app has no verified lineup/news feed to justify a high-quality label.
