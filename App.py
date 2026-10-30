@@ -38,7 +38,7 @@ from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
-from data.sources import parse_date, fdorg_match_result  # noqa: E402
+from data.sources import parse_date, fdorg_match_result, highlightly_connection_check  # noqa: E402
 from betting.settlement import determine_outcome  # noqa: E402
 from ui import theme  # noqa: E402
 from ui.tabs import scanner, portfolio, stats, calculator, backtest  # noqa: E402
@@ -569,6 +569,18 @@ with st.sidebar:
         value=_api_key_default("highlightly_api_key", "HIGHLIGHTLY_API_KEY", "highlightly_api_key"),
         type="password", key="highlightly_api_key_input",
         help="Реальные prematch odds из Highlightly. На Free/Basic endpoint коэффициентов недоступен.")
+
+    if st.button("🔎 Проверить доступ к коэффициентам", key="check_highlightly_odds",
+                 use_container_width=True):
+        with st.spinner("Проверяю ключ и endpoint Highlightly /odds…"):
+            _highlightly_check = highlightly_connection_check(highlightly_key)
+        if _highlightly_check.get("ok"):
+            st.success(_highlightly_check.get("message", "Highlightly /odds доступен."))
+            st.caption(f"API host: {_highlightly_check.get('base', 'автовыбор')}")
+        elif _highlightly_check.get("matches_ok"):
+            st.warning(_highlightly_check.get("message", "Ключ работает, но доступ к коэффициентам не подтверждён."))
+        else:
+            st.error(_highlightly_check.get("message", "Не удалось проверить Highlightly."))
 
     st.markdown(
         "<div style='font-size:.72rem;color:#8b93a7;margin-top:14px;"
