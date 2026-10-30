@@ -57,11 +57,19 @@ SECRET_KEYS = ("fdorg_token", "highlightly_api_key", "llm_api_key")
 
 
 def _configured_secret(*keys):
+    """Read root Streamlit secrets and common nested API sections."""
     try:
         for key in keys:
             value = st.secrets.get(key, "")
             if value:
                 return str(value).strip()
+        for section_name in ("api", "apis", "secrets", "highlightly"):
+            section = st.secrets.get(section_name, {})
+            if hasattr(section, "get"):
+                for key in keys:
+                    value = section.get(key, "")
+                    if value:
+                        return str(value).strip()
     except Exception:
         pass
     return ""
