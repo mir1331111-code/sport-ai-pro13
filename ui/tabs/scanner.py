@@ -48,6 +48,14 @@ def _runtime_secret(session_key: str, *names: str) -> str:
             value = str(st.secrets.get(name, "") or "").strip()
             if value:
                 return value
+        # Also accept common nested layouts such as [api] or [highlightly].
+        for section_name in ("api", "apis", "secrets", "highlightly"):
+            section = st.secrets.get(section_name, {})
+            if hasattr(section, "get"):
+                for name in names:
+                    value = str(section.get(name, "") or "").strip()
+                    if value:
+                        return value
     except Exception:
         pass
     return ""
