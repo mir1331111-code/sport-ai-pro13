@@ -2559,7 +2559,7 @@ def _sstats_line(text):
 
 
 def _sstats_flat_bets(odds_payload):
-    """Accept both compact Game.odds and full bookmaker[] -> odds[] responses."""
+    """Yield (market, bookmaker) from compact Game.odds or full Odds response."""
     if isinstance(odds_payload, dict):
         odds_payload = odds_payload.get("data", odds_payload.get("odds", []))
     if not isinstance(odds_payload, list):
@@ -2569,18 +2569,23 @@ def _sstats_flat_bets(odds_payload):
             continue
         # Compact /Games/list response: item itself is ApiSaBet.
         if "marketName" in item or "marketId" in item:
-            yield item
+            yield item, ""
             continue
         # Detailed /Odds/{gameId} response: bookmaker object contains ApiSaBet[].
         nested = item.get("odds")
+        bookmaker = str(item.get("bookmakerName") or "").strip()
         if isinstance(nested, list):
             for bet in nested:
                 if isinstance(bet, dict):
-                    yield bet
+                    yield bet, bookmaker
 
 
 def _sstats_parse_markets(odds_payload):
-    """Normalize SStats marketName + Price(name,value) records to app market keys."""
+    """Normalize SStats marketName + Price(name,value) records to app market keys.
+
+    For detailed bookmaker responses, bookmaker_by_pick records the bookmaker
+    offering the selected best decimal price. Compact fixtures may not include it.
+    """
     prices = {
         "П1": [], "X": [], "П2": [],
         "total_market_odds": {},
@@ -2588,7 +2593,18 @@ def _sstats_parse_markets(odds_payload):
         "stat_market_odds": {},
         "asian_handicap_market_odds": {},
     }
-    for bet in _sstats_flat_bets(odds_payload):
+    bookmaker_by_pick = {}
+
+    def _record(selection, odd, bookmaker, group=None):
+        target = prices[group] if group else prices
+        values = target.setdefault(selection, []) if group else target[selection]
+        values.append(odd)
+        if bookmaker:
+            best = max(values)
+            if odd >= best:
+                bookmaker_by_pick[selection] = bookmaker
+
+    for bet, bookmaker in _sstats_flat_bets(odds_payload):
         market_name = str(bet.get("marketName") or bet.get("name") or "").strip()
         market = market_name.casefold()
         price_rows = bet.get("odds") or bet.get("values") or bet.get("outcomes") or []
@@ -2611,19 +2627,19 @@ def _sstats_parse_markets(odds_payload):
             ))
             if is_1x2:
                 if label_norm in ("1", "home", "home win", "п1", "1 (home)"):
-                    prices["П1"].append(odd)
+                    _record("П1", odd, bookmaker)
                 elif label_norm in ("x", "х", "draw", "tie", "ничья"):
-                    prices["X"].append(odd)
+                    _record("X", odd, bookmaker)
                 elif label_norm in ("2", "away", "away win", "п2", "2 (away)"):
-                    prices["П2"].append(odd)
+                    _record("П2", odd, bookmaker)
                 continue
 
             # Both teams to score.
             if any(term in market for term in ("both teams", "btts", "обе заб", "обе команды забьют")):
                 if label_norm in ("yes", "да", "both", "true"):
-                    prices["btts_market_odds"].setdefault("BTTS Да", []).append(odd)
+                    _record("BTTS Да", odd, bookmaker, "btts_market_odds")
                 elif label_norm in ("no", "нет", "false"):
-                    prices["btts_market_odds"].setdefault("BTTS Нет", []).append(odd)
+                    _record("BTTS Нет", odd, bookmaker, "btts_market_odds")
                 continue
 
             # Totals, including corners/cards; the line may be encoded in either
@@ -2643,13 +2659,13 @@ def _sstats_parse_markets(odds_payload):
                 line_text = f"{line:g}"
                 if any(term in market for term in ("corner", "corners", "углов")):
                     key = ("Угл ТБ " if is_over else "Угл ТМ ") + line_text
-                    prices["stat_market_odds"].setdefault(key, []).append(odd)
+                    _record(key, odd, bookmaker, "stat_market_odds")
                 elif any(term in market for term in ("card", "booking", "карточ")):
                     key = ("Карты ТБ " if is_over else "Карты ТМ ") + line_text
-                    prices["stat_market_odds"].setdefault(key, []).append(odd)
+                    _record(key, odd, bookmaker, "stat_market_odds")
                 elif any(term in market for term in ("total", "goal", "over/under", "тотал", "гол")):
                     key = ("ТБ " if is_over else "ТМ ") + line_text
-                    prices["total_market_odds"].setdefault(key, []).append(odd)
+                    _record(key, odd, bookmaker, "total_market_odds")
                 continue
 
             # Asian/European handicap — kept separately; never treated as 1X2.
@@ -2663,13 +2679,14 @@ def _sstats_parse_markets(odds_payload):
                     key = f"Ф2 {line:g}"
                 else:
                     continue
-                prices["asian_handicap_market_odds"].setdefault(key, []).append(odd)
+                _record(key, odd, bookmaker, "asian_handicap_market_odds")
 
     result = {
         "total_market_odds": {},
         "btts_market_odds": {},
         "stat_market_odds": {},
         "asian_handicap_market_odds": {},
+        "bookmaker_by_pick": bookmaker_by_pick,
         "extra_market_source": "sstats",
         "source": "sstats",
     }
