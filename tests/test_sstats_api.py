@@ -90,6 +90,8 @@ class SStatsTests(unittest.TestCase):
             self.assertEqual(result["stat_market_odds"]["Угл ТБ 9.5"], 1.88)
             self.assertEqual(result["stat_market_odds"]["Карты ТМ 4.5"], 1.95)
             self.assertEqual(result["source"], "sstats")
+        self.assertEqual(detailed_result["bookmaker_by_pick"]["П1"], "Example bookmaker")
+        self.assertEqual(detailed_result["bookmaker_by_pick"]["ТБ 2.5"], "Example bookmaker")
 
     @patch.object(sources, "_sstats_request")
     @patch.object(sources, "_sstats_timezone")
