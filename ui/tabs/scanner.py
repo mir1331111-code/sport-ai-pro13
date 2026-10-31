@@ -1483,6 +1483,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 chosen_verdict, best = best_value_market(
                     verdict, rows_, market_odds, D["bank"], kelly_frac,
                     min_prob, min_edge=max(min_edge, 0.05), min_ev=0.05,
+                    bookmaker_by_pick=bookmaker_by_pick,
                 )
                 if best is not None:
                     verdict = chosen_verdict
@@ -1773,7 +1774,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not 0.0 < over_p < 1.0:
                     continue
                 odds_by_pick = card.get("total_market_odds") or {}
-                no_vig_total = proportional_devig(odds_by_pick, ("ТБ 2.5", "ТМ 2.5"))
+                no_vig_total = proportional_devig(
+                    odds_by_pick, ("ТБ 2.5", "ТМ 2.5"),
+                    bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
+                )
                 for pick, model_p in (("ТБ 2.5", over_p), ("ТМ 2.5", 1.0 - over_p)):
                     match_key = (str(card.get("match") or ""), pick)
                     if pick not in odds_by_pick or match_key in existing_keys:
@@ -1826,7 +1830,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not 0.0 < btts_p < 1.0:
                     continue
                 odds_by_pick = card.get("btts_market_odds") or {}
-                no_vig_btts = proportional_devig(odds_by_pick, ("BTTS Да", "BTTS Нет"))
+                no_vig_btts = proportional_devig(
+                    odds_by_pick, ("BTTS Да", "BTTS Нет"),
+                    bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
+                )
                 for pick, model_p in (("BTTS Да", btts_p), ("BTTS Нет", 1.0 - btts_p)):
                     match_key = (str(card.get("match") or ""), pick)
                     if pick not in odds_by_pick or match_key in existing_keys:
