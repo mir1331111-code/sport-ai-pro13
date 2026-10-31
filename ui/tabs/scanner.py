@@ -1229,34 +1229,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 try:
                     candidates = []
 
-                    # Highlightly is optional; free/public providers and imported quotes are fallbacks.
-                    if highlightly_key and not market_odds:
-                        funnel_counts["market_req"] += 1
-                        try:
-                            highlighted = highlightly_odds_fixture(
-                                d.strftime("%Y-%m-%d"), h_en, a_en, highlightly_key, logs
-                            )
-                            if isinstance(highlighted, dict):
-                                if all(key in highlighted for key in ("П1", "X", "П2")):
-                                    candidates.append((highlighted.get("source", "highlightly"), highlighted))
-                                    market_odds = {key: highlighted[key] for key in ("П1", "X", "П2")}
-                                    odds_source = highlighted.get("source", "highlightly")
-                                # Merge market groups rather than replacing SStats lines
-                                # which Highlightly may not cover for this fixture.
-                                total_market_odds.update(highlighted.get("total_market_odds") or {})
-                                btts_market_odds.update(highlighted.get("btts_market_odds") or {})
-                                stat_market_odds.update(highlighted.get("stat_market_odds") or {})
-                                asian_handicap_market_odds.update(highlighted.get("asian_handicap_market_odds") or {})
-                                if highlighted.get("total_market_odds"):
-                                    total_odds_source = "highlightly"
-                                if any(highlighted.get(name) for name in (
-                                    "total_market_odds", "btts_market_odds",
-                                    "stat_market_odds", "asian_handicap_market_odds"
-                                )):
-                                    extra_market_source = "highlightly"
-                        except Exception as exc:
-                            logs.append(f"⚠️ Highlightly lookup failed: {type(exc).__name__}: {str(exc)[:120]}")
-
                     # Detailed SStats bookmaker markets for a bounded shortlist of fixtures.
                     # Do not gate API lookup on model probability: that previously meant
                     # zero real prices were fetched whenever every team probability was < 58%.
@@ -1317,6 +1289,56 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 "stat_market_odds", "asian_handicap_market_odds"
                             )):
                                 extra_market_source = "sstats"
+
+                    # Highlightly is a reserve source: consult it only when SStats did not
+                    # provide a complete 1X2 market for this exact fixture.
+                    has_complete_1x2 = all(key in market_odds for key in ("П1", "X", "П2"))
+                    if highlightly_key and not has_complete_1x2:
+                        funnel_counts["market_req"] += 1
+                        try:
+                            highlighted = highlightly_odds_fixture(
+                                d.strftime("%Y-%m-%d"), h_en, a_en, highlightly_key, logs
+                            )
+                            if isinstance(highlighted, dict):
+                                highlighted_1x2 = {
+                                    key: highlighted[key]
+                                    for key in ("П1", "X", "П2")
+                                    if highlighted.get(key) is not None
+                                }
+                                if all(key in highlighted_1x2 for key in ("П1", "X", "П2")):
+                                    market_odds = highlighted_1x2
+                                    odds_source = "highlightly_fallback"
+                                    bookmaker_by_pick.update(highlighted.get("bookmaker_by_pick") or {})
+                                    logs.append(
+                                        f"🛟 Highlightly резерв: использованы коэффициенты 1X2 для {h_ru} — {a_ru}; "
+                                        "полной линии SStats нет."
+                                    )
+                                # Secondary markets are strictly a fallback too: preserve
+                                # SStats prices and fill only market/line keys it did not return.
+                                for group_name, target in (
+                                    ("total_market_odds", total_market_odds),
+                                    ("btts_market_odds", btts_market_odds),
+                                    ("stat_market_odds", stat_market_odds),
+                                    ("asian_handicap_market_odds", asian_handicap_market_odds),
+                                ):
+                                    incoming = highlighted.get(group_name) or {}
+                                    if not isinstance(incoming, dict):
+                                        continue
+                                    missing = {
+                                        key: value for key, value in incoming.items()
+                                        if key not in target
+                                    }
+                                    target.update(missing)
+                                    if missing:
+                                        if group_name == "total_market_odds" and not total_odds_source:
+                                            total_odds_source = "highlightly_fallback"
+                                        if not extra_market_source:
+                                            extra_market_source = "highlightly_fallback"
+                        except Exception as exc:
+                            logs.append(
+                                f"⚠️ Highlightly резервный запрос не сработал: "
+                                f"{type(exc).__name__}: {str(exc)[:120]}"
+                            )
 
                     # Fallback: Prognozist/Marathon real 1X2 line, using strict team and date matching.
                     # This runs when Highlightly is unavailable or has no line for this fixture.
