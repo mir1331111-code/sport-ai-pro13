@@ -1216,6 +1216,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             total_odds_source = str(
                 r.get("total_odds_source") or ("sstats" if total_market_odds else "no_market")
             )
+            btts_odds_source = str(
+                r.get("btts_odds_source") or ("sstats" if btts_market_odds else "no_market")
+            )
             extra_market_source = str(r.get("extra_market_source") or "")
             # Keep secondary-market quotes from verified providers and imported CSV/JSON.
             # Only accept prices explicitly attached to this fixture and market/line.
@@ -1284,6 +1287,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                         continue
                             if detailed.get("total_market_odds"):
                                 total_odds_source = "sstats"
+                            if detailed.get("btts_market_odds"):
+                                btts_odds_source = "sstats"
                             if any(detailed.get(name) for name in (
                                 "total_market_odds", "btts_market_odds",
                                 "stat_market_odds", "asian_handicap_market_odds"
@@ -1332,6 +1337,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     if missing:
                                         if group_name == "total_market_odds" and total_odds_source in ("", "no_market"):
                                             total_odds_source = "highlightly_fallback"
+                                        if group_name == "btts_market_odds" and btts_odds_source in ("", "no_market"):
+                                            btts_odds_source = "highlightly_fallback"
                                         if not extra_market_source:
                                             extra_market_source = "highlightly_fallback"
                         except Exception as exc:
@@ -1422,6 +1429,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                                              if k.startswith("BTTS ")})
                                     stat_market_odds.update({k: v for k, v in valid_imported.items()
                                                              if k.startswith(("Угл ", "Карты "))})
+                                    if total_market_odds:
+                                        total_odds_source = "manual_import"
+                                    if btts_market_odds:
+                                        btts_odds_source = "manual_import"
                                     if total_market_odds or btts_market_odds or stat_market_odds:
                                         extra_market_source = "manual_import"
                                     logs.append(
@@ -1531,6 +1542,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "bookmaker_by_pick": dict(bookmaker_by_pick),
                 "total_market_odds": dict(total_market_odds),
                 "total_odds_source": total_odds_source if total_market_odds else (str(r.get("extra_market_source") or "") if r.get("total_market_odds") else total_odds_source),
+                "btts_odds_source": btts_odds_source if btts_market_odds else "no_market",
                 "extra_market_source": extra_market_source,
                 "btts_market_odds": dict(btts_market_odds),
                 "stat_market_odds": dict(stat_market_odds),
@@ -1798,11 +1810,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     logs.append("AUTO-TOTALS: " + str(card.get("match_ru") or card.get("match") or "") + " | " + pick + " @ " + format(odd, ".2f"))
 
         # BTTS is eligible only with an exact-market quote from a trusted source.
-        # Unlike totals, it is not auto-added until a separate historical validation gate exists;
-        # value/EV/edge and bankroll safety filters still apply.
+        # It uses stricter probability, edge, EV, and fractional-Kelly bankroll gates.
         if auto_add:
             for card in cards:
-                extra_source = str(card.get("extra_market_source") or "").casefold()
+                extra_source = str(card.get("btts_odds_source") or "").casefold()
                 if extra_source not in {"sstats", "highlightly_fallback", "highlightly", "manual_import"}:
                     continue
                 try:
