@@ -33,7 +33,7 @@ This review compares public repositories for methodology and reproducible evalua
 1. Run python -m compileall -q .
 2. Run python -m unittest discover -s tests -v.
 3. Compare the existing engine and candidate configuration on identical walk-forward fixtures using log loss, Brier score, RPS, and confidence intervals.
-4. Check 1X2, O/U 2.5 and BTTS separately; keep markets disabled for automatic portfolio entry unless their own out-of-sample validation gates pass.
+4. Check 1X2, O/U 2.5 and BTTS separately. The current BTTS path is prospective virtual/paper-trading only: a dedicated historical BTTS calibration and model-vs-market validation gate has not yet been implemented, so it is experimental and must not be treated as validated betting advice.
 5. Verify the odds-source metadata and actual API coverage in the deployed app. GitHub CI cannot validate provider credentials or live feed coverage.
 
 ## References
