@@ -259,6 +259,8 @@ def refine_with_real_odds(
     kelly_frac: float,
     min_edge: float = 0.03,
     min_ev: float = 0.03,
+    *,
+    market_fair_prob: float | None = None,
 ):
     """
     Превращает model candidate в реальный betting signal.
@@ -332,18 +334,37 @@ def refine_with_real_odds(
 
     model_prob = float(verdict["prob"])
     market_implied = 1.0 / real_odd
-    # Conservative single-price blend: raw implied probability includes margin,
-    # so it is not described as de-vigged. Blend weight is fixed pending OOF fit.
-    prob = max(1e-6, min(1.0 - 1e-6,
-                         market_implied + 0.40 * (model_prob - market_implied)))
+    # If the complete same-bookmaker 1X2 line is available, blend toward its
+    # proportional no-vig probability. Otherwise retain the conservative
+    # single-price implied-probability fallback.
+    try:
+        fair_prob = float(market_fair_prob)
+        if not 0.0 < fair_prob < 1.0:
+            fair_prob = market_implied
+            fair_prob_source = "single_price_raw_implied"
+        else:
+            fair_prob_source = "complete_market_proportional_devig"
+    except (TypeError, ValueError):
+        fair_prob = market_implied
+        fair_prob_source = "single_price_raw_implied"
 
-    market_edge = edge(prob, real_odd)
+    prob = max(1e-6, min(1.0 - 1e-6,
+                         fair_prob + 0.40 * (model_prob - fair_prob)))
+    # Edge is measured against the no-vig benchmark when available; EV is
+    # always measured against the actual executable decimal price.
+    market_edge = prob - fair_prob
     ev = expected_value(prob, real_odd)
 
     verdict["model_prob"] = model_prob
     verdict["market_implied_raw"] = market_implied
+    verdict["market_fair_prob"] = fair_prob
+    verdict["market_fair_prob_source"] = fair_prob_source
     verdict["prob"] = prob
-    verdict["probability_method"] = "market_blend_0.4_model_delta"
+    verdict["probability_method"] = (
+        "market_blend_0.4_model_delta_devig"
+        if fair_prob_source == "complete_market_proportional_devig"
+        else "market_blend_0.4_model_delta"
+    )
     verdict["odd"] = real_odd
     verdict["real_odds"] = True
     verdict["edge"] = market_edge

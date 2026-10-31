@@ -25,6 +25,7 @@ from model.engine import Engine
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
 from betting.kelly import kelly, market_type
+from betting.market_math import blend_probability, proportional_devig
 from llm.analyst import analyze_match
 from model.independent_forecasts import historical_features, record_scan_forecasts
 from ui.cards import (render_verdict_card, translate_team,
@@ -1216,6 +1217,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             total_odds_source = str(
                 r.get("total_odds_source") or ("sstats" if total_market_odds else "no_market")
             )
+            btts_odds_source = str(
+                r.get("btts_odds_source") or ("sstats" if btts_market_odds else "no_market")
+            )
             extra_market_source = str(r.get("extra_market_source") or "")
             # Keep secondary-market quotes from verified providers and imported CSV/JSON.
             # Only accept prices explicitly attached to this fixture and market/line.
@@ -1228,34 +1232,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if rows_ is not None:
                 try:
                     candidates = []
-
-                    # Highlightly is optional; free/public providers and imported quotes are fallbacks.
-                    if highlightly_key and not market_odds:
-                        funnel_counts["market_req"] += 1
-                        try:
-                            highlighted = highlightly_odds_fixture(
-                                d.strftime("%Y-%m-%d"), h_en, a_en, highlightly_key, logs
-                            )
-                            if isinstance(highlighted, dict):
-                                if all(key in highlighted for key in ("П1", "X", "П2")):
-                                    candidates.append((highlighted.get("source", "highlightly"), highlighted))
-                                    market_odds = {key: highlighted[key] for key in ("П1", "X", "П2")}
-                                    odds_source = highlighted.get("source", "highlightly")
-                                # Merge market groups rather than replacing SStats lines
-                                # which Highlightly may not cover for this fixture.
-                                total_market_odds.update(highlighted.get("total_market_odds") or {})
-                                btts_market_odds.update(highlighted.get("btts_market_odds") or {})
-                                stat_market_odds.update(highlighted.get("stat_market_odds") or {})
-                                asian_handicap_market_odds.update(highlighted.get("asian_handicap_market_odds") or {})
-                                if highlighted.get("total_market_odds"):
-                                    total_odds_source = "highlightly"
-                                if any(highlighted.get(name) for name in (
-                                    "total_market_odds", "btts_market_odds",
-                                    "stat_market_odds", "asian_handicap_market_odds"
-                                )):
-                                    extra_market_source = "highlightly"
-                        except Exception as exc:
-                            logs.append(f"⚠️ Highlightly lookup failed: {type(exc).__name__}: {str(exc)[:120]}")
 
                     # Detailed SStats bookmaker markets for a bounded shortlist of fixtures.
                     # Do not gate API lookup on model probability: that previously meant
@@ -1312,15 +1288,69 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                         continue
                             if detailed.get("total_market_odds"):
                                 total_odds_source = "sstats"
+                            if detailed.get("btts_market_odds"):
+                                btts_odds_source = "sstats"
                             if any(detailed.get(name) for name in (
                                 "total_market_odds", "btts_market_odds",
                                 "stat_market_odds", "asian_handicap_market_odds"
                             )):
                                 extra_market_source = "sstats"
 
+                    # Highlightly is a reserve source: consult it only when SStats did not
+                    # provide a complete 1X2 market for this exact fixture.
+                    has_complete_1x2 = all(key in market_odds for key in ("П1", "X", "П2"))
+                    if highlightly_key and not has_complete_1x2:
+                        funnel_counts["market_req"] += 1
+                        try:
+                            highlighted = highlightly_odds_fixture(
+                                d.strftime("%Y-%m-%d"), h_en, a_en, highlightly_key, logs
+                            )
+                            if isinstance(highlighted, dict):
+                                highlighted_1x2 = {
+                                    key: highlighted[key]
+                                    for key in ("П1", "X", "П2")
+                                    if highlighted.get(key) is not None
+                                }
+                                if all(key in highlighted_1x2 for key in ("П1", "X", "П2")):
+                                    market_odds = highlighted_1x2
+                                    odds_source = "highlightly_fallback"
+                                    bookmaker_by_pick.update(highlighted.get("bookmaker_by_pick") or {})
+                                    logs.append(
+                                        f"🛟 Highlightly резерв: использованы коэффициенты 1X2 для {h_ru} — {a_ru}; "
+                                        "полной линии SStats нет."
+                                    )
+                                # Secondary markets are strictly a fallback too: preserve
+                                # SStats prices and fill only market/line keys it did not return.
+                                for group_name, target in (
+                                    ("total_market_odds", total_market_odds),
+                                    ("btts_market_odds", btts_market_odds),
+                                    ("stat_market_odds", stat_market_odds),
+                                    ("asian_handicap_market_odds", asian_handicap_market_odds),
+                                ):
+                                    incoming = highlighted.get(group_name) or {}
+                                    if not isinstance(incoming, dict):
+                                        continue
+                                    missing = {
+                                        key: value for key, value in incoming.items()
+                                        if key not in target
+                                    }
+                                    target.update(missing)
+                                    if missing:
+                                        if group_name == "total_market_odds" and total_odds_source in ("", "no_market"):
+                                            total_odds_source = "highlightly_fallback"
+                                        if group_name == "btts_market_odds" and btts_odds_source in ("", "no_market"):
+                                            btts_odds_source = "highlightly_fallback"
+                                        if not extra_market_source:
+                                            extra_market_source = "highlightly_fallback"
+                        except Exception as exc:
+                            logs.append(
+                                f"⚠️ Highlightly резервный запрос не сработал: "
+                                f"{type(exc).__name__}: {str(exc)[:120]}"
+                            )
+
                     # Fallback: Prognozist/Marathon real 1X2 line, using strict team and date matching.
                     # This runs when Highlightly is unavailable or has no line for this fixture.
-                    if not market_odds:
+                    if not all(key in market_odds for key in ("П1", "X", "П2")):
                         try:
                             marathon_line = marathon_odds(
                                 h_en, a_en, d.strftime("%Y-%m-%d"), lg
@@ -1345,7 +1375,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             logs.append(f"⚠️ Prognozist/Marathon: {type(exc).__name__}: {str(exc)[:100]}")
 
                     # Imported CSV/JSON quote: match by normalized teams and date.
-                    if not market_odds:
+                    if not all(key in market_odds for key in ("П1", "X", "П2")):
                         def _team_key(value):
                             # Ignore punctuation, accents and common club prefixes.
                             import unicodedata
@@ -1400,6 +1430,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                                              if k.startswith("BTTS ")})
                                     stat_market_odds.update({k: v for k, v in valid_imported.items()
                                                              if k.startswith(("Угл ", "Карты "))})
+                                    if total_market_odds:
+                                        total_odds_source = "manual_import"
+                                    if btts_market_odds:
+                                        btts_odds_source = "manual_import"
                                     if total_market_odds or btts_market_odds or stat_market_odds:
                                         extra_market_source = "manual_import"
                                     logs.append(
@@ -1449,6 +1483,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 chosen_verdict, best = best_value_market(
                     verdict, rows_, market_odds, D["bank"], kelly_frac,
                     min_prob, min_edge=max(min_edge, 0.05), min_ev=0.05,
+                    bookmaker_by_pick=bookmaker_by_pick,
                 )
                 if best is not None:
                     verdict = chosen_verdict
@@ -1509,6 +1544,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "bookmaker_by_pick": dict(bookmaker_by_pick),
                 "total_market_odds": dict(total_market_odds),
                 "total_odds_source": total_odds_source if total_market_odds else (str(r.get("extra_market_source") or "") if r.get("total_market_odds") else total_odds_source),
+                "btts_odds_source": btts_odds_source if btts_market_odds else "no_market",
                 "extra_market_source": extra_market_source,
                 "btts_market_odds": dict(btts_market_odds),
                 "stat_market_odds": dict(stat_market_odds),
@@ -1738,6 +1774,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not 0.0 < over_p < 1.0:
                     continue
                 odds_by_pick = card.get("total_market_odds") or {}
+                no_vig_total = proportional_devig(
+                    odds_by_pick, ("ТБ 2.5", "ТМ 2.5"),
+                    bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
+                )
                 for pick, model_p in (("ТБ 2.5", over_p), ("ТМ 2.5", 1.0 - over_p)):
                     match_key = (str(card.get("match") or ""), pick)
                     if pick not in odds_by_pick or match_key in existing_keys:
@@ -1747,8 +1787,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         if not 1.01 < odd <= 100:
                             continue
                         implied = 1.0 / odd
-                        prob = max(1e-6, min(1.0 - 1e-6, implied + 0.40 * (model_p - implied)))
-                        edge_value = prob - implied
+                        fair_market_p = (no_vig_total or {}).get(pick, implied)
+                        prob = blend_probability(model_p, fair_market_p, 0.40)
+                        edge_value = prob - fair_market_p
                         ev_value = prob * odd - 1.0
                         stake = kelly(prob, odd, available_bank, kelly_frac, cap=0.02)
                     except (TypeError, ValueError, ZeroDivisionError):
@@ -1762,7 +1803,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "div": card.get("div", ""), "league": card.get("league", ""),
                         "market": "OU", "pick": pick, "odds": odd, "stake": stake,
                         "prob": prob, "model_prob": model_p, "market_implied_raw": implied,
-                        "probability_method": "market_blend_0.4_model_delta",
+                        "probability_method": "market_blend_0.4_model_delta_devig" if no_vig_total else "market_blend_0.4_model_delta",
                         "status": "pending", "strat": "scanner_auto_totals",
                         "odds_source": card.get("total_odds_source", "highlightly"), "mode": "real",
                         "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
@@ -1774,6 +1815,62 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     available_bank -= stake
                     total_stake += stake
                     logs.append("AUTO-TOTALS: " + str(card.get("match_ru") or card.get("match") or "") + " | " + pick + " @ " + format(odd, ".2f"))
+
+        # BTTS is eligible only with an exact-market quote from a trusted source.
+        # It uses stricter probability, edge, EV, and fractional-Kelly bankroll gates.
+        if auto_add:
+            for card in cards:
+                extra_source = str(card.get("btts_odds_source") or "").casefold()
+                if extra_source not in {"sstats", "highlightly_fallback", "highlightly", "manual_import"}:
+                    continue
+                try:
+                    btts_p = float(card.get("btts"))
+                except (TypeError, ValueError):
+                    continue
+                if not 0.0 < btts_p < 1.0:
+                    continue
+                odds_by_pick = card.get("btts_market_odds") or {}
+                no_vig_btts = proportional_devig(
+                    odds_by_pick, ("BTTS Да", "BTTS Нет"),
+                    bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
+                )
+                for pick, model_p in (("BTTS Да", btts_p), ("BTTS Нет", 1.0 - btts_p)):
+                    match_key = (str(card.get("match") or ""), pick)
+                    if pick not in odds_by_pick or match_key in existing_keys:
+                        continue
+                    try:
+                        odd = float(odds_by_pick[pick])
+                        if not 1.01 < odd <= 100:
+                            continue
+                        implied = 1.0 / odd
+                        fair_market_p = (no_vig_btts or {}).get(pick, implied)
+                        prob = blend_probability(model_p, fair_market_p, 0.40)
+                        edge_value = prob - fair_market_p
+                        ev_value = prob * odd - 1.0
+                        stake = kelly(prob, odd, available_bank, kelly_frac, cap=0.02)
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        continue
+                    if (prob < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB)
+                            or edge_value < float(min_edge) or ev_value < 0.03
+                            or stake <= 0 or stake > available_bank):
+                        continue
+                    new_bets.append({
+                        "match": card.get("match", ""), "match_ru": card.get("match_ru", card.get("match", "")),
+                        "div": card.get("div", ""), "league": card.get("league", ""),
+                        "market": "BTTS", "pick": pick, "odds": odd, "stake": stake,
+                        "prob": prob, "model_prob": model_p, "market_implied_raw": implied,
+                        "probability_method": "market_blend_0.4_model_delta_devig" if no_vig_btts else "market_blend_0.4_model_delta",
+                        "status": "pending", "strat": "scanner_auto_btts",
+                        "odds_source": extra_source, "mode": "real",
+                        "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
+                        "date_iso": card.get("date_iso"), "match_time": card.get("time", ""),
+                        "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "fixture_id": card.get("fixture_id"), "score": None, "ev": ev_value,
+                    })
+                    existing_keys.add(match_key)
+                    available_bank -= stake
+                    total_stake += stake
+                    logs.append("AUTO-BTTS: " + str(card.get("match_ru") or card.get("match") or "") + " | " + pick + " @ " + format(odd, ".2f"))
 
         D2 = dict(D)
         D2["cards"] = cards

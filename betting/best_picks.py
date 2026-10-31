@@ -4,11 +4,13 @@ from __future__ import annotations
 from copy import deepcopy
 from betting.verdict import refine_with_real_odds
 from betting.kelly import market_type
+from betting.market_math import proportional_devig
 
 
 def best_value_market(verdict: dict, rows: list, market_odds: dict | None,
                       bank: float, kelly_frac: float, min_prob: float,
-                      *, min_edge: float = 0.03, min_ev: float = 0.03):
+                      *, min_edge: float = 0.03, min_ev: float = 0.03,
+                      bookmaker_by_pick: dict | None = None):
     """Return (candidate_verdict, best_tuple) for the strongest qualified real-price market.
 
     Never treats model fair odds as bookmaker prices. A candidate must have a
@@ -19,6 +21,10 @@ def best_value_market(verdict: dict, rows: list, market_odds: dict | None,
         return None, None
 
     qualified = []
+    # Never de-vig a partial line or combine outcomes from different markets.
+    no_vig_1x2 = proportional_devig(
+        market_odds, ("П1", "X", "П2"), bookmaker_by_pick=bookmaker_by_pick
+    )
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -52,6 +58,7 @@ def best_value_market(verdict: dict, rows: list, market_odds: dict | None,
         refined, best = refine_with_real_odds(
             candidate, [dict(row)], {pick: odd}, bank, kelly_frac,
             min_edge=min_edge, min_ev=min_ev,
+            market_fair_prob=(no_vig_1x2 or {}).get(pick),
         )
         if (not best or not refined.get("value_passed")
                 or float(refined.get("prob") or 0.0) < float(min_prob)):
