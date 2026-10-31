@@ -1330,7 +1330,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     }
                                     target.update(missing)
                                     if missing:
-                                        if group_name == "total_market_odds" and not total_odds_source:
+                                        if group_name == "total_market_odds" and total_odds_source in ("", "no_market"):
                                             total_odds_source = "highlightly_fallback"
                                         if not extra_market_source:
                                             extra_market_source = "highlightly_fallback"
@@ -1342,7 +1342,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
                     # Fallback: Prognozist/Marathon real 1X2 line, using strict team and date matching.
                     # This runs when Highlightly is unavailable or has no line for this fixture.
-                    if not market_odds:
+                    if not all(key in market_odds for key in ("П1", "X", "П2")):
                         try:
                             marathon_line = marathon_odds(
                                 h_en, a_en, d.strftime("%Y-%m-%d"), lg
@@ -1367,7 +1367,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             logs.append(f"⚠️ Prognozist/Marathon: {type(exc).__name__}: {str(exc)[:100]}")
 
                     # Imported CSV/JSON quote: match by normalized teams and date.
-                    if not market_odds:
+                    if not all(key in market_odds for key in ("П1", "X", "П2")):
                         def _team_key(value):
                             # Ignore punctuation, accents and common club prefixes.
                             import unicodedata
