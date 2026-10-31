@@ -9,12 +9,26 @@ import math
 from collections.abc import Mapping, Sequence
 
 
-def proportional_devig(odds: Mapping[str, float], picks: Sequence[str]) -> dict[str, float] | None:
-    """Convert a complete set of decimal odds to proportional no-vig probabilities.
+def proportional_devig(
+    odds: Mapping[str, float],
+    picks: Sequence[str],
+    *,
+    bookmaker_by_pick: Mapping[str, str] | None = None,
+) -> dict[str, float] | None:
+    """Convert a complete, single-bookmaker line to proportional no-vig probabilities.
 
-    Returns None rather than inventing missing prices or normalizing a partial line.
+    A set of best prices assembled across different bookmakers is not a coherent
+    market line. Without bookmaker provenance for every outcome, fail closed.
     """
-    if not isinstance(odds, Mapping) or not picks:
+    if not isinstance(odds, Mapping) or not picks or not isinstance(bookmaker_by_pick, Mapping):
+        return None
+    bookmakers = []
+    for pick in picks:
+        bookmaker = str(bookmaker_by_pick.get(pick) or "").strip().casefold()
+        if not bookmaker:
+            return None
+        bookmakers.append(bookmaker)
+    if len(set(bookmakers)) != 1:
         return None
     implied: dict[str, float] = {}
     for pick in picks:
