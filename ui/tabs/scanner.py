@@ -25,6 +25,7 @@ from model.engine import Engine
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
 from betting.kelly import kelly, market_type
+from betting.market_math import blend_probability, proportional_devig
 from llm.analyst import analyze_match
 from model.independent_forecasts import historical_features, record_scan_forecasts
 from ui.cards import (render_verdict_card, translate_team,
@@ -544,7 +545,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                     "odds": manual_odd, "stake": stake,
                     "prob": prob, "model_prob": model_prob,
                     "market_implied_raw": market_implied,
-                    "probability_method": "market_blend_0.4_model_delta",
+                    "probability_method": "market_blend_0.4_model_delta_devig" if no_vig_total else "market_blend_0.4_model_delta",
                     "status": "pending", "strat": "scanner_auto_recommendation",
                     "odds_source": str((c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"} else c.get("odds_source")) or "Highlightly"),
                     "mode": "real",
@@ -1772,6 +1773,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not 0.0 < over_p < 1.0:
                     continue
                 odds_by_pick = card.get("total_market_odds") or {}
+                no_vig_total = proportional_devig(odds_by_pick, ("ТБ 2.5", "ТМ 2.5"))
                 for pick, model_p in (("ТБ 2.5", over_p), ("ТМ 2.5", 1.0 - over_p)):
                     match_key = (str(card.get("match") or ""), pick)
                     if pick not in odds_by_pick or match_key in existing_keys:
@@ -1781,8 +1783,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         if not 1.01 < odd <= 100:
                             continue
                         implied = 1.0 / odd
-                        prob = max(1e-6, min(1.0 - 1e-6, implied + 0.40 * (model_p - implied)))
-                        edge_value = prob - implied
+                        fair_market_p = (no_vig_total or {}).get(pick, implied)
+                        prob = blend_probability(model_p, fair_market_p, 0.40)
+                        edge_value = prob - fair_market_p
                         ev_value = prob * odd - 1.0
                         stake = kelly(prob, odd, available_bank, kelly_frac, cap=0.02)
                     except (TypeError, ValueError, ZeroDivisionError):
@@ -1796,7 +1799,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "div": card.get("div", ""), "league": card.get("league", ""),
                         "market": "OU", "pick": pick, "odds": odd, "stake": stake,
                         "prob": prob, "model_prob": model_p, "market_implied_raw": implied,
-                        "probability_method": "market_blend_0.4_model_delta",
+                        "probability_method": "market_blend_0.4_model_delta_devig" if no_vig_btts else "market_blend_0.4_model_delta",
                         "status": "pending", "strat": "scanner_auto_totals",
                         "odds_source": card.get("total_odds_source", "highlightly"), "mode": "real",
                         "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
@@ -1823,6 +1826,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not 0.0 < btts_p < 1.0:
                     continue
                 odds_by_pick = card.get("btts_market_odds") or {}
+                no_vig_btts = proportional_devig(odds_by_pick, ("BTTS Да", "BTTS Нет"))
                 for pick, model_p in (("BTTS Да", btts_p), ("BTTS Нет", 1.0 - btts_p)):
                     match_key = (str(card.get("match") or ""), pick)
                     if pick not in odds_by_pick or match_key in existing_keys:
@@ -1832,8 +1836,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         if not 1.01 < odd <= 100:
                             continue
                         implied = 1.0 / odd
-                        prob = max(1e-6, min(1.0 - 1e-6, implied + 0.40 * (model_p - implied)))
-                        edge_value = prob - implied
+                        fair_market_p = (no_vig_btts or {}).get(pick, implied)
+                        prob = blend_probability(model_p, fair_market_p, 0.40)
+                        edge_value = prob - fair_market_p
                         ev_value = prob * odd - 1.0
                         stake = kelly(prob, odd, available_bank, kelly_frac, cap=0.02)
                     except (TypeError, ValueError, ZeroDivisionError):
