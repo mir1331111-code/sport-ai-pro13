@@ -438,12 +438,34 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         auto_quote_exists = False
         has_positive_value = False
 
-    market_is_validated = (market_type(pick) == "1X2" or
-                           (market_type(pick) == "OU" and bool(c.get("total_market_validation"))))
+    selected_market_type = market_type(pick)
+    if selected_market_type == "1X2":
+        market_is_validated = True
+        validation_note = ""
+    elif selected_market_type == "OU":
+        market_is_validated = bool(c.get("total_market_validation"))
+        validation_note = (
+            "Тоталы не прошли историческую проверку; Value не подтверждён."
+            if not market_is_validated else ""
+        )
+    elif selected_market_type == "BTTS":
+        # A real quote confirms the bookmaker price, not the model's historical
+        # calibration. Do not describe BTTS as having failed a test that was never run.
+        market_is_validated = False
+        validation_note = (
+            "Для «Обе забьют» пока нет отдельного исторического walk-forward теста. "
+            "Коэффициент показан как котировка, но прогноз и Value не подтверждены."
+        )
+    else:
+        market_is_validated = False
+        validation_note = "Для этого рынка нет отдельной исторической проверки."
+
     if has_positive_value and market_is_validated:
         st.success("Есть подтверждённый коэффициент и модельный перевес.")
     elif has_positive_value and not market_is_validated:
-        st.warning("Котировка найдена, но этот рынок не прошёл историческую проверку. Value не считается подтверждённым; ставку не рекомендовать.")
+        st.warning(validation_note + " Ставку не рекомендовать.")
+    elif auto_quote_exists and not market_is_validated:
+        st.caption(validation_note or "Коэффициент есть, но историческая надёжность не подтверждена — не ставить.")
     elif auto_quote_exists:
         st.caption("Коэффициент есть, но надёжного преимущества не подтверждено — не ставить.")
     else:
