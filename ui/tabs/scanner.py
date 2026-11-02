@@ -359,7 +359,12 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     }
     # In "all matches" mode, compare every modeled market. Dedicated tabs
     # restrict the list to their own market type.
-    allowed_types = filter_types.get(market_filter, {"1X2", "OU", "BTTS", "STAT"})
+    # The default "all matches" view is a betting shortlist, not a list of
+    # every visible quote. Keep unvalidated BTTS/stat markets out of the
+    # headline selection; they remain available in their dedicated info tabs.
+    allowed_types = filter_types.get(market_filter, {"1X2", "OU"} if market_filter is None else {"1X2", "OU", "BTTS", "STAT"})
+    if market_filter is None and not c.get("total_market_validation"):
+        allowed_types = {"1X2"}
     candidate_options = {
         label: item for label, item in market_options.items()
         if market_type(item[0]) in allowed_types
@@ -1019,16 +1024,31 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "handicap": sum(bool(x.get("asian_handicap_market_odds")) for x in cards_view),
         }
         market_tabs = st.tabs([
+            f"Тоталы ({market_counts['goals']})",
             f"Все матчи ({len(cards_view)})",
             f"Победа / 1X2 ({market_counts['winner']})",
-            f"Тоталы ({market_counts['goals']})",
             f"Обе забьют ({market_counts['btts']})",
             f"Угловые ({market_counts['corners']})",
             f"Карточки ({market_counts['cards']})",
             f"Форы ({market_counts['handicap']})",
         ])
 
+        # Totals is the default workspace: show model forecasts for every
+        # fixture, including unpriced ones, so missing bookmaker coverage is
+        # visible instead of silently hiding the match.
         with market_tabs[0]:
+            if market_counts["goals"] == 0:
+                st.info(
+                    "Подтверждённых котировок на тоталы пока нет. Ниже показан прогноз модели "
+                    "по каждому матчу; без реальной цены Value и ставка недоступны."
+                )
+            for card in cards_view:
+                st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+                _render_manual_odds_block(
+                    card, D, kelly_frac, min_prob, min_edge, market_filter="goals"
+                )
+
+        with market_tabs[1]:
             if group_by_day:
                 grouped = {}
                 for card in cards_view:
@@ -1045,8 +1065,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     _render_manual_odds_block(card, D, kelly_frac, min_prob, min_edge, market_filter=None)
 
         market_specs = [
-            (1, "winner", "market_odds", "1X2"),
-            (2, "goals", "total_market_odds", "тоталы голов"),
+            (2, "winner", "market_odds", "1X2"),
             (3, "btts", "btts_market_odds", "«Обе забьют»"),
             (4, "corners", "stat_market_odds", "угловые"),
             (5, "cards", "stat_market_odds", "карточки"),
