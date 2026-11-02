@@ -131,5 +131,36 @@ class SStatsMarketParserTests(unittest.TestCase):
         self.assertEqual(parsed.get("П2"), 3.80)
 
 
+    def test_accepts_explicit_goals_over_under_market_alias(self):
+        def total_book(name, price):
+            return {
+                "bookmakerName": name,
+                "odds": [{
+                    "marketName": "Goals Over/Under",
+                    "odds": [{"name": "Over 2.5", "value": str(price)}],
+                }],
+            }
+
+        parsed = _sstats_parse_markets([
+            total_book("Book A", 1.85),
+            total_book("Book B", 1.90),
+        ])
+        self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 1.90)
+
+    def test_goals_over_under_alias_does_not_accept_period_or_handicap(self):
+        for market_name in ("1st Half Goals Over/Under", "Asian Handicap Goals Over/Under"):
+            parsed = _sstats_parse_markets([
+                {"bookmakerName": "Book A", "odds": [{
+                    "marketName": market_name,
+                    "odds": [{"name": "Over 2.5", "value": "1.85"}],
+                }]},
+                {"bookmakerName": "Book B", "odds": [{
+                    "marketName": market_name,
+                    "odds": [{"name": "Over 2.5", "value": "1.90"}],
+                }]},
+            ])
+            self.assertNotIn("ТБ 2.5", parsed["total_market_odds"])
+
+
 if __name__ == "__main__":
     unittest.main()
