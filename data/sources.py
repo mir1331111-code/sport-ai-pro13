@@ -2997,7 +2997,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
     now, timezone_offset = _sstats_timezone()
     horizon = max(1, min(30, int(days or 3)))
     cache_key = (
-        f"sstats_upcoming_v3_{now.date().isoformat()}_{horizon}_"
+        f"sstats_upcoming_v4_{now.date().isoformat()}_{horizon}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 900)
