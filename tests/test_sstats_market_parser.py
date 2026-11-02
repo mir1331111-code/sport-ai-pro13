@@ -184,5 +184,39 @@ class SStatsMarketParserTests(unittest.TestCase):
         ])
         self.assertNotIn("ТБ 0.5", team_total["total_market_odds"])
 
+
+    def test_reads_structured_line_when_market_and_outcome_are_generic(self):
+        def total_book(name, line):
+            return {
+                "bookmakerName": name,
+                "odds": [{
+                    "marketName": "Total",
+                    "odds": [
+                        {"name": "Over", "point": line, "value": "1.85"},
+                        {"name": "Under", "point": line, "value": "1.95"},
+                    ],
+                }],
+            }
+
+        parsed = _sstats_parse_markets([
+            total_book("Book A", 2.5),
+            total_book("Book B", 2.5),
+        ])
+        self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 1.85)
+        self.assertEqual(parsed["total_market_odds"]["ТМ 2.5"], 1.95)
+
+    def test_structured_line_does_not_allow_handicap_market_into_totals(self):
+        parsed = _sstats_parse_markets([
+            {"bookmakerName": "Book A", "odds": [{
+                "marketName": "Asian Handicap Goals",
+                "odds": [{"name": "Over", "point": 2.5, "value": "1.85"}],
+            }]},
+            {"bookmakerName": "Book B", "odds": [{
+                "marketName": "Asian Handicap Goals",
+                "odds": [{"name": "Over", "point": 2.5, "value": "1.90"}],
+            }]},
+        ])
+        self.assertNotIn("ТБ 2.5", parsed["total_market_odds"])
+
 if __name__ == "__main__":
     unittest.main()
