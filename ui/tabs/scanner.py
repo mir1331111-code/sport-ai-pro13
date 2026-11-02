@@ -442,16 +442,17 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # Model fair odds are not a substitute for a real quote.
     if selected_odd is not None:
         st.markdown(
-            f"<div class='pick-decision'><span class='pick-decision-label'>РЕШЕНИЕ</span>"
-            f"<strong>{html.escape(selected_label)}</strong>"
-            f"<span class='pick-decision-odd'>КФ {selected_odd:.2f}</span></div>",
+            f"<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;margin:8px 0;border:1px solid #285f51;border-radius:12px;background:linear-gradient(120deg,#102923,#101b22)'>"
+            f"<div><div style='font-size:11px;letter-spacing:.12em;color:#8fd8bd;font-weight:700'>НАШ ВЫБОР</div>"
+            f"<strong style='font-size:20px;color:#f1f7f5'>{html.escape(selected_label)}</strong></div>"
+            f"<div style='font-size:22px;font-weight:800;color:#8fe2c1;white-space:nowrap'>КФ {selected_odd:.2f}</div></div>",
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
-            f"<div class='pick-decision pick-decision-muted'><span class='pick-decision-label'>ПРОГНОЗ</span>"
-            f"<strong>{html.escape(selected_label)}</strong>"
-            f"<span class='pick-decision-odd'>Нет кэфа</span></div>",
+            f"<div style='padding:12px 16px;margin:8px 0;border:1px solid #46515a;border-radius:12px;background:#121a20'>"
+            f"<div style='font-size:11px;letter-spacing:.12em;color:#9aa9b2;font-weight:700'>НЕТ ПОДТВЕРЖДЁННОГО КЭФА</div>"
+            f"<strong style='font-size:18px;color:#d9e1e5'>{html.escape(selected_label)}</strong></div>",
             unsafe_allow_html=True,
         )
 
