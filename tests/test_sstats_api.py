@@ -220,6 +220,40 @@ class SStatsTests(unittest.TestCase):
         self.assertIn("подтверждённые тоталы: 1 линий", result["message"])
         self.assertNotIn("private-test-key", repr(result))
 
+    @patch.object(sources, "cache_put")
+    @patch.object(sources, "cache_get", return_value=None)
+    @patch.object(sources, "_sstats_timezone")
+    @patch.object(sources, "_sstats_request")
+    def test_account_check_reports_single_book_total_as_unconfirmed(
+        self, request_mock, timezone_mock, _cache_get, _cache_put
+    ):
+        from datetime import datetime, timedelta
+        now = datetime(2026, 11, 2, 12, 0)
+        timezone_mock.return_value = (now, 2)
+        request_mock.side_effect = [
+            _Response(200, {"status": "success", "data": {"userName": "test-user"}}),
+            _Response(200, {"status": "success", "data": [{
+                "id": 778, "date": (now + timedelta(days=1)).isoformat(),
+                "homeTeam": {"name": "Home"}, "awayTeam": {"name": "Away"},
+            }]}),
+            _Response(200, {"status": "success", "data": [{
+                "bookmakerName": "Book A",
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [{"name": "Over 2.5", "value": "1.85"}],
+                }],
+            }]}),
+        ]
+
+        result = sources.sstats_account_check("private-test-key")
+
+        self.assertTrue(result["odds_checked"])
+        self.assertEqual(result["total_quote_line_count"], 1)
+        self.assertEqual(result["total_line_count"], 0)
+        self.assertEqual(result["unconfirmed_total_line_count"], 1)
+        self.assertIn("только от одного букмекера", result["message"])
+        self.assertNotIn("private-test-key", repr(result))
+
     @patch.object(sources, "_sstats_request")
     def test_account_check_confirms_key_without_exposing_it(self, request_mock):
         request_mock.side_effect = [
