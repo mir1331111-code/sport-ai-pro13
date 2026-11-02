@@ -2735,16 +2735,28 @@ def _sstats_parse_markets(odds_payload):
         "total_market_odds", "btts_market_odds", "stat_market_odds",
         "asian_handicap_market_odds",
     ):
-        result[group] = {
-            key: max(odd for odd, _book in values)
-            for key, values in prices[group].items() if values
-        }
         for key, values in prices[group].items():
-            if values:
-                best_odd = max(odd for odd, _book in values)
-                best_book = next((book for odd, book in reversed(values) if odd == best_odd and book), "")
-                if best_book:
-                    result["bookmaker_by_pick"][key] = best_book
+            # Avoid selecting a stale/malformed extreme quote as the "best" price.
+            valid = [(float(odd), str(book or "")) for odd, book in values
+                     if 1.01 <= float(odd) <= 100.0]
+            if not valid:
+                continue
+            ordered = sorted(odd for odd, _book in valid)
+            middle = len(ordered) // 2
+            median = (ordered[middle] if len(ordered) % 2
+                      else (ordered[middle - 1] + ordered[middle]) / 2.0)
+            # Keep only real bookmaker quotes reasonably close to consensus.
+            credible = [(odd, book) for odd, book in valid
+                        if odd <= median * 1.25]
+            if group == "total_market_odds":
+                # This scanner targets high-confidence selections, not long shots.
+                credible = [(odd, book) for odd, book in credible if odd <= 8.0]
+            if not credible:
+                continue
+            best_odd, best_book = max(credible, key=lambda item: item[0])
+            result[group][key] = best_odd
+            if best_book:
+                result["bookmaker_by_pick"][key] = best_book
     return result
 
 

@@ -50,6 +50,35 @@ class SStatsMarketParserTests(unittest.TestCase):
         self.assertNotIn("X", parsed)
         self.assertNotIn("П2", parsed)
 
+    def test_rejects_extreme_total_price_outlier(self):
+        def total_book(name, price):
+            return {
+                "bookmakerName": name,
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [{"name": "Over 2.5", "value": str(price)}],
+                }],
+            }
+
+        parsed = _sstats_parse_markets([
+            total_book("Book A", 1.55),
+            total_book("Book B", 1.62),
+            total_book("Book C", 1.58),
+            total_book("Bad feed", 10.25),
+        ])
+        self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 1.62)
+        self.assertNotEqual(parsed["total_market_odds"]["ТБ 2.5"], 10.25)
+
+    def test_does_not_publish_extreme_total_longshot(self):
+        parsed = _sstats_parse_markets([{
+            "bookmakerName": "Bad feed",
+            "odds": [{
+                "marketName": "Total Goals",
+                "odds": [{"name": "Over 4.5", "value": "41.00"}],
+            }],
+        }])
+        self.assertNotIn("ТБ 4.5", parsed["total_market_odds"])
+
     def test_allows_explicit_full_time_result_alias(self):
         parsed = _sstats_parse_markets([
             bookmaker("Book A", "Full Time Result", 2.10, 3.50, 3.80),
