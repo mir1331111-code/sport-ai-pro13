@@ -2691,7 +2691,25 @@ def _sstats_parse_markets(odds_payload):
                 elif any(term in market for term in ("card", "booking", "карточ")):
                     key = ("Карты ТБ " if is_over else "Карты ТМ ") + line_text
                     _record(key, odd, bookmaker, "stat_market_odds")
-                elif any(term in market for term in ("total goals", "goals total", "total goal", "goal total", "over/under goals", "goals over/under", "goals over under", "total goals over under", "total over under goals", "тотал голов", "тотал гола", "голы тотал")):
+                elif (
+                    any(term in market for term in (
+                        "total goals", "goals total", "total goal", "goal total",
+                        "over/under goals", "goals over/under", "goals over under",
+                        "total goals over under", "total over under goals",
+                        "match goals", "match total", "тотал голов", "тотал гола",
+                        "голы тотал",
+                    ))
+                    or (
+                        _market_key(market_name) in {
+                            "total", "totals", "over under", "over under total",
+                            "over under match", "total over under",
+                        }
+                        and not any(term in market for term in (
+                            "team", "home", "away", "player", "corner", "corners",
+                            "углов", "card", "booking", "карточ", "half", "period",
+                        ))
+                    )
+                ):
                     key = ("ТБ " if is_over else "ТМ ") + line_text
                     _record(key, odd, bookmaker, "total_market_odds")
                 continue
@@ -3098,11 +3116,21 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
                 "форы": len(result.get("asian_handicap_market_odds") or {}),
                 "1X2": sum(result.get(key_name) is not None for key_name in ("П1", "X", "П2")),
             }
+            market_names = sorted({
+                str(bet.get("marketName") or bet.get("name") or "").strip()
+                for bet, _book in _sstats_flat_bets(data)
+                if str(bet.get("marketName") or bet.get("name") or "").strip()
+            })
             logs.append(
                 f"SStats Odds/{game_id}: {len(data)} букмекеров, "
                 f"{market_count} исходов/линий; " +
                 ", ".join(f"{name}={count}" for name, count in group_counts.items()) + "."
             )
+            if group_counts["тоталы"] == 0 and market_names:
+                logs.append(
+                    "SStats: названия рынков в ответе API: "
+                    + " | ".join(market_names[:30])
+                )
             if all(result.get(key) is not None for key in ("П1", "X", "П2")):
                 selected_book = (result.get("bookmaker_by_pick") or {}).get("П1")
                 logs.append(
