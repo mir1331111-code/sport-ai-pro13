@@ -79,6 +79,49 @@ class SStatsMarketParserTests(unittest.TestCase):
         }])
         self.assertNotIn("ТБ 4.5", parsed["total_market_odds"])
 
+
+    def test_rejects_total_from_asian_handicap_market(self):
+        parsed = _sstats_parse_markets([{
+            "bookmakerName": "Book A",
+            "odds": [{
+                "marketName": "Asian Handicap Goals",
+                "odds": [{"name": "Over 3.5", "value": "8.00"}],
+            }],
+        }, {
+            "bookmakerName": "Book B",
+            "odds": [{
+                "marketName": "Asian Handicap Goals",
+                "odds": [{"name": "Over 3.5", "value": "7.80"}],
+            }],
+        }])
+        self.assertNotIn("ТБ 3.5", parsed["total_market_odds"])
+
+    def test_rejects_total_from_first_half_market(self):
+        parsed = _sstats_parse_markets([{
+            "bookmakerName": "Book A",
+            "odds": [{
+                "marketName": "1st Half Total Goals",
+                "odds": [{"name": "Over 1.5", "value": "2.00"}],
+            }],
+        }, {
+            "bookmakerName": "Book B",
+            "odds": [{
+                "marketName": "1st Half Total Goals",
+                "odds": [{"name": "Over 1.5", "value": "2.10"}],
+            }],
+        }])
+        self.assertNotIn("ТБ 1.5", parsed["total_market_odds"])
+
+    def test_requires_two_named_books_to_confirm_total(self):
+        parsed = _sstats_parse_markets([{
+            "bookmakerName": "Only Book",
+            "odds": [{
+                "marketName": "Total Goals",
+                "odds": [{"name": "Over 3.5", "value": "8.00"}],
+            }],
+        }])
+        self.assertNotIn("ТБ 3.5", parsed["total_market_odds"])
+
     def test_allows_explicit_full_time_result_alias(self):
         parsed = _sstats_parse_markets([
             bookmaker("Book A", "Full Time Result", 2.10, 3.50, 3.80),
