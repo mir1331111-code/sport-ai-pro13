@@ -2664,13 +2664,25 @@ def _sstats_parse_markets(odds_payload):
             # Totals, including corners/cards. Reject period-specific and handicap
             # markets before looking at the outcome label: "Over 3.5" alone does not
             # prove that the market is full-time goals.
+            # SStats usually labels totals "Over 2.5"/"Under 2.5",
+            # but some feeds put the line first ("2.5 Over") or use
+            # the compact Russian forms "ТБ 2.5"/"ТМ 2.5".
+            # A bare numeric outcome is never enough to infer a total side.
             is_over = (
-                label_norm in ("over", "more", "больше", "o")
-                or label_norm.startswith(("over ", "больше ", "o "))
+                label_norm in ("over", "more", "больше", "o", "тб")
+                or label_norm.startswith(("over ", "more ", "больше ", "o ", "тб "))
+                or bool(re.match(
+                    r"^\\s*\\d{1,2}(?:[.,]\\d{1,2})?\\s*(?:[-:]\\s*)?(?:over|more|больше|тб)\\b",
+                    label_norm,
+                ))
             )
             is_under = (
-                label_norm in ("under", "less", "меньше", "u")
-                or label_norm.startswith(("under ", "меньше ", "u "))
+                label_norm in ("under", "less", "меньше", "u", "тм")
+                or label_norm.startswith(("under ", "less ", "меньше ", "u ", "тм "))
+                or bool(re.match(
+                    r"^\\s*\\d{1,2}(?:[.,]\\d{1,2})?\\s*(?:[-:]\\s*)?(?:under|less|меньше|тм)\\b",
+                    label_norm,
+                ))
             )
             is_period_market = any(term in market for term in (
                 "first half", "1st half", "half time", "half-time",
@@ -2865,7 +2877,7 @@ def sstats_account_check(api_key: str) -> dict:
         "From": now.date().isoformat(),
         "To": (now.date() + timedelta(days=14)).isoformat(),
         "Upcoming": "true",
-        "Limit": 3,
+        "Limit": 8,
         "Offset": 0,
         "TimeZone": timezone_offset,
     }
@@ -2894,35 +2906,83 @@ def sstats_account_check(api_key: str) -> dict:
 
     odds_count = 0
     odds_checked = False
-    if games and isinstance(games[0], dict):
-        game_id = games[0].get("id")
-        if game_id is not None:
-            try:
-                odds_response = _sstats_request(f"Odds/{game_id}", key, params={"opening": "false"})
-                if odds_response.status_code == 200:
-                    odds_payload = _sstats_unwrap(odds_response.json() or {}) or []
-                    if isinstance(odds_payload, list):
-                        odds_count = sum(
-                            len(item.get("odds") or [])
-                            for item in odds_payload if isinstance(item, dict)
-                        )
-                    odds_checked = True
-            except Exception:
-                pass
+    checked_matches = 0
+    totals_fixtures = 0
+    total_line_count = 0
+    btts_fixtures = 0
+    handicap_fixtures = 0
+    markets_seen = set()
+    # The first scheduled match may have no odds yet. Probe several upcoming
+    # fixtures so this button measures market coverage, not one random game.
+    sample_games = [
+        game for game in games
+        if isinstance(game, dict) and game.get("id") is not None
+    ][:5]
+    for game in sample_games:
+        try:
+            detailed = sstats_odds_fixture(game.get("id"), key)
+        except Exception:
+            detailed = None
+        if not isinstance(detailed, dict):
+            continue
+        odds_checked = True
+        checked_matches += 1
+        totals = detailed.get("total_market_odds") or {}
+        btts = detailed.get("btts_market_odds") or {}
+        handicaps = detailed.get("asian_handicap_market_odds") or {}
+        odds_count += sum(
+            len(detailed.get(group) or {})
+            for group in (
+                "total_market_odds", "btts_market_odds",
+                "stat_market_odds", "asian_handicap_market_odds",
+            )
+        )
+        if totals:
+            totals_fixtures += 1
+            total_line_count += len(totals)
+        if btts:
+            btts_fixtures += 1
+        if handicaps:
+            handicap_fixtures += 1
+        markets_seen.update(detailed.get("market_names") or [])
 
+    if not sample_games:
+        detail_message = "в выборке нет предстоящих матчей для проверки Odds."
+    elif not odds_checked:
+        detail_message = "не удалось получить успешный ответ Odds ни для одного проверенного матча."
+    elif total_line_count:
+        detail_message = (
+            f"подтверждённые тоталы: {total_line_count} линий на {totals_fixtures} "
+            f"из {checked_matches} проверенных матчей."
+        )
+    else:
+        detail_message = (
+            f"Odds ответил для {checked_matches} матчей, но подтверждённых тоталов "
+            "голов (линия от двух букмекеров) в этой выборке нет."
+        )
+    other_markets = []
+    if btts_fixtures:
+        other_markets.append(f"BTTS: {btts_fixtures} матчей")
+    if handicap_fixtures:
+        other_markets.append(f"форы: {handicap_fixtures} матчей")
+    other_hint = (" Другие рынки: " + "; ".join(other_markets) + ".") if other_markets else ""
+    market_hint = (
+        " Примеры рынков API: " + ", ".join(sorted(markets_seen)[:8]) + "."
+        if markets_seen and not total_line_count else ""
+    )
     return {
         "ok": True, "games_ok": True, "games_count": len(games),
         "odds_checked": odds_checked, "odds_count": odds_count,
+        "checked_matches": checked_matches,
+        "totals_fixtures": totals_fixtures,
+        "total_line_count": total_line_count,
+        "btts_fixtures": btts_fixtures,
+        "handicap_fixtures": handicap_fixtures,
+        "markets_seen": sorted(markets_seen)[:12],
         "message": (
             f"SStats подключён: ключ подтверждён для {account_data.get('userName')}; "
-            f"расписание отвечает, ближайших матчей в тестовой выборке: {len(games)}; "
-            + (
-                f"в Odds найдены {odds_count} рынков/линий."
-                if odds_checked and odds_count
-                else "проверка Odds прошла, но в тестовом матче котировки не найдены."
-                if odds_checked
-                else "проверка полного Odds для тестового матча пока не подтверждена."
-            )
+            f"расписание отвечает ({len(games)} матчей). {detail_message}"
+            f"{other_hint}{market_hint}"
         ),
     }
 
@@ -3098,7 +3158,7 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
     if not key or game_id in (None, ""):
         return None
     cache_key = (
-        f"sstats_full_odds_v3_{game_id}_"
+        f"sstats_full_odds_v4_{game_id}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 1800)
@@ -3153,6 +3213,32 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
                     "SStats: названия рынков в ответе API: "
                     + " | ".join(market_names[:30])
                 )
+                # Market labels and JSON field names are sufficient to diagnose
+                # parser/schema mismatches. Never log request URLs or API keys.
+                outcome_samples = []
+                for bet, _book in _sstats_flat_bets(data):
+                    market_label = str(
+                        bet.get("marketName") or bet.get("name") or "без названия"
+                    ).strip()
+                    rows = bet.get("odds") or bet.get("values") or bet.get("outcomes") or []
+                    for row in rows[:3] if isinstance(rows, list) else []:
+                        if not isinstance(row, dict):
+                            continue
+                        label = str(
+                            row.get("name") or row.get("label")
+                            or row.get("valueName") or "без подписи"
+                        ).strip()
+                        fields = ",".join(sorted(str(key) for key in row.keys()))
+                        outcome_samples.append(f"{market_label} → {label} [{fields}]")
+                        if len(outcome_samples) >= 12:
+                            break
+                    if len(outcome_samples) >= 12:
+                        break
+                if outcome_samples:
+                    logs.append(
+                        "SStats: примеры исходов и полей: "
+                        + " | ".join(outcome_samples)
+                    )
             if all(result.get(key) is not None for key in ("П1", "X", "П2")):
                 selected_book = (result.get("bookmaker_by_pick") or {}).get("П1")
                 logs.append(
