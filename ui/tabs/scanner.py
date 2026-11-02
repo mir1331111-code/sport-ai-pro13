@@ -373,14 +373,18 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         else:
             st.caption("Коэффициенты букмекера именно для выбранного рынка: " + quote_text)
     elif market_filter in {"goals", "btts", "corners", "cards"}:
-        st.caption("Highlightly не вернул цену именно для этого рынка; цены 1X2 не подставляются.")
+        market_names = {"goals": "тотала голов", "btts": "рынка «Обе забьют»", "corners": "угловых", "cards": "карточек"}
+        st.caption(
+            f"Нет подтверждённой котировки SStats на точный исход {market_names.get(market_filter, 'рынка')}. "
+            "Коэффициенты 1X2 не подставляются вместо неё."
+        )
     asian_quotes = c.get("asian_handicap_market_odds") or {}
     if asian_quotes:
         asian_text = " · ".join(
             f"{pick}: **{float(odd):.2f}**"
             for pick, odd in sorted(asian_quotes.items())
         )
-        st.caption("Азиатские форы Highlightly (информационно): " + asian_text)
+        st.caption("Азиатские форы SStats (информационно): " + asian_text)
 
     quoted_candidates = [
         (label, item[0], item[1], quote_for(item[0]))
@@ -456,8 +460,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # Model fair odds are not a substitute for a real quote.
     st.info(
         "Для расчёта value используются только реальные котировки, сопоставленные с точным матчем "
-        "и выбранным рынком/линией. Источником может быть Highlightly, Prognozist/Marathon или "
-        "импортированный CSV/JSON. Справочный коэффициент модели не считается букмекерской ценой."
+        "и выбранным рынком/линией. Основной источник котировок — SStats; также можно использовать "
+        "импортированные CSV/JSON. Справочный коэффициент модели не считается букмекерской ценой."
     )
 
     examples = {
@@ -903,8 +907,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 verdict = card.get("verdict") or {}
                 match_name = str(card.get("match_ru") or card.get("match") or "Матч")
                 league_name = str(card.get("league") or "Футбол")
-                pick_name = str(card.get("best") or verdict.get("pick") or verdict.get("best_pick") or "Исход выбран моделью")
-                odd = verdict.get("real_odds") or verdict.get("odds") or card.get("best_odds")
+                best_result = card.get("best")
+                # best_value_market returns (market_type, pick, real_odd, ev, prob, stake).
+                # Never stringify that tuple as the pick label or treat real_odds=True as price 1.00.
+                best_pick = best_result[1] if isinstance(best_result, (tuple, list)) and len(best_result) >= 3 else None
+                best_odd = best_result[2] if isinstance(best_result, (tuple, list)) and len(best_result) >= 3 else None
+                pick_name = str(
+                    verdict.get("label") or verdict.get("pick") or best_pick
+                    or card.get("best_pick") or "Исход выбран моделью"
+                )
+                odd = verdict.get("odd")
+                if odd is None:
+                    odd = best_odd if best_odd is not None else card.get("best_odds")
                 try:
                     odd_text = f"Коэффициент {float(odd):.2f}" if odd is not None else ""
                 except (TypeError, ValueError):
@@ -985,45 +999,77 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             st.warning("Ничего не найдено.")
             return
 
-        # Until verified Marathon odds are available for extra markets, keep
-        # the scanner focused on 1X2 only. This prevents model-only totals/BTTS
-        # forecasts from being presented beside winner odds or entering the portfolio.
+        market_counts = {
+            "winner": sum(bool(x.get("market_odds")) for x in cards_view),
+            "goals": sum(bool(x.get("total_market_odds")) for x in cards_view),
+            "btts": sum(bool(x.get("btts_market_odds")) for x in cards_view),
+            "corners": sum(any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {})) for x in cards_view),
+            "cards": sum(any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {})) for x in cards_view),
+            "handicap": sum(bool(x.get("asian_handicap_market_odds")) for x in cards_view),
+        }
         market_tabs = st.tabs([
             f"Все матчи ({len(cards_view)})",
-            f"Победа / 1X2 ({sum(bool(c.get('market_odds')) for c in cards_view)})",
+            f"Победа / 1X2 ({market_counts['winner']})",
+            f"Тоталы ({market_counts['goals']})",
+            f"Обе забьют ({market_counts['btts']})",
+            f"Угловые ({market_counts['corners']})",
+            f"Карточки ({market_counts['cards']})",
+            f"Форы ({market_counts['handicap']})",
         ])
 
         with market_tabs[0]:
             if group_by_day:
                 grouped = {}
-                for c in cards_view:
-                    grouped.setdefault(day_label(parse_card_date(c)), []).append(c)
+                for card in cards_view:
+                    grouped.setdefault(day_label(parse_card_date(card)), []).append(card)
                 sorted_groups = sorted(grouped.items(), key=lambda kv: parse_card_date(kv[1][0]))
                 for label, items in sorted_groups:
                     st.markdown(f"### {label} · {len(items)} матч.")
-                    for c in items:
-                        st.markdown(render_fixture_header(c), unsafe_allow_html=True)
-                        _render_manual_odds_block(
-                            c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
-                        )
+                    for card in items:
+                        st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+                        _render_manual_odds_block(card, D, kelly_frac, min_prob, min_edge, market_filter=None)
             else:
-                for c in cards_view:
-                    st.markdown(render_fixture_header(c), unsafe_allow_html=True)
-                    _render_manual_odds_block(
-                        c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
+                for card in cards_view:
+                    st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+                    _render_manual_odds_block(card, D, kelly_frac, min_prob, min_edge, market_filter=None)
+
+        market_specs = [
+            (1, "winner", "market_odds", "1X2"),
+            (2, "goals", "total_market_odds", "тоталы голов"),
+            (3, "btts", "btts_market_odds", "«Обе забьют»"),
+            (4, "corners", "stat_market_odds", "угловые"),
+            (5, "cards", "stat_market_odds", "карточки"),
+        ]
+        for tab_index, market_filter, odds_field, market_label in market_specs:
+            with market_tabs[tab_index]:
+                def has_market_quote(card):
+                    quotes = card.get(odds_field) or {}
+                    if market_filter == "corners":
+                        return any(str(key).startswith("Угл ") for key in quotes)
+                    if market_filter == "cards":
+                        return any(str(key).startswith("Карты ") for key in quotes)
+                    return bool(quotes)
+                selected_cards = [card for card in cards_view if has_market_quote(card)]
+                if not selected_cards:
+                    st.info(
+                        f"SStats не вернул подтверждённых котировок на {market_label} для показанных матчей. "
+                        "Коэффициенты 1X2 не подставляются вместо отсутствующего рынка."
                     )
+                for card in selected_cards:
+                    st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+                    _render_manual_odds_block(card, D, kelly_frac, min_prob, min_edge, market_filter=market_filter)
 
-        with market_tabs[1]:
-            winner_cards = [c for c in cards_view if c.get("p1") is not None and c.get("p2") is not None]
-            if not winner_cards:
-                st.info("Модель не сформировала прогноз 1X2.")
-            for c in winner_cards:
-                st.markdown(render_fixture_header(c), unsafe_allow_html=True)
-                _render_manual_odds_block(
-                    c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
-                )
+        with market_tabs[6]:
+            handicap_cards = [card for card in cards_view if card.get("asian_handicap_market_odds")]
+            if not handicap_cards:
+                st.info("SStats не вернул подтверждённых котировок на форы для показанных матчей.")
+            for card in handicap_cards:
+                st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+                quotes = card.get("asian_handicap_market_odds") or {}
+                st.caption("Котировки SStats: " + " · ".join(
+                    f"{pick}: **{float(odd):.2f}**" for pick, odd in sorted(quotes.items())
+                ))
 
-        st.caption("Пока доступны только подтверждённые коэффициенты 1X2. Тоталы, «Обе забьют», угловые и карточки временно скрыты до проверки реальных котировок Marathon.")
         st.caption("✅ Показано " + str(len(cards_view)) + " из "
                    + str(len(all_cards)))
         return
@@ -1159,8 +1205,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                           "model_only": 0, "estimated": 0, "real": 0}
         if not highlightly_key:
             logs.append(
-                "ℹ️ Highlightly не настроен; сканер продолжит работу через Prognozist/Marathon "
-                "и импортированные CSV/JSON-котировки."
+                "ℹ️ SStats — основной источник котировок. Если нужного рынка нет в ответе API, "
+                "можно загрузить собственные коэффициенты через CSV/JSON."
             )
 
         for match_idx, r in enumerate(rows, 1):
