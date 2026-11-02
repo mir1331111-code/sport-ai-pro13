@@ -430,32 +430,14 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         has_positive_value = False
 
     if has_positive_value:
-        st.markdown("**🎯 Лучший вариант с положительным value**")
-        st.markdown(f"### {selected_label}")
-        st.caption(
-            f"Выбран по EV среди рынков с реальным коэффициентом: "
-            f"EV {selected_ev * 100:+.1f}% · Edge {selected_edge * 100:+.1f}%."
-        )
+        st.success("Есть подтверждённый коэффициент и модельный перевес.")
     elif auto_quote_exists:
-        st.markdown("**📊 Прогноз модели — ставки с положительным value не найдено**")
-        st.markdown(f"### {selected_label}")
-        st.warning(
-            f"Лучший из проверенных коэффициентов всё ещё без преимущества: "
-            f"EV {selected_ev * 100:+.1f}% · Edge {selected_edge * 100:+.1f}%. "
-            "Это прогноз для анализа, не рекомендация к ставке."
-        )
+        st.caption("Коэффициент есть, но надёжного преимущества не подтверждено — не ставить.")
     else:
-        st.markdown("**📊 Прогноз модели — без подтверждённого коэффициента**")
-        st.markdown(f"### {selected_label}")
-        st.caption("Реального коэффициента на выбранный исход не получено; ставку и value подтвердить нельзя.")
+        st.caption("Нет подтверждённого коэффициента — рекомендации к ставке нет.")
     market_is_validated = (market_type(pick) == "1X2" or
                            (market_type(pick) == "OU" and bool(c.get("total_market_validation"))))
-    fair_odd = (1.0 / model_prob) if model_prob > 0 else None
 
-    st.caption(
-        f"Вероятность модели: {model_prob * 100:.1f}% · "
-        + (f"справочный кэф модели: {fair_odd:.2f}" if fair_odd else "справочный кэф модели: нет расчёта")
-    )
     # Only markets with an actual bookmaker quote can be auto-priced.
     # Model fair odds are not a substitute for a real quote.
     if selected_odd is not None:
@@ -488,7 +470,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         source_label = str((
             c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"}
             else c.get("odds_source")
-        ) or "Highlightly")
+        ) or "SStats")
         col_input.success(f"Коэффициент: **{manual_odd:.2f}** · {source_label}")
     else:
         manual_odd = None
@@ -507,7 +489,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         edge = prob - market_implied
         stake = kelly(prob, manual_odd, D["bank"], kelly_frac, cap=0.02)
 
-        with col_metrics.expander("Проверка рекомендации", expanded=False):
+        with col_metrics.expander("Детали (по желанию)", expanded=False):
             st.write(f"Вероятность модели: {prob * 100:.1f}%")
             st.write(f"Вероятность из коэффициента до снятия маржи: {market_implied * 100:.1f}%")
             st.write(f"Преимущество модели: {edge * 100:+.1f}%")
