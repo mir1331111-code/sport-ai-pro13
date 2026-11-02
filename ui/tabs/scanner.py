@@ -903,8 +903,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 verdict = card.get("verdict") or {}
                 match_name = str(card.get("match_ru") or card.get("match") or "Матч")
                 league_name = str(card.get("league") or "Футбол")
-                pick_name = str(card.get("best") or verdict.get("pick") or verdict.get("best_pick") or "Исход выбран моделью")
-                odd = verdict.get("real_odds") or verdict.get("odds") or card.get("best_odds")
+                best_result = card.get("best")
+                # best_value_market returns (market_type, pick, real_odd, ev, prob, stake).
+                # Never stringify that tuple as the pick label or treat real_odds=True as price 1.00.
+                best_pick = best_result[1] if isinstance(best_result, (tuple, list)) and len(best_result) >= 3 else None
+                best_odd = best_result[2] if isinstance(best_result, (tuple, list)) and len(best_result) >= 3 else None
+                pick_name = str(
+                    verdict.get("label") or verdict.get("pick") or best_pick
+                    or card.get("best_pick") or "Исход выбран моделью"
+                )
+                odd = verdict.get("odd")
+                if odd is None:
+                    odd = best_odd if best_odd is not None else card.get("best_odds")
                 try:
                     odd_text = f"Коэффициент {float(odd):.2f}" if odd is not None else ""
                 except (TypeError, ValueError):
