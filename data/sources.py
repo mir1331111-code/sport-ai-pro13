@@ -2897,7 +2897,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
     now, timezone_offset = _sstats_timezone()
     horizon = max(1, min(30, int(days or 3)))
     cache_key = (
-        f"sstats_upcoming_v2_{now.date().isoformat()}_{horizon}_"
+        f"sstats_upcoming_v3_{now.date().isoformat()}_{horizon}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 900)
@@ -3058,7 +3058,7 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
     if not key or game_id in (None, ""):
         return None
     cache_key = (
-        f"sstats_full_odds_v2_{game_id}_"
+        f"sstats_full_odds_v3_{game_id}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 1800)
@@ -3091,9 +3091,17 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
         ) + sum(key_name in result for key_name in ("П1", "X", "П2"))
         cache_put(cache_key, result)
         if logs is not None:
+            group_counts = {
+                "тоталы": len(result.get("total_market_odds") or {}),
+                "BTTS": len(result.get("btts_market_odds") or {}),
+                "статистика": len(result.get("stat_market_odds") or {}),
+                "форы": len(result.get("asian_handicap_market_odds") or {}),
+                "1X2": sum(result.get(key_name) is not None for key_name in ("П1", "X", "П2")),
+            }
             logs.append(
                 f"SStats Odds/{game_id}: {len(data)} букмекеров, "
-                f"{market_count} исходов/линий."
+                f"{market_count} исходов/линий; " +
+                ", ".join(f"{name}={count}" for name, count in group_counts.items()) + "."
             )
             if all(result.get(key) is not None for key in ("П1", "X", "П2")):
                 selected_book = (result.get("bookmaker_by_pick") or {}).get("П1")
