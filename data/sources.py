@@ -3070,6 +3070,18 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
                 f"SStats Odds/{game_id}: {len(data)} букмекеров, "
                 f"{market_count} исходов/линий."
             )
+            if all(result.get(key) is not None for key in ("П1", "X", "П2")):
+                selected_book = (result.get("bookmaker_by_pick") or {}).get("П1")
+                logs.append(
+                    "✅ SStats 1X2: проверенная полная линия"
+                    + (f" от {selected_book}" if selected_book else " без подтверждённого букмекера")
+                    + "."
+                )
+            else:
+                logs.append(
+                    "⚠️ SStats 1X2 отклонён/не найден: проверьте название рынка, "
+                    "полноту линии и сумму обратных коэффициентов."
+                )
         return result
     except Exception as exc:
         if logs is not None:
