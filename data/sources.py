@@ -2567,9 +2567,16 @@ def _sstats_flat_bets(odds_payload):
     for item in odds_payload:
         if not isinstance(item, dict):
             continue
-        # Compact /Games/list response: item itself is ApiSaBet.
+        # Compact /Games/list response: item itself is ApiSaBet. Some
+        # detailed feeds also flatten bookmakerName onto each market row.
         if "marketName" in item or "marketId" in item:
-            yield item, ""
+            flat_book = item.get("bookmakerName") or item.get("bookmaker") or ""
+            if isinstance(flat_book, dict):
+                flat_book = (
+                    flat_book.get("name") or flat_book.get("bookmakerName")
+                    or flat_book.get("title")
+                )
+            yield item, str(flat_book or "").strip()
             continue
         # Detailed /Odds/{gameId} response: bookmaker object contains ApiSaBet[].
         nested = item.get("odds")
@@ -3237,15 +3244,20 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
             return None
         result = _sstats_parse_markets(data)
         result["market_names"] = sorted({
-            str(bet.get("marketName") or bet.get("name") or "").strip()
+            str(
+                (bet.get("marketName") or bet.get("market") or bet.get("name") or "")
+                if not isinstance(bet.get("market"), dict)
+                else (
+                    bet.get("market", {}).get("name")
+                    or bet.get("market", {}).get("title") or ""
+                )
+            ).strip()
             for bet, _book in _sstats_flat_bets(data)
-            if str(bet.get("marketName") or bet.get("name") or "").strip()
+            if str(bet.get("marketName") or bet.get("market") or bet.get("name") or "").strip()
         })
-        result["bookmakers"] = [
-            str(item.get("bookmakerName") or "")
-            for item in data
-            if isinstance(item, dict) and item.get("bookmakerName")
-        ]
+        result["bookmakers"] = sorted({
+            book for _bet, book in _sstats_flat_bets(data) if book
+        })
         market_count = sum(
             len(result.get(group) or {})
             for group in (
