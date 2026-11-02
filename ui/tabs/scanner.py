@@ -1513,9 +1513,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"✅ BET: {h_ru} — {a_ru} | "
                     f"{best[1]} @ {best[2]:.2f} ({odds_source})")
             else:
+                if market_odds:
+                    no_best_reason = (
+                        "no 1X2 pick passed min probability / edge >= "
+                        f"{max(min_edge, 0.05):.1%} / EV >= 5% / positive Kelly; "
+                        "check selected market line and model-vs-market gap"
+                    )
+                else:
+                    no_best_reason = "no validated real 1X2 bookmaker line"
                 logs.append(
                     f"❌ NO BEST: {h_ru} — {a_ru} | "
-                    f"is_action={verdict.get('is_action')}")
+                    f"is_action={verdict.get('is_action')} | reason={no_best_reason}")
 
             cards.append({
                 "div": lg,
