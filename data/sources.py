@@ -2731,20 +2731,48 @@ def _sstats_parse_markets(odds_payload):
             # A compact feed without book provenance cannot be safely de-vigged.
             result["bookmaker_by_pick"] = {}
 
-    for group in (
-        "total_market_odds", "btts_market_odds", "stat_market_odds",
-        "asian_handicap_market_odds",
-    ):
-        result[group] = {
-            key: max(odd for odd, _book in values)
-            for key, values in prices[group].items() if values
-        }
+    # Totals and BTTS must be a coherent two-way quote from one bookmaker.
+    # Previously each side independently took the maximum across all books;
+    # this could combine unrelated prices and create fake value.
+    for group in ("total_market_odds", "btts_market_odds"):
+        by_market = prices[group]
+        lines = set()
+        for key in by_market:
+            if group == "total_market_odds" and key.startswith("ТБ "):
+                lines.add(key[3:])
+            elif group == "btts_market_odds" and key == "BTTS Да":
+                lines.add("btts")
+        for line in lines:
+            over_key, under_key = (
+                (("ТБ " + line), ("ТМ " + line))
+                if group == "total_market_odds"
+                else ("BTTS Да", "BTTS Нет")
+            )
+            candidates = []
+            for over_odd, over_book in by_market.get(over_key, []):
+                for under_odd, under_book in by_market.get(under_key, []):
+                    if not over_book or not under_book or over_book.casefold() != under_book.casefold():
+                        continue
+                    implied = 1.0 / over_odd + 1.0 / under_odd
+                    if 0.85 <= implied <= 1.35:
+                        candidates.append((implied, over_book, over_odd, under_odd))
+            if candidates:
+                _, book, over_odd, under_odd = min(candidates, key=lambda row: row[0])
+                result[group][over_key] = over_odd
+                result[group][under_key] = under_odd
+                result["bookmaker_by_pick"][over_key] = book
+                result["bookmaker_by_pick"][under_key] = book
+
+    # Keep statistical/handicap prices informational; don't use them as
+    # evidence of a validated betting edge.
+    for group in ("stat_market_odds", "asian_handicap_market_odds"):
         for key, values in prices[group].items():
-            if values:
-                best_odd = max(odd for odd, _book in values)
-                best_book = next((book for odd, book in reversed(values) if odd == best_odd and book), "")
-                if best_book:
-                    result["bookmaker_by_pick"][key] = best_book
+            if not values:
+                continue
+            best_odd, best_book = max(values, key=lambda row: row[0])
+            result[group][key] = best_odd
+            if best_book:
+                result["bookmaker_by_pick"][key] = best_book
     return result
 
 
