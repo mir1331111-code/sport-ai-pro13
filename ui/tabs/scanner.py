@@ -321,7 +321,18 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         # a quote belongs to the exact market. A page-wide bookmaker mention is not proof
         # that every parsed price belongs to that bookmaker.
         extra_source = str(c.get("extra_market_source") or "").casefold()
-        if kind in {"OU", "BTTS", "STAT"} and extra_source not in {"highlightly", "manual_import", "sstats"}:
+        # Secondary markets have independent provenance. A verified SStats
+        # BTTS quote must not accidentally bless a stale totals quote from
+        # another provider merely because both live on the same fixture card.
+        if kind == "OU":
+            source = str(c.get("total_odds_source") or "").casefold()
+            if source not in {"highlightly", "manual_import", "sstats"}:
+                return None
+        elif kind == "BTTS":
+            source = str(c.get("btts_odds_source") or "").casefold()
+            if source not in {"highlightly", "manual_import", "sstats"}:
+                return None
+        elif kind == "STAT" and extra_source not in {"highlightly", "manual_import", "sstats"}:
             return None
         if kind == "1X2":
             raw = source_odds.get(candidate_pick)
@@ -1297,7 +1308,28 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     "stat_market_odds": stat_market_odds,
                                     "asian_handicap_market_odds": asian_handicap_market_odds,
                                 }[group]
-                                for selection, raw_value in (detailed.get(group) or {}).items():
+                                verified_quotes = detailed.get(group) or {}
+
+                                # For totals, detailed SStats data has explicit
+                                # bookmaker provenance and was independently
+                                # corroborated by the parser. Replace the whole
+                                # previous totals map rather than retaining a
+                                # larger quote from another feed. A higher price
+                                # is not evidence that it belongs to the right line.
+                                if group == "total_market_odds" and verified_quotes:
+                                    target.clear()
+                                    for selection, raw_value in verified_quotes.items():
+                                        try:
+                                            value = float(raw_value)
+                                            if 1.01 < value <= 8.0:
+                                                target[selection] = value
+                                                if detailed_bookmakers.get(selection):
+                                                    bookmaker_by_pick[selection] = detailed_bookmakers[selection]
+                                        except (TypeError, ValueError):
+                                            continue
+                                    continue
+
+                                for selection, raw_value in verified_quotes.items():
                                     try:
                                         value = float(raw_value)
                                         current = float(target.get(selection) or 0)
