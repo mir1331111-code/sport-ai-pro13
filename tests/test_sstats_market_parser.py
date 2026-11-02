@@ -110,6 +110,34 @@ class SStatsMarketParserTests(unittest.TestCase):
         self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 1)
         self.assertFalse(parsed["total_market_confirmed"]["ТБ 2.5"])
 
+    def test_flat_market_rows_keep_inline_bookmaker_names(self):
+        parsed = _sstats_parse_markets([
+            {
+                "marketId": 99, "marketName": "Total Goals",
+                "bookmakerName": "Book A",
+                "odds": [{"name": "Over 2.5", "value": "1.85"}],
+            },
+            {
+                "marketId": 99, "marketName": "Total Goals",
+                "bookmakerName": "Book B",
+                "odds": [{"name": "Over 2.5", "value": "1.90"}],
+            },
+        ])
+        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 2)
+        self.assertTrue(parsed["total_market_confirmed"]["ТБ 2.5"])
+
+    def test_falls_back_to_odd_field_when_value_is_null(self):
+        parsed = _sstats_parse_markets([
+            {
+                "bookmakerName": "Book A",
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [{"name": "Over 2.5", "value": None, "odd": "1.85"}],
+                }],
+            },
+        ])
+        self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 1.85)
+
     def test_two_named_books_confirm_total_quote(self):
         parsed = _sstats_parse_markets([
             {
