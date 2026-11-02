@@ -368,10 +368,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     ]
     if displayed_quotes:
         quote_text = " · ".join(f"{pick}: **{odd:.2f}**" for pick, odd in displayed_quotes)
-        if market_filter is None:
-            st.caption("Найденные реальные коэффициенты по рынкам (каждая цена относится только к указанному исходу/линии): " + quote_text)
-        else:
-            st.caption("Коэффициенты букмекера именно для выбранного рынка: " + quote_text)
+        with st.expander("Другие коэффициенты", expanded=False):
+            st.caption("Котировки SStats по точным рынкам: " + quote_text)
     elif market_filter in {"goals", "btts", "corners", "cards"}:
         market_names = {"goals": "тотала голов", "btts": "рынка «Обе забьют»", "corners": "угловых", "cards": "карточек"}
         st.caption(
@@ -430,47 +428,31 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         has_positive_value = False
 
     if has_positive_value:
-        st.markdown("**🎯 Лучший вариант с положительным value**")
-        st.markdown(f"### {selected_label}")
-        st.caption(
-            f"Выбран по EV среди рынков с реальным коэффициентом: "
-            f"EV {selected_ev * 100:+.1f}% · Edge {selected_edge * 100:+.1f}%."
-        )
+        st.success("Есть подтверждённый коэффициент и модельный перевес.")
     elif auto_quote_exists:
-        st.markdown("**📊 Прогноз модели — ставки с положительным value не найдено**")
-        st.markdown(f"### {selected_label}")
-        st.warning(
-            f"Лучший из проверенных коэффициентов всё ещё без преимущества: "
-            f"EV {selected_ev * 100:+.1f}% · Edge {selected_edge * 100:+.1f}%. "
-            "Это прогноз для анализа, не рекомендация к ставке."
-        )
+        st.caption("Коэффициент есть, но надёжного преимущества не подтверждено — не ставить.")
     else:
-        st.markdown("**📊 Прогноз модели — без подтверждённого коэффициента**")
-        st.markdown(f"### {selected_label}")
-        st.caption("Реального коэффициента на выбранный исход не получено; ставку и value подтвердить нельзя.")
+        st.caption("Нет подтверждённого коэффициента — рекомендации к ставке нет.")
     market_is_validated = (market_type(pick) == "1X2" or
                            (market_type(pick) == "OU" and bool(c.get("total_market_validation"))))
-    fair_odd = (1.0 / model_prob) if model_prob > 0 else None
 
-    st.caption(
-        f"Вероятность модели: {model_prob * 100:.1f}% · "
-        + (f"справочный кэф модели: {fair_odd:.2f}" if fair_odd else "справочный кэф модели: нет расчёта")
-    )
     # Only markets with an actual bookmaker quote can be auto-priced.
     # Model fair odds are not a substitute for a real quote.
-    st.info(
-        "Для расчёта value используются только реальные котировки, сопоставленные с точным матчем "
-        "и выбранным рынком/линией. Основной источник котировок — SStats; также можно использовать "
-        "импортированные CSV/JSON. Справочный коэффициент модели не считается букмекерской ценой."
-    )
-
-    examples = {
-        "1X2": "Пример: выбрали «Победа хозяев (П1)» → берите коэффициент П1.",
-        "OU": "Пример: выбрали «ТБ 2.5» → берите кэф именно на тотал больше 2.5, не на ТМ 2.5.",
-        "BTTS": "Пример: выбрали «Обе команды забьют — да» → берите кэф на «Да», а не на «Нет».",
-        "STAT": "Пример: берите кэф именно на выбранную линию угловых или карточек. Эти рынки пока только для просмотра.",
-    }
-    st.caption(examples.get(market_type(pick), "Коэффициент должен соответствовать выбранному исходу и линии."))
+    if selected_odd is not None:
+        st.markdown(
+            f"<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;margin:8px 0;border:1px solid #285f51;border-radius:12px;background:linear-gradient(120deg,#102923,#101b22)'>"
+            f"<div><div style='font-size:11px;letter-spacing:.12em;color:#8fd8bd;font-weight:700'>НАШ ВЫБОР</div>"
+            f"<strong style='font-size:20px;color:#f1f7f5'>{html.escape(selected_label)}</strong></div>"
+            f"<div style='font-size:22px;font-weight:800;color:#8fe2c1;white-space:nowrap'>КФ {selected_odd:.2f}</div></div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f"<div style='padding:12px 16px;margin:8px 0;border:1px solid #46515a;border-radius:12px;background:#121a20'>"
+            f"<div style='font-size:11px;letter-spacing:.12em;color:#9aa9b2;font-weight:700'>НЕТ ПОДТВЕРЖДЁННОГО КЭФА</div>"
+            f"<strong style='font-size:18px;color:#d9e1e5'>{html.escape(selected_label)}</strong></div>",
+            unsafe_allow_html=True,
+        )
 
     key_base = f"manual_{c.get('match', '')}_{pick}".replace(" ", "_").replace("/", "_")
     input_key = f"odd_{key_base}"
@@ -487,8 +469,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         source_label = str((
             c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"}
             else c.get("odds_source")
-        ) or "Highlightly")
-        col_input.success(f"Кэф загружен автоматически ({source_label}): **{manual_odd:.2f}**")
+        ) or "SStats")
+        col_input.success(f"Коэффициент: **{manual_odd:.2f}** · {source_label}")
     else:
         manual_odd = None
         col_input.warning(
@@ -506,21 +488,15 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         edge = prob - market_implied
         stake = kelly(prob, manual_odd, D["bank"], kelly_frac, cap=0.02)
 
-        col_metrics.markdown(
-            f"**Расчёт для выбранного исхода**  \n"
-            f"- Вероятность модели (без подмешивания кэфа): **{prob * 100:.1f}%**  \n"
-            f"- Вероятность из кэфа (без снятия маржи): **{market_implied * 100:.1f}%**  \n"
-            f"- Edge модели: **{edge * 100:+.1f}%**  \n"
-            f"- EV по вероятности модели: **{ev * 100:+.1f}%**"
-        )
-        if abs(model_prob - market_implied) >= 0.20:
-            col_metrics.warning(
-                "Сильное расхождение модели и котировки (20 п.п. или больше). "
-                "Проверьте матч, выбранный исход и линию. Не используйте этот кэф "
-                "для ставки, пока причина расхождения не выяснена."
-            )
-        if market_is_validated:
-            col_metrics.caption(f"Предварительный размер по дробному Kelly: {stake:.2f} у.е. (лимит 2% банка).")
+        with col_metrics.expander("Детали (по желанию)", expanded=False):
+            st.write(f"Вероятность модели: {prob * 100:.1f}%")
+            st.write(f"Вероятность из коэффициента до снятия маржи: {market_implied * 100:.1f}%")
+            st.write(f"Преимущество модели: {edge * 100:+.1f}%")
+            st.write(f"Ожидаемая доходность: {ev * 100:+.1f}%")
+            if abs(model_prob - market_implied) >= 0.20:
+                st.warning("Модель сильно расходится с котировкой. Проверьте матч, исход и точную линию.")
+            if market_is_validated:
+                st.caption(f"Расчётный размер виртуальной ставки: {stake:.2f} у.е.")
 
         passed = (
             market_is_validated
@@ -571,7 +547,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         else:
             col_btn.caption("Автодобавление не сработало: не пройдены пороги вероятности, Edge, EV или Kelly.")
     elif source_odd is None:
-        col_metrics.caption("Ожидается реальный коэффициент выбранного рынка из Highlightly.")
+        col_metrics.caption("Нет подтверждённого коэффициента для этого исхода.")
 
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
@@ -889,7 +865,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         st.markdown(
             "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:8px 0 4px'>"
             "<div><div class='scanner-kicker'>SHORTLIST · AI MATCH DESK</div>"
-            "<h2 style='margin:0'>Что играем</h2>"
+            "<h2 style='margin:0'>На что ставить</h2>"
             "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>Только отобранные исходы. Расчёты — внутри, здесь главное решение и причина.</div></div>"
             "</div>",
             unsafe_allow_html=True,
