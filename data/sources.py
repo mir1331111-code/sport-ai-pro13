@@ -2691,7 +2691,7 @@ def _sstats_parse_markets(odds_payload):
                 elif any(term in market for term in ("card", "booking", "карточ")):
                     key = ("Карты ТБ " if is_over else "Карты ТМ ") + line_text
                     _record(key, odd, bookmaker, "stat_market_odds")
-                elif any(term in market for term in ("total goals", "goals total", "total goal", "goal total", "over/under goals", "тотал голов", "тотал гола", "голы тотал")):
+                elif any(term in market for term in ("total goals", "goals total", "total goal", "goal total", "over/under goals", "goals over/under", "goals over under", "total goals over under", "total over under goals", "тотал голов", "тотал гола", "голы тотал")):
                     key = ("ТБ " if is_over else "ТМ ") + line_text
                     _record(key, odd, bookmaker, "total_market_odds")
                 continue
