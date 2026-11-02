@@ -456,16 +456,17 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             or bool((c.get("total_market_confirmed") or {}).get(pick))
         )
         market_is_validated = history_validated and quote_corroborated
+        validation_notes = []
         if not history_validated:
-            validation_note = "Тоталы не прошли историческую проверку; Value не подтверждён."
-        elif not quote_corroborated:
-            validation_note = (
-                f"Котировка тотала получена только от одного букмекера"
-                f"{f' ({book_count})' if book_count else ''}. Цена показана, "
-                "но для подтверждения нужна вторая независимая котировка. Ставку не рекомендовать."
+            validation_notes.append(
+                "Тоталы не прошли историческую проверку; Value не подтверждён."
             )
-        else:
-            validation_note = ""
+        if not quote_corroborated:
+            validation_notes.append(
+                f"Котировка тотала получена только от {book_count or 1} букмекера. "
+                "Цена показана, но для подтверждения нужна вторая независимая котировка."
+            )
+        validation_note = " ".join(validation_notes)
     elif selected_market_type == "BTTS":
         # A real quote confirms the bookmaker price, not the model's historical
         # calibration. Do not describe BTTS as having failed a test that was never run.
@@ -523,6 +524,15 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"}
             else c.get("odds_source")
         ) or "SStats")
+        if market_type(pick) == "OU" and str(c.get("total_odds_source") or "").casefold() == "sstats":
+            book_name = (c.get("bookmaker_by_pick") or {}).get(pick)
+            book_count = int((c.get("total_market_book_count") or {}).get(pick) or 0)
+            source_label = (
+                f"SStats · {book_name or 'букмекер не указан'} · "
+                f"{book_count} {'букмекера' if book_count in (2, 3, 4) else 'букмекеров' if book_count > 4 else 'букмекер'}"
+            )
+            if not (c.get("total_market_confirmed") or {}).get(pick):
+                source_label += " · не подтверждена второй книгой"
         col_input.success(f"Коэффициент: **{manual_odd:.2f}** · {source_label}")
     else:
         manual_odd = None
