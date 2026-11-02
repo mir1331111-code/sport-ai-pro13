@@ -2581,28 +2581,47 @@ def _sstats_flat_bets(odds_payload):
 
 
 def _sstats_parse_markets(odds_payload):
-    """Normalize SStats marketName + Price(name,value) records to app market keys.
+    """Normalize SStats markets while keeping 1X2 odds from one coherent book.
 
-    For detailed bookmaker responses, bookmaker_by_pick records the bookmaker
-    offering the selected best decimal price. Compact fixtures may not include it.
+    Only explicit full-time result markets are accepted as 1X2. A complete
+    bookmaker line is selected as a unit; prices from different bookmakers
+    are never stitched together for market de-vigging.
     """
     prices = {
-        "П1": [], "X": [], "П2": [],
         "total_market_odds": {},
         "btts_market_odds": {},
         "stat_market_odds": {},
         "asian_handicap_market_odds": {},
     }
     bookmaker_by_pick = {}
+    one_x_two_by_book = {}
 
     def _record(selection, odd, bookmaker, group=None):
         target = prices[group] if group else prices
-        values = target.setdefault(selection, []) if group else target[selection]
-        values.append(odd)
-        if bookmaker:
-            best = max(values)
-            if odd >= best:
-                bookmaker_by_pick[selection] = bookmaker
+        values = target.setdefault(selection, []) if group else target.setdefault(selection, [])
+        values.append((odd, bookmaker))
+        
+    def _market_key(value):
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+    def _is_full_time_1x2(value):
+        market = _market_key(value)
+        # Explicit period/market qualifiers must never be mistaken for full-time 1X2.
+        excluded = (
+            "first half", "1st half", "half time", "half-time", "second half",
+            "2nd half", "extra time", "penalty", "to qualify", "corners",
+            "corner", "cards", "handicap", "asian", "period",
+        )
+        if any(term in market for term in excluded):
+            return False
+        exact = {
+            "1x2", "match result", "full time result", "fulltime result",
+            "match winner", "90 minutes result", "90 min result",
+            "result after 90 minutes", "1x2 90 minutes", "1x2 regular time",
+        }
+        if market in exact:
+            return True
+        return bool(re.search(r"\b(full time|fulltime|90 min|90 minutes)\b.*\b(result|winner)\b", market))
 
     for bet, bookmaker in _sstats_flat_bets(odds_payload):
         market_name = str(bet.get("marketName") or bet.get("name") or "").strip()
@@ -2620,18 +2639,18 @@ def _sstats_parse_markets(odds_payload):
             if odd is None:
                 continue
 
-            # 1X2 / match-result market.
-            is_1x2 = any(term in market for term in (
-                "1x2", "match result", "full time result", "match winner",
-                "winner", "исход матча", "результат матча",
-            ))
-            if is_1x2:
+            # Only a named full-time 1X2 market qualifies; plain "winner" is ambiguous.
+            if _is_full_time_1x2(market_name):
+                selection = None
                 if label_norm in ("1", "home", "home win", "п1", "1 (home)"):
-                    _record("П1", odd, bookmaker)
+                    selection = "П1"
                 elif label_norm in ("x", "х", "draw", "tie", "ничья"):
-                    _record("X", odd, bookmaker)
+                    selection = "X"
                 elif label_norm in ("2", "away", "away win", "п2", "2 (away)"):
-                    _record("П2", odd, bookmaker)
+                    selection = "П2"
+                if selection:
+                    book_key = str(bookmaker or "").strip()
+                    one_x_two_by_book.setdefault(book_key, {}).setdefault(selection, []).append(odd)
                 continue
 
             # Both teams to score.
@@ -2690,16 +2709,42 @@ def _sstats_parse_markets(odds_payload):
         "extra_market_source": "sstats",
         "source": "sstats",
     }
-    for key in ("П1", "X", "П2"):
-        if prices[key]:
-            result[key] = max(prices[key])
+
+    # Prefer the complete valid 1X2 line with the lowest overround. This makes
+    # every no-vig probability traceable to one bookmaker's actual line.
+    complete_lines = []
+    for book, selections in one_x_two_by_book.items():
+        if not all(selections.get(pick) for pick in ("П1", "X", "П2")):
+            continue
+        line = {pick: max(selections[pick]) for pick in ("П1", "X", "П2")}
+        implied_sum = sum(1.0 / odd for odd in line.values())
+        # Values outside this broad range are likely wrong market mapping/data.
+        if not (0.85 <= implied_sum <= 1.35):
+            continue
+        complete_lines.append((implied_sum, book, line))
+    if complete_lines:
+        _, selected_book, selected_line = min(complete_lines, key=lambda item: item[0])
+        result.update(selected_line)
+        if selected_book:
+            result["bookmaker_by_pick"] = {pick: selected_book for pick in selected_line}
+        else:
+            # A compact feed without book provenance cannot be safely de-vigged.
+            result["bookmaker_by_pick"] = {}
+
     for group in (
         "total_market_odds", "btts_market_odds", "stat_market_odds",
         "asian_handicap_market_odds",
     ):
         result[group] = {
-            key: max(values) for key, values in prices[group].items() if values
+            key: max(odd for odd, _book in values)
+            for key, values in prices[group].items() if values
         }
+        for key, values in prices[group].items():
+            if values:
+                best_odd = max(odd for odd, _book in values)
+                best_book = next((book for odd, book in reversed(values) if odd == best_odd and book), "")
+                if best_book:
+                    result["bookmaker_by_pick"][key] = best_book
     return result
 
 
