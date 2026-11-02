@@ -597,10 +597,13 @@ with st.sidebar:
         with st.spinner("Проверяю ключ SStats, расписание и Odds…"):
             _sstats_check = sstats_account_check(sstats_key)
         if (_sstats_check.get("ok") and _sstats_check.get("games_ok")
-                and _sstats_check.get("odds_checked")):
-            st.success(_sstats_check.get("message", "SStats подключён, Odds доступны."))
+                and _sstats_check.get("total_line_count", 0) > 0):
+            st.success(_sstats_check.get("message", "SStats подключён; подтверждённые тоталы найдены."))
         elif _sstats_check.get("ok") and _sstats_check.get("games_ok"):
-            st.warning(_sstats_check.get("message", "Ключ и расписание работают, но Odds пока не подтверждён."))
+            st.warning(_sstats_check.get(
+                "message",
+                "Ключ и расписание работают, но подтверждённые тоталы в тестовой выборке не найдены."
+            ))
         elif _sstats_check.get("ok"):
             st.warning(_sstats_check.get("message", "Ключ SStats подтверждён, но данные матчей недоступны."))
         else:
