@@ -2573,7 +2573,13 @@ def _sstats_flat_bets(odds_payload):
             continue
         # Detailed /Odds/{gameId} response: bookmaker object contains ApiSaBet[].
         nested = item.get("odds")
-        bookmaker = str(item.get("bookmakerName") or "").strip()
+        bookmaker_raw = item.get("bookmakerName") or item.get("bookmaker")
+        if isinstance(bookmaker_raw, dict):
+            bookmaker_raw = (
+                bookmaker_raw.get("name") or bookmaker_raw.get("bookmakerName")
+                or bookmaker_raw.get("title")
+            )
+        bookmaker = str(bookmaker_raw or item.get("name") or "").strip()
         if isinstance(nested, list):
             for bet in nested:
                 if isinstance(bet, dict):
@@ -2604,6 +2610,10 @@ def _sstats_parse_markets(odds_payload):
     def _market_key(value):
         return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
 
+    def _book_key(value):
+        # Provider casing/spacing differences must not count as two books.
+        return re.sub(r"\\s+", " ", str(value or "").strip()).casefold()
+
     def _is_full_time_1x2(value):
         market = _market_key(value)
         # Explicit period/market qualifiers must never be mistaken for full-time 1X2.
@@ -2624,7 +2634,10 @@ def _sstats_parse_markets(odds_payload):
         return bool(re.search(r"\b(full time|fulltime|90 min|90 minutes)\b.*\b(result|winner)\b", market))
 
     for bet, bookmaker in _sstats_flat_bets(odds_payload):
-        market_name = str(bet.get("marketName") or bet.get("name") or "").strip()
+        market_raw = bet.get("marketName") or bet.get("market") or bet.get("name") or ""
+        if isinstance(market_raw, dict):
+            market_raw = market_raw.get("name") or market_raw.get("title") or ""
+        market_name = str(market_raw).strip()
         market = market_name.casefold()
         price_rows = bet.get("odds") or bet.get("values") or bet.get("outcomes") or []
         if not isinstance(price_rows, list):
@@ -2633,9 +2646,18 @@ def _sstats_parse_markets(odds_payload):
         for price_row in price_rows:
             if not isinstance(price_row, dict):
                 continue
-            label = str(price_row.get("name") or price_row.get("label") or price_row.get("valueName") or "").strip()
+            label = str(
+                price_row.get("name") or price_row.get("label")
+                or price_row.get("valueName") or price_row.get("outcomeName")
+                or price_row.get("selectionName") or price_row.get("outcome") or ""
+            ).strip()
             label_norm = label.casefold()
-            odd = _sstats_float(price_row.get("value", price_row.get("odd", price_row.get("price"))))
+            raw_odd = next(
+                (price_row.get(field) for field in ("value", "odd", "price", "odds")
+                 if price_row.get(field) not in (None, "")),
+                None,
+            )
+            odd = _sstats_float(raw_odd)
             if odd is None:
                 continue
 
@@ -2815,7 +2837,7 @@ def _sstats_parse_markets(odds_payload):
             # Anonymous compact-feed totals remain hidden because their bookmaker
             # provenance cannot be checked or shown to the user.
             valid_total_books = (
-                {book for _odd, book in valid if book}
+                {_book_key(book) for _odd, book in valid if _book_key(book)}
                 if group == "total_market_odds" else set()
             )
             if group == "total_market_odds" and not valid_total_books:
@@ -2837,7 +2859,7 @@ def _sstats_parse_markets(odds_payload):
             if best_book:
                 result["bookmaker_by_pick"][key] = best_book
             if group == "total_market_odds":
-                credible_books = {book for _odd, book in credible if book}
+                credible_books = {_book_key(book) for _odd, book in credible if _book_key(book)}
                 result["total_market_book_count"][key] = len(credible_books)
                 result["total_market_confirmed"][key] = len(credible_books) >= 2
     return result
