@@ -20,7 +20,6 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
                           parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture,
                           sstats_upcoming_matches, sstats_odds_fixture)
 from data.fixture_merge import merge_fixture_sources, fixture_key
-from data.marathon import marathon_odds
 from model.engine import Engine
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
@@ -457,7 +456,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # Model fair odds are not a substitute for a real quote.
     st.info(
         "Для расчёта value используются только реальные котировки, сопоставленные с точным матчем "
-        "и выбранным рынком/линией. Источником может быть Highlightly, Prognozist/Marathon или "
+        "и выбранным рынком/линией. Источником может быть Highlightly или "
         "импортированный CSV/JSON. Справочный коэффициент модели не считается букмекерской ценой."
     )
 
@@ -839,13 +838,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     with st.expander("⚙️ Настройки сканера", expanded=False):
         st.caption("Дополнительные параметры скрыты, чтобы не перегружать основной экран.")
         source_col, portfolio_col = st.columns(2)
-        with source_col:
-            st.checkbox(
-                "Разрешить источник Prognozist / Marathon",
-                value=False,
-                key="prognozist_permission_input",
-                help="Источник используется только в рамках доступных условий и разрешений.",
-            )
         with portfolio_col:
             auto_add = st.checkbox(
                 "Автодобавление в виртуальный портфель",
@@ -993,9 +985,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             st.warning("Ничего не найдено.")
             return
 
-        # Until verified Marathon odds are available for extra markets, keep
-        # the scanner focused on 1X2 only. This prevents model-only totals/BTTS
-        # forecasts from being presented beside winner odds or entering the portfolio.
         market_tabs = st.tabs([
             f"Все матчи ({len(cards_view)})",
             f"Победа / 1X2 ({sum(bool(c.get('market_odds')) for c in cards_view)})",
@@ -1031,7 +1020,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     c, D, kelly_frac, min_prob, min_edge, market_filter="winner"
                 )
 
-        st.caption("Пока доступны только подтверждённые коэффициенты 1X2. Тоталы, «Обе забьют», угловые и карточки временно скрыты до проверки реальных котировок Marathon.")
+        st.caption("Пока доступны только подтверждённые коэффициенты 1X2. Тоталы, «Обе забьют», угловые и карточки временно скрыты до проверки реальных котировок.")
         st.caption("✅ Показано " + str(len(cards_view)) + " из "
                    + str(len(all_cards)))
         return
@@ -1165,8 +1154,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                           "model_only": 0, "estimated": 0, "real": 0}
         if not highlightly_key:
             logs.append(
-                "ℹ️ Highlightly не настроен; сканер продолжит работу через Prognozist/Marathon "
-                "и импортированные CSV/JSON-котировки."
+                "ℹ️ Highlightly не настроен; доступны только импортированные CSV/JSON-котировки."
             )
 
         for match_idx, r in enumerate(rows, 1):
@@ -1347,32 +1335,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 f"⚠️ Highlightly резервный запрос не сработал: "
                                 f"{type(exc).__name__}: {str(exc)[:120]}"
                             )
-
-                    # Fallback: Prognozist/Marathon real 1X2 line, using strict team and date matching.
-                    # This runs when Highlightly is unavailable or has no line for this fixture.
-                    if not all(key in market_odds for key in ("П1", "X", "П2")):
-                        try:
-                            marathon_line = marathon_odds(
-                                h_en, a_en, d.strftime("%Y-%m-%d"), lg
-                            )
-                            if isinstance(marathon_line, dict) and all(
-                                key in marathon_line for key in ("П1", "X", "П2")
-                            ):
-                                candidate = {}
-                                for key in ("П1", "X", "П2"):
-                                    value = float(marathon_line[key])
-                                    if not 1.01 < value <= 100:
-                                        raise ValueError(f"invalid {key} odds")
-                                    candidate[key] = value
-                                market_odds = candidate
-                                odds_source = "prognozist_marathon"
-                                funnel_counts["market_req"] += 1
-                                logs.append(
-                                    f"🏁 Prognozist/Marathon: {h_ru} — {a_ru} | "
-                                    f"П1 {candidate['П1']:.2f} / X {candidate['X']:.2f} / П2 {candidate['П2']:.2f}"
-                                )
-                        except Exception as exc:
-                            logs.append(f"⚠️ Prognozist/Marathon: {type(exc).__name__}: {str(exc)[:100]}")
 
                     # Imported CSV/JSON quote: match by normalized teams and date.
                     if not all(key in market_odds for key in ("П1", "X", "П2")):
