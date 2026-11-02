@@ -82,14 +82,17 @@ class SStatsTests(unittest.TestCase):
             self.assertEqual(result["П1"], 1.82)
             self.assertEqual(result["X"], 3.55)
             self.assertEqual(result["П2"], 4.70)
-            # Compact feeds and single-book detail responses do not identify
-            # two independent books, so total prices must not be marked confirmed.
-            self.assertEqual(result["total_market_odds"], {})
             self.assertEqual(result["btts_market_odds"]["BTTS Да"], 1.80)
             self.assertEqual(result["btts_market_odds"]["BTTS Нет"], 2.00)
             self.assertEqual(result["stat_market_odds"]["Угл ТБ 9.5"], 1.88)
             self.assertEqual(result["stat_market_odds"]["Карты ТМ 4.5"], 1.95)
             self.assertEqual(result["source"], "sstats")
+        # Anonymous compact prices stay hidden. A named single-book quote is
+        # displayed as a real price but explicitly marked uncorroborated.
+        self.assertEqual(compact_result["total_market_odds"], {})
+        self.assertEqual(detailed_result["total_market_odds"]["ТБ 2.5"], 1.91)
+        self.assertEqual(detailed_result["total_market_book_count"]["ТБ 2.5"], 1)
+        self.assertFalse(detailed_result["total_market_confirmed"]["ТБ 2.5"])
         self.assertEqual(detailed_result["bookmaker_by_pick"]["П1"], "Example bookmaker")
 
     @patch.object(sources, "_sstats_request")
