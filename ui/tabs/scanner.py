@@ -1489,8 +1489,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     if all(key in valid_imported for key in ("П1", "X", "П2")):
                                         market_odds = {key: valid_imported[key] for key in ("П1", "X", "П2")}
                                         odds_source = str(quote.get("source") or "manual_import")
-                                    total_market_odds.update({k: v for k, v in valid_imported.items()
-                                                              if k.startswith(("ТБ ", "ТМ "))})
+                                    imported_totals = {
+                                        k: v for k, v in valid_imported.items()
+                                        if k.startswith(("ТБ ", "ТМ "))
+                                    }
+                                    if imported_totals:
+                                        # A single fixture-level source label cannot safely
+                                        # describe a mixture of SStats and imported prices.
+                                        # Replace the complete totals map and clear the
+                                        # SStats-only corroboration metadata with it.
+                                        total_market_odds = imported_totals
+                                        total_market_book_count = {}
+                                        total_market_confirmed = {}
                                     btts_market_odds.update({k: v for k, v in valid_imported.items()
                                                              if k.startswith("BTTS ")})
                                     stat_market_odds.update({k: v for k, v in valid_imported.items()
