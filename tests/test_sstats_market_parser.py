@@ -69,6 +69,26 @@ class SStatsMarketParserTests(unittest.TestCase):
         self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 1.62)
         self.assertNotEqual(parsed["total_market_odds"]["ТБ 2.5"], 10.25)
 
+    def test_two_named_books_confirm_total_quote(self):
+        parsed = _sstats_parse_markets([
+            {
+                "bookmakerName": "Book A",
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [{"name": "Over 2.5", "value": "1.85"}],
+                }],
+            },
+            {
+                "bookmakerName": "Book B",
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [{"name": "Over 2.5", "value": "1.90"}],
+                }],
+            },
+        ])
+        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 2)
+        self.assertTrue(parsed["total_market_confirmed"]["ТБ 2.5"])
+
     def test_does_not_publish_extreme_total_longshot(self):
         parsed = _sstats_parse_markets([{
             "bookmakerName": "Bad feed",
@@ -112,15 +132,17 @@ class SStatsMarketParserTests(unittest.TestCase):
         }])
         self.assertNotIn("ТБ 1.5", parsed["total_market_odds"])
 
-    def test_requires_two_named_books_to_confirm_total(self):
+    def test_keeps_single_named_book_total_as_unconfirmed_quote(self):
         parsed = _sstats_parse_markets([{
             "bookmakerName": "Only Book",
             "odds": [{
                 "marketName": "Total Goals",
-                "odds": [{"name": "Over 3.5", "value": "8.00"}],
+                "odds": [{"name": "Over 3.5", "value": "2.05"}],
             }],
         }])
-        self.assertNotIn("ТБ 3.5", parsed["total_market_odds"])
+        self.assertEqual(parsed["total_market_odds"]["ТБ 3.5"], 2.05)
+        self.assertEqual(parsed["total_market_book_count"]["ТБ 3.5"], 1)
+        self.assertFalse(parsed["total_market_confirmed"]["ТБ 3.5"])
 
     def test_allows_explicit_full_time_result_alias(self):
         parsed = _sstats_parse_markets([
