@@ -69,6 +69,27 @@ class SStatsMarketParserTests(unittest.TestCase):
         self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 1.62)
         self.assertNotEqual(parsed["total_market_odds"]["ТБ 2.5"], 10.25)
 
+    def test_anonymous_total_quote_cannot_override_named_book_price(self):
+        parsed = _sstats_parse_markets([
+            {
+                "bookmakerName": "Named Book",
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [{"name": "Over 2.5", "value": "2.00"}],
+                }],
+            },
+            {
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [{"name": "Over 2.5", "value": "2.40"}],
+                }],
+            },
+        ])
+        self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 2.00)
+        self.assertEqual(parsed["bookmaker_by_pick"]["ТБ 2.5"], "Named Book")
+        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 1)
+        self.assertFalse(parsed["total_market_confirmed"]["ТБ 2.5"])
+
     def test_two_named_books_confirm_total_quote(self):
         parsed = _sstats_parse_markets([
             {
