@@ -2763,6 +2763,8 @@ def _sstats_parse_markets(odds_payload):
 
     result = {
         "total_market_odds": {},
+        "total_market_book_count": {},
+        "total_market_confirmed": {},
         "btts_market_odds": {},
         "stat_market_odds": {},
         "asian_handicap_market_odds": {},
@@ -2802,9 +2804,16 @@ def _sstats_parse_markets(odds_payload):
                      if 1.01 <= float(odd) <= 100.0]
             if not valid:
                 continue
-            # A single uncorroborated total quote can be a wrong market mapping
-            # (or a bad feed outlier). Do not publish it as a confirmed price.
-            if group == "total_market_odds" and len({book for _odd, book in valid if book}) < 2:
+            # A single named bookmaker still supplies a real, displayable quote.
+            # Keep it visible but mark it uncorroborated; only two or more distinct
+            # named books can make this market eligible for automated validation.
+            # Anonymous compact-feed totals remain hidden because their bookmaker
+            # provenance cannot be checked or shown to the user.
+            valid_total_books = (
+                {book for _odd, book in valid if book}
+                if group == "total_market_odds" else set()
+            )
+            if group == "total_market_odds" and not valid_total_books:
                 continue
             ordered = sorted(odd for odd, _book in valid)
             middle = len(ordered) // 2
@@ -2822,6 +2831,10 @@ def _sstats_parse_markets(odds_payload):
             result[group][key] = best_odd
             if best_book:
                 result["bookmaker_by_pick"][key] = best_book
+            if group == "total_market_odds":
+                credible_books = {book for _odd, book in credible if book}
+                result["total_market_book_count"][key] = len(credible_books)
+                result["total_market_confirmed"][key] = len(credible_books) >= 2
     return result
 
 
@@ -2909,6 +2922,8 @@ def sstats_account_check(api_key: str) -> dict:
     checked_matches = 0
     totals_fixtures = 0
     total_line_count = 0
+    total_quote_line_count = 0
+    unconfirmed_total_line_count = 0
     btts_fixtures = 0
     handicap_fixtures = 0
     markets_seen = set()
@@ -2937,9 +2952,15 @@ def sstats_account_check(api_key: str) -> dict:
                 "stat_market_odds", "asian_handicap_market_odds",
             )
         )
-        if totals:
+        total_quote_line_count += len(totals)
+        confirmed_totals = {
+            line for line, is_confirmed in (detailed.get("total_market_confirmed") or {}).items()
+            if is_confirmed
+        }
+        unconfirmed_total_line_count += max(0, len(totals) - len(confirmed_totals))
+        if confirmed_totals:
             totals_fixtures += 1
-            total_line_count += len(totals)
+            total_line_count += len(confirmed_totals)
         if btts:
             btts_fixtures += 1
         if handicaps:
@@ -2955,10 +2976,19 @@ def sstats_account_check(api_key: str) -> dict:
             f"подтверждённые тоталы: {total_line_count} линий на {totals_fixtures} "
             f"из {checked_matches} проверенных матчей."
         )
+        if unconfirmed_total_line_count:
+            detail_message += (
+                f" Ещё {unconfirmed_total_line_count} линий пришли только от одного букмекера."
+            )
+    elif total_quote_line_count:
+        detail_message = (
+            f"получено {total_quote_line_count} реальных линий тотала, но каждая "
+            "только от одного букмекера; для автоматической ставки нужна вторая независимая котировка."
+        )
     else:
         detail_message = (
-            f"Odds ответил для {checked_matches} матчей, но подтверждённых тоталов "
-            "голов (линия от двух букмекеров) в этой выборке нет."
+            f"Odds ответил для {checked_matches} матчей, но котировки на тоталы голов "
+            "в этой выборке не найдены."
         )
     other_markets = []
     if btts_fixtures:
@@ -2976,6 +3006,8 @@ def sstats_account_check(api_key: str) -> dict:
         "checked_matches": checked_matches,
         "totals_fixtures": totals_fixtures,
         "total_line_count": total_line_count,
+        "total_quote_line_count": total_quote_line_count,
+        "unconfirmed_total_line_count": unconfirmed_total_line_count,
         "btts_fixtures": btts_fixtures,
         "handicap_fixtures": handicap_fixtures,
         "markets_seen": sorted(markets_seen)[:12],
@@ -3158,7 +3190,7 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
     if not key or game_id in (None, ""):
         return None
     cache_key = (
-        f"sstats_full_odds_v4_{game_id}_"
+        f"sstats_full_odds_v5_{game_id}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 1800)
@@ -3197,7 +3229,10 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
         cache_put(cache_key, result)
         if logs is not None:
             group_counts = {
-                "тоталы": len(result.get("total_market_odds") or {}),
+                "тоталы": (
+                    f"{len(result.get('total_market_odds') or {})} "
+                    f"(подтверждены {sum(bool(x) for x in (result.get('total_market_confirmed') or {}).values())})"
+                ),
                 "BTTS": len(result.get("btts_market_odds") or {}),
                 "статистика": len(result.get("stat_market_odds") or {}),
                 "форы": len(result.get("asian_handicap_market_odds") or {}),
