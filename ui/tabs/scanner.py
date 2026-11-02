@@ -368,10 +368,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     ]
     if displayed_quotes:
         quote_text = " · ".join(f"{pick}: **{odd:.2f}**" for pick, odd in displayed_quotes)
-        if market_filter is None:
-            st.caption("Котировки SStats: " + quote_text)
-        else:
-            st.caption("Коэффициенты SStats для выбранного рынка: " + quote_text)
+        with st.expander("Другие коэффициенты", expanded=False):
+            st.caption("Котировки SStats по точным рынкам: " + quote_text)
     elif market_filter in {"goals", "btts", "corners", "cards"}:
         market_names = {"goals": "тотала голов", "btts": "рынка «Обе забьют»", "corners": "угловых", "cards": "карточек"}
         st.caption(
