@@ -2802,6 +2802,11 @@ def _sstats_parse_markets(odds_payload):
             # Avoid selecting a stale/malformed extreme quote as the "best" price.
             valid = [(float(odd), str(book or "").strip()) for odd, book in values
                      if 1.01 <= float(odd) <= 100.0]
+            if group == "total_market_odds":
+                # Totals require an identifiable bookmaker even for display.
+                # Do not let anonymous compact-feed prices affect the median,
+                # selected price, or corroboration count of a named-book quote.
+                valid = [(odd, book) for odd, book in valid if book]
             if not valid:
                 continue
             # A single named bookmaker still supplies a real, displayable quote.
