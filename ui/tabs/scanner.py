@@ -1339,6 +1339,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 # larger quote from another feed. A higher price
                                 # is not evidence that it belongs to the right line.
                                 if group == "total_market_odds" and verified_quotes:
+                                    # Remove stale bookmaker provenance alongside stale prices.
+                                    # Otherwise devigging can attribute a new provider's quote
+                                    # to a bookmaker attached to the replaced quote.
+                                    for old_selection in list(target):
+                                        bookmaker_by_pick.pop(old_selection, None)
                                     target.clear()
                                     for selection, raw_value in verified_quotes.items():
                                         try:
