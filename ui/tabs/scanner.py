@@ -20,7 +20,6 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
                           parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture,
                           sstats_upcoming_matches, sstats_odds_fixture)
 from data.fixture_merge import merge_fixture_sources, fixture_key
-from data.marathon import marathon_odds
 from model.engine import Engine
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
@@ -839,13 +838,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     with st.expander("⚙️ Настройки сканера", expanded=False):
         st.caption("Дополнительные параметры скрыты, чтобы не перегружать основной экран.")
         source_col, portfolio_col = st.columns(2)
-        with source_col:
-            st.checkbox(
-                "Разрешить источник Prognozist / Marathon",
-                value=False,
-                key="prognozist_permission_input",
-                help="Источник используется только в рамках доступных условий и разрешений.",
-            )
         with portfolio_col:
             auto_add = st.checkbox(
                 "Автодобавление в виртуальный портфель",
@@ -1158,7 +1150,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Full bookmaker markets are requested only for a limited shortlist to respect
         # the provider's free API quota.
         sstats_detail_calls = 0
-        SSTATS_DETAIL_MAX_PER_SCAN = 20
+        # Bound per-fixture requests to avoid exhausting the provider's API quota.
+        # Compact odds from Games/list remain available for every fixture.
+        SSTATS_DETAIL_MAX_PER_SCAN = 100
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
@@ -1295,84 +1289,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 "stat_market_odds", "asian_handicap_market_odds"
                             )):
                                 extra_market_source = "sstats"
-
-                    # Highlightly is a reserve source: consult it only when SStats did not
-                    # provide a complete 1X2 market for this exact fixture.
-                    has_complete_1x2 = all(key in market_odds for key in ("П1", "X", "П2"))
-                    if highlightly_key and not has_complete_1x2:
-                        funnel_counts["market_req"] += 1
-                        try:
-                            highlighted = highlightly_odds_fixture(
-                                d.strftime("%Y-%m-%d"), h_en, a_en, highlightly_key, logs
-                            )
-                            if isinstance(highlighted, dict):
-                                highlighted_1x2 = {
-                                    key: highlighted[key]
-                                    for key in ("П1", "X", "П2")
-                                    if highlighted.get(key) is not None
-                                }
-                                if all(key in highlighted_1x2 for key in ("П1", "X", "П2")):
-                                    market_odds = highlighted_1x2
-                                    odds_source = "highlightly_fallback"
-                                    bookmaker_by_pick.update(highlighted.get("bookmaker_by_pick") or {})
-                                    logs.append(
-                                        f"🛟 Highlightly резерв: использованы коэффициенты 1X2 для {h_ru} — {a_ru}; "
-                                        "полной линии SStats нет."
-                                    )
-                                # Secondary markets are strictly a fallback too: preserve
-                                # SStats prices and fill only market/line keys it did not return.
-                                for group_name, target in (
-                                    ("total_market_odds", total_market_odds),
-                                    ("btts_market_odds", btts_market_odds),
-                                    ("stat_market_odds", stat_market_odds),
-                                    ("asian_handicap_market_odds", asian_handicap_market_odds),
-                                ):
-                                    incoming = highlighted.get(group_name) or {}
-                                    if not isinstance(incoming, dict):
-                                        continue
-                                    missing = {
-                                        key: value for key, value in incoming.items()
-                                        if key not in target
-                                    }
-                                    target.update(missing)
-                                    if missing:
-                                        if group_name == "total_market_odds" and total_odds_source in ("", "no_market"):
-                                            total_odds_source = "highlightly_fallback"
-                                        if group_name == "btts_market_odds" and btts_odds_source in ("", "no_market"):
-                                            btts_odds_source = "highlightly_fallback"
-                                        if not extra_market_source:
-                                            extra_market_source = "highlightly_fallback"
-                        except Exception as exc:
-                            logs.append(
-                                f"⚠️ Highlightly резервный запрос не сработал: "
-                                f"{type(exc).__name__}: {str(exc)[:120]}"
-                            )
-
-                    # Fallback: Prognozist/Marathon real 1X2 line, using strict team and date matching.
-                    # This runs when Highlightly is unavailable or has no line for this fixture.
-                    if not all(key in market_odds for key in ("П1", "X", "П2")):
-                        try:
-                            marathon_line = marathon_odds(
-                                h_en, a_en, d.strftime("%Y-%m-%d"), lg
-                            )
-                            if isinstance(marathon_line, dict) and all(
-                                key in marathon_line for key in ("П1", "X", "П2")
-                            ):
-                                candidate = {}
-                                for key in ("П1", "X", "П2"):
-                                    value = float(marathon_line[key])
-                                    if not 1.01 < value <= 100:
-                                        raise ValueError(f"invalid {key} odds")
-                                    candidate[key] = value
-                                market_odds = candidate
-                                odds_source = "prognozist_marathon"
-                                funnel_counts["market_req"] += 1
-                                logs.append(
-                                    f"🏁 Prognozist/Marathon: {h_ru} — {a_ru} | "
-                                    f"П1 {candidate['П1']:.2f} / X {candidate['X']:.2f} / П2 {candidate['П2']:.2f}"
-                                )
-                        except Exception as exc:
-                            logs.append(f"⚠️ Prognozist/Marathon: {type(exc).__name__}: {str(exc)[:100]}")
 
                     # Imported CSV/JSON quote: match by normalized teams and date.
                     if not all(key in market_odds for key in ("П1", "X", "П2")):
