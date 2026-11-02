@@ -520,6 +520,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 
     if source_odd is not None:
         manual_odd = source_odd
+        quote_is_confirmed = True
         source_label = str((
             c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"}
             else c.get("odds_source")
@@ -527,13 +528,17 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         if market_type(pick) == "OU" and str(c.get("total_odds_source") or "").casefold() == "sstats":
             book_name = (c.get("bookmaker_by_pick") or {}).get(pick)
             book_count = int((c.get("total_market_book_count") or {}).get(pick) or 0)
+            quote_is_confirmed = bool((c.get("total_market_confirmed") or {}).get(pick))
             source_label = (
                 f"SStats · {book_name or 'букмекер не указан'} · "
                 f"{book_count} {'букмекера' if book_count in (2, 3, 4) else 'букмекеров' if book_count > 4 else 'букмекер'}"
             )
-            if not (c.get("total_market_confirmed") or {}).get(pick):
+            if not quote_is_confirmed:
                 source_label += " · не подтверждена второй книгой"
-        col_input.success(f"Коэффициент: **{manual_odd:.2f}** · {source_label}")
+        if quote_is_confirmed:
+            col_input.success(f"Коэффициент: **{manual_odd:.2f}** · {source_label}")
+        else:
+            col_input.warning(f"Коэффициент: **{manual_odd:.2f}** · {source_label}")
     else:
         manual_odd = None
         col_input.warning(
