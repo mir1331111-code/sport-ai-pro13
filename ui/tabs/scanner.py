@@ -1497,7 +1497,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                         # A single fixture-level source label cannot safely
                                         # describe a mixture of SStats and imported prices.
                                         # Replace the complete totals map and clear the
-                                        # SStats-only corroboration metadata with it.
+                                        # SStats-only provenance/corroboration metadata with it.
+                                        for old_selection in list(total_market_odds):
+                                            bookmaker_by_pick.pop(old_selection, None)
                                         total_market_odds = imported_totals
                                         total_market_book_count = {}
                                         total_market_confirmed = {}
