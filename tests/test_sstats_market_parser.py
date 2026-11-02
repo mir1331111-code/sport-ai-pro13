@@ -58,6 +58,32 @@ class SStatsMarketParserTests(unittest.TestCase):
         self.assertEqual(parsed.get("X"), 3.50)
         self.assertEqual(parsed.get("П2"), 3.80)
 
+    def test_totals_require_a_coherent_two_way_quote_from_one_book(self):
+        payload = [
+            {
+                "bookmakerName": "Book A",
+                "odds": [
+                    {"marketName": "Total Goals", "odds": [
+                        {"name": "Over 2.5", "value": "1.80"},
+                        {"name": "Under 2.5", "value": "2.05"},
+                    ]},
+                ],
+            },
+            {
+                "bookmakerName": "Book B",
+                "odds": [
+                    {"marketName": "Total Goals", "odds": [
+                        {"name": "Over 2.5", "value": "10.25"},
+                    ]},
+                ],
+            },
+        ]
+        parsed = _sstats_parse_markets(payload)
+        self.assertEqual(parsed["total_market_odds"].get("ТБ 2.5"), 1.80)
+        self.assertEqual(parsed["total_market_odds"].get("ТМ 2.5"), 2.05)
+        self.assertEqual(parsed["bookmaker_by_pick"].get("ТБ 2.5"), "Book A")
+        self.assertNotEqual(parsed["total_market_odds"].get("ТБ 2.5"), 10.25)
+
 
 if __name__ == "__main__":
     unittest.main()
