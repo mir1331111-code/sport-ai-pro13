@@ -1297,7 +1297,28 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     "stat_market_odds": stat_market_odds,
                                     "asian_handicap_market_odds": asian_handicap_market_odds,
                                 }[group]
-                                for selection, raw_value in (detailed.get(group) or {}).items():
+                                verified_quotes = detailed.get(group) or {}
+
+                                # For totals, detailed SStats data has explicit
+                                # bookmaker provenance and was independently
+                                # corroborated by the parser. Replace the whole
+                                # previous totals map rather than retaining a
+                                # larger quote from another feed. A higher price
+                                # is not evidence that it belongs to the right line.
+                                if group == "total_market_odds" and verified_quotes:
+                                    target.clear()
+                                    for selection, raw_value in verified_quotes.items():
+                                        try:
+                                            value = float(raw_value)
+                                            if 1.01 < value <= 8.0:
+                                                target[selection] = value
+                                                if detailed_bookmakers.get(selection):
+                                                    bookmaker_by_pick[selection] = detailed_bookmakers[selection]
+                                        except (TypeError, ValueError):
+                                            continue
+                                    continue
+
+                                for selection, raw_value in verified_quotes.items():
                                     try:
                                         value = float(raw_value)
                                         current = float(target.get(selection) or 0)
