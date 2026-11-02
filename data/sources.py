@@ -2612,7 +2612,7 @@ def _sstats_parse_markets(odds_payload):
 
     def _book_key(value):
         # Provider casing/spacing differences must not count as two books.
-        return re.sub(r"\\s+", " ", str(value or "").strip()).casefold()
+        return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
 
     def _is_full_time_1x2(value):
         market = _market_key(value)
