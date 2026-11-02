@@ -1047,7 +1047,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "winner": sum(bool(x.get("market_odds")) for x in cards_view),
             "goals": sum(bool(x.get("total_market_odds")) for x in cards_view),
             "goals_confirmed": sum(
-                any(bool(flag) for flag in (x.get("total_market_confirmed") or {}).values())
+                bool(x.get("total_market_odds"))
+                and (
+                    str(x.get("total_odds_source") or "").casefold() != "sstats"
+                    or any(bool(flag) for flag in (x.get("total_market_confirmed") or {}).values())
+                )
                 for x in cards_view
             ),
             "btts": sum(bool(x.get("btts_market_odds")) for x in cards_view),
