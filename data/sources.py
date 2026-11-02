@@ -2661,8 +2661,9 @@ def _sstats_parse_markets(odds_payload):
                     _record("BTTS Нет", odd, bookmaker, "btts_market_odds")
                 continue
 
-            # Totals, including corners/cards; the line may be encoded in either
-            # marketName or Price.name (e.g. "Total Goals" + "Over 2.5").
+            # Totals, including corners/cards. Reject period-specific and handicap
+            # markets before looking at the outcome label: "Over 3.5" alone does not
+            # prove that the market is full-time goals.
             is_over = (
                 label_norm in ("over", "more", "больше", "o")
                 or label_norm.startswith(("over ", "больше ", "o "))
@@ -2671,7 +2672,15 @@ def _sstats_parse_markets(odds_payload):
                 label_norm in ("under", "less", "меньше", "u")
                 or label_norm.startswith(("under ", "меньше ", "u "))
             )
-            if is_over or is_under:
+            is_period_market = any(term in market for term in (
+                "first half", "1st half", "half time", "half-time",
+                "second half", "2nd half", "extra time", "period",
+                "1st period", "2nd period", "3rd period",
+            ))
+            is_handicap_market = any(term in market for term in (
+                "handicap", "asian", "фора", "spread",
+            ))
+            if (is_over or is_under) and not is_period_market and not is_handicap_market:
                 line = _sstats_line(label) or _sstats_line(market_name)
                 if line is None:
                     continue
@@ -2682,7 +2691,7 @@ def _sstats_parse_markets(odds_payload):
                 elif any(term in market for term in ("card", "booking", "карточ")):
                     key = ("Карты ТБ " if is_over else "Карты ТМ ") + line_text
                     _record(key, odd, bookmaker, "stat_market_odds")
-                elif any(term in market for term in ("total", "goal", "over/under", "тотал", "гол")):
+                elif any(term in market for term in ("total goals", "goals total", "total goal", "goal total", "over/under goals", "тотал голов", "тотал гола", "голы тотал")):
                     key = ("ТБ " if is_over else "ТМ ") + line_text
                     _record(key, odd, bookmaker, "total_market_odds")
                 continue
@@ -2737,9 +2746,13 @@ def _sstats_parse_markets(odds_payload):
     ):
         for key, values in prices[group].items():
             # Avoid selecting a stale/malformed extreme quote as the "best" price.
-            valid = [(float(odd), str(book or "")) for odd, book in values
+            valid = [(float(odd), str(book or "").strip()) for odd, book in values
                      if 1.01 <= float(odd) <= 100.0]
             if not valid:
+                continue
+            # A single uncorroborated total quote can be a wrong market mapping
+            # (or a bad feed outlier). Do not publish it as a confirmed price.
+            if group == "total_market_odds" and len({book for _odd, book in valid if book}) < 2:
                 continue
             ordered = sorted(odd for odd, _book in valid)
             middle = len(ordered) // 2
