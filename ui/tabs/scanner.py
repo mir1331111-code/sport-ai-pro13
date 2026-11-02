@@ -1261,6 +1261,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         sstats_key and sstats_game_id not in (None, "")
                         and sstats_detail_calls < SSTATS_DETAIL_MAX_PER_SCAN
                     ):
+                        # Keep the funnel's market-request counter in sync with
+                        # the detailed SStats lookup attempts shown in diagnostics.
+                        funnel_counts["market_req"] += 1
                         detailed = sstats_odds_fixture(sstats_game_id, sstats_key, logs)
                         sstats_detail_calls += 1
                         if isinstance(detailed, dict):
