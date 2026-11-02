@@ -448,11 +448,24 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         market_is_validated = True
         validation_note = ""
     elif selected_market_type == "OU":
-        market_is_validated = bool(c.get("total_market_validation"))
-        validation_note = (
-            "Тоталы не прошли историческую проверку; Value не подтверждён."
-            if not market_is_validated else ""
+        history_validated = bool(c.get("total_market_validation"))
+        source = str(c.get("total_odds_source") or "").casefold()
+        book_count = int((c.get("total_market_book_count") or {}).get(pick) or 0)
+        quote_corroborated = (
+            source != "sstats"
+            or bool((c.get("total_market_confirmed") or {}).get(pick))
         )
+        market_is_validated = history_validated and quote_corroborated
+        if not history_validated:
+            validation_note = "Тоталы не прошли историческую проверку; Value не подтверждён."
+        elif not quote_corroborated:
+            validation_note = (
+                f"Котировка тотала получена только от одного букмекера"
+                f"{f' ({book_count})' if book_count else ''}. Цена показана, "
+                "но для подтверждения нужна вторая независимая котировка. Ставку не рекомендовать."
+            )
+        else:
+            validation_note = ""
     elif selected_market_type == "BTTS":
         # A real quote confirms the bookmaker price, not the model's historical
         # calibration. Do not describe BTTS as having failed a test that was never run.
@@ -1281,6 +1294,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if market_odds and odds_source in {"", "no_market", "model_only"}:
                 odds_source = "sstats"
             total_market_odds = dict(r.get("total_market_odds") or {})
+            total_market_book_count = dict(r.get("total_market_book_count") or {})
+            total_market_confirmed = dict(r.get("total_market_confirmed") or {})
             btts_market_odds = dict(r.get("btts_market_odds") or {})
             stat_market_odds = dict(r.get("stat_market_odds") or {})
             asian_handicap_market_odds = dict(r.get("asian_handicap_market_odds") or {})
@@ -1364,6 +1379,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     for old_selection in list(target):
                                         bookmaker_by_pick.pop(old_selection, None)
                                     target.clear()
+                                    total_market_book_count = dict(
+                                        detailed.get("total_market_book_count") or {}
+                                    )
+                                    total_market_confirmed = dict(
+                                        detailed.get("total_market_confirmed") or {}
+                                    )
                                     for selection, raw_value in verified_quotes.items():
                                         try:
                                             value = float(raw_value)
@@ -1572,6 +1593,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "market_odds": dict(market_odds),
                 "bookmaker_by_pick": dict(bookmaker_by_pick),
                 "total_market_odds": dict(total_market_odds),
+                "total_market_book_count": dict(total_market_book_count),
+                "total_market_confirmed": dict(total_market_confirmed),
                 "total_odds_source": total_odds_source if total_market_odds else (str(r.get("extra_market_source") or "") if r.get("total_market_odds") else total_odds_source),
                 "btts_odds_source": btts_odds_source if btts_market_odds else "no_market",
                 "extra_market_source": extra_market_source,
