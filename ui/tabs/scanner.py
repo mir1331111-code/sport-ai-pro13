@@ -1046,13 +1046,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         market_counts = {
             "winner": sum(bool(x.get("market_odds")) for x in cards_view),
             "goals": sum(bool(x.get("total_market_odds")) for x in cards_view),
+            "goals_confirmed": sum(
+                any(bool(flag) for flag in (x.get("total_market_confirmed") or {}).values())
+                for x in cards_view
+            ),
             "btts": sum(bool(x.get("btts_market_odds")) for x in cards_view),
             "corners": sum(any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {})) for x in cards_view),
             "cards": sum(any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {})) for x in cards_view),
             "handicap": sum(bool(x.get("asian_handicap_market_odds")) for x in cards_view),
         }
         market_tabs = st.tabs([
-            f"Тоталы ({market_counts['goals']})",
+            f"Тоталы: котировки {market_counts['goals']} · подтверждены {market_counts['goals_confirmed']}",
             f"Все матчи ({len(cards_view)})",
             f"Победа / 1X2 ({market_counts['winner']})",
             f"Обе забьют ({market_counts['btts']})",
