@@ -162,5 +162,27 @@ class SStatsMarketParserTests(unittest.TestCase):
             self.assertNotIn("ТБ 2.5", parsed["total_market_odds"])
 
 
+    def test_accepts_standard_total_market_name_and_rejects_team_total(self):
+        def total_book(name, market_name, price):
+            return {
+                "bookmakerName": name,
+                "odds": [{
+                    "marketName": market_name,
+                    "odds": [{"name": "Over 0.5", "value": str(price)}],
+                }],
+            }
+
+        parsed = _sstats_parse_markets([
+            total_book("Book A", "Total", 1.08),
+            total_book("Book B", "Total", 1.09),
+        ])
+        self.assertEqual(parsed["total_market_odds"]["ТБ 0.5"], 1.09)
+
+        team_total = _sstats_parse_markets([
+            total_book("Book A", "Home Team Total", 1.08),
+            total_book("Book B", "Home Team Total", 1.09),
+        ])
+        self.assertNotIn("ТБ 0.5", team_total["total_market_odds"])
+
 if __name__ == "__main__":
     unittest.main()
