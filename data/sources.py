@@ -2672,7 +2672,7 @@ def _sstats_parse_markets(odds_payload):
                 label_norm in ("over", "more", "больше", "o", "тб")
                 or label_norm.startswith(("over ", "more ", "больше ", "o ", "тб "))
                 or bool(re.match(
-                    r"^\\s*\\d{1,2}(?:[.,]\\d{1,2})?\\s*(?:[-:]\\s*)?(?:over|more|больше|тб)\\b",
+                    r"^\s*\d{1,2}(?:[.,]\d{1,2})?\s*(?:[-:]\s*)?(?:over|more|больше|тб)\b",
                     label_norm,
                 ))
             )
@@ -2680,7 +2680,7 @@ def _sstats_parse_markets(odds_payload):
                 label_norm in ("under", "less", "меньше", "u", "тм")
                 or label_norm.startswith(("under ", "less ", "меньше ", "u ", "тм "))
                 or bool(re.match(
-                    r"^\\s*\\d{1,2}(?:[.,]\\d{1,2})?\\s*(?:[-:]\\s*)?(?:under|less|меньше|тм)\\b",
+                    r"^\s*\d{1,2}(?:[.,]\d{1,2})?\s*(?:[-:]\s*)?(?:under|less|меньше|тм)\b",
                     label_norm,
                 ))
             )
@@ -3177,6 +3177,11 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
         if not isinstance(data, list):
             return None
         result = _sstats_parse_markets(data)
+        result["market_names"] = sorted({
+            str(bet.get("marketName") or bet.get("name") or "").strip()
+            for bet, _book in _sstats_flat_bets(data)
+            if str(bet.get("marketName") or bet.get("name") or "").strip()
+        })
         result["bookmakers"] = [
             str(item.get("bookmakerName") or "")
             for item in data
@@ -3198,11 +3203,7 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
                 "форы": len(result.get("asian_handicap_market_odds") or {}),
                 "1X2": sum(result.get(key_name) is not None for key_name in ("П1", "X", "П2")),
             }
-            market_names = sorted({
-                str(bet.get("marketName") or bet.get("name") or "").strip()
-                for bet, _book in _sstats_flat_bets(data)
-                if str(bet.get("marketName") or bet.get("name") or "").strip()
-            })
+            market_names = result.get("market_names") or []
             logs.append(
                 f"SStats Odds/{game_id}: {len(data)} букмекеров, "
                 f"{market_count} исходов/линий; " +
