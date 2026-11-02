@@ -2888,7 +2888,7 @@ def sstats_account_check(api_key: str) -> dict:
 
 
 def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
-    """Load upcoming fixtures and compact 1X2/total odds in one SStats request."""
+    """Load upcoming fixtures and compact 1X2 odds; totals require corroborated bookmaker quotes."""
     key = str(api_key or "").strip()
     if not key:
         if logs is not None:
@@ -2897,7 +2897,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
     now, timezone_offset = _sstats_timezone()
     horizon = max(1, min(30, int(days or 3)))
     cache_key = (
-        f"sstats_upcoming_v1_{now.date().isoformat()}_{horizon}_"
+        f"sstats_upcoming_v2_{now.date().isoformat()}_{horizon}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 900)
@@ -3058,7 +3058,7 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
     if not key or game_id in (None, ""):
         return None
     cache_key = (
-        f"sstats_full_odds_v1_{game_id}_"
+        f"sstats_full_odds_v2_{game_id}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 1800)
