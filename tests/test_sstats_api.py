@@ -178,7 +178,6 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(request_mock.call_args.args[0], "Odds/9876")
         self.assertEqual(request_mock.call_args.kwargs["params"]["opening"], "false")
 
-    @patch.object(sources, "_sstats_request")
     @patch.object(sources, "cache_put")
     @patch.object(sources, "cache_get", return_value=None)
     @patch.object(sources, "_sstats_timezone")
@@ -218,6 +217,7 @@ class SStatsTests(unittest.TestCase):
         self.assertIn("подтверждённые тоталы: 1 линий", result["message"])
         self.assertNotIn("private-test-key", repr(result))
 
+    @patch.object(sources, "_sstats_request")
     def test_account_check_confirms_key_without_exposing_it(self, request_mock):
         request_mock.side_effect = [
             _Response(200, {"status": "success", "data": {"userName": "test-user"}}),
