@@ -82,16 +82,15 @@ class SStatsTests(unittest.TestCase):
             self.assertEqual(result["П1"], 1.82)
             self.assertEqual(result["X"], 3.55)
             self.assertEqual(result["П2"], 4.70)
-            self.assertEqual(result["total_market_odds"]["ТБ 2.5"], 1.91)
-            self.assertEqual(result["total_market_odds"]["ТМ 2.5"], 1.95)
-            self.assertEqual(result["total_market_odds"]["ТБ 3.5"], 2.35)
+            # Compact feeds and single-book detail responses do not identify
+            # two independent books, so total prices must not be marked confirmed.
+            self.assertEqual(result["total_market_odds"], {})
             self.assertEqual(result["btts_market_odds"]["BTTS Да"], 1.80)
             self.assertEqual(result["btts_market_odds"]["BTTS Нет"], 2.00)
             self.assertEqual(result["stat_market_odds"]["Угл ТБ 9.5"], 1.88)
             self.assertEqual(result["stat_market_odds"]["Карты ТМ 4.5"], 1.95)
             self.assertEqual(result["source"], "sstats")
         self.assertEqual(detailed_result["bookmaker_by_pick"]["П1"], "Example bookmaker")
-        self.assertEqual(detailed_result["bookmaker_by_pick"]["ТБ 2.5"], "Example bookmaker")
 
     @patch.object(sources, "_sstats_request")
     @patch.object(sources, "_sstats_timezone")
@@ -144,7 +143,9 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(rows[0]["Div"], "E0")
         self.assertEqual(rows[0]["sstats_game_id"], 5678)
         self.assertEqual(rows[0]["market_odds"]["П1"], 1.80)
-        self.assertEqual(rows[0]["total_market_odds"]["ТБ 2.5"], 1.92)
+        # Games/list compact odds have no bookmaker provenance; do not treat
+        # a lone total quote as confirmed. Detailed Odds/{gameId} must corroborate it.
+        self.assertEqual(rows[0]["total_market_odds"], {})
         params = request_mock.call_args.kwargs["params"]
         self.assertEqual(params["Upcoming"], "true")
         self.assertNotIn("do-not-log-this-key", "\\n".join(logs))
