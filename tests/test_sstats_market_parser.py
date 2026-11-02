@@ -205,6 +205,30 @@ class SStatsMarketParserTests(unittest.TestCase):
         self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 1.85)
         self.assertEqual(parsed["total_market_odds"]["ТМ 2.5"], 1.95)
 
+    def test_accepts_reversed_and_russian_total_outcome_labels(self):
+        def total_book(name):
+            return {
+                "bookmakerName": name,
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [
+                        {"name": "2.5 Over", "value": "1.85"},
+                        {"name": "2.5 Under", "value": "1.95"},
+                        {"name": "ТБ 3.5", "value": "2.20"},
+                        {"name": "ТМ 3.5", "value": "1.65"},
+                    ],
+                }],
+            }
+
+        parsed = _sstats_parse_markets([
+            total_book("Book A"),
+            total_book("Book B"),
+        ])
+        self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 1.85)
+        self.assertEqual(parsed["total_market_odds"]["ТМ 2.5"], 1.95)
+        self.assertEqual(parsed["total_market_odds"]["ТБ 3.5"], 2.20)
+        self.assertEqual(parsed["total_market_odds"]["ТМ 3.5"], 1.65)
+
     def test_structured_line_does_not_allow_handicap_market_into_totals(self):
         parsed = _sstats_parse_markets([
             {"bookmakerName": "Book A", "odds": [{
