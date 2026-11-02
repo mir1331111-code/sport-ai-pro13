@@ -427,21 +427,23 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         auto_quote_exists = False
         has_positive_value = False
 
-    if has_positive_value:
+    market_is_validated = (market_type(pick) == "1X2" or
+                           (market_type(pick) == "OU" and bool(c.get("total_market_validation"))))
+    if has_positive_value and market_is_validated:
         st.success("Есть подтверждённый коэффициент и модельный перевес.")
+    elif has_positive_value and not market_is_validated:
+        st.warning("Котировка найдена, но этот рынок не прошёл историческую проверку. Value не считается подтверждённым; ставку не рекомендовать.")
     elif auto_quote_exists:
         st.caption("Коэффициент есть, но надёжного преимущества не подтверждено — не ставить.")
     else:
         st.caption("Нет подтверждённого коэффициента — рекомендации к ставке нет.")
-    market_is_validated = (market_type(pick) == "1X2" or
-                           (market_type(pick) == "OU" and bool(c.get("total_market_validation"))))
 
     # Only markets with an actual bookmaker quote can be auto-priced.
     # Model fair odds are not a substitute for a real quote.
     if selected_odd is not None:
         st.markdown(
             f"<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;margin:8px 0;border:1px solid #285f51;border-radius:12px;background:linear-gradient(120deg,#102923,#101b22)'>"
-            f"<div><div style='font-size:11px;letter-spacing:.12em;color:#8fd8bd;font-weight:700'>НАШ ВЫБОР</div>"
+            f"<div><div style='font-size:11px;letter-spacing:.12em;color:#8fd8bd;font-weight:700'>{'НАШ ВЫБОР' if market_is_validated else 'КОТИРОВКА · РЫНОК НЕ ПРОВЕРЕН'}</div>"
             f"<strong style='font-size:20px;color:#f1f7f5'>{html.escape(selected_label)}</strong></div>"
             f"<div style='font-size:22px;font-weight:800;color:#8fe2c1;white-space:nowrap'>КФ {selected_odd:.2f}</div></div>",
             unsafe_allow_html=True,
