@@ -2681,7 +2681,29 @@ def _sstats_parse_markets(odds_payload):
                 "handicap", "asian", "фора", "spread",
             ))
             if (is_over or is_under) and not is_period_market and not is_handicap_market:
+                # Some SStats responses put the line in a structured field while
+                # the outcome label is only "Over"/"Under" and marketName is "Total".
+                # Read these fields only after rejecting period/handicap markets above.
                 line = _sstats_line(label) or _sstats_line(market_name)
+                if line is None:
+                    for line_value in (
+                        price_row.get("point"), price_row.get("line"),
+                        price_row.get("handicap"), price_row.get("total"),
+                        price_row.get("points"), price_row.get("param"),
+                        bet.get("point"), bet.get("line"),
+                        bet.get("handicap"), bet.get("total"),
+                        bet.get("points"), bet.get("param"),
+                    ):
+                        if isinstance(line_value, (int, float)):
+                            candidate_line = float(line_value)
+                            if 0 <= candidate_line <= 20:
+                                line = candidate_line
+                                break
+                        elif isinstance(line_value, str):
+                            candidate_line = _sstats_line(line_value)
+                            if candidate_line is not None and 0 <= candidate_line <= 20:
+                                line = candidate_line
+                                break
                 if line is None:
                     continue
                 line_text = f"{line:g}"
