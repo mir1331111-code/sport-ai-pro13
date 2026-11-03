@@ -43,6 +43,26 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         }, "E0"))
         self.assertEqual(model.predict("Alpha", "Beta", "E0"), {})
 
+    def test_missing_red_card_fields_do_not_become_zero_card_observations(self):
+        model = HistoricalMatchStats(min_team_games=1)
+        self.assertTrue(model.learn_step({
+            "HomeTeam": "Alpha", "AwayTeam": "Beta",
+            "HC": 6, "AC": 4, "HY": 2, "AY": 1,
+            # HR/AR are deliberately absent.
+        }, "E0"))
+        prediction = model.predict("Alpha", "Beta", "E0")
+        self.assertIn("corners", prediction)
+        self.assertNotIn("cards", prediction)
+
+        self.assertTrue(model.learn_step({
+            "HomeTeam": "Gamma", "AwayTeam": "Delta",
+            "HC": 5, "AC": 3, "HY": 1, "AY": 2,
+            "HR": 0, "AR": 1,
+        }, "E0"))
+        prediction = model.predict("Gamma", "Delta", "E0")
+        self.assertEqual(prediction["cards"]["history_matches"], 1)
+        self.assertAlmostEqual(prediction["cards"]["total"], 4.0)
+
     def test_poisson_over_probability_is_bounded_and_monotonic(self):
         p_low = poisson_over_probability(8.0, 9.5)
         p_high = poisson_over_probability(11.0, 9.5)
