@@ -162,7 +162,10 @@ def _train_engine(matrix_n, logs, update_loader):
     supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
     train_divs = list(dict.fromkeys(priority_divs + supported_divs))
     engine = Engine(matrix_n=matrix_n)
-    from model.historical_match_stats import HistoricalMatchStats, walk_forward_evaluate
+    from model.historical_match_stats import (
+        HistoricalMatchStats, walk_forward_evaluate,
+        walk_forward_market_validation,
+    )
     engine.match_stats = HistoricalMatchStats()
     history = {}
     for i, dv in enumerate(train_divs):
@@ -204,8 +207,18 @@ def _train_engine(matrix_n, logs, update_loader):
         )
         engine.total_market_validation_report = totals_backtest.get(
             "goals_over25_candidate_minus_market", {})
-        engine.total_market_validation = totals_market_is_validated(
-            engine.total_market_validation_report, min_n=500)
+        line_reports = totals_backtest.get("goals_totals_by_line") or {}
+        engine.total_market_validation_by_line = {
+            str(line): bool(report.get("validation_passed"))
+            for line, report in line_reports.items()
+        }
+        engine.total_market_validation = bool(
+            engine.total_market_validation_by_line.get("2.5", False)
+            or totals_market_is_validated(engine.total_market_validation_report, min_n=500)
+        )
+        btts_report = totals_backtest.get("btts") or {}
+        engine.btts_market_validation_report = btts_report
+        engine.btts_market_validation = bool(btts_report.get("validation_passed"))
         total_diff = engine.total_market_validation_report.get("differences", {})
         total_ci = engine.total_market_validation_report.get("confidence_intervals_95", {})
         logs.append(
@@ -225,16 +238,50 @@ def _train_engine(matrix_n, logs, update_loader):
             if engine.total_market_validation else
             "Тоталы не допущены: нужно ≥500 парных матчей и статистически подтверждённое улучшение Brier и LogLoss."
         )
-        for line, line_report in (totals_backtest.get("goals_totals_by_line") or {}).items():
+        for line, line_report in line_reports.items():
             metric = line_report.get("metrics") or {}
+            paired = line_report.get("candidate_minus_baseline") or {}
             logs.append(
-                f"ТБ/ТМ {line}: walk-forward n={metric.get('n', 0)}, "
-                f"Brier={metric.get('brier')}, LogLoss={metric.get('log_loss')}"
+                f"ТБ/ТМ {line}: WF n={metric.get('n', 0)}, "
+                f"baseline-пар={paired.get('n', 0)}, "
+                f"ΔBrier={(paired.get('differences') or {}).get('brier')}, "
+                f"ΔLogLoss={(paired.get('differences') or {}).get('log_loss')}, "
+                f"допуск={'да' if line_report.get('validation_passed') else 'нет'}"
             )
+        logs.append(
+            f"BTTS: WF n={btts_report.get('candidate', {}).get('n', 0)}, "
+            f"пар={btts_report.get('candidate_minus_baseline', {}).get('n', 0)}, "
+            f"допуск={'да' if engine.btts_market_validation else 'нет'}"
+        )
+        stat_report = walk_forward_market_validation(
+            historical_rows, min_history=30, min_n=500, bootstrap_samples=250,
+        )
+        engine.stat_market_validation_report = stat_report
+        engine.stat_market_validation = {
+            market: {
+                str(line): bool(line_report.get("validation_passed"))
+                for line, line_report in line_reports.items()
+            }
+            for market, line_reports in (stat_report.get("markets") or {}).items()
+        }
+        for market, line_reports in engine.stat_market_validation.items():
+            for line, passed in line_reports.items():
+                report = (stat_report.get("markets") or {}).get(market, {}).get(line, {})
+                diff = (report.get("candidate_minus_baseline") or {}).get("differences") or {}
+                logs.append(
+                    f"WF {market} {line}: n={report.get('n', 0)}, "
+                    f"ΔBrier={diff.get('brier')}, ΔLogLoss={diff.get('log_loss')}, "
+                    f"допуск={'да' if passed else 'нет'}"
+                )
     except Exception as exc:
         engine.total_market_validation = False
+        engine.total_market_validation_by_line = {}
         engine.total_market_validation_report = {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
-        logs.append(f"Историческая проверка тоталов не выполнена: {type(exc).__name__}: {str(exc)[:160]}")
+        engine.btts_market_validation = False
+        engine.btts_market_validation_report = {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        engine.stat_market_validation = {}
+        engine.stat_market_validation_report = {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        logs.append(f"Историческая проверка рынков голов/BTTS/статистики не выполнена: {type(exc).__name__}: {str(exc)[:160]}")
     total = sum(len(src) for dv in train_divs for src in history.get(dv, []))
     processed = 0
     trained = 0

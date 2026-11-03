@@ -91,6 +91,33 @@ class WalkForwardMarketBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["goals_over25_candidate_minus_market"]["n"], 3)
         self.assertIn("brier", result["goals_over25_candidate_minus_market"]["differences"])
 
+    def test_football_data_day_month_dates_are_parsed(self):
+        from datetime import date
+        from model.walk_forward import _parse_date
+
+        self.assertEqual(_parse_date("03/11/26"), date(2026, 11, 3))
+        self.assertEqual(_parse_date("03/11/2026"), date(2026, 11, 3))
+        self.assertEqual(_parse_date("2026-11-03"), date(2026, 11, 3))
+
+    def test_walk_forward_reports_btts_and_line_specific_validation(self):
+        rows = []
+        for index in range(80):
+            rows.append({
+                "Date": f"{index + 1:02d}/01/2024",
+                "Div": "E0",
+                "HomeTeam": f"Team{index % 8}",
+                "AwayTeam": f"Team{(index + 3) % 8}",
+                "FTHG": 2 if index % 3 else 0,
+                "FTAG": 1 if index % 4 else 0,
+            })
+        result = walk_forward_compare(rows, bootstrap_samples=0, totals_bootstrap_samples=0)
+        self.assertGreater(result["n"], 0)
+        self.assertIn("btts", result)
+        self.assertIn("validation_passed", result["btts"])
+        self.assertIn("2.5", result["goals_totals_by_line"])
+        self.assertIn("candidate_minus_baseline",
+                      result["goals_totals_by_line"]["2.5"])
+
     def test_power_and_shin_methods_return_valid_probabilities(self):
         row = {"B365H": "2.00", "B365D": "3.50", "B365A": "4.00"}
         for method in ("proportional", "power", "shin"):
