@@ -2259,8 +2259,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 match = re.fullmatch(r"Т([БМ])\s+(\d+(?:[.,]\d+)?)", str(selection), re.I)
                 if not match:
                     continue
-                line_text = match.group(2).replace(",", ".")
-                line = float(line_text)
+                line = float(match.group(2).replace(",", "."))
+                line_text = f"{line:g}"
                 if not bool(total_validation.get(line_text)):
                     continue
                 # SStats totals need both a coherent same-book pair and quotes
@@ -2317,8 +2317,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 code = "Угл" if match.group(1).casefold() == "угл" else "Карты"
                 market_key = "corners" if code == "Угл" else "cards"
                 label_prefix = "Угловые" if code == "Угл" else "Карточки"
-                line_text = match.group(3).replace(",", ".")
-                line = float(line_text)
+                line = float(match.group(3).replace(",", "."))
+                line_text = f"{line:g}"
                 pred = historical_stats.get(market_key) or {}
                 if not bool((stat_validation.get(market_key) or {}).get(line_text)):
                     continue
