@@ -356,7 +356,7 @@ class IndependentAnalystTests(unittest.TestCase):
             }],
             "usage": {"completion_tokens": 20},
         })
-        self.assertEqual(content, r'{"probabilities": {}}')
+        self.assertEqual(content, '{"probabilities": {\n}')
         self.assertEqual(diagnostics["finish_reason"], "stop")
         self.assertNotIn("private chain", content)
 
