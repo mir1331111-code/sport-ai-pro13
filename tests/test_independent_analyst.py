@@ -116,6 +116,110 @@ class IndependentAnalystTests(unittest.TestCase):
         self.assertIn("РАСХОЖДЕНИЕ", result)
         self.assertIn("Качество исходных данных: среднее", result)
 
+    def test_prompt_includes_corners_cards_and_goal_markets(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import llm.analyst as analyst
+
+        content = '''{
+          "independent_pick": "П1",
+          "probabilities": {"П1": 45, "X": 30, "П2": 25},
+          "goal_markets": {
+            "expected_home_goals": 1.5, "expected_away_goals": 1.0,
+            "over_1_5": 80, "over_2_5": 58, "over_3_5": 34,
+            "over_4_5": 16, "btts_yes": 52
+          },
+          "corner_markets": {
+            "expected_home_corners": 5.1, "expected_away_corners": 4.2,
+            "over_8_5": 63, "over_9_5": 54, "over_10_5": 42, "over_11_5": 28
+          },
+          "card_markets": {
+            "expected_home_cards": 2.0, "expected_away_cards": 1.8,
+            "over_2_5": 72, "over_3_5": 55, "over_4_5": 36, "over_5_5": 19
+          },
+          "opinion": "У хозяев небольшое преимущество.",
+          "risks": "Нет подтверждённых составов.",
+          "data_quality": "medium"
+        }'''
+        response = SimpleNamespace(
+            status_code=200, text=content,
+            json=lambda: {"choices": [{"message": {"content": content}}]},
+        )
+        features = {
+            "home_scored_at_home_avg": 1.4, "home_conceded_at_home_avg": 0.8,
+            "away_scored_away_avg": 1.0, "away_conceded_away_avg": 1.2,
+            "home_home_sample": 7, "away_away_sample": 6,
+            "markets": {
+                "corners": {
+                    "home_for_avg": 5.1, "home_against_avg": 4.0,
+                    "away_for_avg": 4.2, "away_against_avg": 4.8,
+                    "history_matches": 320, "home_team_games": 8, "away_team_games": 7,
+                },
+                "cards": {
+                    "home_for_avg": 2.0, "home_against_avg": 1.8,
+                    "away_for_avg": 1.8, "away_against_avg": 2.0,
+                    "history_matches": 320, "home_team_games": 8, "away_team_games": 7,
+                },
+            },
+        }
+        ctx = {
+            "api_key": "unit-test-key", "provider": "Groq (бесплатно, быстро)",
+            "model": "unit-test-model", "home": "Home FC", "away": "Away FC",
+            "league": "Test League", "date": "2026-11-03",
+            "fh": "ВВПВВ", "fa": "ППВНП",
+            "independent_features": features, "model_pick_code": "П1",
+            "p1": .7, "px": .2, "p2": .1, "lam_h": 1.5, "lam_a": 1.0,
+        }
+        with (
+            patch.object(analyst, "cache_get", return_value=None),
+            patch.object(analyst, "cache_put"),
+            patch.object(analyst.usage, "llm_remaining", return_value=5),
+            patch.object(analyst.usage, "llm_increment"),
+            patch.object(analyst._sess, "post", return_value=response) as post,
+        ):
+            result = analyst.analyze_match(ctx)
+        prompt = post.call_args.kwargs["json"]["messages"][1]["content"]
+        self.assertIn("Угловые:", prompt)
+        self.assertIn("Карточки:", prompt)
+        self.assertIn("Оцени 1X2 обязательно", prompt)
+        self.assertIn("ГОЛЫ (оценка Groq)", result)
+        self.assertIn("УГЛОВЫЕ (оценка Groq)", result)
+        self.assertIn("КАРТОЧКИ (оценка Groq)", result)
+        self.assertNotIn("Edge", prompt)
+        self.assertNotIn("коэффициент", prompt.casefold())
+
+    def test_llm_does_not_publish_corner_probabilities_without_real_history(self):
+        from llm.analyst import _format_multi_market_sections
+        raw = {
+            "corner_markets": {
+                "expected_home_corners": 6, "expected_away_corners": 5,
+                "over_8_5": 70, "over_9_5": 60, "over_10_5": 50, "over_11_5": 40,
+            }
+        }
+        summary = _format_multi_market_sections(raw, {
+            "markets": {"corners": {
+                "history_matches": 20, "home_team_games": 2, "away_team_games": 2,
+            }}
+        })
+        self.assertIn("недостаточно подтверждённой истории", summary)
+        self.assertNotIn("70%", summary)
+
+    def test_llm_rejects_non_monotone_corner_line_probabilities(self):
+        from llm.analyst import _format_multi_market_sections
+        raw = {
+            "corner_markets": {
+                "expected_home_corners": 6, "expected_away_corners": 5,
+                "over_8_5": 55, "over_9_5": 65, "over_10_5": 35, "over_11_5": 20,
+            }
+        }
+        summary = _format_multi_market_sections(raw, {
+            "markets": {"corners": {
+                "history_matches": 300, "home_team_games": 8, "away_team_games": 7,
+            }}
+        })
+        self.assertIn("Groq не вернул корректную оценку", summary)
+        self.assertNotIn("55%", summary)
+
     def test_analyze_match_skips_without_minimum_venue_history(self):
         from unittest.mock import patch
         import llm.analyst as analyst

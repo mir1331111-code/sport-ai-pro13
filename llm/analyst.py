@@ -33,12 +33,17 @@ def _session() -> requests.Session:
 _sess = _session()
 NO_PROXY = {"http": None, "https": None}
 
-LLM_SYSTEM_PROMPT = """Ты — независимый футбольный аналитик. Отвечай по-русски; твоя задача — сформировать собственное вероятностное мнение, а не подтвердить прогноз другого алгоритма.
-Ты не видишь прогноз основной модели, её xG-лямбды, вероятности исходов, выбранный исход, уверенность, EV или букмекерские коэффициенты. Не пытайся их угадывать и не подстраивайся под предполагаемый ответ.
-Используй только доступные во входных данных сведения: средние фактически забитые/пропущенные голы хозяев в домашних матчах, гостей в выездных матчах, размеры выборок и последние результаты. Эти показатели рассчитаны отдельно из исторических результатов и могут быть ограничены маленькой выборкой. Если данных мало или они отсутствуют, прямо укажи это и не создавай ложную точность.
-Не выдумывай травмы, составы, мотивацию, стиль, личные встречи, погоду или новости. Оцени вероятности П1, X, П2, сумма должна быть ровно 100. independent_pick должен соответствовать исходу с максимальной вероятностью. Не советуй ставить и не обещай прибыль.
-Ответ строго JSON без markdown:
-{"independent_pick":"П1|X|П2","probabilities":{"П1":40,"X":30,"П2":30},"opinion":"1-3 коротких предложения: факторы, неопределённость, что может изменить оценку","risks":"конкретные риски или недостаток данных","data_quality":"low|medium|high"}"""
+LLM_SYSTEM_PROMPT = """Ты — независимый футбольный аналитик. Отвечай по-русски и оценивай НЕ только победителя.
+Ты не видишь прогноз основной модели, её λ/xG, её вероятности, выбранную ставку, EV и букмекерские коэффициенты. Не подстраивайся под них и не угадывай линию букмекера.
+Используй только фактические исторические показатели и размеры выборок, переданные во входных данных. Не выдумывай травмы, составы, мотивацию, стиль, личные встречи, погоду, владение, удары или новости, если таких данных нет.
+Обязательные рынки: П1/X/П2. Дополнительные рынки оценивай независимо:
+1) тоталы голов ТБ 1.5, 2.5, 3.5, 4.5 и обе забьют Да;
+2) угловые ТБ 8.5, 9.5, 10.5, 11.5;
+3) карточки ТБ 2.5, 3.5, 4.5, 5.5.
+Для каждого дополнительного рынка используй отдельные переданные фактические данные. Если выборки нет или она мала, не угадывай вероятность: верни null для полей этого рынка и объясни причину в risks. Не подменяй статистику угловых голами или средними по чужой лиге. Вероятности Over должны быть монотонными: с ростом линии вероятность не растёт.
+expected_* — прогнозируемое среднее значение, не коэффициент букмекера. Все вероятности выражай числами от 0 до 100. Не советуй ставить и не обещай прибыль.
+Ответ строго JSON без markdown по схеме:
+{"independent_pick":"П1|X|П2","probabilities":{"П1":40,"X":30,"П2":30},"goal_markets":{"expected_home_goals":1.4,"expected_away_goals":1.1,"over_1_5":78,"over_2_5":56,"over_3_5":34,"over_4_5":17,"btts_yes":52},"corner_markets":{"expected_home_corners":5.2,"expected_away_corners":4.1,"over_8_5":61,"over_9_5":52,"over_10_5":40,"over_11_5":29},"card_markets":{"expected_home_cards":2.1,"expected_away_cards":2.0,"over_2_5":77,"over_3_5":62,"over_4_5":43,"over_5_5":25},"opinion":"краткий общий разбор факторов","risks":"недостаток данных и ограничения по рынкам","data_quality":"low|medium|high"}"""
 
 
 def _as_number(value) -> float:
@@ -191,6 +196,137 @@ def _parse_llm_response(
     if risks:
         result += f" Риски: {risks}"
     return _append_model_comparison(result, model_pick_code)
+def _valid_market_section(
+    raw: object,
+    *,
+    expected_keys: tuple[str, str],
+    probability_keys: tuple[str, ...],
+    expected_max: float,
+    features: dict,
+    market_name: str,
+) -> dict | None:
+    """Validate a Groq count-market section against available real history."""
+    if not isinstance(raw, dict):
+        return None
+    history = (features.get("markets") or {}).get(market_name) or {}
+    try:
+        history_n = int(history.get("history_matches") or 0)
+        home_n = int(history.get("home_team_games") or 0)
+        away_n = int(history.get("away_team_games") or 0)
+    except (TypeError, ValueError):
+        return None
+    if history_n < 30 or home_n < 4 or away_n < 4:
+        return None
+    values = {}
+    for key in expected_keys:
+        try:
+            number = float(raw.get(key))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or not 0.0 <= number <= expected_max:
+            return None
+        values[key] = number
+    probabilities = {}
+    for key in probability_keys:
+        try:
+            number = float(raw.get(key))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or not 0.0 <= number <= 100.0:
+            return None
+        probabilities[key] = number
+    ordered = [probabilities[key] for key in probability_keys]
+    if any(ordered[i] + 0.5 < ordered[i + 1] for i in range(len(ordered) - 1)):
+        return None
+    values.update(probabilities)
+    values.update({
+        "history_matches": history_n,
+        "home_team_games": home_n,
+        "away_team_games": away_n,
+    })
+    return values
+
+
+def _format_multi_market_sections(parsed: dict, features: dict) -> str:
+    """Format only independent probabilities backed by sufficient market history."""
+    sections = []
+    goal_raw = parsed.get("goal_markets")
+    if isinstance(goal_raw, dict) and has_sufficient_history(features):
+        try:
+            home = float(goal_raw["expected_home_goals"])
+            away = float(goal_raw["expected_away_goals"])
+            over = [float(goal_raw[k]) for k in ("over_1_5", "over_2_5", "over_3_5", "over_4_5")]
+            btts = float(goal_raw["btts_yes"])
+            all_values = [home, away, *over, btts]
+            if (
+                all(math.isfinite(x) for x in all_values)
+                and 0 <= home <= 6 and 0 <= away <= 6 and home + away <= 10
+                and all(0 <= x <= 100 for x in (*over, btts))
+                and all(over[i] + 0.5 >= over[i + 1] for i in range(len(over) - 1))
+            ):
+                sections.append(
+                    "ГОЛЫ (оценка Groq): "
+                    f"ожидаемо {home:.2f}+{away:.2f}={home+away:.2f}; "
+                    + ", ".join(
+                        f"ТБ {line} {prob:.0f}%"
+                        for line, prob in zip((1.5, 2.5, 3.5, 4.5), over)
+                    )
+                    + f"; Обе забьют — Да {btts:.0f}%."
+                )
+        except (TypeError, ValueError, KeyError):
+            pass
+
+    specs = (
+        (
+            "corner_markets", "corners", "УГЛОВЫЕ",
+            ("expected_home_corners", "expected_away_corners"),
+            ("over_8_5", "over_9_5", "over_10_5", "over_11_5"),
+            (8.5, 9.5, 10.5, 11.5), 20.0,
+        ),
+        (
+            "card_markets", "cards", "КАРТОЧКИ",
+            ("expected_home_cards", "expected_away_cards"),
+            ("over_2_5", "over_3_5", "over_4_5", "over_5_5"),
+            (2.5, 3.5, 4.5, 5.5), 8.0,
+        ),
+    )
+    for raw_key, market_key, label, expected_keys, probability_keys, lines, maximum in specs:
+        market_history = (features.get("markets") or {}).get(market_key) or {}
+        try:
+            enough = (
+                int(market_history.get("history_matches") or 0) >= 30
+                and int(market_history.get("home_team_games") or 0) >= 4
+                and int(market_history.get("away_team_games") or 0) >= 4
+            )
+        except (TypeError, ValueError):
+            enough = False
+        if not enough:
+            sections.append(f"{label}: недостаточно подтверждённой истории — вероятность не публикуется.")
+            continue
+        clean = _valid_market_section(
+            parsed.get(raw_key),
+            expected_keys=expected_keys,
+            probability_keys=probability_keys,
+            expected_max=maximum,
+            features=features,
+            market_name=market_key,
+        )
+        if clean is None:
+            sections.append(f"{label}: Groq не вернул корректную оценку по имеющейся истории.")
+            continue
+        sections.append(
+            f"{label} (оценка Groq): "
+            f"{clean[expected_keys[0]]:.2f}+{clean[expected_keys[1]]:.2f}="
+            f"{clean[expected_keys[0]] + clean[expected_keys[1]]:.2f}; "
+            + ", ".join(
+                f"ТБ {line} {clean[key]:.0f}%"
+                for line, key in zip(lines, probability_keys)
+            )
+            + f"; история {clean['history_matches']} матчей."
+        )
+    return " ".join(sections)
+
+
 def analyze_match(ctx: dict) -> Optional[str]:
     api_key = ctx.get("api_key")
     if not api_key:
@@ -225,7 +361,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
     ctx_hash = hashlib.sha256(
         json.dumps(cache_context, sort_keys=True, default=str).encode()
     ).hexdigest()
-    ck = f"llm_v7_blind_{ctx_hash}"
+    ck = f"llm_v8_multimarket_blind_{ctx_hash}"
     cached = cache_get(ck, CACHE_TTL["llm"])
     if cached is not None:
         _log(f"CACHE HIT: {ctx_hash[:8]}")
@@ -245,21 +381,42 @@ def analyze_match(ctx: dict) -> Optional[str]:
         except (TypeError, ValueError):
             return "нет данных"
 
+    market_history = features.get("markets") or {}
+
+    def market_block(market_key: str, label: str) -> str:
+        item = market_history.get(market_key) or {}
+        if not item:
+            return f"{label}: исторические данные отсутствуют.\\n"
+        return (
+            f"{label}: среднее хозяев в домашних матчах={item.get('home_for_avg', 'нет данных')}; "
+            f"пропускают дома={item.get('home_against_avg', 'нет данных')}; "
+            f"среднее гостей на выезде={item.get('away_for_avg', 'нет данных')}; "
+            f"пропускают на выезде={item.get('away_against_avg', 'нет данных')}; "
+            f"лиговая база={item.get('history_matches', 0)} матчей; "
+            f"выборки хозяев дома={item.get('home_team_games', 0)}, "
+            f"гостей на выезде={item.get('away_team_games', 0)}.\\n"
+        )
+
     user_msg = (
-        f"Матч: {ctx.get('home', '—')} — {ctx.get('away', '—')}\n"
-        f"Лига: {ctx.get('league', '—')}\n"
-        f"Дата матча: {ctx.get('date', '—')}\n"
-        "Независимые исторические показатели (фактические голы, не прогноз основной модели):\n"
-        f"Голы хозяев дома за матч, среднее: {fmt('home_scored_at_home_avg')} "
-        f"(выборка {features.get('home_home_sample', 0)} матчей)\n"
-        f"Пропущенные хозяевами дома за матч, среднее: {fmt('home_conceded_at_home_avg')}\n"
-        f"Голы гостей на выезде за матч, среднее: {fmt('away_scored_away_avg')} "
-        f"(выборка {features.get('away_away_sample', 0)} матчей)\n"
-        f"Пропущенные гостями на выезде за матч, среднее: {fmt('away_conceded_away_avg')}\n"
-        f"Последние результаты (В — выигрыш, Н — ничья, П — поражение): "
-        f"хозяева {ctx.get('fh') or 'нет данных'}, гости {ctx.get('fa') or 'нет данных'}\n"
-        "На основе только этих отдельных входных данных оцени 1X2. "
-        "Если выборки малы или данных недостаточно, отрази это в вероятностях и рисках."
+        f"Матч: {ctx.get('home', '—')} — {ctx.get('away', '—')}\\n"
+        f"Лига: {ctx.get('league', '—')}\\n"
+        f"Дата матча: {ctx.get('date', '—')}\\n"
+        "ИСТОРИЯ ГОЛОВ (фактические завершённые матчи, не прогноз основной модели):\\n"
+        f"Голы хозяев дома за матч: {fmt('home_scored_at_home_avg')} "
+        f"(выборка {features.get('home_home_sample', 0)}); "
+        f"пропущенные хозяевами дома: {fmt('home_conceded_at_home_avg')}.\\n"
+        f"Голы гостей на выезде за матч: {fmt('away_scored_away_avg')} "
+        f"(выборка {features.get('away_away_sample', 0)}); "
+        f"пропущенные гостями на выезде: {fmt('away_conceded_away_avg')}.\\n"
+        f"Последняя форма: хозяева {ctx.get('fh') or 'нет данных'}, "
+        f"гости {ctx.get('fa') or 'нет данных'}.\\n"
+        "ИСТОРИЯ СЧЁТНЫХ РЫНКОВ (фактические данные, не коэффициенты):\\n"
+        + market_block("corners", "Угловые")
+        + market_block("cards", "Карточки")
+        + "Оцени 1X2 обязательно. Дополнительно оцени тоталы голов/ОЗ, угловые и карточки "
+        "только по соответствующей переданной истории. Если данных мало или они отсутствуют, "
+        "верни null для соответствующего раздела и перечисли ограничение в risks. "
+        "Не используй букмекерские коэффициенты и не подстраивай вероятности под рынок."
     )
 
     url = f"{base}/chat/completions"
@@ -274,10 +431,10 @@ def analyze_match(ctx: dict) -> Optional[str]:
             {"role": "user", "content": user_msg},
         ],
         "temperature": 0.4,
-        "max_tokens": 650,
+        "max_tokens": 1600,
     }
 
-    _log(f"REQUEST: provider={provider}, model={model}, mode=blind-independent-1x2")
+    _log(f"REQUEST: provider={provider}, model={model}, mode=blind-independent-multimarket")
     try:
         r = _sess.post(url, headers=headers, json=body,
                        timeout=30, proxies=NO_PROXY)
@@ -308,6 +465,10 @@ def analyze_match(ctx: dict) -> Optional[str]:
         quality_cap = "medium" if min(home_sample, away_sample) >= 5 else "low"
         base_result = _parse_llm_response(content, "", quality_cap=quality_cap)
         if base_result:
+            parsed_payload = _response_json(content) or {}
+            market_summary = _format_multi_market_sections(parsed_payload, features)
+            if market_summary:
+                base_result = base_result + " " + market_summary
             cache_put(ck, base_result)
             result = _append_model_comparison(base_result, ctx.get("model_pick_code", ""))
             _log(f"PARSED OK: {result[:120]}")

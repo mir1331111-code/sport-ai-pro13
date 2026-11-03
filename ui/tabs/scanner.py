@@ -24,6 +24,7 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
 from data.fixture_merge import merge_fixture_sources, fixture_key
 from model.engine import Engine, _norm
 from model.validation_cache import select_validation_rows, validation_cache_key
+from model.market_forecasts import count_over_probability
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
 from betting.kelly import kelly, market_type
@@ -640,7 +641,9 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         lines = quoted_lines or list(default_lines)
         if pred.get("total") is not None and pred.get("history_matches", 0) >= 30:
             for line in lines:
-                over_p = poisson_over_probability(pred["total"], line)
+                over_p = count_over_probability(
+                    pred["total"], line, pred.get("total_variance")
+                )
                 if over_p is not None and 0.0 < over_p < 1.0:
                     line_label = f"{line:g}"
                     market_options[f"{label_prefix}: больше {line_label}"] = (
@@ -2057,7 +2060,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     or pred.get("away_team_games", 0) < 4
                 ):
                     continue
-                over_probability = poisson_over_probability(pred.get("total"), line)
+                over_probability = count_over_probability(
+                    pred.get("total"), line, pred.get("total_variance")
+                )
                 if over_probability is None:
                     continue
                 is_over = match.group(2).upper() == "ТБ"
@@ -2154,7 +2159,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "time": r.get("Time") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 # LLM receives observed venue-specific goal averages, not the primary model's lambdas.
-                "independent_features": historical_features(engine, h_en, a_en),
+                "independent_features": {
+                    **historical_features(engine, h_en, a_en),
+                    "markets": historical_stats,
+                },
                 "xg_used": bool(P.get("xg_used")),
                 "total_market_validation": bool(getattr(engine, "total_market_validation", False)),
                 "total_market_validation_report": getattr(engine, "total_market_validation_report", {}),
@@ -2277,7 +2285,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if opinion:
                     card["llm_opinion"] = opinion
                     llm_done += 1
-                    logs.append(f"🤖 OK [{i_+1}]: {opinion[:60]}")
+                    logs.append(f"🤖 OK [{i_+1}] multimarket: {opinion[:100]}")
                 else:
                     logs.append(f"🤖 FAIL [{i_+1}]: ответ не получен")
             logs.append(f"🤖 LLM итог: {llm_done} мнений")

@@ -18,6 +18,23 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         self.assertAlmostEqual(pred["cards"]["total"], 4.0)
         self.assertEqual(pred["corners"]["history_matches"], 1)
 
+    def test_prediction_exposes_team_venue_averages_and_dispersion(self):
+        model = HistoricalMatchStats(min_team_games=1)
+        rows = [
+            {"HomeTeam": "Alpha", "AwayTeam": "Beta", "HC": 6, "AC": 4, "HY": 2, "AY": 1, "HR": 0, "AR": 0},
+            {"HomeTeam": "Alpha", "AwayTeam": "Gamma", "HC": 8, "AC": 3, "HY": 3, "AY": 2, "HR": 0, "AR": 0},
+            {"HomeTeam": "Delta", "AwayTeam": "Beta", "HC": 5, "AC": 7, "HY": 1, "AY": 3, "HR": 0, "AR": 0},
+        ]
+        for row in rows:
+            model.learn_step(row, "E0")
+        pred = model.predict("Alpha", "Beta", "E0")
+        self.assertEqual(pred["corners"]["home_team_games"], 2)
+        self.assertEqual(pred["corners"]["away_team_games"], 2)
+        self.assertAlmostEqual(pred["corners"]["home_for_avg"], 7.0)
+        self.assertAlmostEqual(pred["corners"]["away_for_avg"], 5.5)
+        self.assertGreater(pred["corners"]["total_variance"], 0)
+        self.assertIn("home_against_avg", pred["cards"])
+
     def test_missing_statistics_do_not_become_zero(self):
         model = HistoricalMatchStats()
         self.assertFalse(model.learn_step({

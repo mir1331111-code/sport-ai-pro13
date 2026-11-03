@@ -10,6 +10,8 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 
+from model.market_forecasts import count_over_probability
+
 
 _FIELDS = {
     "corners": ("HC", "AC"),
@@ -133,16 +135,44 @@ class HistoricalMatchStats:
             h_against = h["home_against"]
             a_for = a["away_for"]
             a_against = a["away_against"]
+            home_for_avg = sum(h_for) / len(h_for) if h_for else None
+            home_against_avg = sum(h_against) / len(h_against) if h_against else None
+            away_for_avg = sum(a_for) / len(a_for) if a_for else None
+            away_against_avg = sum(a_against) / len(a_against) if a_against else None
+
             exp_h = lh
             exp_a = la
             if len(h_for) >= self.min_team_games:
-                exp_h = 0.5 * exp_h + 0.25 * (sum(h_for) / len(h_for)) + 0.25 * (sum(a_against) / len(a_against) if a_against else la)
+                exp_h = (
+                    0.50 * lh
+                    + 0.25 * home_for_avg
+                    + 0.25 * (away_against_avg if away_against_avg is not None else la)
+                )
             if len(a_for) >= self.min_team_games:
-                exp_a = 0.5 * exp_a + 0.25 * (sum(a_for) / len(a_for)) + 0.25 * (sum(h_against) / len(h_against) if h_against else lh)
+                exp_a = (
+                    0.50 * la
+                    + 0.25 * away_for_avg
+                    + 0.25 * (home_against_avg if home_against_avg is not None else lh)
+                )
+
+            league_totals = [float(x[0]) + float(x[1]) for x in league_rows]
+            league_total_mean = sum(league_totals) / len(league_totals)
+            league_total_variance = (
+                sum((value - league_total_mean) ** 2 for value in league_totals)
+                / max(1, len(league_totals) - 1)
+                if len(league_totals) > 1 else league_total_mean
+            )
             result[market] = {
                 "home": max(0.1, exp_h),
                 "away": max(0.1, exp_a),
                 "total": max(0.2, exp_h + exp_a),
+                "total_variance": max(0.1, league_total_variance),
+                "league_home_avg": lh,
+                "league_away_avg": la,
+                "home_for_avg": home_for_avg,
+                "home_against_avg": home_against_avg,
+                "away_for_avg": away_for_avg,
+                "away_against_avg": away_against_avg,
                 "history_matches": len(league_rows),
                 "home_team_games": len(h_for),
                 "away_team_games": len(a_for),
@@ -247,8 +277,19 @@ def walk_forward_market_validation(
                 baseline_mean = sum(home_total + away_total for home_total, away_total in league_rows) / len(league_rows)
                 candidate_mean = float(forecast.get("total") or 0.0)
                 for line in market_lines:
-                    candidate_over = poisson_over_probability(candidate_mean, line)
-                    baseline_over = poisson_over_probability(baseline_mean, line)
+                    candidate_over = count_over_probability(
+                        candidate_mean, line, forecast.get("total_variance")
+                    )
+                    baseline_variance = (
+                        sum(
+                            (float(x[0]) + float(x[1]) - baseline_mean) ** 2
+                            for x in league_rows
+                        ) / max(1, len(league_rows) - 1)
+                        if len(league_rows) > 1 else baseline_mean
+                    )
+                    baseline_over = count_over_probability(
+                        baseline_mean, line, baseline_variance
+                    )
                     if candidate_over is None or baseline_over is None:
                         continue
                     outcome = "over" if actual > line else "under"
