@@ -92,6 +92,146 @@ def _pick_code(value: object) -> str:
     return ""
 
 
+_GPT_OSS_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "independent_football_market_forecast",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "independent_pick": {
+                    "type": "string",
+                    "enum": ["П1", "X", "П2"],
+                },
+                "probabilities": {
+                    "type": "object",
+                    "properties": {
+                        "П1": {"type": "number"},
+                        "X": {"type": "number"},
+                        "П2": {"type": "number"},
+                    },
+                    "required": ["П1", "X", "П2"],
+                    "additionalProperties": False,
+                },
+                "goal_markets": {
+                    "type": ["object", "null"],
+                    "properties": {
+                        "expected_home_goals": {"type": "number"},
+                        "expected_away_goals": {"type": "number"},
+                        "over_1_5": {"type": "number"},
+                        "over_2_5": {"type": "number"},
+                        "over_3_5": {"type": "number"},
+                        "over_4_5": {"type": "number"},
+                        "btts_yes": {"type": "number"},
+                    },
+                    "required": [
+                        "expected_home_goals", "expected_away_goals",
+                        "over_1_5", "over_2_5", "over_3_5", "over_4_5",
+                        "btts_yes",
+                    ],
+                    "additionalProperties": False,
+                },
+                "corner_markets": {
+                    "type": ["object", "null"],
+                    "properties": {
+                        "expected_home_corners": {"type": "number"},
+                        "expected_away_corners": {"type": "number"},
+                        "over_8_5": {"type": "number"},
+                        "over_9_5": {"type": "number"},
+                        "over_10_5": {"type": "number"},
+                        "over_11_5": {"type": "number"},
+                    },
+                    "required": [
+                        "expected_home_corners", "expected_away_corners",
+                        "over_8_5", "over_9_5", "over_10_5", "over_11_5",
+                    ],
+                    "additionalProperties": False,
+                },
+                "card_markets": {
+                    "type": ["object", "null"],
+                    "properties": {
+                        "expected_home_cards": {"type": "number"},
+                        "expected_away_cards": {"type": "number"},
+                        "over_2_5": {"type": "number"},
+                        "over_3_5": {"type": "number"},
+                        "over_4_5": {"type": "number"},
+                        "over_5_5": {"type": "number"},
+                    },
+                    "required": [
+                        "expected_home_cards", "expected_away_cards",
+                        "over_2_5", "over_3_5", "over_4_5", "over_5_5",
+                    ],
+                    "additionalProperties": False,
+                },
+                "opinion": {"type": "string"},
+                "risks": {"type": "string"},
+                "data_quality": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                },
+            },
+            "required": [
+                "independent_pick", "probabilities", "goal_markets",
+                "corner_markets", "card_markets", "opinion", "risks",
+                "data_quality",
+            ],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _extract_chat_completion(data: object) -> tuple[str, dict]:
+    """Extract only user-facing assistant text and safe completion diagnostics.
+
+    Reasoning is deliberately never used as a substitute for missing content.
+    Groq GPT-OSS returns reasoning separately; it is not the forecast payload.
+    """
+    if not isinstance(data, dict):
+        return "", {"response_type": type(data).__name__}
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        text_value = data.get("output_text")
+        if isinstance(text_value, str):
+            return text_value.strip(), {"response_type": "responses_api"}
+        return "", {
+            "response_keys": sorted(str(key) for key in data.keys()),
+            "response_type": "chat_completion",
+        }
+
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message") or {}
+    if not isinstance(message, dict):
+        message = {}
+    raw_content = message.get("content")
+    parts = []
+    if isinstance(raw_content, str):
+        parts.append(raw_content)
+    elif isinstance(raw_content, list):
+        for part in raw_content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                if str(part.get("type") or "").casefold() in {
+                    "text", "output_text",
+                } and isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+    elif isinstance(choice.get("text"), str):
+        parts.append(choice["text"])
+
+    usage_info = data.get("usage") or {}
+    completion_details = usage_info.get("completion_tokens_details") or {}
+    diagnostics = {
+        "finish_reason": choice.get("finish_reason"),
+        "completion_tokens": usage_info.get("completion_tokens"),
+        "reasoning_tokens": completion_details.get("reasoning_tokens"),
+        "message_fields": sorted(str(key) for key in message.keys()),
+        "content_type": type(raw_content).__name__,
+    }
+    return "\n".join(part for part in parts if part).strip(), diagnostics
+
+
 def _response_json(content: str) -> Optional[dict]:
     if not content:
         return None
@@ -361,7 +501,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
     ctx_hash = hashlib.sha256(
         json.dumps(cache_context, sort_keys=True, default=str).encode()
     ).hexdigest()
-    ck = f"llm_v9_multimarket_blind_{ctx_hash}"
+    ck = f"llm_v10_groq_structured_multimarket_blind_{ctx_hash}"
     cached = cache_get(ck, CACHE_TTL["llm"])
     if cached is not None:
         _log(f"CACHE HIT: {ctx_hash[:8]}")
@@ -424,37 +564,78 @@ def analyze_match(ctx: dict) -> Optional[str]:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    body = {
-        "model": model,
-        "messages": [
+    is_groq = "groq" in str(base).casefold()
+    is_gpt_oss = is_groq and model.casefold().startswith("openai/gpt-oss")
+    if is_gpt_oss:
+        # Groq documents low reasoning effort and max_completion_tokens for
+        # GPT-OSS. The previous 1,600-token max_tokens budget was frequently
+        # exhausted by reasoning before the model emitted its JSON content.
+        messages = [{
+            "role": "user",
+            "content": f"{LLM_SYSTEM_PROMPT}\\n\\n{user_msg}",
+        }]
+    else:
+        messages = [
             {"role": "system", "content": LLM_SYSTEM_PROMPT},
             {"role": "user", "content": user_msg},
-        ],
-        "temperature": 0.4,
-        "max_tokens": 1600,
+        ]
+
+    body = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.5 if is_groq else 0.4,
     }
+    if is_groq:
+        body["max_completion_tokens"] = 4096 if is_gpt_oss else 2048
+    else:
+        body["max_tokens"] = 1600
+    if is_gpt_oss:
+        body.update({
+            "reasoning_effort": "low",
+            "include_reasoning": False,
+            "response_format": _GPT_OSS_RESPONSE_FORMAT,
+        })
 
     _log(f"REQUEST: provider={provider}, model={model}, mode=blind-independent-multimarket")
     try:
         r = _sess.post(url, headers=headers, json=body,
-                       timeout=30, proxies=NO_PROXY)
+                       timeout=45 if is_gpt_oss else 30, proxies=NO_PROXY)
         usage.llm_increment(1)
         _log(f"RESPONSE: HTTP {r.status_code}, len={len(r.text)}")
         if r.status_code != 200:
             _log(f"ERROR HTTP {r.status_code}: {r.text[:300]}")
-            cache_put(ck, None)
             return None
 
         data = r.json()
-        choices = data.get("choices") or []
-        if not choices:
-            _log(f"ERROR: нет choices: {str(data)[:300]}")
-            cache_put(ck, None)
-            return None
-        content = (choices[0].get("message") or {}).get("content", "")
+        content, diagnostics = _extract_chat_completion(data)
+        if not content and is_gpt_oss and diagnostics.get("finish_reason") == "length":
+            # A truncated reasoning-only completion can still be HTTP 200.
+            # Retry once with a larger output budget; do not expose reasoning.
+            if usage.llm_remaining() > 0:
+                retry_body = dict(body)
+                retry_body["max_completion_tokens"] = 8192
+                _log(
+                    "WARN: GPT-OSS исчерпал лимит до финального текста "
+                    f"(reasoning_tokens={diagnostics.get('reasoning_tokens')}); повтор с 8192 токенами"
+                )
+                r = _sess.post(
+                    url, headers=headers, json=retry_body,
+                    timeout=60, proxies=NO_PROXY,
+                )
+                usage.llm_increment(1)
+                _log(f"RETRY RESPONSE: HTTP {r.status_code}, len={len(r.text)}")
+                if r.status_code == 200:
+                    data = r.json()
+                    content, diagnostics = _extract_chat_completion(data)
+                else:
+                    _log(f"RETRY ERROR HTTP {r.status_code}: {r.text[:240]}")
+
         if not content:
-            _log("ERROR: content пустой")
-            cache_put(ck, None)
+            _log(
+                "ERROR: финальный content пустой; "
+                + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+            )
+            # Do not cache transient/truncated failures; the next scan may retry.
             return None
 
         _log(f"CONTENT: {content[:300]}")
