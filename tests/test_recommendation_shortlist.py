@@ -7,17 +7,22 @@ from ui.tabs.scanner import (
 
 
 def valid_card():
-    return {
-        "best": ("1X2", "П1", 2.24, 0.12, 0.54, 10.0),
-        "bookmaker_by_pick": {"П1": "1xBet"},
-        "verdict": {
-            "real_odds": True,
-            "value_passed": True,
-            "is_bet": True,
-            "edge": 0.07,
-        },
+    best = ("1X2", "П1", 2.24, 0.12, 0.54, 10.0)
+    verdict = {
+        "real_odds": True,
+        "value_passed": True,
+        "is_bet": True,
+        "edge": 0.07,
     }
-
+    winner = {"best": best, "verdict": verdict, "score": 0.16}
+    return {
+        "best": best,
+        "best_by_market": {"winner": winner},
+        "market_odds": {"П1": 2.24, "X": 3.40, "П2": 3.60},
+        "bookmaker_by_pick": {"П1": "1xBet", "X": "1xBet", "П2": "1xBet"},
+        "verdict": verdict,
+        "best_odds_source": "SStats",
+    }
 
 class RecommendationShortlistTests(unittest.TestCase):
     def test_shortlist_contains_only_markets_with_full_portfolio_validation(self):
@@ -86,14 +91,14 @@ class RecommendationShortlistTests(unittest.TestCase):
         low_edge["verdict"]["edge"] = 0.049
         low_ev = valid_card()
         low_ev["best"] = ("1X2", "П1", 2.24, 0.049, 0.54, 10.0)
+        low_ev["best_by_market"]["winner"]["best"] = low_ev["best"]
 
-        self.assertEqual(
-            _qualified_bet_cards([
-                eligible, no_bookmaker, model_only, no_value,
-                no_kelly, low_edge, low_ev,
-            ]),
-            [eligible],
-        )
+        result = _qualified_bet_cards([
+            eligible, no_bookmaker, model_only, no_value,
+            no_kelly, low_edge, low_ev,
+        ])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["best"][1], "П1")
 
     def test_portfolio_autopick_allows_only_1x2_and_market_benchmarked_over25(self):
         winner = {
