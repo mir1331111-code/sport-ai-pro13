@@ -127,7 +127,7 @@ def market_type(pick: str) -> str:
     if pick.upper().startswith("BTTS"):
         return "BTTS"
 
-    if pick.startswith(("Угл ", "Карты ")):
+    if pick.casefold().startswith(("угл ", "карты ")):
         return "STAT"
 
     if pick.startswith("Ф"):

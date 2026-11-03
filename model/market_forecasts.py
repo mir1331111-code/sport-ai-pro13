@@ -4,6 +4,23 @@ from __future__ import annotations
 import math
 
 
+def is_half_line(line) -> bool:
+    """Return True only for finite half-point lines without push outcomes.
+
+    Integer and quarter lines need explicit push/split-stake settlement and must
+    not be scored with the binary probability/EV model used by this app.
+    """
+    try:
+        value = float(line)
+    except (TypeError, ValueError):
+        return False
+    return (
+        math.isfinite(value)
+        and value > 0.0
+        and math.isclose(value - math.floor(value), 0.5, abs_tol=1e-9)
+    )
+
+
 def count_over_probability(mean, line, variance=None):
     """Estimate P(count > line), using NB when observed variance exceeds the mean.
 

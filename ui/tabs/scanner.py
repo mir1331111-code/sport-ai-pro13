@@ -24,7 +24,7 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
 from data.fixture_merge import merge_fixture_sources, fixture_key
 from model.engine import Engine, _norm
 from model.validation_cache import select_validation_rows, validation_cache_key
-from model.market_forecasts import count_over_probability
+from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
 from betting.kelly import kelly, market_type
@@ -84,34 +84,117 @@ def _safe_filter(rows):
     return out
 
 
+def _portfolio_auto_recommendation(card: object) -> dict | None:
+    """Return one conservative virtual-portfolio candidate for a fixture.
+
+    1X2 requires a complete, named single-bookmaker 1X2 line. Goals O/U is
+    allowed only on 2.5 and only after the separate paired bookmaker benchmark
+    passed. BTTS, corners and cards remain forecast-only until separately
+    validated against an untouched market benchmark.
+    """
+    if not isinstance(card, dict):
+        return None
+    recommendations = card.get("best_by_market") or {}
+    books = card.get("bookmaker_by_pick") or {}
+    candidates = []
+
+    for family in ("winner", "goals"):
+        recommendation = recommendations.get(family)
+        if not isinstance(recommendation, dict):
+            continue
+        best = recommendation.get("best")
+        verdict = recommendation.get("verdict")
+        if (
+            not isinstance(best, (tuple, list))
+            or len(best) < 6
+            or not isinstance(verdict, dict)
+            or not verdict.get("real_odds")
+            or not verdict.get("value_passed")
+            or not verdict.get("is_bet")
+        ):
+            continue
+
+        market_code = str(best[0] or "").upper()
+        pick = str(best[1] or "")
+        if not pick or not str(books.get(pick) or "").strip():
+            continue
+
+        if family == "winner":
+            if market_code != "1X2":
+                continue
+            coherent_line = proportional_devig(
+                card.get("market_odds") or {},
+                ("П1", "X", "П2"),
+                bookmaker_by_pick=books,
+            )
+            if coherent_line is None:
+                continue
+        else:
+            if market_code != "OU" or not bool(card.get("total_market_validation")):
+                continue
+            line_match = re.fullmatch(r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", pick, re.I)
+            if not line_match:
+                continue
+            try:
+                line = float(line_match.group(1).replace(",", "."))
+            except ValueError:
+                continue
+            if abs(line - 2.5) > 1e-9:
+                continue
+            coherent_line = proportional_devig(
+                card.get("total_market_odds") or {},
+                ("ТБ 2.5", "ТМ 2.5"),
+                bookmaker_by_pick=books,
+            )
+            if coherent_line is None:
+                continue
+
+        try:
+            odd, ev, probability, stake = map(
+                float, (best[2], best[3], best[4], best[5])
+            )
+            edge_value = float(verdict.get("edge"))
+        except (TypeError, ValueError):
+            continue
+        if (
+            odd <= 1.01
+            or not 0.0 < probability < 1.0
+            or ev < 0.05
+            or edge_value < 0.05
+            or stake <= 0.0
+        ):
+            continue
+        candidates.append({
+            "family": family,
+            "best": best,
+            "verdict": verdict,
+            "score": float(recommendation.get("score") or 0.0),
+        })
+
+    return max(candidates, key=lambda item: item["score"]) if candidates else None
+
+
 def _is_actionable_recommendation(card: object) -> bool:
-    """True only for a fully priced, value-positive, Kelly-positive pick."""
+    """True only for a conservatively eligible, fully priced portfolio candidate."""
     if not isinstance(card, dict):
         return False
-    verdict = card.get("verdict")
-    best = card.get("best")
-    if not isinstance(verdict, dict) or not isinstance(best, (tuple, list)) or len(best) < 6:
+    choice = _portfolio_auto_recommendation(card)
+    if not isinstance(choice, dict):
         return False
-    if not (
-        verdict.get("real_odds")
-        and verdict.get("value_passed")
-        and verdict.get("is_bet")
-        and str(best[0]).upper() in {"1X2", "OU", "BTTS", "STAT"}
-    ):
-        return False
-    pick = str(best[1] or "")
-    bookmaker = (card.get("bookmaker_by_pick") or {}).get(pick)
-    if not pick or not str(bookmaker or "").strip():
+    verdict = choice.get("verdict") or {}
+    best = choice.get("best")
+    if not isinstance(best, (tuple, list)) or len(best) < 6:
         return False
     try:
         odd, ev, probability, stake = map(float, (best[2], best[3], best[4], best[5]))
         edge_value = float(verdict.get("edge"))
     except (TypeError, ValueError):
         return False
-    # Every displayed recommendation has a validated market model, a complete
-    # same-bookmaker line, at least 5% EV and Edge, and positive Kelly.
     return (
-        odd > 1.01
+        bool(verdict.get("real_odds"))
+        and bool(verdict.get("value_passed"))
+        and bool(verdict.get("is_bet"))
+        and odd > 1.01
         and 0.0 < probability < 1.0
         and ev >= 0.05
         and edge_value >= 0.05
@@ -120,10 +203,29 @@ def _is_actionable_recommendation(card: object) -> bool:
 
 
 def _qualified_bet_cards(cards: object) -> list[dict]:
-    """Build the one-best-pick-per-fixture shortlist; never use model-only picks."""
+    """Build one conservative 1X2/validated O/U 2.5 pick per fixture.
+
+    The dedicated BTTS/corners/cards tabs still show their own independent
+    forecast signals. They are not labelled as portfolio-ready bets here.
+    """
     if not isinstance(cards, list):
         return []
-    return [card for card in cards if _is_actionable_recommendation(card)]
+    qualified = []
+    for card in cards:
+        choice = _portfolio_auto_recommendation(card)
+        if not choice or not _is_actionable_recommendation(card):
+            continue
+        item = dict(card)
+        item["best"] = choice["best"]
+        item["verdict"] = choice["verdict"]
+        pick = str(choice["best"][1])
+        item["best_odds_source"] = (
+            (card.get("market_odds_source_by_pick") or {}).get(pick)
+            or card.get("best_odds_source")
+            or card.get("odds_source", "unknown")
+        )
+        qualified.append(item)
+    return qualified
 
 
 def _stat_market_lines(odds: dict, prefix: str) -> list[float]:
@@ -143,7 +245,7 @@ def _stat_market_lines(odds: dict, prefix: str) -> list[float]:
             line = float(match.group(1).replace(",", "."))
         except ValueError:
             continue
-        if 0.0 < line <= 30.0:
+        if 0.0 < line <= 30.0 and is_half_line(line):
             lines.add(line)
     return sorted(lines)
 
@@ -271,14 +373,14 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
         try:
             totals_backtest = walk_forward_compare(
                 validation_rows, matrix_n=matrix_n, bootstrap_samples=0,
-                totals_bootstrap_samples=100,
+                totals_bootstrap_samples=1000,
             )
             update_loader(
                 "Проверка угловых и карточек (хронологический тест)",
                 0.68, logs,
             )
             stat_report = walk_forward_market_validation(
-                validation_rows, min_history=30, min_n=500, bootstrap_samples=100,
+                validation_rows, min_history=30, min_n=500, bootstrap_samples=1000,
             )
             cache_put(validation_key, {
                 "totals_backtest": totals_backtest,
@@ -318,11 +420,11 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
             str(line): bool(report.get("validation_passed"))
             for line, report in line_reports.items()
         }
-        engine.total_market_validation = bool(
-            engine.total_market_validation_by_line.get("2.5", False)
-            or totals_market_is_validated(
-                engine.total_market_validation_report, min_n=500
-            )
+        # Line-vs-league-baseline validation is useful for forecast screening,
+        # but it is NOT proof of an edge over bookmakers. Automatic total-goals
+        # staking requires the separate paired candidate-vs-market benchmark.
+        engine.total_market_validation = totals_market_is_validated(
+            engine.total_market_validation_report, min_n=500
         )
         engine.btts_market_validation_report = totals_backtest.get("btts") or {}
         engine.btts_market_validation = bool(
@@ -1414,11 +1516,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         with portfolio_col:
             auto_add = st.checkbox(
                 "Автодобавление в виртуальный портфель",
-                value=True,
-                key="scanner_auto_add_qualified_v3",
+                value=False,
+                key="scanner_auto_add_qualified_v4",
                 help="Добавляются только прогнозы с реальными коэффициентами, прошедшие value-фильтры. Реальные ставки не размещаются.",
             )
-    auto_add = st.session_state.get("scanner_auto_add_qualified_v3", True)
+    auto_add = st.session_state.get("scanner_auto_add_qualified_v4", False)
 
     if not scan:
         fn = D.get("funnel")
@@ -1455,8 +1557,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         st.markdown(
             "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:8px 0 4px'>"
             "<div><div class='scanner-kicker'>SHORTLIST · AI MATCH DESK</div>"
-            "<h2 style='margin:0'>На что ставить</h2>"
-            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>Лучшие прошедшие отбор рынки: 1X2, тоталы, BTTS, угловые и карточки. Показываем только проверенные модели и реальные линии.</div></div>"
+            "<h2 style='margin:0'>Лучшие подтверждённые варианты</h2>"
+            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>В shortlist попадают только 1X2 с полной линией одного букмекера и тотал голов 2.5 при отдельной успешной проверке против рынка. BTTS, угловые и карточки показываются как независимые прогнозные сигналы, а не как доказанное преимущество над букмекером.</div></div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1691,6 +1793,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
         goal_cards = _sort_market_cards(goal_cards, "goals")
         with market_tabs[0]:
+            st.caption(
+                "Тоталы ранжируются независимо по всем матчам. Проверка конкретной линии "
+                "против исторической средней лиги оценивает прогноз модели, но сама по себе "
+                "не доказывает преимущество над букмекером. Для портфеля отдельно проверяется "
+                "только полный матч ТБ/ТМ 2.5 против букмекерского рынка."
+            )
             if not goal_cards:
                 st.info(
                     "В этом скане нет тоталов, прошедших собственную проверку, "
@@ -1742,6 +1850,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         ]
         for tab_index, market_filter, odds_field, market_label in market_specs:
             with market_tabs[tab_index]:
+                if market_filter == "btts":
+                    st.caption(
+                        "BTTS оценивается отдельно от победы и тоталов. Исторический фильтр "
+                        "сравнивает прогноз с предыдущей средней лиги; он не подтверждает "
+                        "положительный EV против букмекерского рынка. Рынок остаётся прогнозным."
+                    )
+                elif market_filter in {"corners", "cards"}:
+                    st.caption(
+                        "Этот рынок рассчитывается и ранжируется независимо. Исторический "
+                        "walk-forward сравнивает модель с предыдущей средней лиги, а не доказывает "
+                        "прибыльность ставки против букмекера. Поэтому угловые и карточки не "
+                        "добавляются в виртуальный портфель автоматически."
+                    )
                 def has_market_quote(card):
                     quotes = card.get(odds_field) or {}
                     if market_filter == "corners":
@@ -2260,6 +2381,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not match:
                     continue
                 line = float(match.group(2).replace(",", "."))
+                # The binary probability/EV calculation has no push handling.
+                # Keep integer and quarter lines informational, never actionable.
+                if not is_half_line(line):
+                    continue
                 line_text = f"{line:g}"
                 if not bool(total_validation.get(line_text)):
                     continue
@@ -2318,6 +2443,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 market_key = "corners" if code == "Угл" else "cards"
                 label_prefix = "Угловые" if code == "Угл" else "Карточки"
                 line = float(match.group(3).replace(",", "."))
+                # Integer totals can push and quarter lines split the stake.
+                # This model prices only half-lines, so other quotes stay informational.
+                if not is_half_line(line):
+                    continue
                 line_text = f"{line:g}"
                 pred = historical_stats.get(market_key) or {}
                 if not bool((stat_validation.get(market_key) or {}).get(line_text)):
@@ -2400,12 +2529,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 matches_with_best += 1
                 funnel_counts["bet"] += 1
                 logs.append(
-                    f"✅ BET: {h_ru} — {a_ru} | {best[1]} @ {best[2]:.2f} "
+                    f"✅ MARKET SIGNAL: {h_ru} — {a_ru} | {best[1]} @ {best[2]:.2f} "
                     f"({best[0]} · {best_odds_source})"
                 )
             else:
                 no_best_reason = (
-                    "ни один доступный исход не прошёл историческую проверку, "
+                    "ни один доступный исход не прошёл проверку модели для конкретной линии, "
                     "полную линию одного букмекера, вероятность, Edge >= 5%, "
                     "EV >= 5% и положительный Kelly"
                 )
@@ -2606,27 +2735,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         }
         if auto_add:
             for card in cards:
-                verdict_card = card.get("verdict") or {}
-                best_card = card.get("best")
-                if not best_card or not verdict_card.get("real_odds") or not verdict_card.get("value_passed"):
+                portfolio_choice = _portfolio_auto_recommendation(card)
+                if portfolio_choice is None:
                     continue
+                verdict_card = portfolio_choice["verdict"]
+                best_card = portfolio_choice["best"]
                 pick = str(best_card[1])
                 market_code = str(best_card[0]).upper()
-                # STAT bets are manually settled from actual match statistics
-                # in the portfolio; goal-score auto-settlement remains disabled.
-                if market_code not in {"1X2", "OU", "BTTS", "STAT"}:
-                    continue
+                market_family = portfolio_choice["family"]
                 match_key = (str(card.get("match") or ""), pick)
                 if match_key in existing_keys:
                     continue
-                market_family = (
-                    "winner" if market_code == "1X2"
-                    else "goals" if market_code == "OU"
-                    else "btts" if market_code == "BTTS"
-                    else "corners" if market_code == "STAT" and pick.startswith("Угл ")
-                    else "cards" if market_code == "STAT" and pick.startswith("Карты ")
-                    else None
-                )
                 try:
                     odds_value = float(best_card[2])
                     probability = float(verdict_card.get("prob") or 0.0)
@@ -2657,7 +2776,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "probability_method": verdict_card.get("probability_method", "market_blend_0.4_model_delta"),
                     "status": "pending",
                     "strat": "scanner_auto_" + market_code.casefold(),
-                    "odds_source": card.get("best_odds_source") or card.get("odds_source", "unknown"),
+                    "odds_source": (
+                        (card.get("market_odds_source_by_pick") or {}).get(pick)
+                        or card.get("best_odds_source")
+                        or card.get("odds_source", "unknown")
+                    ),
                     "mode": "real",
                     "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": card.get("date_iso"),
