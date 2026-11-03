@@ -1763,7 +1763,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             total_mean = float(P["lams"][0] or 0.0) + float(P["lams"][1] or 0.0)
             total_validation = getattr(engine, "total_market_validation_by_line", {}) or {}
             for selection in total_market_odds:
-                match = re.fullmatch(r"Т([БМ])\\s+(\\d+(?:[.,]\\d+)?)", str(selection), re.I)
+                match = re.fullmatch(r"Т([БМ])\s+(\d+(?:[.,]\d+)?)", str(selection), re.I)
                 if not match:
                     continue
                 line_text = match.group(2).replace(",", ".")
@@ -1809,7 +1809,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             stat_specs = (("Угл", "corners", "Угловые"), ("Карты", "cards", "Карточки"))
             for selection in stat_market_odds:
                 match = re.fullmatch(
-                    r"(Угл|Карты)\\s+(ТБ|ТМ)\\s+(\\d+(?:[.,]\\d+)?)",
+                    r"(Угл|Карты)\s+(ТБ|ТМ)\s+(\d+(?:[.,]\d+)?)",
                     str(selection), re.I,
                 )
                 if not match:

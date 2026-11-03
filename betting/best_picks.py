@@ -15,7 +15,7 @@ def _paired_picks(pick: str) -> tuple[str, ...] | None:
     if kind == "1X2":
         return ("П1", "X", "П2")
     if kind == "OU":
-        match = re.fullmatch(r"Т[БМ]\\s+(\\d+(?:[.,]\\d+)?)", str(pick or ""), re.I)
+        match = re.fullmatch(r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", str(pick or ""), re.I)
         if match:
             line = match.group(1).replace(",", ".")
             return (f"ТБ {line}", f"ТМ {line}")
@@ -23,7 +23,7 @@ def _paired_picks(pick: str) -> tuple[str, ...] | None:
         return ("BTTS Да", "BTTS Нет")
     elif kind == "STAT":
         match = re.fullmatch(
-            r"(Угл|Карты)\\s+(?:ТБ|ТМ)\\s+(\\d+(?:[.,]\\d+)?)",
+            r"(Угл|Карты)\s+(?:ТБ|ТМ)\s+(\d+(?:[.,]\d+)?)",
             str(pick or ""), re.I,
         )
         if match:
