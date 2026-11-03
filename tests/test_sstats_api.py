@@ -157,6 +157,73 @@ class SStatsTests(unittest.TestCase):
     @patch.object(sources, "_sstats_request")
     @patch.object(sources, "cache_put")
     @patch.object(sources, "cache_get", return_value=None)
+    def test_final_match_statistics_returns_corners_and_all_cards(
+        self, _cache_get, cache_write, request_mock
+    ):
+        request_mock.return_value = _Response(200, {
+            "status": "success",
+            "data": {
+                "game": {"id": 5678, "status": 8, "statusName": "Finished"},
+                "statistics": {
+                    "cornerKicksHome": 7, "cornerKicksAway": 4,
+                    "yellowCardsHome": 2, "yellowCardsAway": 1,
+                    "redCardsHome": 0, "redCardsAway": 1,
+                },
+            },
+        })
+        result = sources.sstats_match_statistics(5678, "private-key")
+        self.assertEqual(result["status"], 8)
+        self.assertTrue(result["finished"])
+        self.assertEqual(result["corners"], 11)
+        self.assertEqual(result["cards"], 4)
+        self.assertEqual(result["source"], "sstats")
+        self.assertEqual(request_mock.call_args.args[0], "Games/5678")
+        self.assertNotIn("private-key", repr(result))
+        cache_write.assert_called_once()
+
+    @patch.object(sources, "_sstats_request")
+    @patch.object(sources, "cache_put")
+    @patch.object(sources, "cache_get", return_value=None)
+    def test_live_or_extra_time_match_is_not_marked_final(
+        self, _cache_get, cache_write, request_mock
+    ):
+        request_mock.return_value = _Response(200, {
+            "status": "success",
+            "data": {
+                "game": {"id": 5678, "status": 6, "statusName": "Extra time"},
+                "statistics": {"cornerKicksHome": 5, "cornerKicksAway": 4},
+            },
+        })
+        result = sources.sstats_match_statistics(5678, "private-key")
+        self.assertFalse(result["finished"])
+        self.assertIsNone(result["corners"])
+        cache_write.assert_not_called()
+
+    @patch.object(sources, "_sstats_request")
+    @patch.object(sources, "cache_put")
+    @patch.object(sources, "cache_get", return_value=None)
+    def test_missing_stat_fields_are_not_treated_as_zero(
+        self, _cache_get, cache_write, request_mock
+    ):
+        request_mock.return_value = _Response(200, {
+            "status": "success",
+            "data": {
+                "game": {"id": 5678, "status": 8},
+                "statistics": {
+                    "cornerKicksHome": 5, "cornerKicksAway": None,
+                    "yellowCardsHome": 1, "yellowCardsAway": 0,
+                    "redCardsHome": 0, "redCardsAway": None,
+                },
+            },
+        })
+        result = sources.sstats_match_statistics(5678, "private-key")
+        self.assertIsNone(result["corners"])
+        self.assertIsNone(result["cards"])
+        cache_write.assert_called_once()
+
+    @patch.object(sources, "_sstats_request")
+    @patch.object(sources, "cache_put")
+    @patch.object(sources, "cache_get", return_value=None)
     def test_full_odds_uses_bookmaker_data_and_caches(self, _cache_get, _cache_put, request_mock):
         request_mock.return_value = _Response(200, {
             "status": "success",
