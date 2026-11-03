@@ -1581,45 +1581,85 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "не зависят от наличия сигнала 1X2."
             )
 
-        market_counts = {
+        quote_counts = {
             "winner": sum(bool(x.get("market_odds")) for x in market_pool),
             "goals": sum(bool(x.get("total_market_odds")) for x in market_pool),
-            "goals_confirmed": sum(
-                bool(x.get("total_market_odds"))
-                and (
-                    str(x.get("total_odds_source") or "").casefold() != "sstats"
-                    or any(bool(flag) for flag in (x.get("total_market_confirmed") or {}).values())
-                )
+            "btts": sum(bool(x.get("btts_market_odds")) for x in market_pool),
+            "corners": sum(
+                any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {}))
                 for x in market_pool
             ),
-            "btts": sum(bool(x.get("btts_market_odds")) for x in market_pool),
-            "corners": sum(any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {})) for x in market_pool),
-            "cards": sum(any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {})) for x in market_pool),
+            "cards": sum(
+                any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {}))
+                for x in market_pool
+            ),
             "handicap": sum(bool(x.get("asian_handicap_market_odds")) for x in market_pool),
         }
+        signal_counts = {
+            family: sum(
+                isinstance((x.get("best_by_market") or {}).get(family), dict)
+                for x in market_pool
+            )
+            for family in ("winner", "goals", "btts", "corners", "cards")
+        }
         market_tabs = st.tabs([
-            f"Тоталы ({market_counts['goals']}, проверены {market_counts['goals_confirmed']})",
-            f"{'Отобранные ставки' if recommendation_mode else 'Все матчи'} ({len(cards_view)})",
-            f"1X2 · линии ({market_counts['winner']})",
-            f"Обе забьют ({market_counts['btts']})",
-            f"Угловые ({market_counts['corners']})",
-            f"Карточки ({market_counts['cards']})",
-            f"Форы ({market_counts['handicap']})",
+            f"Тоталы · сигналы {signal_counts['goals']} / цены {quote_counts['goals']}",
+            f"{'Общий shortlist' if recommendation_mode else 'Все матчи'} ({len(cards_view)})",
+            f"1X2 · сигналы {signal_counts['winner']} / цены {quote_counts['winner']}",
+            f"BTTS · сигналы {signal_counts['btts']} / цены {quote_counts['btts']}",
+            f"Угловые · сигналы {signal_counts['corners']} / цены {quote_counts['corners']}",
+            f"Карточки · сигналы {signal_counts['cards']} / цены {quote_counts['cards']}",
+            f"Форы · котировки {quote_counts['handicap']}",
         ])
 
-        # Totals is the default workspace: show model forecasts for every
-        # fixture, including unpriced ones, so missing bookmaker coverage is
-        # visible instead of silently hiding the match.
-        with market_tabs[0]:
-            if market_counts["goals"] == 0:
-                st.info(
-                    "Подтверждённых котировок на тоталы пока нет. Ниже показан прогноз модели "
-                    "по каждому матчу; без реальной цены Value и ставка недоступны."
+        def _market_recommendation(card, family):
+            return (card.get("best_by_market") or {}).get(family)
+
+        def _sort_market_cards(cards, family):
+            def _key(card):
+                recommendation = _market_recommendation(card, family)
+                result = (recommendation or {}).get("verdict") or {}
+                if sort_mode.startswith("По дате"):
+                    return (0 if recommendation else 1, parse_card_date(card))
+                if sort_mode.startswith("По вероятности"):
+                    return (
+                        0 if recommendation else 1,
+                        -float(result.get("prob") or 0.0),
+                    )
+                if sort_mode.startswith("По EV"):
+                    return (
+                        0 if recommendation else 1,
+                        -float(result.get("ev") or -1.0),
+                    )
+                return (
+                    0 if recommendation else 1,
+                    -float((recommendation or {}).get("score") or -1.0),
                 )
-            for card in market_pool:
+            return sorted(cards, key=_key)
+
+        # Each family is independently ranked over the full fixture pool.
+        # In recommendation mode only its own passed signals are shown.
+        goal_cards = (
+            [card for card in market_pool if _market_recommendation(card, "goals")]
+            if recommendation_mode else market_pool
+        )
+        goal_cards = _sort_market_cards(goal_cards, "goals")
+        with market_tabs[0]:
+            if not goal_cards:
+                st.info(
+                    "В этом скане нет тоталов, прошедших собственную проверку, "
+                    "согласованную линию одного букмекера и пороги Value/EV/Kelly."
+                )
+            elif quote_counts["goals"] == 0:
+                st.info(
+                    "Котировок на тоталы в источниках нет. Модельные оценки не являются "
+                    "ставкой без реальной цены."
+                )
+            for card in goal_cards:
                 st.markdown(render_fixture_header(card), unsafe_allow_html=True)
                 _render_manual_odds_block(
-                    card, D, kelly_frac, min_prob, min_edge, market_filter="goals"
+                    card, D, kelly_frac, min_prob, min_edge, market_filter="goals",
+                    market_recommendation=_market_recommendation(card, "goals"),
                 )
 
         with market_tabs[1]:
@@ -1642,7 +1682,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         market_specs = [
             (2, "winner", "market_odds", "1X2"),
-            (3, "btts", "btts_market_odds", "«Обе забьют»"),
+            (3, "btts", "btts_market_odds", "BTTS"),
             (4, "corners", "stat_market_odds", "угловые"),
             (5, "cards", "stat_market_odds", "карточки"),
         ]
@@ -1655,15 +1695,35 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     if market_filter == "cards":
                         return any(str(key).startswith("Карты ") for key in quotes)
                     return bool(quotes)
-                selected_cards = [card for card in market_pool if has_market_quote(card)]
+
+                if recommendation_mode:
+                    selected_cards = [
+                        card for card in market_pool
+                        if _market_recommendation(card, market_filter)
+                    ]
+                else:
+                    selected_cards = [
+                        card for card in market_pool if has_market_quote(card)
+                    ]
+                selected_cards = _sort_market_cards(selected_cards, market_filter)
                 if not selected_cards:
-                    st.info(
-                        f"SStats не вернул подтверждённых котировок на {market_label} для показанных матчей. "
-                        "Коэффициенты 1X2 не подставляются вместо отсутствующего рынка."
-                    )
+                    if recommendation_mode:
+                        st.info(
+                            f"Нет {market_label}-сигналов, прошедших собственные критерии "
+                            "вероятности, Value, исторической проверки и полного рынка одного букмекера."
+                        )
+                    else:
+                        st.info(
+                            f"Нет подтверждённых котировок на {market_label} для найденных матчей. "
+                            "Коэффициенты 1X2 не подставляются вместо отсутствующего рынка."
+                        )
                 for card in selected_cards:
                     st.markdown(render_fixture_header(card), unsafe_allow_html=True)
-                    _render_manual_odds_block(card, D, kelly_frac, min_prob, min_edge, market_filter=market_filter)
+                    _render_manual_odds_block(
+                        card, D, kelly_frac, min_prob, min_edge,
+                        market_filter=market_filter,
+                        market_recommendation=_market_recommendation(card, market_filter),
+                    )
 
         with market_tabs[6]:
             handicap_cards = [card for card in market_pool if card.get("asian_handicap_market_odds")]
