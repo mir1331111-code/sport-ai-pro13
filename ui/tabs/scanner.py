@@ -126,6 +126,99 @@ def _qualified_bet_cards(cards: object) -> list[dict]:
     return [card for card in cards if _is_actionable_recommendation(card)]
 
 
+def _portfolio_auto_recommendation(card: object) -> dict | None:
+    """Return one conservative virtual-portfolio candidate for a fixture.
+
+    1X2 requires a complete, named single-bookmaker 1X2 line. Goals O/U is
+    allowed only on 2.5 and only after the separate paired bookmaker benchmark
+    passed. BTTS, corners and cards remain forecast-only until separately
+    validated against an untouched market benchmark.
+    """
+    if not isinstance(card, dict):
+        return None
+    recommendations = card.get("best_by_market") or {}
+    books = card.get("bookmaker_by_pick") or {}
+    candidates = []
+
+    for family in ("winner", "goals"):
+        recommendation = recommendations.get(family)
+        if not isinstance(recommendation, dict):
+            continue
+        best = recommendation.get("best")
+        verdict = recommendation.get("verdict")
+        if (
+            not isinstance(best, (tuple, list))
+            or len(best) < 6
+            or not isinstance(verdict, dict)
+            or not verdict.get("real_odds")
+            or not verdict.get("value_passed")
+            or not verdict.get("is_bet")
+        ):
+            continue
+
+        market_code = str(best[0] or "").upper()
+        pick = str(best[1] or "")
+        if not pick or not str(books.get(pick) or "").strip():
+            continue
+
+        if family == "winner":
+            if market_code != "1X2":
+                continue
+            # Compact feed prices without bookmaker attribution are not enough
+            # for unattended portfolio additions.
+            coherent_line = proportional_devig(
+                card.get("market_odds") or {},
+                ("П1", "X", "П2"),
+                bookmaker_by_pick=books,
+            )
+            if coherent_line is None:
+                continue
+        else:
+            if market_code != "OU" or not bool(card.get("total_market_validation")):
+                continue
+            line_match = re.fullmatch(r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", pick, re.I)
+            if not line_match:
+                continue
+            try:
+                line = float(line_match.group(1).replace(",", "."))
+            except ValueError:
+                continue
+            # The historic bookmaker benchmark currently exists only for FT 2.5.
+            if abs(line - 2.5) > 1e-9:
+                continue
+            coherent_line = proportional_devig(
+                card.get("total_market_odds") or {},
+                ("ТБ 2.5", "ТМ 2.5"),
+                bookmaker_by_pick=books,
+            )
+            if coherent_line is None:
+                continue
+
+        try:
+            odd, ev, probability, stake = map(
+                float, (best[2], best[3], best[4], best[5])
+            )
+            edge_value = float(verdict.get("edge"))
+        except (TypeError, ValueError):
+            continue
+        if (
+            odd <= 1.01
+            or not 0.0 < probability < 1.0
+            or ev < 0.05
+            or edge_value < 0.05
+            or stake <= 0.0
+        ):
+            continue
+        candidates.append({
+            "family": family,
+            "best": best,
+            "verdict": verdict,
+            "score": float(recommendation.get("score") or 0.0),
+        })
+
+    return max(candidates, key=lambda item: item["score"]) if candidates else None
+
+
 def _stat_market_lines(odds: dict, prefix: str) -> list[float]:
     """Return the exact half/integer lines present in an SStats corner/card quote map."""
     if not isinstance(odds, dict):
@@ -2614,27 +2707,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         }
         if auto_add:
             for card in cards:
-                verdict_card = card.get("verdict") or {}
-                best_card = card.get("best")
-                if not best_card or not verdict_card.get("real_odds") or not verdict_card.get("value_passed"):
+                portfolio_choice = _portfolio_auto_recommendation(card)
+                if portfolio_choice is None:
                     continue
+                verdict_card = portfolio_choice["verdict"]
+                best_card = portfolio_choice["best"]
                 pick = str(best_card[1])
                 market_code = str(best_card[0]).upper()
-                # STAT bets are manually settled from actual match statistics
-                # in the portfolio; goal-score auto-settlement remains disabled.
-                if market_code not in {"1X2", "OU", "BTTS", "STAT"}:
-                    continue
+                market_family = portfolio_choice["family"]
                 match_key = (str(card.get("match") or ""), pick)
                 if match_key in existing_keys:
                     continue
-                market_family = (
-                    "winner" if market_code == "1X2"
-                    else "goals" if market_code == "OU"
-                    else "btts" if market_code == "BTTS"
-                    else "corners" if market_code == "STAT" and pick.startswith("Угл ")
-                    else "cards" if market_code == "STAT" and pick.startswith("Карты ")
-                    else None
-                )
                 try:
                     odds_value = float(best_card[2])
                     probability = float(verdict_card.get("prob") or 0.0)
@@ -2665,7 +2748,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "probability_method": verdict_card.get("probability_method", "market_blend_0.4_model_delta"),
                     "status": "pending",
                     "strat": "scanner_auto_" + market_code.casefold(),
-                    "odds_source": card.get("best_odds_source") or card.get("odds_source", "unknown"),
+                    "odds_source": (
+                        (card.get("market_odds_source_by_pick") or {}).get(pick)
+                        or card.get("best_odds_source")
+                        or card.get("odds_source", "unknown")
+                    ),
                     "mode": "real",
                     "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": card.get("date_iso"),
