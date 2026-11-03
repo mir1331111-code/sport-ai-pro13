@@ -313,9 +313,11 @@ class SStatsTests(unittest.TestCase):
                 {"bookmakerName": "Book A", "odds": [{
                     "marketName": "Total Goals",
                     "odds": [{"name": "Over 2.5", "value": "1.80"}],
+                    {"name": "Under 2.5", "value": "1.95"},
                 }]},
                 {"bookmakerName": "Book B", "odds": [{
                     "marketName": "Total Goals",
+                    {"name": "Under 2.5", "value": "1.95"},
                     "odds": [{"name": "Over 2.5", "value": "1.85"}],
                 }]},
             ]}),
@@ -352,6 +354,7 @@ class SStatsTests(unittest.TestCase):
                 "odds": [{
                     "marketName": "Total Goals",
                     "odds": [{"name": "Over 2.5", "value": "1.85"}],
+                    {"name": "Under 2.5", "value": "1.95"},
                 }],
             }]}),
         ]
