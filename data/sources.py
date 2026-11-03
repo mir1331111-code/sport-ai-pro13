@@ -2582,21 +2582,131 @@ def _parse_highlightly_odds(odds_entries: list, wanted_ids: set, logs=None) -> O
         "total_market_odds", "btts_market_odds", "stat_market_odds",
         "asian_handicap_market_odds",
     ):
-        result[group] = {key: max(values) for key, values in prices[group].items() if values}
+        valid_by_key = {}
+        for key, values in prices[group].items():
+            valid = [
+                (float(odd), str(book or "").strip())
+                for odd, book in values
+                if 1.01 < float(odd) <= 100.0
+            ]
+            if group in {"total_market_odds", "btts_market_odds", "stat_market_odds"}:
+                # These are two-way markets. Anonymous prices may be displayed
+                # only as quotes, never as a coherent bookmaker line.
+                valid = [(odd, book) for odd, book in valid if book]
+            if not valid:
+                continue
 
-    has_1x2 = all(key in result for key in ("П1", "X", "П2"))
-    has_other = any(result[key] for key in (
-        "total_market_odds", "btts_market_odds", "stat_market_odds",
-        "asian_handicap_market_odds",
-    ))
-    if not has_1x2 and not has_other:
-        return None
-    if logs is not None:
-        market_count = sum(len(result[key]) for key in (
-            "total_market_odds", "btts_market_odds", "stat_market_odds",
-            "asian_handicap_market_odds",
-        )) + (3 if has_1x2 else 0)
-        logs.append(f"Highlightly: распознано {market_count} исходов/линий для найденного матча")
+            ordered = sorted(odd for odd, _book in valid)
+            middle = len(ordered) // 2
+            median = (
+                ordered[middle] if len(ordered) % 2
+                else (ordered[middle - 1] + ordered[middle]) / 2.0
+            )
+            credible = [
+                (odd, book) for odd, book in valid
+                if odd <= median * 1.25
+            ]
+            if group in {"total_market_odds", "stat_market_odds"}:
+                credible = [(odd, book) for odd, book in credible if odd <= 8.0]
+            if credible:
+                valid_by_key[key] = credible
+
+        if group == "asian_handicap_market_odds":
+            for key, credible in valid_by_key.items():
+                best_odd, best_book = max(credible, key=lambda item: item[0])
+                result[group][key] = best_odd
+                if best_book:
+                    result["bookmaker_by_pick"][key] = best_book
+            continue
+
+        # Pair the two sides of each exact line and choose a single coherent
+        # bookmaker quote. Selecting the maximum Over and Under independently
+        # can silently combine two different books and corrupt de-vigging.
+        pair_specs = []
+        if group == "btts_market_odds":
+            pair_specs.append(("BTTS Да", "BTTS Нет"))
+        elif group == "total_market_odds":
+            for key in valid_by_key:
+                match = re.fullmatch(r"ТБ\s+(\d+(?:[.,]\d+)?)", key, re.I)
+                if match:
+                    line = f"{float(match.group(1).replace(',', '.')):g}"
+                    pair_specs.append((f"ТБ {line}", f"ТМ {line}"))
+        else:
+            seen_lines = set()
+            for key in valid_by_key:
+                match = re.fullmatch(
+                    r"(Угл|Карты)\s+ТБ\s+(\d+(?:[.,]\d+)?)", key, re.I
+                )
+                if not match:
+                    continue
+                prefix = "Угл" if match.group(1).casefold() == "угл" else "Карты"
+                line = f"{float(match.group(2).replace(',', '.')):g}"
+                identity = (prefix, line)
+                if identity in seen_lines:
+                    continue
+                seen_lines.add(identity)
+                pair_specs.append((f"{prefix} ТБ {line}", f"{prefix} ТМ {line}"))
+
+        paired_keys = set()
+        for over_key, under_key in pair_specs:
+            paired_keys.update((over_key, under_key))
+            over_rows = valid_by_key.get(over_key, [])
+            under_rows = valid_by_key.get(under_key, [])
+            by_book = {}
+            for odd, book in over_rows:
+                book_key = _book_key(book)
+                if book_key:
+                    by_book.setdefault(book_key, {"name": book})["over"] = max(
+                        odd, by_book.get(book_key, {}).get("over", 0.0)
+                    )
+            for odd, book in under_rows:
+                book_key = _book_key(book)
+                if book_key:
+                    by_book.setdefault(book_key, {"name": book})["under"] = max(
+                        odd, by_book.get(book_key, {}).get("under", 0.0)
+                    )
+
+            complete_lines = []
+            for book_key, quotes in by_book.items():
+                over_odd, under_odd = quotes.get("over"), quotes.get("under")
+                if over_odd is None or under_odd is None:
+                    continue
+                overround = (1.0 / over_odd) + (1.0 / under_odd)
+                if not (0.85 <= overround <= 1.35):
+                    continue
+                complete_lines.append((
+                    overround, -(over_odd + under_odd), book_key,
+                    quotes["name"], over_odd, under_odd,
+                ))
+
+            if complete_lines:
+                # Lowest overround gives the most conservative, coherent
+                # benchmark. Both displayed prices come from that same book.
+                _, _, selected_book_key, selected_book, over_odd, under_odd = min(
+                    complete_lines, key=lambda item: (item[0], item[1], item[2])
+                )
+                result[group][over_key] = over_odd
+                result[group][under_key] = under_odd
+                result["bookmaker_by_pick"][over_key] = selected_book
+                result["bookmaker_by_pick"][under_key] = selected_book
+                if group == "total_market_odds":
+                    common_book_count = len(complete_lines)
+                    for selection in (over_key, under_key):
+                        result["total_market_book_count"][selection] = common_book_count
+                        result["total_market_confirmed"][selection] = common_book_count >= 2
+
+        # Preserve one-sided/unpaired prices for informational display only.
+        # Without a matching same-book side they cannot pass proportional_devig.
+        for key, credible in valid_by_key.items():
+            if key in result[group]:
+                continue
+            best_odd, best_book = max(credible, key=lambda item: item[0])
+            result[group][key] = best_odd
+            if best_book:
+                result["bookmaker_by_pick"][key] = best_book
+            if group == "total_market_odds":
+                result["total_market_book_count"][key] = 0
+                result["total_market_confirmed"][key] = False
     return result
 
 
