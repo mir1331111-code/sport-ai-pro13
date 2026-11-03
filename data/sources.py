@@ -646,6 +646,32 @@ def _tsdb_venue_metadata(venue_id: str, logs=None) -> dict:
         return {}
 
 
+def _tsdb_kickoff_utc(value) -> str:
+    """Normalize TheSportsDB absolute timestamps without trusting naive local clocks."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        stamp = float(raw)
+        if not math.isfinite(stamp) or stamp <= 0:
+            return ""
+        # Feeds may encode Unix timestamps in seconds or milliseconds.
+        if stamp >= 1_000_000_000_000:
+            stamp /= 1000.0
+        parsed = datetime.fromtimestamp(stamp, timezone.utc)
+        if not 2000 <= parsed.year <= 2100:
+            return ""
+        return parsed.isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
 def tsdb_matches(days: int = 7, logs=None) -> list:
     """Сбор матчей из TheSportsDB на N дней вперёд."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -700,12 +726,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "League": league,
                     "Date": (e.get("dateEvent") or "")[:10],
                     "Time": (e.get("strTime") or "")[:5],
-                    "kickoff_utc": (
-                        datetime.fromtimestamp(
-                            int(e.get("strTimestamp")), timezone.utc
-                        ).isoformat().replace("+00:00", "Z")
-                        if str(e.get("strTimestamp") or "").isdigit() else ""
-                    ),
+                    "kickoff_utc": _tsdb_kickoff_utc(e.get("strTimestamp")),
                     "HomeTeam": h,
                     "AwayTeam": a,
                     "fixture_id": e.get("idEvent"),
