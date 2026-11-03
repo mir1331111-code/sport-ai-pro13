@@ -97,13 +97,13 @@ class HistoricalMatchStats:
         for market, (home_key, away_key) in _FIELDS.items():
             h, a = _num(row.get(home_key)), _num(row.get(away_key))
             if market == "cards":
-                # Red cards are added when present; absent values stay missing,
-                # rather than being silently treated as zero.
+                # Total cards include yellow + red. If either red-card field is
+                # missing, this match is not a valid cards observation.
                 hr, ar = _num(row.get("HR")), _num(row.get("AR"))
-                if h is not None and hr is not None:
-                    h += hr
-                if a is not None and ar is not None:
-                    a += ar
+                if h is None or a is None or hr is None or ar is None:
+                    continue
+                h += hr
+                a += ar
             if h is None or a is None:
                 continue
             values[market] = (h, a)
@@ -261,9 +261,9 @@ def walk_forward_market_validation(
                         actual = hc + ac
                 else:
                     hy, ay = _num(row.get("HY")), _num(row.get("AY"))
-                    if hy is not None and ay is not None:
-                        hr, ar = _num(row.get("HR")), _num(row.get("AR"))
-                        actual = hy + ay + (hr or 0.0) + (ar or 0.0)
+                    hr, ar = _num(row.get("HR")), _num(row.get("AR"))
+                    if all(value is not None for value in (hy, ay, hr, ar)):
+                        actual = hy + ay + hr + ar
                 forecast = forecasts.get(market) or {}
                 league_rows = model.league[league][market]
                 if (
@@ -362,9 +362,9 @@ def walk_forward_evaluate(rows, league="G", min_history=30):
             if hc is not None and ac is not None:
                 actuals["corners"] = hc + ac
             hy, ay = _num(row.get("HY")), _num(row.get("AY"))
-            if hy is not None and ay is not None:
-                hr, ar = _num(row.get("HR")), _num(row.get("AR"))
-                actuals["cards"] = hy + ay + (hr or 0.0) + (ar or 0.0)
+            hr, ar = _num(row.get("HR")), _num(row.get("AR"))
+            if all(value is not None for value in (hy, ay, hr, ar)):
+                actuals["cards"] = hy + ay + hr + ar
             for market, actual in actuals.items():
                 forecast = forecasts.get(market)
                 if forecast and forecast.get("history_matches", 0) >= min_history:
