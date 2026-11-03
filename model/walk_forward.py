@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import random
+import numpy as np
 from datetime import date, datetime
 
 from model.engine import Engine, _row_xg_pair
@@ -190,6 +191,39 @@ def _poisson_over_probability(mean, line):
         return None
 
 
+def _bootstrap_mean_samples(values, bootstrap_samples, seed):
+    """Fast deterministic paired row bootstrap in bounded-memory batches.
+
+    Each row is one fixture and each column is one metric. Resampling the row
+    indices together preserves pairing between metrics and avoids the large
+    Python-level loops used by the former bootstrap implementation.
+    """
+    matrix = np.asarray(values, dtype=float)
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(-1, 1)
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        return [[] for _ in range(matrix.shape[1] if matrix.ndim == 2 else 0)]
+
+    sample_count = max(0, int(bootstrap_samples))
+    metric_count = matrix.shape[1]
+    samples = [[] for _ in range(metric_count)]
+    if sample_count == 0:
+        return samples
+
+    row_count = matrix.shape[0]
+    rng = np.random.default_rng(int(seed))
+    batch_size = min(128, sample_count)
+    for offset in range(0, sample_count, batch_size):
+        batch_count = min(batch_size, sample_count - offset)
+        indices = rng.integers(
+            0, row_count, size=(batch_count, row_count), dtype=np.int32
+        )
+        means = matrix[indices].mean(axis=1)
+        for metric_index in range(metric_count):
+            samples[metric_index].extend(means[:, metric_index].tolist())
+    return samples
+
+
 def _binary_metrics(records, *, bootstrap_samples=1000, seed=31415):
     """Brier/log-loss and fixture-bootstrap intervals for binary markets."""
     if not records:
@@ -203,16 +237,12 @@ def _binary_metrics(records, *, bootstrap_samples=1000, seed=31415):
                        -(y * math.log(p) + (1-y) * math.log(1-p))))
     n = len(scores)
     names = ("brier", "log_loss")
-    means = [sum(row[i] for row in scores) / n for i in range(2)]
-    rng = random.Random(seed)
-    samples = {name: [] for name in names}
-    for _ in range(max(0, int(bootstrap_samples))):
-        picked = [scores[rng.randrange(n)] for _ in range(n)]
-        for i, name in enumerate(names):
-            samples[name].append(sum(row[i] for row in picked) / n)
+    matrix = np.asarray(scores, dtype=float)
+    means = matrix.mean(axis=0).tolist()
+    samples = _bootstrap_mean_samples(matrix, bootstrap_samples, seed)
     intervals = {}
-    for name in names:
-        values = sorted(samples[name])
+    for index, name in enumerate(names):
+        values = sorted(samples[index])
         intervals[name] = ({"low": values[int(.025*(len(values)-1))],
                             "high": values[int(.975*(len(values)-1))]}
                            if values else {"low": None, "high": None})
@@ -260,16 +290,12 @@ def _binary_paired_differences(candidate_records, market_records, *, bootstrap_s
         differences.append((cbrier-mbrier, closs-mloss))
     n = len(differences)
     names = ("brier", "log_loss")
-    means = [sum(row[i] for row in differences)/n for i in range(2)]
-    rng = random.Random(seed)
-    samples = {name: [] for name in names}
-    for _ in range(max(0, int(bootstrap_samples))):
-        picked = [differences[rng.randrange(n)] for _ in range(n)]
-        for i, name in enumerate(names):
-            samples[name].append(sum(row[i] for row in picked)/n)
+    matrix = np.asarray(differences, dtype=float)
+    means = matrix.mean(axis=0).tolist()
+    samples = _bootstrap_mean_samples(matrix, bootstrap_samples, seed)
     intervals = {}
-    for name in names:
-        values = sorted(samples[name])
+    for index, name in enumerate(names):
+        values = sorted(samples[index])
         intervals[name] = ({"low": values[int(.025*(len(values)-1))],
                             "high": values[int(.975*(len(values)-1))]}
                            if values else {"low": None, "high": None})

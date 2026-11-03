@@ -63,6 +63,37 @@ class WalkForwardMarketBenchmarkTests(unittest.TestCase):
         }
         self.assertFalse(totals_market_is_validated(report))
 
+    def test_large_bootstrap_is_deterministic_and_keeps_fixture_pairing(self):
+        candidate = []
+        market = []
+        for index in range(600):
+            outcome = "over" if index % 3 else "under"
+            candidate_prob = 0.68 if outcome == "over" else 0.32
+            market_prob = 0.56 if outcome == "over" else 0.44
+            candidate.append((
+                {"over": candidate_prob, "under": 1.0 - candidate_prob},
+                outcome,
+            ))
+            market.append((
+                {"over": market_prob, "under": 1.0 - market_prob},
+                outcome,
+            ))
+
+        first = _binary_paired_differences(
+            candidate, market, bootstrap_samples=1000, seed=91
+        )
+        second = _binary_paired_differences(
+            candidate, market, bootstrap_samples=1000, seed=91
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first["n"], 600)
+        self.assertLess(first["confidence_intervals_95"]["brier"]["high"], 0.0)
+
+        metric_first = _binary_metrics(candidate, bootstrap_samples=1000, seed=17)
+        metric_second = _binary_metrics(candidate, bootstrap_samples=1000, seed=17)
+        self.assertEqual(metric_first, metric_second)
+        self.assertEqual(metric_first["n"], 600)
+
     def test_binary_metrics_report_brier_log_loss_and_intervals(self):
         records = [
             ({"over": 0.70, "under": 0.30}, "over"),
