@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from model.forecast_ledger import ForecastLedger
+from model.forecast_ledger import ForecastLedger, MarketForecastLedger
 from model.independent_forecasts import (
     compare_forecast_rows,
     historical_features,
@@ -36,6 +36,10 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertAlmostEqual(features["away_conceded_away_avg"], 1.5)
         self.assertEqual(features["home_home_sample"], 3)
         self.assertEqual(features["away_away_sample"], 4)
+        self.assertAlmostEqual(features["simple_baseline_lambda_home"], 1.75)
+        self.assertAlmostEqual(features["simple_baseline_lambda_away"], 1.25)
+        self.assertAlmostEqual(features["simple_baseline_lambda_total"], 3.0)
+        self.assertGreater(features["simple_baseline_over_25"], 0.5)
 
     def test_scan_records_pre_kickoff_main_and_ai_once(self):
         tmp = tempfile.TemporaryDirectory()
@@ -71,6 +75,30 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual({row["fixture_id"] for row in rows}, {rows[0]["fixture_id"]})
         self.assertTrue(all(row["result"] is None for row in rows))
         self.assertTrue(all(row["kickoff_at"] for row in rows))
+
+    def test_scan_records_market_recommendation_once(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        now = datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc)
+        card = {
+            "match": "Home FC vs Away FC", "match_ru": "Home FC — Away FC",
+            "div": "E0", "league": "Premier League", "date_iso": "2026-10-25",
+            "time": "16:30", "p1": .52, "px": .28, "p2": .20,
+            "market_odds": {"П1": 2.1, "X": 3.4, "П2": 3.8},
+            "best": ("STAT", "Угл ТБ 9.5", 1.95, .12, .58, 1.0),
+            "best_odds_source": "test-book",
+        }
+        first = record_scan_forecasts([card], db_path=path, now=now)
+        second = record_scan_forecasts([card], db_path=path, now=now)
+        self.assertEqual(first["market_recorded"], 1)
+        self.assertEqual(second["market_recorded"], 0)
+        rows = MarketForecastLedger(path).rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["market"], "STAT")
+        self.assertEqual(rows[0]["selection"], "Угл ТБ 9.5")
+        self.assertEqual(rows[0]["odds_source"], "test-book")
+        self.assertEqual(card["market_forecast_key"], rows[0]["forecast_key"])
 
     def test_scan_does_not_record_after_kickoff_or_without_time(self):
         tmp = tempfile.TemporaryDirectory()
