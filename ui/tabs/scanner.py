@@ -1,438 +1,14 @@
-"""ui/tabs/scanner.py — Сканер с ручным вводом кэфов."""
-from __future__ import annotations
-import os
-import re
-import json
-import csv
-import io
-import html
-import time
-import hashlib
-import threading
-import requests
-from datetime import datetime, timedelta
-
-import streamlit as st
-
-from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE
-from storage import usage
-from storage import sqlite_store as db
-from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
-                          parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture,
-                          sstats_upcoming_matches, sstats_odds_fixture,
-                          footballapi_xg_history)
-from data.fixture_merge import merge_fixture_sources, fixture_key
-from model.engine import Engine, _norm
-from model.validation_cache import select_validation_rows, validation_cache_key
-from betting.verdict import build_verdict
-from betting.best_picks import best_value_market
-from betting.kelly import kelly, market_type
-from betting.market_math import blend_probability, proportional_devig
-from llm.analyst import analyze_match, has_sufficient_history
-from model.independent_forecasts import historical_features, record_scan_forecasts
-from ui.cards import (render_verdict_card, translate_team,
-                      parse_card_date, day_label, render_fixture_header)
-
-LLM_TOP_N = 8
-MAX_STAKE_PCT = 0.05
-AUTO_PORTFOLIO_MIN_PROB = 0.65  # Hard confidence gate for virtual-portfolio additions.
-
-
-def _runtime_secret(session_key: str, *names: str) -> str:
-    """Read credentials from the current password widget, environment, or Streamlit secrets."""
-    value = str(st.session_state.get(session_key, "") or "").strip()
-    if value:
-        return value
-    for name in names:
-        value = os.environ.get(name, "").strip()
-        if value:
-            return value
-    try:
-        for name in names:
-            value = str(st.secrets.get(name, "") or "").strip()
-            if value:
-                return value
-        # Also accept common nested layouts such as [api] or [highlightly].
-        for section_name in ("api", "apis", "secrets", "highlightly", "sstats"):
-            section = st.secrets.get(section_name, {})
-            if hasattr(section, "get"):
-                for name in names:
-                    value = str(section.get(name, "") or "").strip()
-                    if value:
-                        return value
-                if section_name == "sstats":
-                    for alias in ("api_key", "key"):
-                        value = str(section.get(alias, "") or "").strip()
-                        if value:
-                            return value
-    except Exception:
-        pass
-    return ""
-
-
-def _safe_filter(rows):
-    if not isinstance(rows, list):
-        return []
-    out = []
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        if not r.get("HomeTeam") or not r.get("AwayTeam"):
-            continue
-        out.append(r)
-    return out
-
-
-def _is_actionable_recommendation(card: object) -> bool:
-    """True only for a fully priced, value-positive, Kelly-positive 1X2 bet."""
-    if not isinstance(card, dict):
-        return False
-    verdict = card.get("verdict")
-    best = card.get("best")
-    if not isinstance(verdict, dict) or not isinstance(best, (tuple, list)) or len(best) < 6:
-        return False
-    if not (
-        verdict.get("real_odds")
-        and verdict.get("value_passed")
-        and verdict.get("is_bet")
-        and str(best[0]).upper() in {"1X2", "OU", "BTTS", "STAT"}
-    ):
-        return False
-    pick = str(best[1] or "")
-    bookmaker = (card.get("bookmaker_by_pick") or {}).get(pick)
-    if not pick or not str(bookmaker or "").strip():
-        return False
-    try:
-        odd, ev, probability, stake = map(float, (best[2], best[3], best[4], best[5]))
-        edge_value = float(verdict.get("edge"))
-    except (TypeError, ValueError):
-        return False
-    # Every displayed recommendation has a validated market model, a complete
-    # same-bookmaker line, at least 5% EV and Edge, and positive Kelly.
-    return (
-        odd > 1.01
-        and 0.0 < probability < 1.0
-        and ev >= 0.05
-        and edge_value >= 0.05
-        and stake > 0.0
-    )
-
-
-def _qualified_bet_cards(cards: object) -> list[dict]:
-    """Build the user-facing shortlist; never substitute model-only candidates."""
-    if not isinstance(cards, list):
-        return []
-    return [card for card in cards if _is_actionable_recommendation(card)]
-
-
-def _stat_market_lines(odds: dict, prefix: str) -> list[float]:
-    """Return the exact half/integer lines present in an SStats corner/card quote map."""
-    if not isinstance(odds, dict):
-        return []
-    pattern = re.compile(
-        rf"^{re.escape(str(prefix))}\s+(?:ТБ|ТМ)\s+(\d+(?:[.,]\d+)?)$",
-        re.IGNORECASE,
-    )
-    lines = set()
-    for selection in odds:
-        match = pattern.fullmatch(str(selection or "").strip())
-        if not match:
-            continue
-        try:
-            line = float(match.group(1).replace(",", "."))
-        except ValueError:
-            continue
-        if 0.0 < line <= 30.0:
-            lines.add(line)
-    return sorted(lines)
-
-
-def _print_log(msg: str):
-    try:
-        import sys
-        print(f"[SCAN] {msg}", file=sys.stdout, flush=True)
-    except Exception:
-        pass
-
-
-def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_xg_rows=None):
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    cur_year = today.year if today.month >= 7 else today.year - 1
-    history_years = list(range(cur_year - 4, cur_year + 1))
-    priority_divs = ["E0", "SP1", "I1", "D1", "F1", "E1", "SP2", "I2",
-                     "D2", "F2", "N1", "B1", "P1", "T1", "R1"]
-    supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
-    train_divs = list(dict.fromkeys(priority_divs + supported_divs))
-    engine = Engine(matrix_n=matrix_n)
-    from model.historical_match_stats import (
-        HistoricalMatchStats, walk_forward_market_validation,
-    )
-    engine.match_stats = HistoricalMatchStats()
-    history = {}
-    for i, dv in enumerate(train_divs):
-        pct = 0.1 + (i + 1) / len(train_divs) * 0.4
-        update_loader(
-            f"История [{i+1}/{len(train_divs)}] — {DIV_NAMES.get(dv, dv)}",
-            pct, logs)
-        seasons = []
-        for year in history_years:
-            rows = load_seasonal(dv, season_str(year))
-            rows = sorted(rows, key=lambda row: parse_date(row.get("Date", "")) or datetime.min)
-            seasons.append(rows)
-            if rows:
-                logs.append(f"  {season_str(year)}: {len(rows)} матчей")
-        history[dv] = seasons
-        league_rows = [row for season_rows in seasons for row in season_rows]
-        # Per-division walk-forward was redundant: the unified market validation
-        # below evaluates the selected multi-league sample once and is cached.
-        logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(league_rows)} матчей за {len(history_years)} сезонов")
-
-    # Enrich only the current Premier League season with genuine match xG.
-    # Football API's complimentary plan is limited to this season's EPL.
-    xg_rows = list(footballapi_xg_rows or [])
-    if xg_rows and "E0" in history and history["E0"]:
-        current_rows = history["E0"][-1]
-        index = {}
-        for row in current_rows:
-            date_value = parse_date(row.get("Date") or "")
-            if not date_value:
-                continue
-            key = (
-                date_value.date().isoformat(),
-                _norm(row.get("HomeTeam") or ""),
-                _norm(row.get("AwayTeam") or ""),
-            )
-            if all(key):
-                index[key] = row
-        enriched = added = already_present = 0
-        for xg_row in xg_rows:
-            date_value = parse_date(xg_row.get("Date") or "")
-            if not date_value:
-                continue
-            key = (
-                date_value.date().isoformat(),
-                _norm(xg_row.get("HomeTeam") or ""),
-                _norm(xg_row.get("AwayTeam") or ""),
-            )
-            if not all(key):
-                continue
-            existing = index.get(key)
-            if existing is not None:
-                if existing.get("HxG") not in (None, "") and existing.get("AxG") not in (None, ""):
-                    already_present += 1
-                    continue
-                existing["HxG"] = xg_row["HxG"]
-                existing["AxG"] = xg_row["AxG"]
-                existing["xg_source"] = xg_row.get("xg_source", "footballapi.org")
-                enriched += 1
-            else:
-                current_rows.append(dict(xg_row))
-                index[key] = current_rows[-1]
-                added += 1
-        current_rows.sort(
-            key=lambda row: parse_date(row.get("Date") or "") or datetime.min
-        )
-        logs.append(
-            f"✅ Football API xG применён: добавлено матчей={added}, "
-            f"обогащено строк={enriched}, xG уже были={already_present}."
-        )
-    elif not footballapi_key:
-        logs.append(
-            "ℹ️ xG API не подключён. xG-ветка модели готова, но без источника "
-            "в исторических строках используется обычная модель голов."
-        )
-
-    # The validation sample is intentionally bounded: full replays over every
-    # competition/season on each cold start made Streamlit appear frozen.
-    # 15 main leagues × latest 500 complete fixtures retains >500 observations
-    # across competitions for each supported market while limiting CPU time.
-    validation_divs = tuple(priority_divs)
-    validation_rows = select_validation_rows(
-        history, validation_divs, max_rows_per_league=500,
-    )
-    from security import cache_get, cache_put
-    from model.walk_forward import walk_forward_compare, totals_market_is_validated
-    validation_key = validation_cache_key(validation_rows, matrix_n=matrix_n)
-    cached_validation = cache_get(validation_key, 30 * 86400)
-
-    if isinstance(cached_validation, dict):
-        totals_backtest = cached_validation.get("totals_backtest") or {}
-        stat_report = cached_validation.get("stat_report") or {}
-        logs.append(
-            f"⚡ Историческая проверка из кэша: {len(validation_rows)} матчей, "
-            f"{len(validation_divs)} лиг."
-        )
-    else:
-        update_loader(
-            f"Историческая проверка рынков: подготовлено {len(validation_rows)} матчей",
-            0.52, logs,
-        )
-        try:
-            totals_backtest = walk_forward_compare(
-                validation_rows, matrix_n=matrix_n, bootstrap_samples=0,
-                totals_bootstrap_samples=100,
-            )
-            update_loader(
-                "Проверка угловых и карточек (хронологический тест)",
-                0.68, logs,
-            )
-            stat_report = walk_forward_market_validation(
-                validation_rows, min_history=30, min_n=500, bootstrap_samples=100,
-            )
-            cache_put(validation_key, {
-                "totals_backtest": totals_backtest,
-                "stat_report": stat_report,
-            })
-            logs.append(
-                f"Историческая проверка рассчитана: {len(validation_rows)} матчей, "
-                f"{len(validation_divs)} лиг; результат сохранён в кэш."
-            )
-        except Exception as exc:
-            totals_backtest = {}
-            stat_report = {}
-            engine.total_market_validation = False
-            engine.total_market_validation_by_line = {}
-            engine.total_market_validation_report = {
-                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
-            }
-            engine.btts_market_validation = False
-            engine.btts_market_validation_report = {
-                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
-            }
-            engine.stat_market_validation = {}
-            engine.stat_market_validation_report = {
-                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
-            }
-            logs.append(
-                "⚠️ Историческая проверка рынков не завершилась: "
-                f"{type(exc).__name__}: {str(exc)[:160]}. "
-                "Непроверенные рынки закрыты для рекомендаций."
-            )
-
-    if totals_backtest:
-        engine.total_market_validation_report = totals_backtest.get(
-            "goals_over25_candidate_minus_market", {})
-        line_reports = totals_backtest.get("goals_totals_by_line") or {}
-        engine.total_market_validation_by_line = {
-            str(line): bool(report.get("validation_passed"))
-            for line, report in line_reports.items()
-        }
-        engine.total_market_validation = bool(
-            engine.total_market_validation_by_line.get("2.5", False)
-            or totals_market_is_validated(
-                engine.total_market_validation_report, min_n=500
-            )
-        )
-        engine.btts_market_validation_report = totals_backtest.get("btts") or {}
-        engine.btts_market_validation = bool(
-            engine.btts_market_validation_report.get("validation_passed")
-        )
-        total_diff = engine.total_market_validation_report.get("differences", {})
-        total_ci = engine.total_market_validation_report.get("confidence_intervals_95", {})
-        logs.append(
-            f"Исторический walk-forward тоталов: прогнозов="
-            f"{totals_backtest.get('goals_over25', {}).get('n', 0)}, "
-            f"парных с рынком={engine.total_market_validation_report.get('n', 0)}, "
-            f"источники={totals_backtest.get('goals_over25_market_sources', {})}"
-        )
-        if total_diff:
-            logs.append(
-                f"ТБ/ТМ vs рынок: ΔBrier={total_diff.get('brier'):.4f}, "
-                f"ΔLogLoss={total_diff.get('log_loss'):.4f}; "
-                f"95% CI Brier={total_ci.get('brier', {}).get('low')}…{total_ci.get('brier', {}).get('high')}, "
-                f"LogLoss={total_ci.get('log_loss', {}).get('low')}…{total_ci.get('log_loss', {}).get('high')}"
-            )
-        logs.append(
-            "Тоталы допущены к ручному автодобавлению."
-            if engine.total_market_validation else
-            "Тоталы не допущены: нужно ≥500 парных матчей и статистически подтверждённое улучшение Brier и LogLoss."
-        )
-        for line, line_report in line_reports.items():
-            metric = line_report.get("metrics") or {}
-            paired = line_report.get("candidate_minus_baseline") or {}
-            logs.append(
-                f"ТБ/ТМ {line}: WF n={metric.get('n', 0)}, "
-                f"baseline-пар={paired.get('n', 0)}, "
-                f"ΔBrier={(paired.get('differences') or {}).get('brier')}, "
-                f"ΔLogLoss={(paired.get('differences') or {}).get('log_loss')}, "
-                f"допуск={'да' if line_report.get('validation_passed') else 'нет'}"
-            )
-        logs.append(
-            f"BTTS: WF n={engine.btts_market_validation_report.get('candidate', {}).get('n', 0)}, "
-            f"пар={engine.btts_market_validation_report.get('candidate_minus_baseline', {}).get('n', 0)}, "
-            f"допуск={'да' if engine.btts_market_validation else 'нет'}"
-        )
-
-    if stat_report:
-        engine.stat_market_validation_report = stat_report
-        engine.stat_market_validation = {
-            market: {
-                str(line): bool(line_report.get("validation_passed"))
-                for line, line_report in line_reports.items()
-            }
-            for market, line_reports in (stat_report.get("markets") or {}).items()
-        }
-        for market, line_reports in engine.stat_market_validation.items():
-            for line, passed in line_reports.items():
-                report = (stat_report.get("markets") or {}).get(market, {}).get(line, {})
-                diff = (report.get("candidate_minus_baseline") or {}).get("differences") or {}
-                logs.append(
-                    f"WF {market} {line}: n={report.get('n', 0)}, "
-                    f"ΔBrier={diff.get('brier')}, ΔLogLoss={diff.get('log_loss')}, "
-                    f"допуск={'да' if passed else 'нет'}"
-                )
-    if not totals_backtest and not stat_report:
-        engine.total_market_validation = False
-        engine.total_market_validation_by_line = {}
-        engine.btts_market_validation = False
-        engine.stat_market_validation = {}
-        update_loader(
-            "Проверка рынков не завершена; непроверенные рынки отключены",
-            0.74, logs,
-        )
-    else:
-        update_loader(
-            "Исторические рынки проверены; завершаю обучение модели",
-            0.76, logs,
-        )
-
-    total = sum(len(src) for dv in train_divs for src in history.get(dv, []))
-    processed = 0
-    trained = 0
-    for dv in train_divs:
-        for src in history.get(dv, []):
-            for r in src:
-                try:
-                    hg = float(r.get("FTHG", 0))
-                    ag = float(r.get("FTAG", 0))
-                    engine.learn_step(
-                        r["HomeTeam"], r["AwayTeam"], hg, ag, r,
-                        lg=dv, match_num=processed, total=total,
-                        match_date=parse_date(r.get("Date", "")))
-                    engine.match_stats.learn_step(r, dv)
-                    trained += 1
-                except Exception:
-                    pass
-                processed += 1
-                if processed % 50 == 0:
-                    update_loader(
-                        f"Обучение [{processed}/{total}]",
-                        0.76 + processed / max(1, total) * 0.22, logs)
-    engine.trained_n = trained
-    logs.append(f"Обучено: {trained}")
-    return engine
-
-
 @st.cache_resource(show_spinner=False)
 def _shared_engine_cache():
     # Shared across Streamlit reruns and browser sessions in the same process.
-    return {"engines": {}, "lock": threading.RLock()}
+    return {"engines": {}, "locks": {}, "lock": threading.RLock()}
 
 
 def _load_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_xg_rows=None):
-    """Reuse a fitted model across reruns/sessions; rebuild only on cache miss."""
+    """Reuse a fitted model; serialize training only for an identical cache key."""
     import pickle, gzip, os
     from config import DISK_CACHE_DIR
+    from model.cache_locks import get_keyed_lock
 
     xg_cache_tag = "xg_on" if str(footballapi_key or "").strip() else "xg_off"
     xg_ids = sorted({
@@ -445,6 +21,8 @@ def _load_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_
     xg_data_tag = hashlib.sha256("|".join(xg_ids).encode("utf-8")).hexdigest()[:12] if xg_ids else "empty"
     cache_key = f"{APP_VERSION}:{int(matrix_n)}:{xg_cache_tag}:{xg_data_tag}"
     session_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}_{xg_cache_tag}_{xg_data_tag}"
+
+    update_loader("🔎 Проверяю кэш обученной модели...", 0.20, logs)
     try:
         session_engine = st.session_state.get(session_key)
         if (session_engine is not None
@@ -459,30 +37,98 @@ def _load_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_
         pass
 
     shared = _shared_engine_cache()
-    with shared["lock"]:
-        cached = shared["engines"].get(cache_key)
-        if (cached is not None and hasattr(cached, "match_stats")
-                and getattr(cached, "trained_n", 0) > 0):
+    guard = shared.setdefault("lock", threading.RLock())
+
+    def _cached_engine():
+        with guard:
+            candidate = shared.setdefault("engines", {}).get(cache_key)
+        if (
+            candidate is not None
+            and hasattr(candidate, "match_stats")
+            and getattr(candidate, "trained_n", 0) > 0
+        ):
+            return candidate
+        return None
+
+    cached = _cached_engine()
+    if cached is not None:
+        try:
+            st.session_state[session_key] = cached
+        except Exception:
+            pass
+        logs.append(
+            f"🧠 Модель из общего кэша ({cached.trained_n} матчей; повторного обучения нет)"
+        )
+        return cached
+
+    # A single global lock used to cover the whole 30k–40k match training pass.
+    # That made unrelated sessions and different model keys wait silently.
+    # Use one lock per exact xG/data/matrix fingerprint instead.
+    model_lock = get_keyed_lock(shared, cache_key)
+    acquired = model_lock.acquire(blocking=False)
+    waited_seconds = 0
+    while not acquired:
+        cached = _cached_engine()
+        if cached is not None:
             try:
                 st.session_state[session_key] = cached
             except Exception:
                 pass
             logs.append(
-                f"🧠 Модель из общего кэша ({cached.trained_n} матчей; "
-                "повторного обучения нет)"
+                f"🧠 Модель подготовлена параллельным запуском "
+                f"({cached.trained_n} матчей); использую готовый кэш."
             )
             return cached
 
-        p = os.path.join(DISK_CACHE_DIR, f"engine_{APP_VERSION}_{matrix_n}_{xg_cache_tag}_{xg_data_tag}.pkl.gz")
+        waited_seconds += 5
+        update_loader(
+            f"⏳ Модель этого набора уже обучается в другой вкладке — "
+            f"ожидание готового кэша ({waited_seconds} сек.)",
+            min(0.24, 0.20 + waited_seconds / 600.0),
+            logs,
+        )
+        acquired = model_lock.acquire(timeout=5)
+        if waited_seconds >= 180 and not acquired:
+            raise RuntimeError(
+                "Та же модель более 3 минут обучается в другом запуске. "
+                "Не запускайте сканирование в нескольких вкладках одновременно; "
+                "проверьте вкладку, где началось первое обучение."
+            )
+
+    try:
+        # Another request may have completed while this request was waiting.
+        cached = _cached_engine()
+        if cached is not None:
+            try:
+                st.session_state[session_key] = cached
+            except Exception:
+                pass
+            logs.append(
+                f"🧠 Модель из общего кэша ({cached.trained_n} матчей; повторного обучения нет)"
+            )
+            return cached
+
+        p = os.path.join(
+            DISK_CACHE_DIR,
+            f"engine_{APP_VERSION}_{matrix_n}_{xg_cache_tag}_{xg_data_tag}.pkl.gz",
+        )
+        update_loader("💾 Проверяю сохранённую модель на диске...", 0.22, logs)
         if os.path.exists(p):
             try:
-                with open(p, "rb") as f:
-                    data = pickle.loads(gzip.decompress(f.read()))
-                cached_engine = data.get("engine")
-                if (data.get("fp") == APP_VERSION
-                        and hasattr(cached_engine, "match_stats")
-                        and getattr(cached_engine, "trained_n", 0) > 0):
-                    shared["engines"][cache_key] = cached_engine
+                # Avoid attempting to inflate an unexpectedly large/corrupt cache file.
+                if os.path.getsize(p) > 350 * 1024 * 1024:
+                    raise ValueError("cache file exceeds 350 MB safety limit")
+                with open(p, "rb") as file_obj:
+                    data = pickle.loads(gzip.decompress(file_obj.read()))
+                cached_engine = data.get("engine") if isinstance(data, dict) else None
+                if (
+                    isinstance(data, dict)
+                    and data.get("fp") == APP_VERSION
+                    and hasattr(cached_engine, "match_stats")
+                    and getattr(cached_engine, "trained_n", 0) > 0
+                ):
+                    with guard:
+                        shared.setdefault("engines", {})[cache_key] = cached_engine
                     try:
                         st.session_state[session_key] = cached_engine
                     except Exception:
@@ -493,25 +139,43 @@ def _load_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_
                     )
                     return cached_engine
             except Exception as exc:
-                logs.append(f"⚠️ Кэш модели не прочитан ({type(exc).__name__}); создаю заново.")
+                logs.append(
+                    f"⚠️ Дисковый кэш не прочитан ({type(exc).__name__}); "
+                    "создаю модель заново."
+                )
 
+        update_loader("🧠 Кэш не найден — начинаю обучение модели...", 0.24, logs)
         engine = _train_engine(
             matrix_n, logs, update_loader,
             footballapi_key=footballapi_key,
             footballapi_xg_rows=footballapi_xg_rows,
         )
+        update_loader("💾 Сохраняю обученную модель...", 0.99, logs)
         try:
-            with open(p, "wb") as f:
-                f.write(gzip.compress(pickle.dumps(
-                    {"fp": APP_VERSION, "engine": engine})))
+            os.makedirs(DISK_CACHE_DIR, exist_ok=True)
+            packed = gzip.compress(
+                pickle.dumps({"fp": APP_VERSION, "engine": engine}),
+                compresslevel=1,
+            )
+            temporary_path = p + ".tmp"
+            with open(temporary_path, "wb") as file_obj:
+                file_obj.write(packed)
+            os.replace(temporary_path, p)
+            logs.append("💾 Обученная модель сохранена в дисковый кэш.")
         except Exception as exc:
-            logs.append(f"ℹ️ Дисковый кэш недоступен ({type(exc).__name__}); модель сохранена в памяти.")
-        shared["engines"][cache_key] = engine
+            logs.append(
+                f"ℹ️ Дисковый кэш недоступен ({type(exc).__name__}); "
+                "модель останется в памяти текущего процесса."
+            )
+        with guard:
+            shared.setdefault("engines", {})[cache_key] = engine
         try:
             st.session_state[session_key] = engine
         except Exception:
             pass
         return engine
+    finally:
+        model_lock.release()
 
 def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, min_ev=0.03, market_filter=None):
     """Понятный ввод букмекерского коэффициента для выбранного рынка."""
