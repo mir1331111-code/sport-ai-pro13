@@ -3169,48 +3169,134 @@ def _sstats_parse_markets(odds_payload):
         "total_market_odds", "btts_market_odds", "stat_market_odds",
         "asian_handicap_market_odds",
     ):
+        valid_by_key = {}
         for key, values in prices[group].items():
-            # Avoid selecting a stale/malformed extreme quote as the "best" price.
-            valid = [(float(odd), str(book or "").strip()) for odd, book in values
-                     if 1.01 <= float(odd) <= 100.0]
-            if group == "total_market_odds":
-                # Totals require an identifiable bookmaker even for display.
-                # Do not let anonymous compact-feed prices affect the median,
-                # selected price, or corroboration count of a named-book quote.
+            valid = [
+                (float(odd), str(book or "").strip())
+                for odd, book in values
+                if 1.01 < float(odd) <= 100.0
+            ]
+            # Every two-way market requires bookmaker identity on both sides.
+            # Anonymous compact-feed values can never form a deviggable line.
+            if group in {"total_market_odds", "btts_market_odds", "stat_market_odds"}:
                 valid = [(odd, book) for odd, book in valid if book]
             if not valid:
                 continue
-            # A single named bookmaker still supplies a real, displayable quote.
-            # Keep it visible but mark it uncorroborated; only two or more distinct
-            # named books can make this market eligible for automated validation.
-            # Anonymous compact-feed totals remain hidden because their bookmaker
-            # provenance cannot be checked or shown to the user.
-            valid_total_books = (
-                {_book_key(book) for _odd, book in valid if _book_key(book)}
-                if group == "total_market_odds" else set()
-            )
-            if group == "total_market_odds" and not valid_total_books:
-                continue
+
             ordered = sorted(odd for odd, _book in valid)
             middle = len(ordered) // 2
-            median = (ordered[middle] if len(ordered) % 2
-                      else (ordered[middle - 1] + ordered[middle]) / 2.0)
-            # Keep only real bookmaker quotes reasonably close to consensus.
-            credible = [(odd, book) for odd, book in valid
-                        if odd <= median * 1.25]
-            if group == "total_market_odds":
-                # This scanner targets high-confidence selections, not long shots.
+            median = (
+                ordered[middle] if len(ordered) % 2
+                else (ordered[middle - 1] + ordered[middle]) / 2.0
+            )
+            credible = [
+                (odd, book) for odd, book in valid
+                if odd <= median * 1.25
+            ]
+            if group in {"total_market_odds", "stat_market_odds"}:
                 credible = [(odd, book) for odd, book in credible if odd <= 8.0]
-            if not credible:
+            if credible:
+                valid_by_key[key] = credible
+
+        if group == "asian_handicap_market_odds":
+            for key, credible in valid_by_key.items():
+                best_odd, best_book = max(credible, key=lambda item: item[0])
+                result[group][key] = best_odd
+                if best_book:
+                    result["bookmaker_by_pick"][key] = best_book
+            continue
+
+        pair_specs = []
+        if group == "btts_market_odds":
+            pair_specs.append(("BTTS Да", "BTTS Нет"))
+        elif group == "total_market_odds":
+            seen_lines = set()
+            for key in valid_by_key:
+                match = re.fullmatch(r"ТБ\s+(\d+(?:[.,]\d+)?)", key, re.I)
+                if not match:
+                    continue
+                line = f"{float(match.group(1).replace(',', '.')):g}"
+                if line not in seen_lines:
+                    seen_lines.add(line)
+                    pair_specs.append((f"ТБ {line}", f"ТМ {line}"))
+        else:
+            seen_lines = set()
+            for key in valid_by_key:
+                match = re.fullmatch(
+                    r"(Угл|Карты)\s+ТБ\s+(\d+(?:[.,]\d+)?)", key, re.I
+                )
+                if not match:
+                    continue
+                prefix = "Угл" if match.group(1).casefold() == "угл" else "Карты"
+                line = f"{float(match.group(2).replace(',', '.')):g}"
+                identity = (prefix, line)
+                if identity not in seen_lines:
+                    seen_lines.add(identity)
+                    pair_specs.append((f"{prefix} ТБ {line}", f"{prefix} ТМ {line}"))
+
+        paired_keys = set()
+        for over_key, under_key in pair_specs:
+            paired_keys.update((over_key, under_key))
+            by_book = {}
+            for side, key in (("over", over_key), ("under", under_key)):
+                for odd, book in valid_by_key.get(key, []):
+                    book_key = _book_key(book)
+                    if not book_key:
+                        continue
+                    quote = by_book.setdefault(book_key, {"name": book})
+                    quote[side] = max(odd, quote.get(side, 0.0))
+
+            complete_lines = []
+            for book_key, quotes in by_book.items():
+                over_odd, under_odd = quotes.get("over"), quotes.get("under")
+                if over_odd is None or under_odd is None:
+                    continue
+                overround = (1.0 / over_odd) + (1.0 / under_odd)
+                if not (0.85 <= overround <= 1.35):
+                    continue
+                complete_lines.append((
+                    overround, -(over_odd + under_odd), book_key,
+                    quotes["name"], over_odd, under_odd,
+                ))
+
+            if complete_lines:
+                # Pick the most efficient complete bookmaker line. Never mix
+                # the best Over from one book with the best Under from another.
+                _, _, _, selected_book, over_odd, under_odd = min(
+                    complete_lines, key=lambda item: (item[0], item[1], item[2])
+                )
+                result[group][over_key] = over_odd
+                result[group][under_key] = under_odd
+                result["bookmaker_by_pick"][over_key] = selected_book
+                result["bookmaker_by_pick"][under_key] = selected_book
+                if group == "total_market_odds":
+                    common_book_count = len(complete_lines)
+                    for selection in (over_key, under_key):
+                        result["total_market_book_count"][selection] = common_book_count
+                        result["total_market_confirmed"][selection] = common_book_count >= 2
+            elif over_rows := valid_by_key.get(over_key):
+                # Invalid/outlier pairs may be displayed, but deliberately lose
+                # bookmaker provenance so they cannot enter the value selector.
+                for selection in (over_key, under_key):
+                    result["bookmaker_by_pick"].pop(selection, None)
+
+        # Keep one-sided lines visible as raw reference prices only.
+        for key, credible in valid_by_key.items():
+            if key in result[group]:
                 continue
             best_odd, best_book = max(credible, key=lambda item: item[0])
             result[group][key] = best_odd
-            if best_book:
-                result["bookmaker_by_pick"][key] = best_book
             if group == "total_market_odds":
-                credible_books = {_book_key(book) for _odd, book in credible if _book_key(book)}
-                result["total_market_book_count"][key] = len(credible_books)
-                result["total_market_confirmed"][key] = len(credible_books) >= 2
+                result["total_market_book_count"][key] = 0
+                result["total_market_confirmed"][key] = False
+            # A truly one-sided market has no opposing selection to devig.
+            # If its pair was present but invalid, never keep one side's book ID.
+            invalid_pair = any(
+                key in pair and pair[0] not in result[group] and pair[1] not in result[group]
+                for pair in pair_specs
+            )
+            if best_book and not invalid_pair:
+                result["bookmaker_by_pick"][key] = best_book
     return result
 
 
