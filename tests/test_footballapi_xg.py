@@ -50,6 +50,17 @@ class FootballApiXGTests(unittest.TestCase):
         }
         self.assertIsNone(parse_footballapi_xg_match(self.match, missing_away))
 
+    def test_xg_source_rows_are_distinguishable_for_engine_cache(self):
+        import hashlib
+
+        first = [{"xg_match_id": "mt_1", "HxG": 1.1, "AxG": 0.8}]
+        second = first + [{"xg_match_id": "mt_2", "HxG": 0.9, "AxG": 1.4}]
+        fingerprint = lambda rows: hashlib.sha256(
+            "|".join(sorted(str(row["xg_match_id"]) for row in rows)).encode("utf-8")
+        ).hexdigest()[:12]
+        self.assertNotEqual(fingerprint(first), fingerprint(second))
+        self.assertEqual(fingerprint(first), fingerprint(list(reversed(first))))
+
     def test_rejects_unmatched_club_names_in_stats(self):
         wrong_teams = {
             "data": {

@@ -154,7 +154,7 @@ def _print_log(msg: str):
         pass
 
 
-def _train_engine(matrix_n, logs, update_loader, footballapi_key=""):
+def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_xg_rows=None):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     history_years = list(range(cur_year - 4, cur_year + 1))
@@ -194,7 +194,7 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key=""):
 
     # Enrich only the current Premier League season with genuine match xG.
     # Football API's complimentary plan is limited to this season's EPL.
-    xg_rows = footballapi_xg_history(footballapi_key, logs) if footballapi_key else []
+    xg_rows = list(footballapi_xg_rows or [])
     if xg_rows and "E0" in history and history["E0"]:
         current_rows = history["E0"][-1]
         index = {}
@@ -372,14 +372,22 @@ def _shared_engine_cache():
     return {"engines": {}, "lock": threading.RLock()}
 
 
-def _load_engine(matrix_n, logs, update_loader, footballapi_key=""):
+def _load_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_xg_rows=None):
     """Reuse a fitted model across reruns/sessions; rebuild only on cache miss."""
     import pickle, gzip, os
     from config import DISK_CACHE_DIR
 
     xg_cache_tag = "xg_on" if str(footballapi_key or "").strip() else "xg_off"
-    cache_key = f"{APP_VERSION}:{int(matrix_n)}:{xg_cache_tag}"
-    session_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}_{xg_cache_tag}"
+    xg_ids = sorted({
+        str(row.get("xg_match_id") or (
+            f"{row.get('Date','')}|{row.get('HomeTeam','')}|{row.get('AwayTeam','')}"
+        ))
+        for row in (footballapi_xg_rows or [])
+        if isinstance(row, dict)
+    })
+    xg_data_tag = hashlib.sha256("|".join(xg_ids).encode("utf-8")).hexdigest()[:12] if xg_ids else "empty"
+    cache_key = f"{APP_VERSION}:{int(matrix_n)}:{xg_cache_tag}:{xg_data_tag}"
+    session_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}_{xg_cache_tag}_{xg_data_tag}"
     try:
         session_engine = st.session_state.get(session_key)
         if (session_engine is not None
@@ -408,7 +416,7 @@ def _load_engine(matrix_n, logs, update_loader, footballapi_key=""):
             )
             return cached
 
-        p = os.path.join(DISK_CACHE_DIR, f"engine_{APP_VERSION}_{matrix_n}_{xg_cache_tag}.pkl.gz")
+        p = os.path.join(DISK_CACHE_DIR, f"engine_{APP_VERSION}_{matrix_n}_{xg_cache_tag}_{xg_data_tag}.pkl.gz")
         if os.path.exists(p):
             try:
                 with open(p, "rb") as f:
@@ -430,7 +438,11 @@ def _load_engine(matrix_n, logs, update_loader, footballapi_key=""):
             except Exception as exc:
                 logs.append(f"⚠️ Кэш модели не прочитан ({type(exc).__name__}); создаю заново.")
 
-        engine = _train_engine(matrix_n, logs, update_loader, footballapi_key=footballapi_key)
+        engine = _train_engine(
+            matrix_n, logs, update_loader,
+            footballapi_key=footballapi_key,
+            footballapi_xg_rows=footballapi_xg_rows,
+        )
         try:
             with open(p, "wb") as f:
                 f.write(gzip.compress(pickle.dumps(
@@ -1493,9 +1505,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         if not rows:
             logs.append("⚠️ Матчи не найдены. Проверьте доступность источников расписания.")
 
+        update_loader("📈 Загрузка xG-истории...", 0.16, logs)
+        footballapi_xg_rows = footballapi_xg_history(footballapi_key, logs)
+
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(
-            matrix_n, logs, update_loader, footballapi_key=footballapi_key
+            matrix_n, logs, update_loader,
+            footballapi_key=footballapi_key,
+            footballapi_xg_rows=footballapi_xg_rows,
         )
 
         update_loader("🧠 Анализ матчей...", 0.80, logs)
