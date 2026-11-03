@@ -700,6 +700,12 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "League": league,
                     "Date": (e.get("dateEvent") or "")[:10],
                     "Time": (e.get("strTime") or "")[:5],
+                    "kickoff_utc": (
+                        datetime.fromtimestamp(
+                            int(e.get("strTimestamp")), timezone.utc
+                        ).isoformat().replace("+00:00", "Z")
+                        if str(e.get("strTimestamp") or "").isdigit() else ""
+                    ),
                     "HomeTeam": h,
                     "AwayTeam": a,
                     "fixture_id": e.get("idEvent"),
@@ -803,6 +809,7 @@ def espn_matches(days: int, logs=None) -> list:
                     "League": league, "competition": slug,
                     "Date": _msk_date(event.get("date") or ""),
                     "Time": _msk_time(event.get("date") or ""),
+                    "kickoff_utc": event.get("date") or "",
                     "HomeTeam": hn, "AwayTeam": an,
                     "fixture_id": f"espn:{event.get('id')}",
                     "home_badge": (home.get("team") or {}).get("logo") or "",
@@ -3581,6 +3588,11 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
         row = {
             "Date": raw_date[:19],
             "Time": start_time,
+            "kickoff_utc": (
+                raw_date
+                if re.search(r"(?:Z|[+-]\\d{2}:?\\d{2})$", raw_date, re.I)
+                else ""
+            ),
             "HomeTeam": home,
             "AwayTeam": away,
             "Div": div,
