@@ -8,6 +8,9 @@ import streamlit as st
 from storage import sqlite_store as db
 from storage import usage
 from ui.cards import translate_match, day_label
+from config import DB_FILE
+from betting.settlement import determine_stat_outcome
+from model.forecast_ledger import MarketForecastLedger
 
 
 def _bet_date(b: dict):
@@ -130,6 +133,22 @@ def _persist(D):
                           settled_at=bet.get("settled_at"))
         db.log_bank(_safe_float(D.get("bank"), 10000.0), event="manual_settle")
         db.invalidate_caches()
+    try:
+        audit = MarketForecastLedger(DB_FILE)
+        for bet in D.get("bets", []):
+            if not isinstance(bet, dict):
+                continue
+            key, status = bet.get("market_forecast_key"), bet.get("status")
+            if key and status in {"won", "lost", "push", "void"}:
+                audit.settle(
+                    str(key), status,
+                    result_score=str(bet.get("score") or "") or None,
+                    actual_value=bet.get("actual_stat_value"),
+                    settlement_source=str(bet.get("settlement_source") or "portfolio_manual"),
+                    settled_at=bet.get("settled_at"),
+                )
+    except (KeyError, TypeError, ValueError):
+        pass
 
 
 def _render_bet(b, D, index, context="def"):
@@ -195,24 +214,55 @@ def _render_bet(b, D, index, context="def"):
 
     if b.get("status") == "pending":
         _ukey = _bet_uid(b, index, context)
-        cc = st.columns([1, 1, 1, 1])
-        sin = cc[0].text_input("Счёт", key=f"sc_{_ukey}",
-                                label_visibility="collapsed",
-                                placeholder="2:1")
-        sc = sin.strip() if re.match(r"^\d+\s*:\s*\d+$", sin.strip()) else None
-        if cc[1].button("✅", key=f"w_{_ukey}"):
-            st.session_state.data = _apply_settle(D, index, "won", score=sc)
-            _persist(st.session_state.data)
-            st.rerun()
-        if cc[2].button("❌", key=f"l_{_ukey}"):
-            st.session_state.data = _apply_settle(D, index, "lost", score=sc)
-            _persist(st.session_state.data)
-            st.rerun()
-        if cc[3].button("🚫", key=f"c_{_ukey}"):
-            st.session_state.data = _cancel_bet(D, index)
-            _persist(st.session_state.data)
-            st.toast("Ставка отменена")
-            st.rerun()
+        if str(b.get("market") or "").upper() == "STAT":
+            cc = st.columns([2, 1, 1])
+            raw_value = cc[0].text_input(
+                "Фактическое количество", key=f"stat_{_ukey}",
+                label_visibility="collapsed",
+                placeholder="Фактические угловые / карточки, например 10",
+            )
+            if cc[1].button("📊 Рассчитать", key=f"stat_settle_{_ukey}"):
+                if not re.fullmatch(r"\d+", raw_value.strip()):
+                    st.warning("Введи целое фактическое количество угловых или карточек.")
+                else:
+                    actual = int(raw_value.strip())
+                    outcome, reason = determine_stat_outcome(
+                        "STAT", b.get("pick", ""), actual
+                    )
+                    if outcome is None:
+                        st.warning("Не удалось рассчитать результат: " + reason)
+                    else:
+                        kind = "Угловые" if str(b.get("pick", "")).startswith("Угл") else "Карточки"
+                        updated = _apply_settle(D, index, outcome, score=f"{kind}: {actual}")
+                        updated["bets"][index]["actual_stat_value"] = actual
+                        updated["bets"][index]["settlement_source"] = "manual_stat_entry"
+                        st.session_state.data = updated
+                        _persist(updated)
+                        st.rerun()
+            if cc[2].button("🚫", key=f"c_{_ukey}"):
+                st.session_state.data = _cancel_bet(D, index)
+                _persist(st.session_state.data)
+                st.toast("Ставка отменена")
+                st.rerun()
+        else:
+            cc = st.columns([1, 1, 1, 1])
+            sin = cc[0].text_input("Счёт", key=f"sc_{_ukey}",
+                                    label_visibility="collapsed",
+                                    placeholder="2:1")
+            sc = sin.strip() if re.match(r"^\d+\s*:\s*\d+$", sin.strip()) else None
+            if cc[1].button("✅", key=f"w_{_ukey}"):
+                st.session_state.data = _apply_settle(D, index, "won", score=sc)
+                _persist(st.session_state.data)
+                st.rerun()
+            if cc[2].button("❌", key=f"l_{_ukey}"):
+                st.session_state.data = _apply_settle(D, index, "lost", score=sc)
+                _persist(st.session_state.data)
+                st.rerun()
+            if cc[3].button("🚫", key=f"c_{_ukey}"):
+                st.session_state.data = _cancel_bet(D, index)
+                _persist(st.session_state.data)
+                st.toast("Ставка отменена")
+                st.rerun()
 
 
 def render():
