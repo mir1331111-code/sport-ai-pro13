@@ -86,7 +86,7 @@ class SStatsMarketParserTests(unittest.TestCase):
                 }],
             },
         ])
-        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 1)
+        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 0)
         self.assertFalse(parsed["total_market_confirmed"]["ТБ 2.5"])
 
     def test_anonymous_total_quote_cannot_override_named_book_price(self):
@@ -107,7 +107,7 @@ class SStatsMarketParserTests(unittest.TestCase):
         ])
         self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 2.00)
         self.assertEqual(parsed["bookmaker_by_pick"]["ТБ 2.5"], "Named Book")
-        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 1)
+        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 0)
         self.assertFalse(parsed["total_market_confirmed"]["ТБ 2.5"])
 
     def test_flat_market_rows_keep_inline_bookmaker_names(self):
@@ -123,8 +123,8 @@ class SStatsMarketParserTests(unittest.TestCase):
                 "odds": [{"name": "Over 2.5", "value": "1.90"}],
             },
         ])
-        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 2)
-        self.assertTrue(parsed["total_market_confirmed"]["ТБ 2.5"])
+        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 0)
+        self.assertFalse(parsed["total_market_confirmed"]["ТБ 2.5"])
 
     def test_falls_back_to_odd_field_when_value_is_null(self):
         parsed = _sstats_parse_markets([
@@ -144,20 +144,31 @@ class SStatsMarketParserTests(unittest.TestCase):
                 "bookmakerName": "Book A",
                 "odds": [{
                     "marketName": "Total Goals",
-                    "odds": [{"name": "Over 2.5", "value": "1.85"}],
+                    "odds": [
+                        {"name": "Over 2.5", "value": "1.85"},
+                        {"name": "Under 2.5", "value": "1.95"},
+                    ],
                 }],
             },
             {
                 "bookmakerName": "Book B",
                 "odds": [{
                     "marketName": "Total Goals",
-                    "odds": [{"name": "Over 2.5", "value": "1.90"}],
+                    "odds": [
+                        {"name": "Over 2.5", "value": "1.90"},
+                        {"name": "Under 2.5", "value": "1.90"},
+                    ],
                 }],
             },
         ])
         self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 2)
         self.assertTrue(parsed["total_market_confirmed"]["ТБ 2.5"])
 
+
+        self.assertEqual(
+            parsed["bookmaker_by_pick"]["ТБ 2.5"],
+            parsed["bookmaker_by_pick"]["ТМ 2.5"],
+        )
     def test_does_not_publish_extreme_total_longshot(self):
         parsed = _sstats_parse_markets([{
             "bookmakerName": "Bad feed",
