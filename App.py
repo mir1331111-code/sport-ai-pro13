@@ -257,10 +257,8 @@ def _auto_settle(D, force: bool = False):
     token = (st.session_state.get("fdorg_token_input", "")
              or os.environ.get("FDORG_TOKEN", "")
              or _configured_secret("FDORG_TOKEN", "fdorg_token")).strip()
-    sstats_key = (
-        st.session_state.get("sstats_api_key_input", "")
-        or os.environ.get("SSTATS_API_KEY", "")
-        or _configured_secret("SSTATS_API_KEY", "sstats_api_key")
+    sstats_key = _api_key_default(
+        "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
     ).strip()
     log.info("START: %d bets | remaining=%s", len(bets), usage.settle_remaining())
 
@@ -678,7 +676,7 @@ with st.sidebar:
         "SStats.net API key (бесплатные футбольные коэффициенты)",
         value=_api_key_default("sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"),
         type="password", key="sstats_api_key_input",
-        help="Ключ SStats.net. Расписание и коэффициенты загружаются автоматически при сканировании.")
+        help="Ключ SStats.net. Сканирование получает рынки; после FT API также закрывает ставки на угловые и карточки по фактической статистике.")
 
     footballapi_key = st.text_input(
         "Football API key (xG · бесплатно, текущий сезон АПЛ)",
