@@ -170,6 +170,138 @@ def poisson_over_probability(mean, line):
 
 
 
+
+def walk_forward_market_validation(
+    rows, *, min_history: int = 30, min_n: int = 500,
+    bootstrap_samples: int = 250,
+) -> dict:
+    """Chronological corners/cards probability tests versus prior league-rate baselines.
+
+    Same-day fixtures are forecast before any same-day result is ingested. Only
+    observed HC/AC and HY/AY statistics are used. These tests validate forecast
+    quality, not bookmaker edge; current prices still need a coherent same-book line.
+    """
+    from model.walk_forward import (
+        _parse_date, _binary_metrics, _binary_paired_differences,
+        totals_market_is_validated,
+    )
+
+    prepared = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        stamp = _parse_date(row.get("Date") or row.get("date"))
+        home = str(row.get("HomeTeam") or row.get("home_team") or "").strip()
+        away = str(row.get("AwayTeam") or row.get("away_team") or "").strip()
+        league = str(row.get("Div") or row.get("league") or "G")
+        if stamp and home and away:
+            prepared.append((stamp, league, home, away, row))
+    prepared.sort(key=lambda item: item[0])
+
+    lines = {
+        "corners": (7.5, 8.5, 9.5, 10.5, 11.5),
+        "cards": (2.5, 3.5, 4.5, 5.5, 6.5),
+    }
+    model = HistoricalMatchStats()
+    candidate_records = {
+        market: {line: [] for line in market_lines}
+        for market, market_lines in lines.items()
+    }
+    baseline_records = {
+        market: {line: [] for line in market_lines}
+        for market, market_lines in lines.items()
+    }
+
+    cursor = 0
+    while cursor < len(prepared):
+        stamp = prepared[cursor][0]
+        group = []
+        while cursor < len(prepared) and prepared[cursor][0] == stamp:
+            group.append(prepared[cursor])
+            cursor += 1
+
+        pending_rows = []
+        for _, league, home, away, row in group:
+            forecasts = model.predict(home, away, league)
+            for market, market_lines in lines.items():
+                actual = None
+                if market == "corners":
+                    hc, ac = _num(row.get("HC")), _num(row.get("AC"))
+                    if hc is not None and ac is not None:
+                        actual = hc + ac
+                else:
+                    hy, ay = _num(row.get("HY")), _num(row.get("AY"))
+                    if hy is not None and ay is not None:
+                        hr, ar = _num(row.get("HR")), _num(row.get("AR"))
+                        actual = hy + ay + (hr or 0.0) + (ar or 0.0)
+                forecast = forecasts.get(market) or {}
+                league_rows = model.league[league][market]
+                if (
+                    actual is None
+                    or len(league_rows) < min_history
+                    or forecast.get("history_matches", 0) < min_history
+                    or forecast.get("home_team_games", 0) < model.min_team_games
+                    or forecast.get("away_team_games", 0) < model.min_team_games
+                ):
+                    continue
+                baseline_mean = sum(home_total + away_total for home_total, away_total in league_rows) / len(league_rows)
+                candidate_mean = float(forecast.get("total") or 0.0)
+                for line in market_lines:
+                    candidate_over = poisson_over_probability(candidate_mean, line)
+                    baseline_over = poisson_over_probability(baseline_mean, line)
+                    if candidate_over is None or baseline_over is None:
+                        continue
+                    outcome = "over" if actual > line else "under"
+                    candidate_records[market][line].append(
+                        ({"over": candidate_over, "under": 1.0 - candidate_over}, outcome)
+                    )
+                    baseline_records[market][line].append(
+                        ({"over": baseline_over, "under": 1.0 - baseline_over}, outcome)
+                    )
+            pending_rows.append((row, league))
+        # Update only after every fixture for the same date has been forecast.
+        for row, league in pending_rows:
+            model.learn_step(row, league)
+
+    report = {}
+    for market, market_lines in lines.items():
+        report[market] = {}
+        for line in market_lines:
+            candidate = candidate_records[market][line]
+            baseline = baseline_records[market][line]
+            paired = _binary_paired_differences(
+                candidate, baseline,
+                bootstrap_samples=bootstrap_samples,
+                seed=50100 + int(line * 10) + (0 if market == "corners" else 1000),
+            )
+            report[market][str(line)] = {
+                "line": line,
+                "n": len(candidate),
+                "candidate": _binary_metrics(
+                    candidate, bootstrap_samples=bootstrap_samples,
+                    seed=51100 + int(line * 10),
+                ),
+                "baseline": _binary_metrics(
+                    baseline, bootstrap_samples=bootstrap_samples,
+                    seed=52100 + int(line * 10),
+                ),
+                "candidate_minus_baseline": paired,
+                "validation_passed": totals_market_is_validated(paired, min_n=min_n),
+            }
+    return {
+        "n_rows": len(prepared),
+        "min_history": int(min_history),
+        "min_n": int(min_n),
+        "markets": report,
+        "interpretation": (
+            "Validation compares team-specific Poisson forecasts against a prior "
+            "league-average Poisson baseline on identical chronological fixtures. "
+            "It does not establish positive betting EV; a current exact-market price "
+            "from one bookmaker is still required."
+        ),
+    }
+
+
 def walk_forward_evaluate(rows, league="G", min_history=30):
     """Evaluate totals chronologically; each forecast sees only earlier rows."""
     model = HistoricalMatchStats()

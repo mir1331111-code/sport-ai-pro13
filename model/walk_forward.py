@@ -23,18 +23,32 @@ def _get(row, *names):
 
 
 def _parse_date(value):
+    """Parse ISO timestamps and Football-Data day/month/year CSV dates."""
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
         return value
     try:
         raw = str(value).strip().replace("Z", "+00:00")
+        if not raw:
+            return None
         try:
             return datetime.fromisoformat(raw).date()
         except ValueError:
+            pass
+        try:
             return date.fromisoformat(raw[:10])
+        except ValueError:
+            pass
+        # football-data.co.uk exports dates as DD/MM/YY or DD/MM/YYYY.
+        for fmt in ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y"):
+            try:
+                return datetime.strptime(raw[:10], fmt).date()
+            except ValueError:
+                continue
     except (TypeError, ValueError):
         return None
+    return None
 
 
 def _without_xg(row):
@@ -317,6 +331,11 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
     # Separate binary evaluation for each common goals line. This measures
     # forecast quality, not merely whether the 1X2 model predicts the winner.
     goals_line_records = {line: [] for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)}
+    goals_line_baseline_records = {line: [] for line in goals_line_records}
+    btts_records = []
+    btts_baseline_records = []
+    btts_history = {}
+    goals_history = {}
     market_sources = {}
     total_market_sources = {}
     xg_forecasts = xg_eligible_rows = 0
@@ -347,11 +366,34 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             lambdas = pred_candidate.get("lams") or (0.0, 0.0)
             total_mean = float(lambdas[0] or 0.0) + float(lambdas[1] or 0.0)
             actual_total = hg + ag
+            prior_goal_totals = goals_history.get(league, [])
+            baseline_goal_mean = (
+                sum(prior_goal_totals) / len(prior_goal_totals)
+                if len(prior_goal_totals) >= 30 else None
+            )
             for line, line_records in goals_line_records.items():
                 line_over = _poisson_over_probability(total_mean, line)
                 if line_over is not None:
                     line_outcome = "over" if actual_total > line else "under"
                     line_records.append(({"over": line_over, "under": 1.0 - line_over}, line_outcome))
+                    if baseline_goal_mean is not None:
+                        baseline_over = _poisson_over_probability(baseline_goal_mean, line)
+                        if baseline_over is not None:
+                            goals_line_baseline_records[line].append(
+                                ({"over": baseline_over, "under": 1.0 - baseline_over}, line_outcome)
+                            )
+
+            # Independent BTTS evaluation. The baseline is the league's prior
+            # empirical BTTS rate, calculated strictly before this match date.
+            btts_outcome = "over" if hg > 0 and ag > 0 else "under"
+            btts_model_prob = max(1e-6, min(1.0 - 1e-6, float(pred_candidate.get("btts", 0.5))))
+            prior_btts = btts_history.get(league, [0, 0])
+            btts_prior_yes, btts_prior_n = prior_btts
+            if btts_prior_n >= 30:
+                btts_baseline_prob = (btts_prior_yes + 1.0) / (btts_prior_n + 2.0)
+                btts_records.append(({"over": btts_model_prob, "under": 1.0 - btts_model_prob}, btts_outcome))
+                btts_baseline_records.append(({"over": btts_baseline_prob, "under": 1.0 - btts_baseline_prob}, btts_outcome))
+
             total_market_p, total_market_source = _total_market_probs(row_copy)
             if total_market_p:
                 records["goals_over25_market"].append((total_market_p, total_outcome))
@@ -390,6 +432,10 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             index += 1
+            goals_history.setdefault(row_copy.get("Div") or "G", []).append(hg + ag)
+            prior_btts = btts_history.setdefault(row_copy.get("Div") or "G", [0, 0])
+            prior_btts[0] += int(hg > 0 and ag > 0)
+            prior_btts[1] += 1
 
     metrics = {name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=1729)
                for name, value in records.items() if not name.startswith("goals_over25")}
@@ -397,15 +443,47 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
     goals_over25_metrics = _binary_metrics(records["goals_over25"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_market_metrics = _binary_metrics(records["goals_over25_market"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_candidate_market_metrics = _binary_metrics(records["goals_over25_candidate_on_market"], bootstrap_samples=totals_bs, seed=31415)
-    goals_totals_by_line = {
-        str(line): {
+    goals_totals_by_line = {}
+    for line, line_records in goals_line_records.items():
+        candidate_metric = _binary_metrics(
+            line_records, bootstrap_samples=totals_bs, seed=31415 + int(line * 10)
+        )
+        baseline_records = goals_line_baseline_records[line]
+        baseline_metric = _binary_metrics(
+            baseline_records, bootstrap_samples=totals_bs, seed=32415 + int(line * 10)
+        )
+        candidate_minus_baseline = _binary_paired_differences(
+            line_records[-len(baseline_records):] if baseline_records else [],
+            baseline_records,
+            bootstrap_samples=totals_bs,
+            seed=33415 + int(line * 10),
+        )
+        goals_totals_by_line[str(line)] = {
             "line": line,
-            "n": len(line_records),
-            "metrics": _binary_metrics(line_records, bootstrap_samples=totals_bs, seed=31415 + int(line * 10)),
-            "interpretation": "Poisson total-goals probability evaluated against the observed full-time goal total; no bookmaker comparison unless paired line odds are available."
+            "n": candidate_metric["n"],
+            "metrics": candidate_metric,
+            "baseline_metrics": baseline_metric,
+            "baseline_paired_n": candidate_minus_baseline.get("n", 0),
+            "candidate_minus_baseline": candidate_minus_baseline,
+            "validation_passed": totals_market_is_validated(candidate_minus_baseline, min_n=500),
+            "interpretation": (
+                "Chronological Poisson totals forecast versus prior league goal-rate baseline; "
+                "validation requires >=500 paired forecasts and both 95% Brier/log-loss intervals below zero."
+            ),
         }
-        for line, line_records in goals_line_records.items()
-    }
+    btts_model_metrics = _binary_metrics(
+        btts_records, bootstrap_samples=totals_bs, seed=41415
+    )
+    btts_baseline_metrics = _binary_metrics(
+        btts_baseline_records, bootstrap_samples=totals_bs, seed=42415
+    )
+    btts_candidate_minus_baseline = _binary_paired_differences(
+        btts_records, btts_baseline_records,
+        bootstrap_samples=totals_bs, seed=43415,
+    )
+    btts_validation = totals_market_is_validated(
+        btts_candidate_minus_baseline, min_n=500
+    )
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
     delta = lambda left, right, key: (
@@ -426,6 +504,12 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
         "goals_over25_market": goals_over25_market_metrics,
         "goals_over25_candidate_on_market": goals_over25_candidate_market_metrics,
         "goals_totals_by_line": goals_totals_by_line,
+        "btts": {
+            "candidate": btts_model_metrics,
+            "baseline": btts_baseline_metrics,
+            "candidate_minus_baseline": btts_candidate_minus_baseline,
+            "validation_passed": btts_validation,
+        },
         "goals_over25_market_sources": total_market_sources,
         "goals_over25_candidate_minus_market": _binary_paired_differences(
             records["goals_over25_candidate_on_market"], records["goals_over25_market"],
