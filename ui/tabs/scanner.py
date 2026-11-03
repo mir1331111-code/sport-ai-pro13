@@ -84,6 +84,96 @@ def _safe_filter(rows):
     return out
 
 
+def _portfolio_auto_recommendation(card: object) -> dict | None:
+    """Return one conservative virtual-portfolio candidate for a fixture.
+
+    1X2 requires a complete, named single-bookmaker 1X2 line. Goals O/U is
+    allowed only on 2.5 and only after the separate paired bookmaker benchmark
+    passed. BTTS, corners and cards remain forecast-only until separately
+    validated against an untouched market benchmark.
+    """
+    if not isinstance(card, dict):
+        return None
+    recommendations = card.get("best_by_market") or {}
+    books = card.get("bookmaker_by_pick") or {}
+    candidates = []
+
+    for family in ("winner", "goals"):
+        recommendation = recommendations.get(family)
+        if not isinstance(recommendation, dict):
+            continue
+        best = recommendation.get("best")
+        verdict = recommendation.get("verdict")
+        if (
+            not isinstance(best, (tuple, list))
+            or len(best) < 6
+            or not isinstance(verdict, dict)
+            or not verdict.get("real_odds")
+            or not verdict.get("value_passed")
+            or not verdict.get("is_bet")
+        ):
+            continue
+
+        market_code = str(best[0] or "").upper()
+        pick = str(best[1] or "")
+        if not pick or not str(books.get(pick) or "").strip():
+            continue
+
+        if family == "winner":
+            if market_code != "1X2":
+                continue
+            coherent_line = proportional_devig(
+                card.get("market_odds") or {},
+                ("П1", "X", "П2"),
+                bookmaker_by_pick=books,
+            )
+            if coherent_line is None:
+                continue
+        else:
+            if market_code != "OU" or not bool(card.get("total_market_validation")):
+                continue
+            line_match = re.fullmatch(r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", pick, re.I)
+            if not line_match:
+                continue
+            try:
+                line = float(line_match.group(1).replace(",", "."))
+            except ValueError:
+                continue
+            if abs(line - 2.5) > 1e-9:
+                continue
+            coherent_line = proportional_devig(
+                card.get("total_market_odds") or {},
+                ("ТБ 2.5", "ТМ 2.5"),
+                bookmaker_by_pick=books,
+            )
+            if coherent_line is None:
+                continue
+
+        try:
+            odd, ev, probability, stake = map(
+                float, (best[2], best[3], best[4], best[5])
+            )
+            edge_value = float(verdict.get("edge"))
+        except (TypeError, ValueError):
+            continue
+        if (
+            odd <= 1.01
+            or not 0.0 < probability < 1.0
+            or ev < 0.05
+            or edge_value < 0.05
+            or stake <= 0.0
+        ):
+            continue
+        candidates.append({
+            "family": family,
+            "best": best,
+            "verdict": verdict,
+            "score": float(recommendation.get("score") or 0.0),
+        })
+
+    return max(candidates, key=lambda item: item["score"]) if candidates else None
+
+
 def _is_actionable_recommendation(card: object) -> bool:
     """True only for a conservatively eligible, fully priced portfolio candidate."""
     if not isinstance(card, dict):
