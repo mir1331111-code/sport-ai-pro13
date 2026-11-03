@@ -816,7 +816,18 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         market_is_validated = True
         validation_note = ""
     elif selected_market_type == "OU":
-        history_validated = bool(c.get("total_market_validation"))
+        # Validate the exact goal-total line, not whichever line happened to
+        # make the fixture's global shortlist.
+        line_match = re.fullmatch(r"Т[БМ]\\s+(\\d+(?:[.,]\\d+)?)", str(pick), re.I)
+        line_key = (
+            f"{float(line_match.group(1).replace(',', '.')):g}"
+            if line_match else ""
+        )
+        line_reports = c.get("total_market_validation_by_line") or {}
+        history_validated = (
+            bool(line_reports[line_key])
+            if line_key in line_reports else bool(c.get("total_market_validation"))
+        )
         source = str(c.get("total_odds_source") or "").casefold()
         book_count = int((c.get("total_market_book_count") or {}).get(pick) or 0)
         quote_corroborated = (
@@ -827,22 +838,55 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         validation_notes = []
         if not history_validated:
             validation_notes.append(
-                "Тоталы не прошли историческую проверку; Value не подтверждён."
+                f"Линия тотала {line_key or 'выбранная'} не прошла отдельную историческую проверку."
             )
         if not quote_corroborated:
             validation_notes.append(
                 f"Котировка тотала получена только от {book_count or 1} букмекера. "
-                "Цена показана, но для подтверждения нужна вторая независимая котировка."
+                "Для допуска нужна вторая независимая котировка."
             )
         validation_note = " ".join(validation_notes)
     elif selected_market_type == "BTTS":
-        # A real quote confirms the bookmaker price, not the model's historical
-        # calibration. Do not describe BTTS as having failed a test that was never run.
-        market_is_validated = False
+        market_is_validated = bool(c.get("btts_market_validation"))
         validation_note = (
-            "Для «Обе забьют» пока нет отдельного исторического walk-forward теста. "
-            "Коэффициент показан как котировка, но прогноз и Value не подтверждены."
+            "" if market_is_validated else
+            "BTTS не прошёл собственную историческую walk-forward проверку."
         )
+    elif selected_market_type == "STAT":
+        stat_match = re.fullmatch(
+            r"(Угл|Карты)\\s+Т[БМ]\\s+(\\d+(?:[.,]\\d+)?)",
+            str(pick), re.I,
+        )
+        if stat_match:
+            stat_name = (
+                "corners" if stat_match.group(1).casefold() == "угл" else "cards"
+            )
+            stat_line = f"{float(stat_match.group(2).replace(',', '.')):g}"
+            line_validated = bool(
+                ((c.get("stat_market_validation") or {}).get(stat_name) or {}).get(stat_line)
+            )
+            stat_prediction = stat_preds.get(stat_name) or {}
+            history_sufficient = (
+                int(stat_prediction.get("history_matches") or 0) >= 30
+                and int(stat_prediction.get("home_team_games") or 0) >= 4
+                and int(stat_prediction.get("away_team_games") or 0) >= 4
+            )
+            source = str(c.get("extra_market_source") or "").casefold()
+            quote_source_valid = source in {"highlightly", "manual_import", "sstats"}
+            market_is_validated = line_validated and history_sufficient and quote_source_valid
+            validation_parts = []
+            if not line_validated:
+                validation_parts.append(
+                    f"Линия {stat_line} рынка {stat_name} не прошла собственный walk-forward тест."
+                )
+            if not history_sufficient:
+                validation_parts.append("Недостаточно фактической истории по этой паре команд.")
+            if not quote_source_valid:
+                validation_parts.append("Нет подтверждённой котировки на этот рынок.")
+            validation_note = " ".join(validation_parts)
+        else:
+            market_is_validated = False
+            validation_note = "Не удалось определить точный статистический рынок и линию."
     else:
         market_is_validated = False
         validation_note = "Для этого рынка нет отдельной исторической проверки."
@@ -1409,15 +1453,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         group_by_day = c3.checkbox("Группировать по дням", True,
                                     key="scanner_group_by_day")
 
-        # Default mode is deliberately a short, actionable shortlist.
-        # Full fixture/market browsing is opt-in and explicitly informational.
+        # The combined shortlist is intentionally one best pick per fixture.
+        # Dedicated market tabs must never inherit that 1X2/global-best filter:
+        # each market is recalculated across the complete fixture pool.
         cards_view = qualified if recommendation_mode else all_cards
+        market_pool = list(all_cards)
         if recommendation_mode:
             st.caption(
-                "Главный режим показывает только готовые 1X2-сигналы: реальная полная линия "
-                "одного букмекера, заданный минимум вероятности, Edge ≥ 5%, EV ≥ 5% и "
-                "положительный Kelly. Угловые, карточки, BTTS и тоталы пока справочные "
-                "до отдельной исторической проверки."
+                "«Общий shortlist» показывает лучший общий исход на матч. "
+                "Вкладки 1X2, тоталов, BTTS, угловых и карточек отбирают матчи независимо "
+                "по всему пулу сканирования: состав команд в них может отличаться."
             )
 
         if sort_mode.startswith("По дате"):
@@ -1436,41 +1481,40 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 cards_view.sort(key=lambda c: -float(
                     (c.get("verdict", {}).get("prob") or 0)))
 
-        if not cards_view:
-            if recommendation_mode:
-                st.info(
-                    "Сегодня нет матчей, которые прошли все критерии отбора. "
-                    "Это нормальный результат: сканер не будет предлагать ставку ради количества. "
-                    "Переключи режим на «Все матчи и котировки (справочно)», чтобы посмотреть рынок."
-                )
-            else:
-                st.warning("Матчи для отображения не найдены.")
+        if not market_pool:
+            st.warning("Матчи для отображения не найдены.")
             return
+        if recommendation_mode and not cards_view:
+            st.info(
+                "Общий shortlist пуст, но отдельные рынки ниже всё равно проверяются "
+                "по всем матчам — хорошие варианты на тоталы, BTTS, угловые или карточки "
+                "не зависят от наличия сигнала 1X2."
+            )
 
         market_counts = {
-            "winner": sum(bool(x.get("market_odds")) for x in cards_view),
-            "goals": sum(bool(x.get("total_market_odds")) for x in cards_view),
+            "winner": sum(bool(x.get("market_odds")) for x in market_pool),
+            "goals": sum(bool(x.get("total_market_odds")) for x in market_pool),
             "goals_confirmed": sum(
                 bool(x.get("total_market_odds"))
                 and (
                     str(x.get("total_odds_source") or "").casefold() != "sstats"
                     or any(bool(flag) for flag in (x.get("total_market_confirmed") or {}).values())
                 )
-                for x in cards_view
+                for x in market_pool
             ),
-            "btts": sum(bool(x.get("btts_market_odds")) for x in cards_view),
-            "corners": sum(any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {})) for x in cards_view),
-            "cards": sum(any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {})) for x in cards_view),
-            "handicap": sum(bool(x.get("asian_handicap_market_odds")) for x in cards_view),
+            "btts": sum(bool(x.get("btts_market_odds")) for x in market_pool),
+            "corners": sum(any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {})) for x in market_pool),
+            "cards": sum(any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {})) for x in market_pool),
+            "handicap": sum(bool(x.get("asian_handicap_market_odds")) for x in market_pool),
         }
         market_tabs = st.tabs([
-            f"Тоталы · справочно ({market_counts['goals']}, проверены {market_counts['goals_confirmed']})",
+            f"Тоталы ({market_counts['goals']}, проверены {market_counts['goals_confirmed']})",
             f"{'Отобранные ставки' if recommendation_mode else 'Все матчи'} ({len(cards_view)})",
             f"1X2 · линии ({market_counts['winner']})",
-            f"Обе забьют · справочно ({market_counts['btts']})",
-            f"Угловые · справочно ({market_counts['corners']})",
-            f"Карточки · справочно ({market_counts['cards']})",
-            f"Форы · справочно ({market_counts['handicap']})",
+            f"Обе забьют ({market_counts['btts']})",
+            f"Угловые ({market_counts['corners']})",
+            f"Карточки ({market_counts['cards']})",
+            f"Форы ({market_counts['handicap']})",
         ])
 
         # Totals is the default workspace: show model forecasts for every
@@ -1482,14 +1526,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "Подтверждённых котировок на тоталы пока нет. Ниже показан прогноз модели "
                     "по каждому матчу; без реальной цены Value и ставка недоступны."
                 )
-            for card in cards_view:
+            for card in market_pool:
                 st.markdown(render_fixture_header(card), unsafe_allow_html=True)
                 _render_manual_odds_block(
                     card, D, kelly_frac, min_prob, min_edge, market_filter="goals"
                 )
 
         with market_tabs[1]:
-            if group_by_day:
+            if not cards_view:
+                st.info("В общем shortlist нет ставок, прошедших все пороги. Отдельные вкладки рынков проверяются независимо.")
+            elif group_by_day:
                 grouped = {}
                 for card in cards_view:
                     grouped.setdefault(day_label(parse_card_date(card)), []).append(card)
@@ -1519,7 +1565,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     if market_filter == "cards":
                         return any(str(key).startswith("Карты ") for key in quotes)
                     return bool(quotes)
-                selected_cards = [card for card in cards_view if has_market_quote(card)]
+                selected_cards = [card for card in market_pool if has_market_quote(card)]
                 if not selected_cards:
                     st.info(
                         f"SStats не вернул подтверждённых котировок на {market_label} для показанных матчей. "
@@ -1530,7 +1576,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     _render_manual_odds_block(card, D, kelly_frac, min_prob, min_edge, market_filter=market_filter)
 
         with market_tabs[6]:
-            handicap_cards = [card for card in cards_view if card.get("asian_handicap_market_odds")]
+            handicap_cards = [card for card in market_pool if card.get("asian_handicap_market_odds")]
             if not handicap_cards:
                 st.info("SStats не вернул подтверждённых котировок на форы для показанных матчей.")
             for card in handicap_cards:
@@ -1540,8 +1586,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"{pick}: **{float(odd):.2f}**" for pick, odd in sorted(quotes.items())
                 ))
 
-        st.caption("✅ Показано " + str(len(cards_view)) + " из "
-                   + str(len(all_cards)))
+        st.caption(
+            "✅ Общий shortlist: " + str(len(cards_view))
+            + " матчей · отдельные рынки: весь пул из " + str(len(market_pool)) + " матчей"
+        )
         return
 
     # ==================== СКАН ====================
