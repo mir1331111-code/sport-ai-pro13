@@ -332,6 +332,7 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
     # forecast quality, not merely whether the 1X2 model predicts the winner.
     goals_line_records = {line: [] for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)}
     goals_line_baseline_records = {line: [] for line in goals_line_records}
+    goals_line_candidate_on_baseline_records = {line: [] for line in goals_line_records}
     btts_records = []
     btts_baseline_records = []
     btts_history = {}
@@ -381,6 +382,9 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
                         if baseline_over is not None:
                             goals_line_baseline_records[line].append(
                                 ({"over": baseline_over, "under": 1.0 - baseline_over}, line_outcome)
+                            )
+                            goals_line_candidate_on_baseline_records[line].append(
+                                ({"over": line_over, "under": 1.0 - line_over}, line_outcome)
                             )
 
             # Independent BTTS evaluation. The baseline is the league's prior
@@ -453,7 +457,7 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             baseline_records, bootstrap_samples=totals_bs, seed=32415 + int(line * 10)
         )
         candidate_minus_baseline = _binary_paired_differences(
-            line_records[-len(baseline_records):] if baseline_records else [],
+            goals_line_candidate_on_baseline_records[line],
             baseline_records,
             bootstrap_samples=totals_bs,
             seed=33415 + int(line * 10),

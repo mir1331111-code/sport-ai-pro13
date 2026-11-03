@@ -2095,7 +2095,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     continue
                 pick = str(best_card[1])
                 market_code = str(best_card[0]).upper()
-                if market_code not in {"1X2", "OU", "BTTS", "STAT"}:
+                # Goal-score settlement is available for 1X2/OU/BTTS. Corners
+                # and cards remain shortlist-only until statistic-score settlement
+                # exists; never freeze bankroll for a bet the app cannot settle.
+                if market_code not in {"1X2", "OU", "BTTS"}:
                     continue
                 match_key = (str(card.get("match") or ""), pick)
                 if match_key in existing_keys:

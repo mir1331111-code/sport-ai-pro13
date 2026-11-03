@@ -38,6 +38,37 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         self.assertEqual(market_type("Карты ТМ 4.5"), "STAT")
         self.assertEqual(market_type("BTTS Да"), "BTTS")
 
+    def test_stat_market_walk_forward_validation_builds_line_reports(self):
+        from datetime import date, timedelta
+        from model.historical_match_stats import walk_forward_market_validation
+
+        rows = []
+        start = date(2024, 1, 1)
+        for index in range(100):
+            current = start + timedelta(days=index)
+            rows.append({
+                "Date": current.strftime("%d/%m/%Y"),
+                "Div": "E0",
+                "HomeTeam": f"Team{index % 10}",
+                "AwayTeam": f"Team{(index + 3) % 10}",
+                "HC": 5 + (index % 4),
+                "AC": 3 + (index % 3),
+                "HY": 1 + (index % 2),
+                "AY": 1 + (index % 3 == 0),
+                "HR": 0,
+                "AR": 0,
+            })
+        report = walk_forward_market_validation(
+            rows, min_history=15, min_n=10, bootstrap_samples=20,
+        )
+        self.assertEqual(report["n_rows"], 100)
+        self.assertIn("corners", report["markets"])
+        self.assertIn("9.5", report["markets"]["corners"])
+        self.assertIn("cards", report["markets"])
+        self.assertIn("4.5", report["markets"]["cards"])
+        self.assertGreater(report["markets"]["corners"]["9.5"]["n"], 0)
+        self.assertIn("validation_passed", report["markets"]["cards"]["4.5"])
+
     def test_history_stats_survive_pickle_round_trip_and_keep_defaultdicts(self):
         from model.engine import Engine
 
