@@ -2029,17 +2029,24 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
         fixture_sources = []
         sstats_rows = []
+        source_counts = {"TheSportsDB": 0, "ESPN": 0, "football-data.org": 0, "SStats": 0}
         try:
-            fixture_sources.extend(tsdb_matches(days, logs))
+            tsdb_rows = tsdb_matches(days, logs)
+            source_counts["TheSportsDB"] = len(tsdb_rows)
+            fixture_sources.extend(tsdb_rows)
         except Exception as exc:
             logs.append(f"⚠️ TheSportsDB fixtures: {type(exc).__name__}")
         try:
-            fixture_sources.extend(espn_matches(days, logs))
+            espn_rows = espn_matches(days, logs)
+            source_counts["ESPN"] = len(espn_rows)
+            fixture_sources.extend(espn_rows)
         except Exception as exc:
             logs.append(f"⚠️ ESPN fixtures: {type(exc).__name__}")
         if token:
             try:
-                fixture_sources.extend(fdorg_matches(days, token, logs))
+                fdorg_rows = fdorg_matches(days, token, logs)
+                source_counts["football-data.org"] = len(fdorg_rows)
+                fixture_sources.extend(fdorg_rows)
             except Exception as exc:
                 logs.append(f"⚠️ football-data.org fixtures: {type(exc).__name__}")
         if sstats_key:
@@ -2048,11 +2055,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 # schedule feed, merge_fixture_sources preserves that row and fills
                 # its missing bookmaker prices and SStats game ID from this source.
                 sstats_rows = sstats_upcoming_matches(days, sstats_key, logs)
+                source_counts["SStats"] = len(sstats_rows)
                 fixture_sources.extend(sstats_rows)
             except Exception as exc:
                 logs.append(f"⚠️ SStats fixtures/odds: {type(exc).__name__}")
         else:
             logs.append("ℹ️ SSTATS_API_KEY не настроен — бесплатный источник SStats пропущен.")
+        logs.append(
+            "📡 Источники расписания: " + " · ".join(
+                f"{name} {count}" for name, count in source_counts.items()
+            )
+        )
         try:
             rows = _safe_filter(merge_fixture_sources(fixture_sources))
         except Exception:
@@ -2107,6 +2120,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if merged_sstats:
                 logs.append(f"🔗 SStats: коэффициенты сопоставлены с {merged_sstats} матчами из общего расписания.")
 
+        logs.append(
+            f"🔀 Объединение расписаний: получено {len(fixture_sources)} строк, "
+            f"после дедупликации {len(rows)} уникальных матчей."
+        )
         logs.append(f"📡 Матчи для анализа из футбольных источников: {len(rows)}")
         if not rows:
             logs.append("⚠️ Матчи не найдены. Проверьте доступность источников расписания.")
@@ -2143,6 +2160,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "можно загрузить собственные коэффициенты через CSV/JSON."
             )
 
+        date_filter_counts = {
+            "invalid_date": 0, "outside_horizon": 0, "missing_teams": 0,
+            "inside_horizon": 0,
+        }
         for match_idx, r in enumerate(rows, 1):
             if match_idx == 1 or match_idx % 5 == 0:
                 update_loader(
@@ -2151,12 +2172,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     logs,
                 )
             d = parse_date(r.get("Date", ""))
-            if not d or not (today <= d < today + timedelta(days=days)):
+            if not d:
+                date_filter_counts["invalid_date"] += 1
+                continue
+            if not (today <= d < today + timedelta(days=days)):
+                date_filter_counts["outside_horizon"] += 1
                 continue
             h_en = (r.get("HomeTeam") or "").strip()
             a_en = (r.get("AwayTeam") or "").strip()
             if not h_en or not a_en:
+                date_filter_counts["missing_teams"] += 1
                 continue
+            date_filter_counts["inside_horizon"] += 1
             h_ru = translate_team(h_en)
             a_ru = translate_team(a_en)
             lg = r.get("Div") or "G"
@@ -2699,6 +2726,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "⚠️ SStats: ID матчей есть, но коэффициенты не загружены. "
                     "Проверьте ответ /Odds/{gameId} и журнал HTTP-статусов."
                 )
+        logs.append(
+            f"🗓️ Фильтр горизонта {days} дн.: в окне {date_filter_counts['inside_horizon']}, "
+            f"вне окна {date_filter_counts['outside_horizon']}, "
+            f"дата не распознана {date_filter_counts['invalid_date']}, "
+            f"без названий команд {date_filter_counts['missing_teams']}."
+        )
+        logs.append(
+            f"🧮 Итог скана: источники {len(fixture_sources)} строк → "
+            f"{len(rows)} уникальных → {date_filter_counts['inside_horizon']} в окне → "
+            f"{len(cards)} карточек после модели."
+        )
         logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов")
         logs.append(f"🎯 BET: {matches_with_best}")
 
