@@ -26,7 +26,7 @@ from model.engine import Engine, _norm
 from model.validation_cache import select_validation_rows, validation_cache_key
 from model.market_forecasts import count_over_probability
 from betting.verdict import build_verdict
-from betting.best_picks import best_value_market
+from betting.best_picks import best_value_market, best_value_markets
 from betting.kelly import kelly, market_type
 from betting.market_math import blend_probability, proportional_devig
 from llm.analyst import analyze_match, has_sufficient_history
@@ -2132,6 +2132,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 market_validation_by_pick[selection] = True
 
             candidate_rows = list(rows_ or []) + extra_rows
+            # Evaluate each family independently before computing the one-best
+            # cross-market pick. A strong 1X2 result must not suppress a goals,
+            # BTTS, corners or cards signal on this fixture.
+            best_by_market = best_value_markets(
+                verdict, candidate_rows, selection_odds, D["bank"], kelly_frac,
+                min_prob, min_edge=max(min_edge, 0.05), min_ev=0.05,
+                bookmaker_by_pick=bookmaker_by_pick,
+                market_validation_by_pick=market_validation_by_pick,
+            )
             best_odds_source = "no_market"
             if selection_odds and candidate_rows:
                 chosen_verdict, best = best_value_market(
@@ -2195,6 +2204,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "date": d.strftime("%d.%m") +
                         (f" {r.get('Time','')}" if r.get("Time") else ""),
                 "verdict": verdict, "best": best,
+                "best_by_market": best_by_market,
                 "games": P["games"], "fh": fh, "fa": fa,
                 "fixture_id": r.get("fixture_id"),
                 "sstats_game_id": r.get("sstats_game_id"),
