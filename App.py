@@ -34,13 +34,17 @@ st.set_page_config(page_title="NEURO BET PRO",
                    initial_sidebar_state="expanded")
 
 from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
-                    AUTO_SETTLE_THROTTLE_SEC)
+                    AUTO_SETTLE_THROTTLE_SEC, DB_FILE)
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
-from data.sources import (parse_date, fdorg_match_result, highlightly_connection_check,
-                          sstats_account_check, footballapi_xg_connection_check)  # noqa: E402
-from betting.settlement import determine_outcome  # noqa: E402
+from data.sources import (
+    parse_date, fdorg_match_result, highlightly_connection_check,
+    sstats_account_check, sstats_match_statistics, sstats_find_match_id,
+    footballapi_xg_connection_check,
+)  # noqa: E402
+from betting.settlement import determine_outcome, determine_stat_outcome  # noqa: E402
+from model.forecast_ledger import MarketForecastLedger  # noqa: E402
 from ui import theme  # noqa: E402
 from ui.tabs import scanner, portfolio, stats, calculator, backtest  # noqa: E402
 
@@ -245,7 +249,7 @@ if "initial_bank" not in D["meta"]:
 
 # ==================== AUTO-SETTLE ====================
 def _auto_settle(D, force: bool = False):
-    """ESPN/TheSportsDB/OpenLigaDB → fdorg. Не раньше MIN_AGE. Никакого авто-void."""
+    """Settle score markets from FT results and STAT markets from SStats full stats."""
     D2 = dict(D)
     bets = list(D2.get("bets", []))
     closed = tried = 0
@@ -253,14 +257,18 @@ def _auto_settle(D, force: bool = False):
     token = (st.session_state.get("fdorg_token_input", "")
              or os.environ.get("FDORG_TOKEN", "")
              or _configured_secret("FDORG_TOKEN", "fdorg_token")).strip()
+    sstats_key = (
+        st.session_state.get("sstats_api_key_input", "")
+        or os.environ.get("SSTATS_API_KEY", "")
+        or _configured_secret("SSTATS_API_KEY", "sstats_api_key")
+    ).strip()
     log.info("START: %d bets | remaining=%s", len(bets), usage.settle_remaining())
 
     for idx, b in enumerate(bets):
         if not isinstance(b, dict) or b.get("status") != "pending":
             continue
-        # Corners/cards require their own result feed; never query goal-only
-        # score sources or spend settlement quota on these markets.
-        if str(b.get("market", "")).upper() == "STAT":
+        is_stat_market = str(b.get("market", "")).upper() == "STAT"
+        if is_stat_market and not sstats_key:
             continue
         if tried >= MAX_PER_RUN:
             log.info("MAX_PER_RUN reached")
@@ -277,54 +285,124 @@ def _auto_settle(D, force: bool = False):
             if last and now - last < RETRY_EVERY:
                 continue
 
-        res, source = None, None
-        tried += 1
-
-        # 1) ESPN / TheSportsDB / OpenLigaDB — без лимита, быстрый путь
-        h_team = (b.get("home") or "").strip()
-        a_team = (b.get("away") or "").strip()
-        if not (h_team and a_team):
-            m = b.get("match") or ""
-            if " vs " in m:
-                h_team, a_team = [p.strip() for p in m.split(" vs ", 1)]
-        d_iso = b.get("date_iso") or ""
-        if h_team and a_team and d_iso:
-            try:
-                from data.scores import find_match_score
-                res = find_match_score(h_team, a_team, d_iso)
-                if res:
-                    source = res.get("source", "auto")
-            except Exception as e:
-                log.warning("find_match_score error: %s", e)
-
-        # 2) football-data.org — только если первый источник не справился
-        if not _is_finished(res):
-            res = None
-            fid = b.get("fixture_id")
-            if fid and token:
-                try:
-                    res = fdorg_match_result(fid, token)
-                    if res:
-                        source = "fdorg"
-                except Exception as e:
-                    log.warning("fdorg error: %s", e)
-
         b2 = dict(b)
         b2["last_settle_try"] = now.isoformat()
-        log.info("%s | src=%s | res=%s", b.get("match_ru", "?"), source, res)
+        outcome, reason = None, ""
+        source = None
+        result_label = None
+        actual_stat_value = None
 
-        if not _is_finished(res):
-            bets[idx] = b2
-            continue
+        if is_stat_market:
+            # New bets retain the SStats game ID. Legacy bets are resolved only
+            # by exact local date and ordered home/away team names.
+            game_id = b2.get("sstats_game_id")
+            if game_id in (None, ""):
+                fixture_id = str(b2.get("fixture_id") or "")
+                if fixture_id.startswith("sstats:"):
+                    candidate = fixture_id.split(":", 1)[1]
+                    game_id = candidate if candidate.isdigit() else None
+            h_team = str(b2.get("home") or "").strip()
+            a_team = str(b2.get("away") or "").strip()
+            if not (h_team and a_team):
+                match = str(b2.get("match") or "")
+                if " vs " in match:
+                    h_team, a_team = [part.strip() for part in match.split(" vs ", 1)]
+            d_iso = str(b2.get("date_iso") or "")[:10]
+            tried += 1
+            if game_id in (None, "") and h_team and a_team and d_iso:
+                try:
+                    game_id = sstats_find_match_id(d_iso, h_team, a_team, sstats_key)
+                    if game_id not in (None, ""):
+                        b2["sstats_game_id"] = int(game_id)
+                except Exception as exc:
+                    log.warning("SStats match ID lookup failed: %s", type(exc).__name__)
+            if game_id in (None, ""):
+                log.info(
+                    "%s | SStats match ID not resolved; left pending",
+                    b2.get("match_ru", "?"),
+                )
+                bets[idx] = b2
+                continue
+            try:
+                stat_data = sstats_match_statistics(game_id, sstats_key)
+            except Exception as exc:
+                stat_data = None
+                log.warning("SStats match statistics failed: %s", type(exc).__name__)
+            if not isinstance(stat_data, dict) or not stat_data.get("finished"):
+                log.info(
+                    "%s | SStats match not confirmed FT; left pending",
+                    b2.get("match_ru", "?"),
+                )
+                bets[idx] = b2
+                continue
 
-        usage.settle_increment(1)
-        outcome, reason = determine_outcome(
-            b.get("market"), b.get("pick"), int(res["home"]), int(res["away"]))
+            pick = str(b2.get("pick") or "")
+            stat_kind = (
+                "corners" if pick.casefold().startswith("угл ")
+                else "cards" if pick.casefold().startswith("карты ")
+                else None
+            )
+            actual_stat_value = stat_data.get(stat_kind) if stat_kind else None
+            if actual_stat_value is None:
+                log.info(
+                    "%s | SStats FT but %s statistics unavailable; left pending",
+                    b2.get("match_ru", "?"), stat_kind or "selection",
+                )
+                bets[idx] = b2
+                continue
+            outcome, reason = determine_stat_outcome(
+                "STAT", pick, actual_stat_value
+            )
+            source = "sstats"
+            result_label = (
+                f"Угловые: {actual_stat_value}"
+                if stat_kind == "corners" else f"Карточки: {actual_stat_value}"
+            )
+        else:
+            res, source = None, None
+            tried += 1
+            h_team = str(b.get("home") or "").strip()
+            a_team = str(b.get("away") or "").strip()
+            if not (h_team and a_team):
+                match = str(b.get("match") or "")
+                if " vs " in match:
+                    h_team, a_team = [part.strip() for part in match.split(" vs ", 1)]
+            d_iso = b.get("date_iso") or ""
+            if h_team and a_team and d_iso:
+                try:
+                    from data.scores import find_match_score
+                    res = find_match_score(h_team, a_team, d_iso)
+                    if res:
+                        source = res.get("source", "auto")
+                except Exception as exc:
+                    log.warning("find_match_score error: %s", type(exc).__name__)
+
+            if not _is_finished(res):
+                res = None
+                fixture_id = b.get("fixture_id")
+                if fixture_id and token:
+                    try:
+                        res = fdorg_match_result(fixture_id, token)
+                        if res:
+                            source = "fdorg"
+                    except Exception as exc:
+                        log.warning("fdorg error: %s", type(exc).__name__)
+
+            if not _is_finished(res):
+                bets[idx] = b2
+                continue
+            outcome, reason = determine_outcome(
+                b.get("market"), b.get("pick"),
+                int(res["home"]), int(res["away"]),
+            )
+            result_label = f"{int(res['home'])}:{int(res['away'])}"
+
         if outcome is None:
             log.info("unknown outcome: %s", reason)
             bets[idx] = b2
             continue
 
+        usage.settle_increment(1)
         try:
             stake = float(b2["stake"])
             odds = float(b2["odds"])
@@ -332,9 +410,12 @@ def _auto_settle(D, force: bool = False):
             bets[idx] = b2
             continue
 
-        b2["score"] = f"{int(res['home'])}:{int(res['away'])}"
+        b2["score"] = result_label
         b2["settled_at"] = datetime.now().isoformat()
         b2["settle_source"] = source
+        if actual_stat_value is not None:
+            b2["actual_stat_value"] = actual_stat_value
+            b2["settlement_source"] = source
         b2.pop("stale", None)
 
         if outcome in ("push", "void"):
@@ -349,27 +430,33 @@ def _auto_settle(D, force: bool = False):
             bets[idx] = b2
             continue
         bets[idx] = b2
+
         if db.SQLITE_BOOT_OK:
             try:
                 if b2.get("id") is not None:
                     db.update_bet(
-                        int(b2["id"]),
-                        status=b2.get("status"),
-                        score=b2.get("score"),
-                        settled_at=b2.get("settled_at"),
+                        int(b2["id"]), status=b2.get("status"),
+                        score=b2.get("score"), settled_at=b2.get("settled_at"),
                     )
                 else:
                     db.update_bet_by_identity(
-                        b2.get("match"),
-                        b2.get("market"),
-                        b2.get("pick"),
-                        b2.get("date_iso"),
-                        status=b2.get("status"),
-                        score=b2.get("score"),
-                        settled_at=b2.get("settled_at"),
+                        b2.get("match"), b2.get("market"), b2.get("pick"),
+                        b2.get("date_iso"), status=b2.get("status"),
+                        score=b2.get("score"), settled_at=b2.get("settled_at"),
                     )
-            except Exception as e:
-                log.warning("SQLite settle persist error: %s", e)
+            except Exception as exc:
+                log.warning("SQLite settle persist error: %s", type(exc).__name__)
+
+        audit_key = b2.get("market_forecast_key")
+        if audit_key:
+            try:
+                MarketForecastLedger(DB_FILE).settle(
+                    str(audit_key), outcome, result_score=result_label,
+                    actual_value=actual_stat_value,
+                    settlement_source=str(source or "auto"),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                log.warning("Market forecast audit settle error: %s", type(exc).__name__)
         closed += 1
 
     for idx, b in enumerate(bets):
@@ -384,7 +471,6 @@ def _auto_settle(D, force: bool = False):
     D2["stats"] = _recompute_stats(bets, D2.get("stats"))
     log.info("DONE: %d closed, %d tried", closed, tried)
     return D2, closed, tried
-
 
 def _void_stale(D):
     D2 = dict(D)
