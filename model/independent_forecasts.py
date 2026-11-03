@@ -251,7 +251,7 @@ def record_scan_forecasts(
             try:
                 market, selection = str(best[0]).upper().strip(), str(best[1]).strip()
                 price, probability = float(best[2]), float(best[4])
-                key = f"{fixture_id}|{main_version}|best-market"
+                key = f"{fixture_id}|{main_version}|market|{now.isoformat()}"
                 card["market_forecast_key"] = key
                 if key not in existing_market:
                     market_ledger.record_recommendation(
