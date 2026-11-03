@@ -1,6 +1,7 @@
 """ui/tabs/scanner.py — Сканер с ручным вводом кэфов."""
 from __future__ import annotations
 import os
+import re
 import json
 import csv
 import io
