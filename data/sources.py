@@ -13,7 +13,7 @@
   * Дополнительно распознаются шотландский, австралийский, японский чемпионаты.
 """
 from __future__ import annotations
-import csv, io, re, logging, os, hashlib
+import csv, io, re, logging, os, hashlib, math
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -397,11 +397,16 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
         cache_key = f"footballapi_xg_match_v1_{match_id}"
         cached = cache_get(cache_key, 365 * 86400)
         if isinstance(cached, dict):
-            cached_count += 1
             row = cached.get("row")
             if isinstance(row, dict):
+                cached_count += 1
                 rows.append(row)
-            continue
+                continue
+            # Missing/incomplete xG is only a short negative cache. Re-check later
+            # because providers can publish match statistics after full time.
+            if cache_get(cache_key, 6 * 3600) is not None:
+                cached_count += 1
+                continue
         if fetched >= stats_budget:
             break
         if not _footballapi_take_rate_slot():
@@ -416,13 +421,14 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
                 rate_limited = True
                 break
             if response.status_code != 200:
-                # Do not cache access/coverage errors as a missing xG statistic.
                 if logs is not None and response.status_code not in (403, 404):
                     logs.append(
                         f"⚠️ Football API stats {match_id}: HTTP {response.status_code}"
                     )
-                if response.status_code in (401, 403):
+                if response.status_code in (401, 403, 429):
+                    rate_limited = response.status_code == 429
                     break
+                # Short negative cache for missing/temporarily unavailable stats.
                 cache_put(cache_key, {"row": None})
                 continue
             payload = response.json() or {}
