@@ -27,6 +27,7 @@ from model.validation_cache import select_validation_rows, validation_cache_key
 from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
+from betting.favorites import model_favorite, rank_model_favorites
 from betting.kelly import kelly, market_type
 from betting.market_math import blend_probability, proportional_devig
 from llm.analyst import analyze_match, has_sufficient_history
@@ -1275,8 +1276,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     st.markdown("<div class='scanner-section-label'>БЫСТРЫЙ ЗАПУСК</div>",
                 unsafe_allow_html=True)
     c1, c2 = st.columns([1.25, 1], vertical_alignment="bottom")
-    days = c1.slider("Горизонт матчей", 1, 14, 3,
-                     help="На сколько дней вперёд искать расписание.")
+    days = c1.slider(
+        "Горизонт матчей", 1, 14, 7, key="scanner_horizon_days_v4",
+        help="Ищет матчи на ближайшие 7 дней по умолчанию; можно расширить до 14."
+    )
     scan = c2.button("⚡ Запустить сканирование", type="primary",
                      use_container_width=True,
                      disabled=st.session_state.get("_scan_in_progress", False))
@@ -1554,11 +1557,62 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             qualified.sort(key=lambda c: -float(
                 (c.get("verdict") or {}).get("ev") or -1))
 
+        # Forecast favorites are ranked independently of bookmaker value gates.
+        # They are displayed as model probabilities, never as guaranteed winners
+        # or automatic betting recommendations.
+        favorite_matches = rank_model_favorites(all_cards)
         st.markdown(
-            "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:8px 0 4px'>"
-            "<div><div class='scanner-kicker'>SHORTLIST · AI MATCH DESK</div>"
-            "<h2 style='margin:0'>Лучшие подтверждённые варианты</h2>"
-            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>В shortlist попадают только 1X2 с полной линией одного букмекера и тотал голов 2.5 при отдельной успешной проверке против рынка. BTTS, угловые и карточки показываются как независимые прогнозные сигналы, а не как доказанное преимущество над букмекером.</div></div>"
+            "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:18px 0 4px'>"
+            "<div><div class='scanner-kicker'>MODEL FAVORITES · 1X2</div>"
+            "<h2 style='margin:0'>Самые вероятные исходы</h2>"
+            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>"
+            "Топ-10 по вероятности П1 / ничьей / П2 среди всех матчей скана. "
+            "Это прогноз модели, а не гарантия победы и не подтверждение Value.</div></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        if favorite_matches:
+            favorite_columns = st.columns(2)
+            for favorite_rank, favorite_item in enumerate(favorite_matches[:10], start=1):
+                favorite_card = favorite_item["card"]
+                favorite_match = str(
+                    favorite_card.get("match_ru") or favorite_card.get("match") or "Матч"
+                )
+                favorite_league = str(favorite_card.get("league") or "Футбол")
+                favorite_kickoff = " · ".join(
+                    str(value) for value in (
+                        favorite_card.get("date") or "",
+                        favorite_card.get("time") or "",
+                    ) if value
+                )
+                favorite_probability = float(favorite_item["probability"])
+                with favorite_columns[(favorite_rank - 1) % 2]:
+                    st.markdown(
+                        "<div style='padding:13px 15px;margin:7px 0;border:1px solid rgba(118,159,180,.28);"
+                        "border-radius:12px;background:linear-gradient(120deg,rgba(22,42,54,.9),rgba(15,24,32,.94))'>"
+                        f"<div style='display:flex;justify-content:space-between;gap:8px;color:#9eb1bd;font-size:11px'>"
+                        f"<span>#{favorite_rank} · {html.escape(favorite_league)}</span>"
+                        f"<span>{html.escape(favorite_item['strength'])}</span></div>"
+                        f"<div style='font-weight:750;font-size:16px;color:#f0f5f7;margin:7px 0 4px'>"
+                        f"{html.escape(favorite_match)}</div>"
+                        f"<div style='color:#8fd8bd;font-weight:800;font-size:19px'>"
+                        f"{html.escape(favorite_item['label'])} · {favorite_probability:.1%}</div>"
+                        f"<div style='color:#9aaab3;font-size:12px;margin-top:4px'>"
+                        f"{html.escape(favorite_kickoff or 'Время начала уточняется')} · "
+                        "модельная вероятность 1X2</div></div>",
+                        unsafe_allow_html=True,
+                    )
+        else:
+            st.info("Для найденных матчей нет корректного полного прогноза 1X2.")
+
+        st.markdown(
+            "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:18px 0 4px'>"
+            "<div><div class='scanner-kicker'>VALUE SHORTLIST · BOOKMAKER CHECK</div>"
+            "<h2 style='margin:0'>Подтверждённые Value-сигналы</h2>"
+            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>"
+            "Этот отдельный список намеренно строгий: полная линия одного букмекера, "
+            "подтверждённый Edge и EV от 5%, положительный Kelly. Здесь может быть 0–2 матча, "
+            "даже когда в расписании намного больше событий.</div></div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1656,14 +1710,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
              "По EV (высокие сначала)",
              "По вероятности (высокие сначала)",
              "По дате (ближайшие сначала)"],
-            key="scanner_sort")
+            index=2,
+            key="scanner_sort_v4")
         display_mode = c2.selectbox(
             "Что показывать",
-            ["🎯 Общий shortlist по лучшему исходу",
-             "Все матчи и котировки"],
+            ["⭐ Вероятные исходы (все матчи)",
+             "🎯 Только подтверждённый Value-shortlist",
+             "Все матчи с реальными котировками"],
             index=0,
-            key="scanner_display_mode_v3",
+            key="scanner_display_mode_v4",
         )
+        probability_mode = display_mode.startswith("⭐")
         recommendation_mode = display_mode.startswith("🎯")
         group_by_day = c3.checkbox("Группировать по дням", True,
                                     key="scanner_group_by_day")
@@ -1675,16 +1732,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         market_pool = list(all_cards)
         if recommendation_mode:
             st.caption(
-                "«Общий shortlist» показывает лучший общий исход на матч. "
-                "Вкладки 1X2, тоталов, BTTS, угловых и карточек отбирают матчи независимо "
-                "по всему пулу сканирования: состав команд в них может отличаться."
+                "Показаны только исходы, прошедшие строгую проверку Value/EV/Edge/Kelly. "
+                "Для просмотра остальных матчей переключитесь на прогнозный режим."
+            )
+        elif probability_mode:
+            st.caption(
+                "По умолчанию показываются все найденные матчи, отсортированные по вероятнейшему "
+                "исходу 1X2. Отдельные вкладки также показывают весь пул событий; отсутствие цены "
+                "или Value не скрывает прогноз и не превращает его в ставку."
+            )
+        else:
+            st.caption(
+                "Показаны матчи с доступными котировками. Для полного списка событий выберите "
+                "«Вероятные исходы (все матчи)»."
             )
 
         if sort_mode.startswith("По дате"):
             cards_view.sort(key=lambda c: parse_card_date(c))
         elif sort_mode.startswith("По вероятности"):
             cards_view.sort(
-                key=lambda c: -(c.get("verdict", {}).get("prob") or 0))
+                key=lambda c: -(model_favorite(c) or {}).get("probability", 0.0))
         elif sort_mode.startswith("По EV"):
             cards_view.sort(
                 key=lambda c: -(c.get("verdict", {}).get("ev") or -1))
@@ -1770,10 +1837,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if sort_mode.startswith("По дате"):
                     return (0 if recommendation else 1, parse_card_date(card))
                 if sort_mode.startswith("По вероятности"):
-                    return (
-                        0 if recommendation else 1,
-                        -float(result.get("prob") or 0.0),
+                    # In forecast view, sort every family by the fixture's most
+                    # likely 1X2 outcome; in Value mode use the validated market
+                    # probability from that family's own recommendation.
+                    probability = (
+                        float(result.get("prob") or 0.0)
+                        if recommendation else
+                        float((model_favorite(card) or {}).get("probability") or 0.0)
                     )
+                    return (0 if recommendation else 1, -probability)
                 if sort_mode.startswith("По EV"):
                     return (
                         0 if recommendation else 1,
@@ -1876,6 +1948,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         card for card in market_pool
                         if _market_recommendation(card, market_filter)
                     ]
+                elif probability_mode:
+                    # Do not hide a fixture just because its bookmaker has not
+                    # published this secondary market; keep its forecast visible.
+                    selected_cards = list(market_pool)
                 else:
                     selected_cards = [
                         card for card in market_pool if has_market_quote(card)
@@ -1886,6 +1962,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         st.info(
                             f"Нет {market_label}-сигналов, прошедших собственные критерии "
                             "вероятности, Value, исторической проверки и полного рынка одного букмекера."
+                        )
+                    elif probability_mode:
+                        st.info(
+                            f"Для найденных матчей нет рассчитанного прогноза или цены рынка {market_label}. "
+                            "Матчи с отсутствующей котировкой не удаляются из остальных разделов."
                         )
                     else:
                         st.info(
