@@ -3557,6 +3557,116 @@ def _sstats_div_code(league_name: str) -> str:
     return "G"
 
 
+def sstats_match_statistics(game_id, api_key: str, logs=None) -> Optional[dict]:
+    """Fetch final verified corners/cards from the SStats full-match endpoint.
+
+    SStats status 8 is a normal full-time result. Extra-time/penalty statuses are
+    deliberately not accepted because these pre-match total markets are settled
+    on regulation-time statistics. Missing fields stay None; they are never zero.
+    """
+    key = str(api_key or "").strip()
+    if not key or game_id in (None, ""):
+        return None
+    try:
+        game_id_text = str(int(game_id))
+    except (TypeError, ValueError):
+        game_id_text = str(game_id).strip()
+    if not game_id_text or not re.fullmatch(r"\d+", game_id_text):
+        return None
+
+    cache_key = (
+        f"sstats_match_stats_v1_{game_id_text}_"
+        f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+    )
+    cached = cache_get(cache_key, 10 * 60)
+    if isinstance(cached, dict):
+        return cached
+
+    try:
+        response = _sstats_request(
+            f"Games/{game_id_text}", key, timeout=(5, 25)
+        )
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ SStats Game/{game_id_text}: {type(exc).__name__}")
+        return None
+    if response.status_code != 200:
+        if logs is not None:
+            logs.append(
+                f"⚠️ SStats Game/{game_id_text}: HTTP {response.status_code}"
+            )
+        return None
+
+    try:
+        payload = response.json() or {}
+        data = _sstats_unwrap(payload)
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ SStats Game/{game_id_text}: {type(exc).__name__}")
+        return None
+    if not isinstance(data, dict):
+        return None
+    game = data.get("game") or {}
+    stats = data.get("statistics") or {}
+    if not isinstance(game, dict) or not isinstance(stats, dict):
+        return None
+    try:
+        status = int(game.get("status"))
+    except (TypeError, ValueError):
+        status = None
+
+    result = {
+        "game_id": game_id_text,
+        "status": status,
+        "status_name": str(game.get("statusName") or ""),
+        "finished": status == 8,
+        "corners": None,
+        "cards": None,
+        "source": "sstats",
+    }
+    if status != 8:
+        return result
+
+    def _count(field):
+        value = stats.get(field)
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = float(str(value).replace(",", "."))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or number < 0 or not number.is_integer():
+            return None
+        return int(number)
+
+    corners_home = _count("cornerKicksHome")
+    corners_away = _count("cornerKicksAway")
+    if corners_home is not None and corners_away is not None:
+        result["corners"] = corners_home + corners_away
+
+    yellow_home = _count("yellowCardsHome")
+    yellow_away = _count("yellowCardsAway")
+    red_home = _count("redCardsHome")
+    red_away = _count("redCardsAway")
+    if all(value is not None for value in (
+        yellow_home, yellow_away, red_home, red_away
+    )):
+        result["cards"] = (
+            yellow_home + yellow_away + red_home + red_away
+        )
+
+    # A completed-but-uncovered competition is cached briefly to avoid hammering
+    # the source; the next normal retry can fill fields that arrive later.
+    cache_put(cache_key, result)
+    if logs is not None:
+        logs.append(
+            f"SStats Game/{game_id_text}: FT; "
+            f"угловые={'есть' if result['corners'] is not None else 'нет'}, "
+            f"карточки={'есть' if result['cards'] is not None else 'нет'}."
+        )
+    return result
+
+
 def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
     """Fetch full prematch bookmaker markets for one SStats fixture."""
     key = str(api_key or "").strip()
