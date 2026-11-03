@@ -2377,6 +2377,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "match_time": card.get("time", ""),
                     "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "fixture_id": card.get("fixture_id"),
+                    "sstats_game_id": card.get("sstats_game_id"),
                     "market_forecast_key": card.get("market_forecast_key"),
                     "score": None,
                     "ev": ev_value,
