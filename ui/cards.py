@@ -365,6 +365,31 @@ def render_verdict_card(c: dict, thr: float) -> str:
             + bookmaker + '</div></div>'
         )
 
+    baseline = c.get("independent_features") or {}
+    baseline_html = ""
+    try:
+        baseline_values = (
+            baseline.get("simple_baseline_lambda_home"),
+            baseline.get("simple_baseline_lambda_away"),
+            baseline.get("simple_baseline_lambda_total"),
+            baseline.get("simple_baseline_over_25"),
+        )
+        if all(value is not None for value in baseline_values):
+            lh, la, total, over25 = map(float, baseline_values)
+            baseline_html = (
+                '<div style="margin-top:10px;padding:9px 12px;border-radius:10px;'
+                'background:rgba(148,163,184,.06);border:1px solid rgba(148,163,184,.16);'
+                'color:#aebbd0;font-size:.75rem;">'
+                '<b style="color:#cbd5e1;">Контрольная Poisson-база по средним дома/в гостях:</b> '
+                f'λ хозяев {lh:.2f} · λ гостей {la:.2f} · всего {total:.2f} · '
+                f'ТБ 2.5 {over25*100:.1f}%'
+                '<div style="margin-top:3px;color:#7f8da3;">'
+                'Только сверка с основной моделью, не самостоятельный сигнал ставки.'
+                '</div></div>'
+            )
+    except (TypeError, ValueError):
+        baseline_html = ""
+
     llm_opinion = c.get("llm_opinion") or ""
     llm_html = ""
     if llm_opinion:
@@ -508,6 +533,6 @@ def render_verdict_card(c: dict, thr: float) -> str:
         'font-size:.86rem;line-height:1.65;">' + reasons_html + '</ul>'
         '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
         'font-weight:700;margin-bottom:8px;letter-spacing:1.4px;">Альтернативы</div>'
-        + alt_html + context_html + grok_html + llm_html +
+        + alt_html + baseline_html + context_html + grok_html + llm_html +
         '</div></div>'
     )
