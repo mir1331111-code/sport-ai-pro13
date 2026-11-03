@@ -222,6 +222,158 @@ class IndependentAnalystTests(unittest.TestCase):
         self.assertIn("Groq не вернул корректную оценку", summary)
         self.assertNotIn("55%", summary)
 
+    def test_groq_gpt_oss_request_uses_low_reasoning_and_strict_json(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import llm.analyst as analyst
+
+        content = '''{
+          "independent_pick": "П1",
+          "probabilities": {"П1": 48, "X": 28, "П2": 24},
+          "goal_markets": null,
+          "corner_markets": null,
+          "card_markets": null,
+          "opinion": "Небольшое преимущество хозяев.",
+          "risks": "Нет подтверждённых составов.",
+          "data_quality": "medium"
+        }'''
+        response = SimpleNamespace(
+            status_code=200,
+            text=content,
+            json=lambda: {"choices": [{"message": {"content": content}}]},
+        )
+        ctx = {
+            "api_key": "unit-test-key",
+            "provider": "Groq (бесплатно, быстро)",
+            "model": "openai/gpt-oss-20b",
+            "home": "Home FC", "away": "Away FC", "league": "Test League",
+            "date": "2026-11-03", "model_pick_code": "П1",
+            "fh": "ВВПВВ", "fa": "ППВНП",
+            "independent_features": {
+                "home_scored_at_home_avg": 1.2, "home_conceded_at_home_avg": 0.8,
+                "away_scored_away_avg": 1.0, "away_conceded_away_avg": 1.3,
+                "home_home_sample": 5, "away_away_sample": 5,
+            },
+        }
+        with (
+            patch.object(analyst, "cache_get", return_value=None),
+            patch.object(analyst, "cache_put"),
+            patch.object(analyst.usage, "llm_remaining", return_value=5),
+            patch.object(analyst.usage, "llm_increment"),
+            patch.object(analyst._sess, "post", return_value=response) as post,
+        ):
+            result = analyst.analyze_match(ctx)
+
+        request = post.call_args.kwargs["json"]
+        self.assertEqual(request["max_completion_tokens"], 4096)
+        self.assertEqual(request["reasoning_effort"], "low")
+        self.assertFalse(request["include_reasoning"])
+        self.assertEqual(request["response_format"]["type"], "json_schema")
+        self.assertTrue(request["response_format"]["json_schema"]["strict"])
+        self.assertEqual(len(request["messages"]), 1)
+        self.assertIn("САМОСТОЯТЕЛЬНЫЙ ПРОГНОЗ ИИ", result)
+
+    def test_gpt_oss_retries_empty_length_completion_with_larger_budget(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import llm.analyst as analyst
+
+        raw = '''{
+          "independent_pick": "П1",
+          "probabilities": {"П1": 48, "X": 28, "П2": 24},
+          "goal_markets": null,
+          "corner_markets": null,
+          "card_markets": null,
+          "opinion": "Небольшое преимущество хозяев.",
+          "risks": "Нет подтверждённых составов.",
+          "data_quality": "medium"
+        }'''
+        empty = SimpleNamespace(
+            status_code=200,
+            text='{"choices":[{"message":{"content":null},"finish_reason":"length"}]}',
+            json=lambda: {
+                "choices": [{
+                    "message": {"role": "assistant", "content": None, "reasoning": "private reasoning"},
+                    "finish_reason": "length",
+                }],
+                "usage": {
+                    "completion_tokens": 4096,
+                    "completion_tokens_details": {"reasoning_tokens": 3900},
+                },
+            },
+        )
+        recovered = SimpleNamespace(
+            status_code=200,
+            text=raw,
+            json=lambda: {"choices": [{
+                "message": {"role": "assistant", "content": raw},
+                "finish_reason": "stop",
+            }]},
+        )
+        ctx = {
+            "api_key": "unit-test-key",
+            "provider": "Groq (бесплатно, быстро)",
+            "model": "openai/gpt-oss-20b",
+            "home": "Home FC", "away": "Away FC", "league": "Test League",
+            "date": "2026-11-03", "model_pick_code": "П1",
+            "fh": "ВВПВВ", "fa": "ППВНП",
+            "independent_features": {
+                "home_scored_at_home_avg": 1.2, "home_conceded_at_home_avg": 0.8,
+                "away_scored_away_avg": 1.0, "away_conceded_away_avg": 1.3,
+                "home_home_sample": 5, "away_away_sample": 5,
+            },
+        }
+        with (
+            patch.object(analyst, "cache_get", return_value=None),
+            patch.object(analyst, "cache_put"),
+            patch.object(analyst.usage, "llm_remaining", return_value=5),
+            patch.object(analyst.usage, "llm_increment") as increment,
+            patch.object(analyst._sess, "post", side_effect=[empty, recovered]) as post,
+        ):
+            result = analyst.analyze_match(ctx)
+
+        self.assertIsNotNone(result)
+        self.assertIn("П1 48% · X 28% · П2 24%", result)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[0].kwargs["json"]["max_completion_tokens"], 4096)
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["max_completion_tokens"], 8192)
+        self.assertEqual(increment.call_count, 2)
+        self.assertNotIn("private reasoning", result)
+
+    def test_chat_completion_extractor_reads_text_blocks_but_never_reasoning(self):
+        from llm.analyst import _extract_chat_completion
+
+        content, diagnostics = _extract_chat_completion({
+            "choices": [{
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "{\\"probabilities\\": {}"},
+                        {"type": "text", "text": "}"},
+                    ],
+                    "reasoning": "private chain of thought",
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {"completion_tokens": 20},
+        })
+        self.assertEqual(content, '{\\"probabilities\\": {}}')
+        self.assertEqual(diagnostics["finish_reason"], "stop")
+        self.assertNotIn("private chain", content)
+
+        empty, meta = _extract_chat_completion({
+            "choices": [{
+                "message": {"content": None, "reasoning": "must not be shown"},
+                "finish_reason": "length",
+            }],
+            "usage": {
+                "completion_tokens": 50,
+                "completion_tokens_details": {"reasoning_tokens": 50},
+            },
+        })
+        self.assertEqual(empty, "")
+        self.assertEqual(meta["reasoning_tokens"], 50)
+        self.assertNotIn("must not be shown", empty)
+
     def test_analyze_match_skips_without_minimum_venue_history(self):
         from unittest.mock import patch
         import llm.analyst as analyst
