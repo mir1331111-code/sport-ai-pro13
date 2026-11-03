@@ -2152,6 +2152,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     except (TypeError, ValueError):
                                         continue
                                 if valid_imported:
+                                    # Imported prices do not inherit bookmaker identity
+                                    # from an older SStats/Highlightly quote on the same
+                                    # pick. Without an explicit book in the import, the
+                                    # two-way line must stay informational.
+                                    for imported_pick in valid_imported:
+                                        bookmaker_by_pick.pop(imported_pick, None)
                                     if all(key in valid_imported for key in ("П1", "X", "П2")):
                                         market_odds = {key: valid_imported[key] for key in ("П1", "X", "П2")}
                                         odds_source = str(quote.get("source") or "manual_import")
