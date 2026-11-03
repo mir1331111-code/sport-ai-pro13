@@ -3557,6 +3557,76 @@ def _sstats_div_code(league_name: str) -> str:
     return "G"
 
 
+def sstats_find_match_id(
+    date_iso: str, home_team: str, away_team: str, api_key: str,
+    logs=None,
+) -> Optional[int]:
+    """Resolve legacy portfolio entries only when date and ordered teams match uniquely."""
+    key = str(api_key or "").strip()
+    date_text = str(date_iso or "")[:10]
+    try:
+        datetime.strptime(date_text, "%Y-%m-%d")
+    except ValueError:
+        return None
+    home_key, away_key = _norm_name(home_team), _norm_name(away_team)
+    if not key or not home_key or not away_key:
+        return None
+    cache_key = (
+        f"sstats_match_id_v1_{date_text}_{home_key}_{away_key}_"
+        f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+    )
+    cached = cache_get(cache_key, 6 * 60 * 60)
+    if cached is not None:
+        try:
+            return int(cached) if cached else None
+        except (TypeError, ValueError):
+            return None
+    _now, timezone_offset = _sstats_timezone()
+    try:
+        response = _sstats_request(
+            "Games/list", key,
+            params={
+                "Date": date_text, "Ended": "true", "Limit": 1000,
+                "Offset": 0, "TimeZone": timezone_offset,
+            },
+            timeout=(5, 25),
+        )
+        if response.status_code != 200:
+            if logs is not None:
+                logs.append(f"⚠️ SStats match lookup: HTTP {response.status_code}")
+            return None
+        records = _sstats_unwrap(response.json() or {})
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ SStats match lookup: {type(exc).__name__}")
+        return None
+    if not isinstance(records, list):
+        return None
+    matches = []
+    for game in records:
+        if not isinstance(game, dict):
+            continue
+        game_date = str(game.get("date") or "")[:10]
+        h = game.get("homeTeam") or {}
+        a = game.get("awayTeam") or {}
+        if not isinstance(h, dict) or not isinstance(a, dict):
+            continue
+        if (
+            game_date == date_text
+            and _norm_name(str(h.get("name") or game.get("homeTeamName") or "")) == home_key
+            and _norm_name(str(a.get("name") or game.get("awayTeamName") or "")) == away_key
+            and game.get("id") not in (None, "")
+        ):
+            try:
+                matches.append(int(game["id"]))
+            except (TypeError, ValueError):
+                continue
+    # Multiple same-team fixtures on the same date are ambiguous, so do not guess.
+    resolved = matches[0] if len(set(matches)) == 1 else None
+    cache_put(cache_key, resolved)
+    return resolved
+
+
 def sstats_match_statistics(game_id, api_key: str, logs=None) -> Optional[dict]:
     """Fetch final verified corners/cards from the SStats full-match endpoint.
 
