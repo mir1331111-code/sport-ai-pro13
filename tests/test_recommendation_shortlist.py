@@ -20,30 +20,57 @@ def valid_card():
 
 
 class RecommendationShortlistTests(unittest.TestCase):
-    def test_independent_market_recommendations_can_appear_in_shortlist(self):
-        winner = valid_card()
+    def test_shortlist_contains_only_markets_with_full_portfolio_validation(self):
+        winner = {
+            "best": ("1X2", "П1", 2.20, 0.12, 0.60, 10.0),
+            "verdict": {"real_odds": True, "value_passed": True, "is_bet": True, "edge": 0.08},
+            "score": 0.16,
+        }
+        btts = {
+            "best": ("BTTS", "BTTS Да", 2.10, 0.25, 0.70, 9.0),
+            "verdict": {"real_odds": True, "value_passed": True, "is_bet": True, "edge": 0.20},
+            "score": 0.30,
+        }
+        corners = {
+            "best": ("STAT", "Угл ТБ 9.5", 2.10, 0.25, 0.70, 9.0),
+            "verdict": {"real_odds": True, "value_passed": True, "is_bet": True, "edge": 0.20},
+            "score": 0.30,
+        }
+        card = {
+            "best_by_market": {"winner": winner, "btts": btts, "corners": corners},
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book A", "П2": "Book A",
+                                  "BTTS Да": "Book B", "BTTS Нет": "Book B",
+                                  "Угл ТБ 9.5": "Book C", "Угл ТМ 9.5": "Book C"},
+            "market_odds": {"П1": 2.20, "X": 3.50, "П2": 3.30},
+        }
+        result = _qualified_bet_cards([card])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["best"][1], "П1")
 
-        total = valid_card()
-        total["best"] = ("OU", "ТБ 2.5", 2.10, 0.12, 0.54, 10.0)
-        total["bookmaker_by_pick"] = {"ТБ 2.5": "Book B"}
+        # A fixture with only a statistical forecast must not be called
+        # portfolio-ready, even though its own market tab may show the signal.
+        stat_only = {
+            "best_by_market": {"corners": corners},
+            "bookmaker_by_pick": card["bookmaker_by_pick"],
+        }
+        self.assertEqual(_qualified_bet_cards([stat_only]), [])
 
-        corners = valid_card()
-        corners["best"] = ("STAT", "Угл ТБ 9.5", 2.10, 0.12, 0.54, 10.0)
-        corners["bookmaker_by_pick"] = {"Угл ТБ 9.5": "Book C"}
+    def test_total_shortlist_requires_exact_25_line_and_bookmaker_benchmark(self):
+        total = {
+            "best": ("OU", "ТБ 2.5", 2.10, 0.15, 0.62, 9.0),
+            "verdict": {"real_odds": True, "value_passed": True, "is_bet": True, "edge": 0.10},
+            "score": 0.18,
+        }
+        card = {
+            "best_by_market": {"goals": total},
+            "bookmaker_by_pick": {"ТБ 2.5": "Book A", "ТМ 2.5": "Book A"},
+            "total_market_odds": {"ТБ 2.5": 2.10, "ТМ 2.5": 1.80},
+            "total_market_validation": False,
+        }
+        self.assertEqual(_qualified_bet_cards([card]), [])
+        card["total_market_validation"] = True
+        self.assertEqual(_qualified_bet_cards([card])[0]["best"][1], "ТБ 2.5")
 
-        cards = valid_card()
-        cards["best"] = ("STAT", "Карты ТМ 4.5", 2.10, 0.12, 0.54, 10.0)
-        cards["bookmaker_by_pick"] = {"Карты ТМ 4.5": "Book D"}
-
-        btts = valid_card()
-        btts["best"] = ("BTTS", "BTTS Да", 2.10, 0.12, 0.54, 10.0)
-        btts["bookmaker_by_pick"] = {"BTTS Да": "Book E"}
-
-        self.assertTrue(_is_actionable_recommendation(winner))
-        self.assertEqual(
-            _qualified_bet_cards([winner, total, corners, cards, btts]),
-            [winner, total, corners, cards, btts],
-        )
 
     def test_shortlist_rejects_missing_bookmaker_value_and_kelly(self):
         eligible = valid_card()
