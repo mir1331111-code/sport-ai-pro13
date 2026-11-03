@@ -7,6 +7,45 @@ from copy import deepcopy
 from betting.verdict import refine_with_real_odds
 from betting.kelly import market_type
 from betting.market_math import proportional_devig
+from model.market_forecasts import is_half_line
+
+
+def _canonical_market_pick(pick: str) -> str:
+    """Normalize market selection labels before looking up prices/provenance.
+
+    Provider labels sometimes differ only by case or decimal formatting (for
+    example ``BTTS да`` versus ``BTTS Да``). These are the same selection; an
+    exact dictionary lookup must not silently discard an otherwise valid quote.
+    """
+    text = re.sub(r"\\s+", " ", str(pick or "").strip())
+    if text in {"П1", "X", "П2"}:
+        return text
+
+    total = re.fullmatch(r"Т([БМ])\\s+(\\d+(?:[.,]\\d+)?)", text, re.I)
+    if total:
+        line = float(total.group(2).replace(",", "."))
+        return f"Т{total.group(1).upper()} {line:g}"
+
+    btts = re.fullmatch(r"BTTS\\s+(да|yes|нет|no)", text, re.I)
+    if btts:
+        side = btts.group(1).casefold()
+        return "BTTS Да" if side in {"да", "yes"} else "BTTS Нет"
+
+    stat = re.fullmatch(r"(угл|карты)\\s+(ТБ|ТМ)\\s+(\\d+(?:[.,]\\d+)?)", text, re.I)
+    if stat:
+        prefix = "Угл" if stat.group(1).casefold() == "угл" else "Карты"
+        line = float(stat.group(3).replace(",", "."))
+        return f"{prefix} {stat.group(2).upper()} {line:g}"
+    return text
+
+
+def _canonical_market_mapping(values: dict | None) -> dict:
+    if not isinstance(values, dict):
+        return {}
+    result = {}
+    for key, value in values.items():
+        result[_canonical_market_pick(key)] = value
+    return result
 
 
 def _paired_picks(pick: str) -> tuple[str, ...] | None:
@@ -17,8 +56,10 @@ def _paired_picks(pick: str) -> tuple[str, ...] | None:
     if kind == "OU":
         match = re.fullmatch(r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", str(pick or ""), re.I)
         if match:
-            line = match.group(1).replace(",", ".")
-            return (f"ТБ {line}", f"ТМ {line}")
+            line = float(match.group(1).replace(",", "."))
+            if not is_half_line(line):
+                return None
+            return (f"ТБ {line:g}", f"ТМ {line:g}")
     elif kind == "BTTS":
         return ("BTTS Да", "BTTS Нет")
     elif kind == "STAT":
@@ -28,8 +69,10 @@ def _paired_picks(pick: str) -> tuple[str, ...] | None:
         )
         if match:
             prefix = "Угл" if match.group(1).casefold() == "угл" else "Карты"
-            line = match.group(2).replace(",", ".")
-            return (f"{prefix} ТБ {line}", f"{prefix} ТМ {line}")
+            line = float(match.group(2).replace(",", "."))
+            if not is_half_line(line):
+                return None
+            return (f"{prefix} ТБ {line:g}", f"{prefix} ТМ {line:g}")
     return None
 
 
@@ -55,14 +98,16 @@ def best_value_markets(
     if not isinstance(rows, list):
         return {}
     families = {
-        "winner": lambda pick: market_type(pick) == "1X2",
-        "goals": lambda pick: market_type(pick) == "OU",
-        "btts": lambda pick: market_type(pick) == "BTTS",
+        "winner": lambda pick: market_type(_canonical_market_pick(pick)) == "1X2",
+        "goals": lambda pick: market_type(_canonical_market_pick(pick)) == "OU",
+        "btts": lambda pick: market_type(_canonical_market_pick(pick)) == "BTTS",
         "corners": lambda pick: (
-            market_type(pick) == "STAT" and str(pick).startswith("Угл ")
+            market_type(_canonical_market_pick(pick)) == "STAT"
+            and _canonical_market_pick(pick).startswith("Угл ")
         ),
         "cards": lambda pick: (
-            market_type(pick) == "STAT" and str(pick).startswith("Карты ")
+            market_type(_canonical_market_pick(pick)) == "STAT"
+            and _canonical_market_pick(pick).startswith("Карты ")
         ),
     }
     result = {}
@@ -119,13 +164,14 @@ def best_value_market(
     if not isinstance(market_odds, dict) or not market_odds:
         return None, None
 
-    bookmaker_by_pick = bookmaker_by_pick or {}
-    market_validation_by_pick = market_validation_by_pick or {}
+    market_odds = _canonical_market_mapping(market_odds)
+    bookmaker_by_pick = _canonical_market_mapping(bookmaker_by_pick)
+    market_validation_by_pick = _canonical_market_mapping(market_validation_by_pick)
     qualified = []
     for row in rows or []:
         if not isinstance(row, dict):
             continue
-        pick = str(row.get("pick") or "")
+        pick = _canonical_market_pick(row.get("pick") or "")
         kind = market_type(pick)
         if kind not in {"1X2", "OU", "BTTS", "STAT"}:
             continue
@@ -147,6 +193,8 @@ def best_value_market(
             # Do not compare two-way prices taken from different bookmakers.
             continue
 
+        candidate_row = dict(row)
+        candidate_row["pick"] = pick
         candidate = deepcopy(verdict)
         candidate.update({
             "pick": pick,
@@ -165,7 +213,7 @@ def best_value_market(
         })
         refined, best = refine_with_real_odds(
             candidate,
-            [dict(row)],
+            [candidate_row],
             {pick: odd},
             bank,
             kelly_frac,
