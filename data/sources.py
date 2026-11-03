@@ -16,7 +16,7 @@ from __future__ import annotations
 import csv, io, re, logging, os, hashlib, math
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.robotparser import RobotFileParser
 from urllib.parse import urlparse
