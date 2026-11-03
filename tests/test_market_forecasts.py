@@ -1,6 +1,6 @@
 import unittest
 
-from model.market_forecasts import count_over_probability, goal_total_probabilities
+from model.market_forecasts import count_over_probability, goal_total_probabilities, is_half_line
 
 
 class MarketForecastTests(unittest.TestCase):
@@ -24,6 +24,12 @@ class MarketForecastTests(unittest.TestCase):
         self.assertGreater(result["over_2_5"], result["over_3_5"])
         self.assertGreater(result["btts_yes"], 0.0)
         self.assertLess(result["btts_yes"], 1.0)
+
+    def test_only_half_lines_are_supported_for_binary_betting_ev(self):
+        for line in (0.5, 1.5, 2.5, 9.5, 10.5):
+            self.assertTrue(is_half_line(line))
+        for line in (1.0, 2.0, 8.0, 9.25, 10.75, float("nan"), None):
+            self.assertFalse(is_half_line(line))
 
     def test_invalid_counts_are_rejected(self):
         self.assertIsNone(count_over_probability(0, 9.5))
