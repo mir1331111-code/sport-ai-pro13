@@ -96,7 +96,7 @@ class IndependentAnalystTests(unittest.TestCase):
             "independent_features": {
                 "home_scored_at_home_avg": 1.2, "home_conceded_at_home_avg": 0.8,
                 "away_scored_away_avg": 1.0, "away_conceded_away_avg": 1.3,
-                "home_home_sample": 2, "away_away_sample": 1,
+                "home_home_sample": 5, "away_away_sample": 5,
             },
         }
         with (
@@ -114,7 +114,26 @@ class IndependentAnalystTests(unittest.TestCase):
         self.assertNotIn("0.92", user_prompt)
         self.assertNotIn("П1", user_prompt)
         self.assertIn("РАСХОЖДЕНИЕ", result)
-        self.assertIn("Качество исходных данных: низкое", result)
+        self.assertIn("Качество исходных данных: среднее", result)
+
+    def test_analyze_match_skips_without_minimum_venue_history(self):
+        from unittest.mock import patch
+        import llm.analyst as analyst
+
+        ctx = {
+            "api_key": "unit-test-key",
+            "independent_features": {
+                "home_scored_at_home_avg": 1.2,
+                "home_conceded_at_home_avg": 0.8,
+                "away_scored_away_avg": 1.0,
+                "away_conceded_away_avg": 1.3,
+                "home_home_sample": 4,
+                "away_away_sample": 8,
+            },
+        }
+        with patch.object(analyst._sess, "post") as post:
+            self.assertIsNone(analyst.analyze_match(ctx))
+        post.assert_not_called()
 
 
 if __name__ == "__main__":
