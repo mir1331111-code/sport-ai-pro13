@@ -572,7 +572,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
         # exhausted by reasoning before the model emitted its JSON content.
         messages = [{
             "role": "user",
-            "content": f"{LLM_SYSTEM_PROMPT}\\n\\n{user_msg}",
+            "content": f"{LLM_SYSTEM_PROMPT}\n\n{user_msg}",
         }]
     else:
         messages = [
