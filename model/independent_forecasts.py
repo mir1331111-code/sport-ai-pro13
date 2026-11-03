@@ -13,7 +13,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
-from model.forecast_ledger import ForecastLedger, OUTCOMES
+from model.forecast_ledger import ForecastLedger, MarketForecastLedger, OUTCOMES
 
 
 def _mean(values: list[Any]) -> float | None:
@@ -37,14 +37,26 @@ def historical_features(engine: Any, home: str, away: str, limit: int = 8) -> di
     hc = list(home_stats.get("hc") or [])[-limit:]
     ass = list(away_stats.get("as") or [])[-limit:]
     ac = list(away_stats.get("ac") or [])[-limit:]
+    home_scored, home_conceded = _mean(hs), _mean(hc)
+    away_scored, away_conceded = _mean(ass), _mean(ac)
+    lambda_home = (home_scored + away_conceded) / 2 if home_scored is not None and away_conceded is not None else None
+    lambda_away = (away_scored + home_conceded) / 2 if away_scored is not None and home_conceded is not None else None
+    lambda_total = lambda_home + lambda_away if lambda_home is not None and lambda_away is not None else None
+    over_25 = None
+    if lambda_total is not None and math.isfinite(lambda_total) and lambda_total >= 0:
+        over_25 = 1 - math.exp(-lambda_total) * (1 + lambda_total + lambda_total**2 / 2)
     return {
-        "home_scored_at_home_avg": _mean(hs),
-        "home_conceded_at_home_avg": _mean(hc),
-        "away_scored_away_avg": _mean(ass),
-        "away_conceded_away_avg": _mean(ac),
+        "home_scored_at_home_avg": home_scored,
+        "home_conceded_at_home_avg": home_conceded,
+        "away_scored_away_avg": away_scored,
+        "away_conceded_away_avg": away_conceded,
         "home_home_sample": min(len(hs), len(hc)),
         "away_away_sample": min(len(ass), len(ac)),
         "sample_limit": limit,
+        "simple_baseline_lambda_home": lambda_home,
+        "simple_baseline_lambda_away": lambda_away,
+        "simple_baseline_lambda_total": lambda_total,
+        "simple_baseline_over_25": over_25,
     }
 
 
@@ -166,10 +178,12 @@ def record_scan_forecasts(
     now: datetime | None = None,
 ) -> dict[str, int]:
     """Save one immutable pre-kickoff forecast per fixture/model; repeated scans are safe."""
-    stats = {"main_recorded": 0, "ai_recorded": 0, "skipped_no_time": 0,
-             "skipped_started": 0, "invalid": 0}
+    stats = {"main_recorded": 0, "ai_recorded": 0, "market_recorded": 0,
+             "skipped_no_time": 0, "skipped_started": 0, "invalid": 0}
     ledger = ForecastLedger(db_path)
+    market_ledger = MarketForecastLedger(db_path)
     existing = {str(row["forecast_key"]) for row in ledger.rows()}
+    existing_market = {str(row["forecast_key"]) for row in market_ledger.rows()}
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
@@ -231,6 +245,27 @@ def record_scan_forecasts(
                     stats["ai_recorded"] += 1
                 except (ValueError, TypeError):
                     stats["invalid"] += 1
+
+        best = card.get("best")
+        if isinstance(best, (tuple, list)) and len(best) >= 5:
+            try:
+                market, selection = str(best[0]).upper().strip(), str(best[1]).strip()
+                price, probability = float(best[2]), float(best[4])
+                key = f"{fixture_id}|{main_version}|{market}|{selection}"
+                card["market_forecast_key"] = key
+                if key not in existing_market:
+                    market_ledger.record_recommendation(
+                        forecast_key=key, fixture_id=fixture_id, home_team=home,
+                        away_team=away, league=league, model_version=main_version,
+                        market=market, selection=selection, probability=probability,
+                        entry_odds=price, forecast_at=now, kickoff_at=kickoff,
+                        odds_source=str(card.get("best_odds_source") or card.get("odds_source") or "") or None,
+                        unit_stake=1.0,
+                    )
+                    existing_market.add(key)
+                    stats["market_recorded"] += 1
+            except (ValueError, TypeError, IndexError):
+                stats["invalid"] += 1
     return stats
 
 
@@ -299,7 +334,64 @@ def settle_due_forecasts(
                     settled += 1
         except Exception:
             errors += 1
-    return {"fixtures_checked": looked_up, "forecasts_settled": settled, "errors": errors}
+    market_ledger = MarketForecastLedger(db_path)
+    market_groups: dict[str, list[dict]] = defaultdict(list)
+    for row in market_ledger.rows():
+        if row.get("result_status") is not None or not row.get("kickoff_at"):
+            continue
+        # A match score cannot settle corners or cards.
+        if str(row.get("market") or "").upper() == "STAT":
+            continue
+        try:
+            kickoff = datetime.fromisoformat(str(row["kickoff_at"]).replace("Z", "+00:00"))
+            if kickoff.tzinfo is None or kickoff.astimezone(timezone.utc) > now_utc:
+                continue
+            fixture_id = str(row.get("fixture_id") or "")
+            parts = fixture_id.split(":", 2)
+            if len(parts) < 3 or parts[0] != "ind":
+                continue
+            age = (local_today - datetime.strptime(parts[1], "%Y-%m-%d").date()).days
+            if 0 <= age <= max_age_days:
+                market_groups[fixture_id].append(row)
+        except (ValueError, TypeError):
+            continue
+
+    market_checked = market_settled = 0
+    if market_groups:
+        from data.scores import find_match_score
+        from betting.settlement import determine_outcome
+    for fixture_id, rows in sorted(
+        market_groups.items(),
+        key=lambda pair: max(str(row.get("kickoff_at") or "") for row in pair[1]),
+        reverse=True,
+    )[:max(0, int(max_fixtures))]:
+        sample = rows[0]
+        market_checked += 1
+        try:
+            score = find_match_score(
+                str(sample["home_team"]), str(sample["away_team"]), fixture_id.split(":", 2)[1],
+            )
+            if not score or str(score.get("status") or "").upper() != "FT":
+                continue
+            hg, ag = int(score["home"]), int(score["away"])
+            for row in rows:
+                outcome, _reason = determine_outcome(
+                    str(row["market"]), str(row["selection"]), hg, ag
+                )
+                if outcome is not None:
+                    market_ledger.settle(
+                        str(row["forecast_key"]), outcome, result_score=f"{hg}:{ag}",
+                        settlement_source=str(score.get("source") or "verified_ft_score"),
+                        settled_at=now_utc,
+                    )
+                    market_settled += 1
+        except Exception:
+            errors += 1
+    return {
+        "fixtures_checked": looked_up, "forecasts_settled": settled,
+        "market_fixtures_checked": market_checked,
+        "market_forecasts_settled": market_settled, "errors": errors,
+    }
 
 
 def _metrics(rows: list[dict]) -> dict[str, Any]:
