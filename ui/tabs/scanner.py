@@ -818,7 +818,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     elif selected_market_type == "OU":
         # Validate the exact goal-total line, not whichever line happened to
         # make the fixture's global shortlist.
-        line_match = re.fullmatch(r"Т[БМ]\\s+(\\d+(?:[.,]\\d+)?)", str(pick), re.I)
+        line_match = re.fullmatch(r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", str(pick), re.I)
         line_key = (
             f"{float(line_match.group(1).replace(',', '.')):g}"
             if line_match else ""
@@ -854,7 +854,7 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         )
     elif selected_market_type == "STAT":
         stat_match = re.fullmatch(
-            r"(Угл|Карты)\\s+Т[БМ]\\s+(\\d+(?:[.,]\\d+)?)",
+            r"(Угл|Карты)\s+Т[БМ]\s+(\d+(?:[.,]\d+)?)",
             str(pick), re.I,
         )
         if stat_match:
@@ -1012,7 +1012,9 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                     "date_iso": c.get("date_iso"),
                     "match_time": c.get("time", ""),
                     "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "fixture_id": c.get("fixture_id"), "score": None, "ev": ev,
+                    "fixture_id": c.get("fixture_id"),
+                    "sstats_game_id": c.get("sstats_game_id"),
+                    "score": None, "ev": ev,
                 }
                 D2["bets"] = list(D.get("bets") or []) + [new_bet]
                 D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - stake)
@@ -1444,8 +1446,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             key="scanner_sort")
         display_mode = c2.selectbox(
             "Что показывать",
-            ["🎯 Только подтверждённые ставки",
-             "Все матчи и котировки (справочно)"],
+            ["🎯 Общий shortlist по лучшему исходу",
+             "Все матчи и котировки"],
             index=0,
             key="scanner_display_mode_v2",
         )
