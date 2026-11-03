@@ -7,6 +7,7 @@ import streamlit as st
 from storage import sqlite_store as db
 from config import DB_FILE
 from model.independent_forecasts import comparison_report, settle_due_forecasts
+from model.forecast_ledger import MarketForecastLedger
 
 
 def _sharpe(returns: list, periods_per_year: int = 252) -> float:
@@ -307,6 +308,41 @@ def _render_independent_ai():
         )
 
 
+def _render_market_audit():
+    st.subheader("📚 Аудит рекомендаций по рынкам")
+    st.caption(
+        "Одна лучшая pre-match рекомендация на матч. ROI рассчитан на фиксированную "
+        "единичную ставку и не является доходностью фактического банка."
+    )
+    report = MarketForecastLedger(DB_FILE).metrics()
+    overall = report["overall"]
+    if not overall["n"]:
+        st.info("Пока нет рекомендаций, прошедших проверку цены и рынка.")
+        return
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Рекомендаций", overall["n"])
+    c2.metric("Закрыто", overall["settled"])
+    c3.metric("ROI · 1 ед.", "—" if overall["roi"] is None else f"{overall['roi']*100:+.2f}%")
+    c4.metric("CLV", "—" if overall["mean_clv"] is None else f"{overall['mean_clv']*100:+.2f}%")
+    rows = []
+    for item in report["by_market"]:
+        rows.append({
+            "Рынок": item["market"], "Всего": item["n"], "Закрыто": item["settled"],
+            "Победы / поражения": f"{item['wins']} / {item['losses']}",
+            "Win rate": "—" if item["win_rate"] is None else f"{item['win_rate']*100:.1f}%",
+            "Средний кэф": "—" if item["avg_odds"] is None else f"{item['avg_odds']:.2f}",
+            "ROI · 1 ед.": "—" if item["roi"] is None else f"{item['roi']*100:+.2f}%",
+            "CLV": "—" if item["mean_clv"] is None else f"{item['mean_clv']*100:+.2f}%",
+            "Brier": "—" if item["brier"] is None else f"{item['brier']:.4f}",
+        })
+    st.dataframe(rows, width="stretch", hide_index=True)
+    if overall["pending"]:
+        st.caption(
+            f"Ожидают результата: {overall['pending']}. Угловые и карточки закрываются "
+            "только после ввода фактической статистики в портфеле."
+        )
+
+
 def render():
     D = st.session_state.data
     st.header("📈 Статистика")
@@ -320,6 +356,7 @@ def render():
         _render_by_day(D)
     with tab4:
         _render_by_market(D)
+        _render_market_audit()
     with tab5:
         _render_independent_ai()
 
