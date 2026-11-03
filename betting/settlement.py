@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime, time, timedelta
 from typing import Literal, Optional
 
 Outcome = Literal["won", "lost", "push", "void"]
@@ -20,6 +21,89 @@ _AH_RE = re.compile(r"Ф([12])\(([-+]?\d+(?:[.,]\d+)?)\)")
 _OU_RE = re.compile(r"^(?:Т([БМ])|(Over|Under|O|U))\s*(\d+(?:[.,]\d+)?)$", re.I)
 _1X2 = {"П1": "П1", "1": "П1", "П2": "П2", "2": "П2", "X": "X"}
 _DC = {"1X", "X2", "12"}
+
+
+def settlement_not_before(
+    match_date,
+    match_time=None,
+    *,
+    grace: timedelta = timedelta(hours=2, minutes=15),
+) -> Optional[datetime]:
+    """Return the earliest safe result-lookup time for a scheduled fixture.
+
+    If a kickoff time is available, wait for the configured grace period after
+    it. If the time is missing, wait until 02:15 on the following calendar day
+    (with the supplied grace added) rather than treating midnight as kickoff.
+    Returns None only when the fixture date itself cannot be parsed.
+    """
+    date_part = None
+    kickoff = None
+
+    if isinstance(match_date, datetime):
+        kickoff = match_date
+        date_part = match_date.date()
+    elif isinstance(match_date, date):
+        date_part = match_date
+    else:
+        raw_date = str(match_date or "").strip()
+        if not raw_date:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+            date_part = parsed.date()
+            if parsed.time() != time.min:
+                kickoff = parsed
+        except ValueError:
+            for fmt in (
+                "%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y",
+                "%d-%m-%Y", "%d/%m/%y",
+            ):
+                try:
+                    date_part = datetime.strptime(raw_date[:10], fmt).date()
+                    break
+                except ValueError:
+                    continue
+            if date_part is None:
+                return None
+
+    if kickoff is None:
+        raw_time = str(match_time or "").strip()
+        if raw_time:
+            try:
+                # Also accept a full ISO datetime in the time field.
+                if "T" in raw_time or " " in raw_time:
+                    kickoff = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                else:
+                    parsed_time = time.fromisoformat(raw_time)
+                    kickoff = datetime.combine(date_part, parsed_time)
+            except ValueError:
+                kickoff = None
+
+    if kickoff is not None:
+        if kickoff.tzinfo is not None:
+            kickoff = kickoff.astimezone().replace(tzinfo=None)
+        return kickoff + grace
+
+    # A date without a kickoff clock is not evidence that a match started at
+    # midnight. Delay lookup until the next day plus the normal FT grace.
+    return datetime.combine(date_part, time.min) + timedelta(days=1) + grace
+
+
+def settlement_ready(
+    match_date,
+    match_time=None,
+    *,
+    now: Optional[datetime] = None,
+    grace: timedelta = timedelta(hours=2, minutes=15),
+) -> Optional[bool]:
+    """Whether a fixture is old enough for a final-score provider lookup."""
+    not_before = settlement_not_before(match_date, match_time, grace=grace)
+    if not_before is None:
+        return None
+    current = now or datetime.now()
+    if current.tzinfo is not None:
+        current = current.astimezone().replace(tzinfo=None)
+    return current >= not_before
 
 
 def _norm_pick(p: Optional[str]) -> str:
