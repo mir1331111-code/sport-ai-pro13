@@ -221,7 +221,8 @@ class SStatsMarketParserTests(unittest.TestCase):
             }],
         }])
         self.assertEqual(parsed["total_market_odds"]["ТБ 3.5"], 2.05)
-        self.assertEqual(parsed["total_market_book_count"]["ТБ 3.5"], 1)
+        # A one-sided total quote has no complete same-book pair.
+        self.assertEqual(parsed["total_market_book_count"]["ТБ 3.5"], 0)
         self.assertFalse(parsed["total_market_confirmed"]["ТБ 3.5"])
 
     def test_allows_explicit_full_time_result_alias(self):
