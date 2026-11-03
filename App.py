@@ -20,7 +20,7 @@ import os
 import json
 import time
 import logging
-from datetime import datetime, timedelta
+from datetime import date as dt_date, datetime, time as dt_time, timedelta, timezone
 
 import streamlit as st
 
@@ -44,14 +44,131 @@ from data.sources import (
     footballapi_xg_connection_check,
 )  # noqa: E402
 from betting.settlement import (  # noqa: E402
-    determine_outcome, determine_stat_outcome, settlement_ready,
+    determine_outcome, determine_stat_outcome,
 )
+
+
+def _settlement_ready_compat(
+    match_date, match_time=None, *, kickoff_at=None, now=None,
+    grace=timedelta(hours=2, minutes=15),
+):
+    """Conservative compatibility gate for deployments with an older settlement.py."""
+    def _absolute_utc(value):
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            raw = str(value or "").strip()
+            if not raw:
+                return None
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+
+    absolute = _absolute_utc(kickoff_at) or _absolute_utc(match_date)
+    if absolute is not None:
+        not_before = absolute + grace
+    else:
+        date_part = None
+        embedded_local_time = None
+        if isinstance(match_date, datetime):
+            date_part = match_date.date()
+            if match_date.tzinfo is None and match_date.time() != dt_time.min:
+                embedded_local_time = match_date.time()
+        elif isinstance(match_date, dt_date):
+            date_part = match_date
+        else:
+            raw_date = str(match_date or "").strip()
+            if raw_date:
+                try:
+                    parsed_date = datetime.fromisoformat(
+                        raw_date.replace("Z", "+00:00")
+                    )
+                    date_part = parsed_date.date()
+                    if parsed_date.tzinfo is None and parsed_date.time() != dt_time.min:
+                        embedded_local_time = parsed_date.time()
+                except ValueError:
+                    for fmt in (
+                        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+                        "%d/%m/%Y %H:%M", "%Y-%m-%d", "%d.%m.%Y",
+                        "%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y",
+                    ):
+                        try:
+                            parsed_date = datetime.strptime(raw_date[:19], fmt)
+                            date_part = parsed_date.date()
+                            if parsed_date.time() != dt_time.min:
+                                embedded_local_time = parsed_date.time()
+                            break
+                        except ValueError:
+                            continue
+        if date_part is None:
+            return None
+
+        raw_time = str(match_time or "").strip()
+        if not raw_time and embedded_local_time is not None:
+            raw_time = embedded_local_time.isoformat()
+        if raw_time:
+            try:
+                if "T" in raw_time or " " in raw_time:
+                    parsed_time = datetime.fromisoformat(
+                        raw_time.replace("Z", "+00:00")
+                    )
+                    if parsed_time.tzinfo is not None:
+                        not_before = parsed_time.astimezone(timezone.utc) + grace
+                    else:
+                        local_kickoff = parsed_time
+                        not_before = (
+                            local_kickoff.replace(tzinfo=timezone.utc)
+                            + timedelta(hours=12) + grace
+                        )
+                else:
+                    parsed_clock = dt_time.fromisoformat(
+                        raw_time.replace("Z", "+00:00")
+                    )
+                    local_kickoff = datetime.combine(date_part, parsed_clock)
+                    if parsed_clock.tzinfo is not None:
+                        not_before = local_kickoff.astimezone(timezone.utc) + grace
+                    else:
+                        not_before = (
+                            local_kickoff.replace(tzinfo=timezone.utc)
+                            + timedelta(hours=12) + grace
+                        )
+            except ValueError:
+                raw_time = ""
+        if not raw_time:
+            latest_local_kickoff = datetime.combine(
+                date_part + timedelta(days=1), dt_time(11, 59),
+                tzinfo=timezone.utc,
+            )
+            not_before = latest_local_kickoff + grace
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    return current >= not_before
+
+
+try:
+    from betting.settlement import settlement_ready  # noqa: E402
+    _SETTLEMENT_READY_FALLBACK = False
+except ImportError as exc:
+    if "settlement_ready" not in str(exc):
+        raise
+    settlement_ready = _settlement_ready_compat
+    _SETTLEMENT_READY_FALLBACK = True
 from model.forecast_ledger import MarketForecastLedger  # noqa: E402
 from ui import theme  # noqa: E402
 from ui.tabs import scanner, portfolio, stats, calculator, backtest  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[APP] %(message)s")
 log = logging.getLogger("neurobet")
+if _SETTLEMENT_READY_FALLBACK:
+    log.warning("betting.settlement is older than App.py; using conservative local settlement gate")
 
 # ==================== КОНСТАНТЫ ====================
 DEFAULT_BANK = 10000.0
