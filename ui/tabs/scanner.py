@@ -25,7 +25,7 @@ from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
 from betting.kelly import kelly, market_type
 from betting.market_math import blend_probability, proportional_devig
-from llm.analyst import analyze_match
+from llm.analyst import analyze_match, has_sufficient_history
 from model.independent_forecasts import historical_features, record_scan_forecasts
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label, render_fixture_header)
@@ -1677,11 +1677,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Review fixtures with the most historical observations first, not only
         # fixtures already selected by the value model. The LLM still receives no
         # model probabilities, pick, confidence, EV, or bookmaker prices.
-        action_cards = [
+        eligible_llm_cards = [
             c for c in cards
             if isinstance(c.get("verdict"), dict)
             and c.get("lam_h") is not None and c.get("lam_a") is not None
         ]
+        action_cards = [
+            c for c in eligible_llm_cards
+            if has_sufficient_history(c.get("independent_features"))
+        ]
+        skipped_low_history = len(eligible_llm_cards) - len(action_cards)
         # Deterministic hash sampling spreads the limited LLM budget across fixtures
         # without prioritizing the main model's favourite pick, confidence, or odds value.
         action_cards.sort(key=lambda c: hashlib.sha256(
@@ -1693,6 +1698,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"🤖 LLM подготовка: key={'есть' if llm_key else 'НЕТ'} | "
             f"provider={llm_prov} | "
             f"analysis_cards={len(action_cards)} | "
+            f"skipped_low_history={skipped_low_history} | "
             f"remaining={usage.llm_remaining()}")
 
         if llm_key and usage.llm_remaining() > 0 and action_cards:
@@ -1742,7 +1748,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         elif not llm_key:
             logs.append("🤖 LLM: ключ не задан")
         elif not action_cards:
-            logs.append("🤖 LLM: нет матчей с данными для независимого анализа")
+            logs.append(
+                "🤖 LLM: независимые вероятности не рассчитаны — "
+                f"недостаточно фактической истории (пропущено {skipped_low_history} матчей; "
+                "нужно минимум 5 домашних матчей хозяев и 5 выездных матчей гостей)."
+            )
 
         # Persist both forecasters before the fixture starts. The ledger keeps the
         # first prediction immutable, making repeated scans idempotent and auditable.
