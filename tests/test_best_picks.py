@@ -1,6 +1,9 @@
 import unittest
 
-from betting.best_picks import best_value_market, best_value_markets, _paired_picks
+from betting.best_picks import (
+    best_value_market, best_value_markets, _paired_picks,
+    _canonical_market_pick,
+)
 from betting.kelly import market_type
 
 
@@ -56,6 +59,39 @@ class BestValueMarketTests(unittest.TestCase):
         self.assertEqual(_paired_picks("BTTS Да"), ("BTTS Да", "BTTS Нет"))
         self.assertEqual(_paired_picks("Угл ТБ 9.5"), ("Угл ТБ 9.5", "Угл ТМ 9.5"))
         self.assertEqual(_paired_picks("Карты ТМ 4.5"), ("Карты ТБ 4.5", "Карты ТМ 4.5"))
+
+    def test_canonicalizes_case_and_decimal_market_aliases(self):
+        self.assertEqual(_canonical_market_pick("BTTS да"), "BTTS Да")
+        self.assertEqual(_canonical_market_pick("btts NO"), "BTTS Нет")
+        self.assertEqual(_canonical_market_pick("ТБ 2,50"), "ТБ 2.5")
+        self.assertEqual(_canonical_market_pick("угл тм 9,50"), "Угл ТМ 9.5")
+
+    def test_btts_lowercase_forecast_finds_canonical_price_and_validation(self):
+        rows = [{"pick": "BTTS да", "label": "Обе забьют — да", "prob": 0.75}]
+        odds = {"BTTS Да": 1.95, "BTTS Нет": 1.95}
+        books = {"BTTS Да": "Book A", "BTTS Нет": "Book A"}
+        chosen, best = best_value_market(
+            _verdict(), rows, odds, bank=1000, kelly_frac=0.25,
+            min_prob=0.50, bookmaker_by_pick=books,
+            market_validation_by_pick={"BTTS Да": True},
+        )
+        self.assertIsNotNone(chosen)
+        self.assertEqual(best[1], "BTTS Да")
+
+    def test_integer_and_quarter_total_lines_are_not_binary_bets(self):
+        for pick, opposite in (("ТБ 2.0", "ТМ 2.0"), ("Угл ТБ 9.0", "Угл ТМ 9.0"),
+                               ("Карты ТБ 4.25", "Карты ТМ 4.25")):
+            with self.subTest(pick=pick):
+                self.assertIsNone(_paired_picks(pick))
+                chosen, best = best_value_market(
+                    _verdict(), [{"pick": pick, "prob": 0.80}],
+                    {pick: 2.20, opposite: 1.70},
+                    bank=1000, kelly_frac=0.25, min_prob=0.50,
+                    bookmaker_by_pick={pick: "Book A", opposite: "Book A"},
+                    market_validation_by_pick={pick: True},
+                )
+                self.assertIsNone(chosen)
+                self.assertIsNone(best)
 
     def test_selects_validated_total_market_with_same_bookmaker_pair(self):
         rows = [{"pick": "ТБ 2.5", "label": "Тотал больше 2.5", "prob": 0.72}]
