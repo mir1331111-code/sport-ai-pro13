@@ -283,14 +283,14 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
         try:
             totals_backtest = walk_forward_compare(
                 validation_rows, matrix_n=matrix_n, bootstrap_samples=0,
-                totals_bootstrap_samples=100,
+                totals_bootstrap_samples=1000,
             )
             update_loader(
                 "Проверка угловых и карточек (хронологический тест)",
                 0.68, logs,
             )
             stat_report = walk_forward_market_validation(
-                validation_rows, min_history=30, min_n=500, bootstrap_samples=100,
+                validation_rows, min_history=30, min_n=500, bootstrap_samples=1000,
             )
             cache_put(validation_key, {
                 "totals_backtest": totals_backtest,
@@ -1467,8 +1467,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         st.markdown(
             "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:8px 0 4px'>"
             "<div><div class='scanner-kicker'>SHORTLIST · AI MATCH DESK</div>"
-            "<h2 style='margin:0'>На что ставить</h2>"
-            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>Лучшие прошедшие отбор рынки: 1X2, тоталы, BTTS, угловые и карточки. Показываем только проверенные модели и реальные линии.</div></div>"
+            "<h2 style='margin:0'>Лучшие подтверждённые варианты</h2>"
+            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>В shortlist попадают только 1X2 с полной линией одного букмекера и тотал голов 2.5 при отдельной успешной проверке против рынка. BTTS, угловые и карточки показываются как независимые прогнозные сигналы, а не как доказанное преимущество над букмекером.</div></div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1703,6 +1703,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
         goal_cards = _sort_market_cards(goal_cards, "goals")
         with market_tabs[0]:
+            st.caption(
+                "Тоталы ранжируются независимо по всем матчам. Проверка конкретной линии "
+                "против исторической средней лиги оценивает прогноз модели, но сама по себе "
+                "не доказывает преимущество над букмекером. Для портфеля отдельно проверяется "
+                "только полный матч ТБ/ТМ 2.5 против букмекерского рынка."
+            )
             if not goal_cards:
                 st.info(
                     "В этом скане нет тоталов, прошедших собственную проверку, "
@@ -1754,6 +1760,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         ]
         for tab_index, market_filter, odds_field, market_label in market_specs:
             with market_tabs[tab_index]:
+                if market_filter == "btts":
+                    st.caption(
+                        "BTTS оценивается отдельно от победы и тоталов. Исторический фильтр "
+                        "сравнивает прогноз с предыдущей средней лиги; он не подтверждает "
+                        "положительный EV против букмекерского рынка. Рынок остаётся прогнозным."
+                    )
+                elif market_filter in {"corners", "cards"}:
+                    st.caption(
+                        "Этот рынок рассчитывается и ранжируется независимо. Исторический "
+                        "walk-forward сравнивает модель с предыдущей средней лиги, а не доказывает "
+                        "прибыльность ставки против букмекера. Поэтому угловые и карточки не "
+                        "добавляются в виртуальный портфель автоматически."
+                    )
                 def has_market_quote(card):
                     quotes = card.get(odds_field) or {}
                     if market_filter == "corners":
@@ -2420,12 +2439,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 matches_with_best += 1
                 funnel_counts["bet"] += 1
                 logs.append(
-                    f"✅ BET: {h_ru} — {a_ru} | {best[1]} @ {best[2]:.2f} "
+                    f"✅ MARKET SIGNAL: {h_ru} — {a_ru} | {best[1]} @ {best[2]:.2f} "
                     f"({best[0]} · {best_odds_source})"
                 )
             else:
                 no_best_reason = (
-                    "ни один доступный исход не прошёл историческую проверку, "
+                    "ни один доступный исход не прошёл проверку модели для конкретной линии, "
                     "полную линию одного букмекера, вероятность, Edge >= 5%, "
                     "EV >= 5% и положительный Kelly"
                 )
