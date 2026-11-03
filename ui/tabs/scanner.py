@@ -1058,14 +1058,20 @@ def _render_manual_odds_block(
                 st.caption(f"Расчётный размер виртуальной ставки: {stake:.2f} у.е.")
 
         passed = (
-            market_is_validated
+            rec_verdict is not None
+            and market_is_validated
             and prob >= max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB)
             and edge >= min_edge
             and ev >= min_ev
             and stake > 0
         )
-        if not market_is_validated:
-            col_btn.info("Автодобавление отключено: для этого рынка не пройдена историческая проверка или он не поддерживается.")
+        if rec_verdict is None:
+            col_btn.info(
+                "Справочная котировка: исход не прошёл независимый отбор этого рынка. "
+                "Добавление в портфель отключено."
+            )
+        elif not market_is_validated:
+            col_btn.info("Автодобавление отключено: для этого рынка не пройдена историческая проверка или не подтверждена полная линия одного букмекера.")
         elif passed:
             existing = any(
                 f"{b.get('match', '')}|{b.get('pick', '')}" == f"{c['match']}|{pick}"
@@ -1615,6 +1621,29 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         def _market_recommendation(card, family):
             return (card.get("best_by_market") or {}).get(family)
 
+        def _global_market_recommendation(card):
+            best = card.get("best")
+            if not isinstance(best, (tuple, list)) or len(best) < 2:
+                return None
+            pick = str(best[1])
+            kind = market_type(pick)
+            family = (
+                "winner" if kind == "1X2"
+                else "goals" if kind == "OU"
+                else "btts" if kind == "BTTS"
+                else "corners" if kind == "STAT" and pick.startswith("Угл ")
+                else "cards" if kind == "STAT" and pick.startswith("Карты ")
+                else None
+            )
+            recommendation = _market_recommendation(card, family) if family else None
+            candidate = (recommendation or {}).get("best")
+            return (
+                recommendation
+                if isinstance(candidate, (tuple, list)) and len(candidate) >= 2
+                and str(candidate[1]) == pick
+                else None
+            )
+
         def _sort_market_cards(cards, family):
             def _key(card):
                 recommendation = _market_recommendation(card, family)
@@ -1674,11 +1703,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     st.markdown(f"### {label} · {len(items)} матч.")
                     for card in items:
                         st.markdown(render_fixture_header(card), unsafe_allow_html=True)
-                        _render_manual_odds_block(card, D, kelly_frac, min_prob, min_edge, market_filter=None)
+                        _render_manual_odds_block(
+                            card, D, kelly_frac, min_prob, min_edge,
+                            market_filter=None,
+                            market_recommendation=_global_market_recommendation(card),
+                        )
             else:
                 for card in cards_view:
                     st.markdown(render_fixture_header(card), unsafe_allow_html=True)
-                    _render_manual_odds_block(card, D, kelly_frac, min_prob, min_edge, market_filter=None)
+                    _render_manual_odds_block(
+                            card, D, kelly_frac, min_prob, min_edge,
+                            market_filter=None,
+                            market_recommendation=_global_market_recommendation(card),
+                        )
 
         market_specs = [
             (2, "winner", "market_odds", "1X2"),
@@ -2199,6 +2236,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 line_text = match.group(2).replace(",", ".")
                 line = float(line_text)
                 if not bool(total_validation.get(line_text)):
+                    continue
+                # SStats totals need both a coherent same-book pair and quotes
+                # corroborated by at least two independent bookmakers.
+                if (
+                    str(total_odds_source or "").casefold() == "sstats"
+                    and not bool(total_market_confirmed.get(selection))
+                ):
                     continue
                 over_probability = poisson_over_probability(total_mean, line)
                 if over_probability is None:
