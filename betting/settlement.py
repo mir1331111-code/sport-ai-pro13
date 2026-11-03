@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal, Optional
 
 Outcome = Literal["won", "lost", "push", "void"]
@@ -20,6 +21,130 @@ _AH_RE = re.compile(r"Ф([12])\(([-+]?\d+(?:[.,]\d+)?)\)")
 _OU_RE = re.compile(r"^(?:Т([БМ])|(Over|Under|O|U))\s*(\d+(?:[.,]\d+)?)$", re.I)
 _1X2 = {"П1": "П1", "1": "П1", "П2": "П2", "2": "П2", "X": "X"}
 _DC = {"1X", "X2", "12"}
+
+
+def settlement_not_before(
+    match_date,
+    match_time=None,
+    *,
+    kickoff_at=None,
+    grace: timedelta = timedelta(hours=2, minutes=15),
+) -> Optional[datetime]:
+    """Return a UTC instant after which final-score lookups are safe.
+
+    Absolute ISO kickoff timestamps (with Z or an offset) are authoritative.
+    A naive local kickoff clock has no timezone, so a 12-hour upper-bound
+    offset is added before comparing it with UTC. If no clock is available,
+    the latest possible kickoff on that local calendar date is assumed.
+    This deliberately delays uncertain fixtures rather than querying scores
+    before a match can have started.
+    """
+    def _absolute_utc(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+
+    # The source's original timestamp wins over transformed local display fields.
+    absolute = _absolute_utc(kickoff_at)
+    if absolute is None:
+        absolute = _absolute_utc(match_date)
+    if absolute is not None:
+        return absolute + grace
+
+    date_part = None
+    embedded_local_time = None
+    raw_date = str(match_date or "").strip()
+    if isinstance(match_date, datetime):
+        date_part = match_date.date()
+        if match_date.tzinfo is None and match_date.time() != time.min:
+            embedded_local_time = match_date.time()
+    elif isinstance(match_date, date):
+        date_part = match_date
+    elif raw_date:
+        try:
+            parsed_date = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+            date_part = parsed_date.date()
+            if parsed_date.tzinfo is None and parsed_date.time() != time.min:
+                embedded_local_time = parsed_date.time()
+        except ValueError:
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+                "%d/%m/%Y %H:%M", "%Y-%m-%d", "%d.%m.%Y",
+                "%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y",
+            ):
+                try:
+                    parsed_date = datetime.strptime(raw_date[:19], fmt)
+                    date_part = parsed_date.date()
+                    if parsed_date.time() != time.min:
+                        embedded_local_time = parsed_date.time()
+                    break
+                except ValueError:
+                    continue
+    if date_part is None:
+        return None
+
+    # A naive clock is expressed in an unspecified provider-local timezone.
+    # UTC can be as late as local time +12h (UTC-12), so wait that margin.
+    raw_time = str(match_time or "").strip()
+    if not raw_time and embedded_local_time is not None:
+        raw_time = embedded_local_time.isoformat()
+    if raw_time:
+        try:
+            if "T" in raw_time or " " in raw_time:
+                parsed_time = datetime.fromisoformat(
+                    raw_time.replace("Z", "+00:00")
+                )
+                if parsed_time.tzinfo is not None:
+                    return parsed_time.astimezone(timezone.utc) + grace
+                local_kickoff = parsed_time
+            else:
+                local_kickoff = datetime.combine(
+                    date_part, time.fromisoformat(raw_time)
+                )
+            return (
+                local_kickoff.replace(tzinfo=timezone.utc)
+                + timedelta(hours=12)
+                + grace
+            )
+        except ValueError:
+            pass
+
+    # No clock: assume a kickoff at 23:59 in the latest possible timezone.
+    # This is intentionally conservative; unknown-time legacy bets may settle
+    # later, but they will not trigger score lookups before a possible kickoff.
+    latest_local_kickoff = datetime.combine(
+        date_part + timedelta(days=1), time(11, 59), tzinfo=timezone.utc
+    )
+    return latest_local_kickoff + grace
+
+
+def settlement_ready(
+    match_date,
+    match_time=None,
+    *,
+    kickoff_at=None,
+    now: Optional[datetime] = None,
+    grace: timedelta = timedelta(hours=2, minutes=15),
+) -> Optional[bool]:
+    """Whether a fixture is old enough for a final-score provider lookup."""
+    not_before = settlement_not_before(
+        match_date, match_time, kickoff_at=kickoff_at, grace=grace
+    )
+    if not_before is None:
+        return None
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    return current >= not_before
 
 
 def _norm_pick(p: Optional[str]) -> str:

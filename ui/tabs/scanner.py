@@ -2565,6 +2565,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "market_odds_source_by_pick": dict(market_source_by_pick),
                 "date_iso": d.strftime("%Y-%m-%d"),
                 "time": r.get("Time") or "",
+                "kickoff_utc": r.get("kickoff_utc") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 # LLM receives observed venue-specific goal averages, not the primary model's lambdas.
                 "independent_features": {
@@ -2785,6 +2786,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": card.get("date_iso"),
                     "match_time": card.get("time", ""),
+                    "kickoff_utc": card.get("kickoff_utc") or None,
                     "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "fixture_id": card.get("fixture_id"),
                     "sstats_game_id": card.get("sstats_game_id"),

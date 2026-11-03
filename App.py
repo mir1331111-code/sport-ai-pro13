@@ -43,7 +43,9 @@ from data.sources import (
     sstats_account_check, sstats_match_statistics, sstats_find_match_id,
     footballapi_xg_connection_check,
 )  # noqa: E402
-from betting.settlement import determine_outcome, determine_stat_outcome  # noqa: E402
+from betting.settlement import (  # noqa: E402
+    determine_outcome, determine_stat_outcome, settlement_ready,
+)
 from model.forecast_ledger import MarketForecastLedger  # noqa: E402
 from ui import theme  # noqa: E402
 from ui.tabs import scanner, portfolio, stats, calculator, backtest  # noqa: E402
@@ -275,8 +277,16 @@ def _auto_settle(D, force: bool = False):
             log.info("LIMIT reached")
             break
 
-        bd = _bet_date(b)
-        if bd and now - bd < SETTLE_MIN_AGE:
+        # Do not query score providers just because calendar midnight passed:
+        # wait for 2h15 after the actual kickoff. Legacy bets without a kickoff
+        # time are deferred to the next day to avoid false NOT FOUND lookups.
+        ready = settlement_ready(
+            b.get("date_iso") or b.get("date"),
+            b.get("match_time") or b.get("time"),
+            kickoff_at=b.get("kickoff_utc"),
+            grace=SETTLE_MIN_AGE,
+        )
+        if ready is False:
             continue
         if not force:
             last = _parse_iso(b.get("last_settle_try"))

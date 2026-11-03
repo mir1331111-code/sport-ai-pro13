@@ -16,7 +16,7 @@ from __future__ import annotations
 import csv, io, re, logging, os, hashlib, math
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.robotparser import RobotFileParser
 from urllib.parse import urlparse
@@ -646,6 +646,32 @@ def _tsdb_venue_metadata(venue_id: str, logs=None) -> dict:
         return {}
 
 
+def _tsdb_kickoff_utc(value) -> str:
+    """Normalize TheSportsDB absolute timestamps without trusting naive local clocks."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError, OverflowError):
+        pass
+    try:
+        stamp = float(raw)
+        if not math.isfinite(stamp) or stamp <= 0:
+            return ""
+        # Feeds may encode Unix timestamps in seconds or milliseconds.
+        if stamp >= 1_000_000_000_000:
+            stamp /= 1000.0
+        parsed = datetime.fromtimestamp(stamp, timezone.utc)
+        if not 2000 <= parsed.year <= 2100:
+            return ""
+        return parsed.isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
 def tsdb_matches(days: int = 7, logs=None) -> list:
     """Сбор матчей из TheSportsDB на N дней вперёд."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -700,6 +726,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "League": league,
                     "Date": (e.get("dateEvent") or "")[:10],
                     "Time": (e.get("strTime") or "")[:5],
+                    "kickoff_utc": _tsdb_kickoff_utc(e.get("strTimestamp")),
                     "HomeTeam": h,
                     "AwayTeam": a,
                     "fixture_id": e.get("idEvent"),
@@ -803,6 +830,7 @@ def espn_matches(days: int, logs=None) -> list:
                     "League": league, "competition": slug,
                     "Date": _msk_date(event.get("date") or ""),
                     "Time": _msk_time(event.get("date") or ""),
+                    "kickoff_utc": event.get("date") or "",
                     "HomeTeam": hn, "AwayTeam": an,
                     "fixture_id": f"espn:{event.get('id')}",
                     "home_badge": (home.get("team") or {}).get("logo") or "",
@@ -3581,6 +3609,11 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
         row = {
             "Date": raw_date[:19],
             "Time": start_time,
+            "kickoff_utc": (
+                raw_date
+                if re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", raw_date, re.I)
+                else ""
+            ),
             "HomeTeam": home,
             "AwayTeam": away,
             "Div": div,
