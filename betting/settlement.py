@@ -119,3 +119,29 @@ def determine_outcome(market: str, pick: str, hg: int, ag: int
             return None, f"unknown_dc:{p}"
         return ("won" if ok else "lost"), "dc"
     return None, f"unknown_market:{m}"
+
+
+_STAT_TOTAL_RE = re.compile(r"^(Угл|Карты)\s+(ТБ|ТМ)\s+(\d+(?:[.,]\d+)?)$", re.I)
+
+
+def determine_stat_outcome(
+    market: str, pick: str, actual_value: int | float | str,
+) -> tuple[Optional[Outcome], str]:
+    """Settle corners/cards using actual match statistics, never the score."""
+    if str(market or "").upper() not in {"STAT", "CORNERS", "CARDS"}:
+        return None, f"unknown_stat_market:{market}"
+    if isinstance(actual_value, bool):
+        return None, "bad_stat_value"
+    try:
+        value = float(actual_value)
+    except (TypeError, ValueError):
+        return None, "bad_stat_value"
+    if not value >= 0 or not value.is_integer():
+        return None, "bad_stat_value"
+    match = _STAT_TOTAL_RE.fullmatch(_norm_pick(pick))
+    if not match:
+        return None, f"unknown_stat_pick:{_norm_pick(pick)}"
+    kind, side, raw_line = match.groups()
+    line = _num(raw_line)
+    difference = value - line if side.upper() == "ТБ" else line - value
+    return _cmp(difference), "stat_corners" if kind.casefold() == "угл" else "stat_cards"
