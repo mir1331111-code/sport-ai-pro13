@@ -3435,12 +3435,28 @@ def sstats_account_check(api_key: str) -> dict:
                 "stat_market_odds", "asian_handicap_market_odds",
             )
         )
-        total_quote_line_count += len(totals)
-        confirmed_totals = {
-            line for line, is_confirmed in (detailed.get("total_market_confirmed") or {}).items()
-            if is_confirmed
-        }
-        unconfirmed_total_line_count += max(0, len(totals) - len(confirmed_totals))
+        total_lines = set()
+        for selection in totals:
+            line_match = re.fullmatch(
+                r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", str(selection), re.I
+            )
+            if line_match:
+                total_lines.add(
+                    f"{float(line_match.group(1).replace(',', '.')):g}"
+                )
+        confirmed_totals = set()
+        for selection, is_confirmed in (detailed.get("total_market_confirmed") or {}).items():
+            if not is_confirmed:
+                continue
+            line_match = re.fullmatch(
+                r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", str(selection), re.I
+            )
+            if line_match:
+                confirmed_totals.add(
+                    f"{float(line_match.group(1).replace(',', '.')):g}"
+                )
+        total_quote_line_count += len(total_lines)
+        unconfirmed_total_line_count += len(total_lines - confirmed_totals)
         if confirmed_totals:
             totals_fixtures += 1
             total_line_count += len(confirmed_totals)
