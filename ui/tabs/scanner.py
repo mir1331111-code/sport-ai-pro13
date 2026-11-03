@@ -2055,25 +2055,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 }[group]
                                 verified_quotes = detailed.get(group) or {}
 
-                                # For totals, detailed SStats data has explicit
-                                # bookmaker provenance and was independently
-                                # corroborated by the parser. Replace the whole
-                                # previous totals map rather than retaining a
-                                # larger quote from another feed. A higher price
-                                # is not evidence that it belongs to the right line.
-                                if group == "total_market_odds" and verified_quotes:
+                                # Detailed SStats quotes have explicit
+                                # bookmaker provenance. Replace each complete
+                                # market map rather than mixing another provider's
+                                # stale prices into this line.
+                                if group in {
+                                    "total_market_odds", "btts_market_odds", "stat_market_odds"
+                                } and verified_quotes:
                                     # Remove stale bookmaker provenance alongside stale prices.
                                     # Otherwise devigging can attribute a new provider's quote
                                     # to a bookmaker attached to the replaced quote.
                                     for old_selection in list(target):
                                         bookmaker_by_pick.pop(old_selection, None)
                                     target.clear()
-                                    total_market_book_count = dict(
-                                        detailed.get("total_market_book_count") or {}
-                                    )
-                                    total_market_confirmed = dict(
-                                        detailed.get("total_market_confirmed") or {}
-                                    )
+                                    if group == "total_market_odds":
+                                        total_market_book_count = dict(
+                                            detailed.get("total_market_book_count") or {}
+                                        )
+                                        total_market_confirmed = dict(
+                                            detailed.get("total_market_confirmed") or {}
+                                        )
                                     for selection, raw_value in verified_quotes.items():
                                         try:
                                             value = float(raw_value)
@@ -2099,10 +2100,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 total_odds_source = "sstats"
                             if detailed.get("btts_market_odds"):
                                 btts_odds_source = "sstats"
-                            if any(detailed.get(name) for name in (
-                                "total_market_odds", "btts_market_odds",
-                                "stat_market_odds", "asian_handicap_market_odds"
-                            )):
+                            if detailed.get("stat_market_odds"):
                                 extra_market_source = "sstats"
 
                     # Imported CSV/JSON quote: match by normalized teams and date.
@@ -2165,25 +2163,30 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                         k: v for k, v in valid_imported.items()
                                         if k.startswith(("ТБ ", "ТМ "))
                                     }
+                                    imported_btts = {
+                                        k: v for k, v in valid_imported.items()
+                                        if k.startswith("BTTS ")
+                                    }
+                                    imported_stats = {
+                                        k: v for k, v in valid_imported.items()
+                                        if k.startswith(("Угл ", "Карты "))
+                                    }
                                     if imported_totals:
-                                        # A single fixture-level source label cannot safely
-                                        # describe a mixture of SStats and imported prices.
-                                        # Replace the complete totals map and clear the
-                                        # SStats-only provenance/corroboration metadata with it.
                                         for old_selection in list(total_market_odds):
                                             bookmaker_by_pick.pop(old_selection, None)
                                         total_market_odds = imported_totals
                                         total_market_book_count = {}
                                         total_market_confirmed = {}
-                                    btts_market_odds.update({k: v for k, v in valid_imported.items()
-                                                             if k.startswith("BTTS ")})
-                                    stat_market_odds.update({k: v for k, v in valid_imported.items()
-                                                             if k.startswith(("Угл ", "Карты "))})
-                                    if total_market_odds:
                                         total_odds_source = "manual_import"
-                                    if btts_market_odds:
+                                    if imported_btts:
+                                        for old_selection in list(btts_market_odds):
+                                            bookmaker_by_pick.pop(old_selection, None)
+                                        btts_market_odds = imported_btts
                                         btts_odds_source = "manual_import"
-                                    if total_market_odds or btts_market_odds or stat_market_odds:
+                                    if imported_stats:
+                                        for old_selection in list(stat_market_odds):
+                                            bookmaker_by_pick.pop(old_selection, None)
+                                        stat_market_odds = imported_stats
                                         extra_market_source = "manual_import"
                                     logs.append(
                                         f"📥 Импорт коэффициентов ({quote.get('source') or 'manual_import'}, дата ±{date_delta} дн.): "
