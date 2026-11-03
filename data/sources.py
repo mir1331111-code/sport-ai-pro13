@@ -3590,7 +3590,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             "Time": start_time,
             "kickoff_utc": (
                 raw_date
-                if re.search(r"(?:Z|[+-]\\d{2}:?\\d{2})$", raw_date, re.I)
+                if re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", raw_date, re.I)
                 else ""
             ),
             "HomeTeam": home,
