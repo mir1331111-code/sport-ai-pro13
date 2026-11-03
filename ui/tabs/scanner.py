@@ -80,6 +80,28 @@ def _safe_filter(rows):
     return out
 
 
+def _stat_market_lines(odds: dict, prefix: str) -> list[float]:
+    """Return the exact half/integer lines present in an SStats corner/card quote map."""
+    if not isinstance(odds, dict):
+        return []
+    pattern = re.compile(
+        rf"^{re.escape(str(prefix))}\s+(?:ТБ|ТМ)\s+(\d+(?:[.,]\d+)?)$",
+        re.IGNORECASE,
+    )
+    lines = set()
+    for selection in odds:
+        match = pattern.fullmatch(str(selection or "").strip())
+        if not match:
+            continue
+        try:
+            line = float(match.group(1).replace(",", "."))
+        except ValueError:
+            continue
+        if 0.0 < line <= 30.0:
+            lines.add(line)
+    return sorted(lines)
+
+
 def _print_log(msg: str):
     try:
         import sys
@@ -299,21 +321,35 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         line_label = f"{line:.1f}"
         market_options[f"Тотал голов больше {line_label}"] = (f"ТБ {line_label}", over_p)
         market_options[f"Тотал голов меньше {line_label}"] = (f"ТМ {line_label}", 1.0 - over_p)
-    for stat_market, lines in (("corners", (8.5, 9.5, 10.5)), ("cards", (3.5, 4.5, 5.5))):
+    # Build statistical-market forecasts for the exact lines returned by SStats.
+    # Previously the UI knew only corners 8.5/9.5/10.5 and cards 3.5/4.5/5.5;
+    # a real quote at another line caused the fixture to appear in the tab but
+    # its price was then hidden from the card.
+    stat_odds = c.get("stat_market_odds") or {}
+    stat_specs = (
+        ("corners", "Угл", "Угловые", (8.5, 9.5, 10.5)),
+        ("cards", "Карты", "Карточки", (3.5, 4.5, 5.5)),
+    )
+    for stat_market, market_code, label_prefix, default_lines in stat_specs:
         pred = stat_preds.get(stat_market) or {}
+        quoted_lines = _stat_market_lines(stat_odds, market_code)
+        lines = quoted_lines or list(default_lines)
         if pred.get("total") is not None and pred.get("history_matches", 0) >= 30:
             for line in lines:
                 over_p = poisson_over_probability(pred["total"], line)
-                if over_p is not None:
-                    prefix = "Угловые" if stat_market == "corners" else "Карточки"
-                    market_options[f"{prefix}: больше {line}"] = (f"{'Угл' if stat_market == 'corners' else 'Карты'} ТБ {line}", over_p)
-                    market_options[f"{prefix}: меньше {line}"] = (f"{'Угл' if stat_market == 'corners' else 'Карты'} ТМ {line}", 1.0 - over_p)
+                if over_p is not None and 0.0 < over_p < 1.0:
+                    line_label = f"{line:g}"
+                    market_options[f"{label_prefix}: больше {line_label}"] = (
+                        f"{market_code} ТБ {line_label}", over_p
+                    )
+                    market_options[f"{label_prefix}: меньше {line_label}"] = (
+                        f"{market_code} ТМ {line_label}", 1.0 - over_p
+                    )
 
     # Automatically select the strongest forecast; no manual market cycling.
     source_odds = c.get("market_odds") or {}
     total_odds = c.get("total_market_odds") or {}
     btts_odds = c.get("btts_market_odds") or {}
-    stat_odds = c.get("stat_market_odds") or {}
 
     def quote_for(candidate_pick):
         kind = market_type(candidate_pick)
@@ -386,8 +422,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         quote_text = " · ".join(f"{pick}: **{odd:.2f}**" for pick, odd in displayed_quotes)
         with st.expander("Другие коэффициенты", expanded=False):
             st.caption("Котировки SStats по точным рынкам: " + quote_text)
-    elif market_filter in {"goals", "btts", "corners", "cards"}:
-        market_names = {"goals": "тотала голов", "btts": "рынка «Обе забьют»", "corners": "угловых", "cards": "карточек"}
+    elif market_filter in {"goals", "btts"}:
+        market_names = {"goals": "тотала голов", "btts": "рынка «Обе забьют»"}
         st.caption(
             f"Нет подтверждённой котировки SStats на точный исход {market_names.get(market_filter, 'рынка')}. "
             "Коэффициенты 1X2 не подставляются вместо неё."
@@ -409,7 +445,32 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     # exact-market quote. If none is priced, keep the best model forecast
     # visible but mark it as unpriced and do not allow value/portfolio actions.
     if not candidate_options:
-        st.info("Для этого рынка модель пока не сформировала прогноз с достаточными данными.")
+        if market_filter in {"corners", "cards"}:
+            market_code = "Угл" if market_filter == "corners" else "Карты"
+            actual_quotes = []
+            for selection, raw_price in stat_odds.items():
+                if not str(selection).startswith(market_code + " "):
+                    continue
+                try:
+                    price = float(raw_price)
+                    if 1.01 < price <= 100:
+                        actual_quotes.append((str(selection), price))
+                except (TypeError, ValueError):
+                    continue
+            if actual_quotes:
+                quote_text = " · ".join(
+                    f"{selection}: **{price:.2f}**"
+                    for selection, price in sorted(actual_quotes)
+                )
+                st.caption("Реальные котировки SStats по доступным линиям: " + quote_text)
+                st.info(
+                    "Котировки есть, но для этих линий недостаточно исторических данных, "
+                    "чтобы рассчитать вероятность. Ставку не рекомендую."
+                )
+            else:
+                st.info("Для этого матча SStats не вернул котировки этого статистического рынка.")
+        else:
+            st.info("Для этого рынка модель пока не сформировала прогноз с достаточными данными.")
         return
     # Rank priced picks by expected value, not raw probability. A 38% outcome
     # at 2.36 is not a recommendation when its EV is negative. Keep unpriced

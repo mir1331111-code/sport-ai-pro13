@@ -1,3 +1,4 @@
+import pickle
 import unittest
 
 from model.historical_match_stats import HistoricalMatchStats, poisson_over_probability
@@ -36,6 +37,33 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         self.assertEqual(market_type("Угл ТБ 9.5"), "STAT")
         self.assertEqual(market_type("Карты ТМ 4.5"), "STAT")
         self.assertEqual(market_type("BTTS Да"), "BTTS")
+
+    def test_history_stats_survive_pickle_round_trip_and_keep_defaultdicts(self):
+        from model.engine import Engine
+
+        model = HistoricalMatchStats(min_team_games=1)
+        model.learn_step({
+            "HomeTeam": "Alpha", "AwayTeam": "Beta",
+            "HC": "6", "AC": "4", "HY": "2", "AY": "1",
+            "HR": "1", "AR": "0",
+        }, "E0")
+
+        engine = Engine(matrix_n=5)
+        engine.match_stats = model
+        engine.trained_n = 1
+        restored_engine = pickle.loads(pickle.dumps(engine))
+        restored = restored_engine.match_stats
+        pred = restored.predict("Alpha", "Beta", "E0")
+        self.assertAlmostEqual(pred["corners"]["total"], 10.0)
+        self.assertAlmostEqual(pred["cards"]["total"], 4.0)
+        self.assertEqual(restored.trained_matches["E0"], 1)
+
+        # New keys created after restore must retain the original defaultdict behavior.
+        self.assertTrue(restored.learn_step({
+            "HomeTeam": "Gamma", "AwayTeam": "Delta",
+            "HC": "5", "AC": "6", "HY": "1", "AY": "2",
+        }, "E1"))
+        self.assertEqual(restored.trained_matches["E1"], 1)
 
 
 if __name__ == "__main__":

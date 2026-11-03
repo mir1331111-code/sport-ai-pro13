@@ -39,6 +39,55 @@ class HistoricalMatchStats:
         )
         self.trained_matches = defaultdict(int)
 
+    @staticmethod
+    def _plain(value):
+        """Convert nested defaultdict containers to ordinary pickle-safe values."""
+        if isinstance(value, dict):
+            return {
+                key: HistoricalMatchStats._plain(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [HistoricalMatchStats._plain(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(HistoricalMatchStats._plain(item) for item in value)
+        return value
+
+    def __getstate__(self):
+        # The live defaultdicts use lambdas as factories. Those lambdas cannot
+        # be pickled, so persist plain dictionaries and rebuild factories on load.
+        return {
+            "min_team_games": self.min_team_games,
+            "league": self._plain(self.league),
+            "teams": self._plain(self.teams),
+            "trained_matches": self._plain(self.trained_matches),
+        }
+
+    def __setstate__(self, state):
+        self.__init__(state.get("min_team_games", 4))
+        for league, markets in (state.get("league") or {}).items():
+            self.league[league] = defaultdict(
+                list,
+                {market: list(values) for market, values in markets.items()},
+            )
+        for league, teams in (state.get("teams") or {}).items():
+            league_teams = defaultdict(
+                lambda: defaultdict(lambda: defaultdict(list))
+            )
+            for team, markets in teams.items():
+                team_markets = defaultdict(lambda: defaultdict(list))
+                for market, dimensions in markets.items():
+                    team_markets[market] = defaultdict(
+                        list,
+                        {dimension: list(values) for dimension, values in dimensions.items()},
+                    )
+                league_teams[team] = team_markets
+            self.teams[league] = league_teams
+        self.trained_matches.update({
+            league: int(count)
+            for league, count in (state.get("trained_matches") or {}).items()
+        })
+
     def learn_step(self, row, league="G"):
         if not isinstance(row, dict):
             return False

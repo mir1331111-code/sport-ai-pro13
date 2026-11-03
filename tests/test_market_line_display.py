@@ -1,9 +1,21 @@
 import unittest
 
 from ui.cards import render_verdict_card
+from ui.tabs.scanner import _stat_market_lines
 
 
 class MarketLineDisplayTests(unittest.TestCase):
+    def test_stat_quote_lines_come_from_exact_sstats_market_keys(self):
+        odds = {
+            "Угл ТБ 7.5": 1.90,
+            "Угл ТМ 7.5": 1.92,
+            "Угл ТБ 11.5": 2.20,
+            "Карты ТБ 4.5": 1.85,
+            "Угл ТБ 7.5 extra": 4.0,
+        }
+        self.assertEqual(_stat_market_lines(odds, "Угл"), [7.5, 11.5])
+        self.assertEqual(_stat_market_lines(odds, "Карты"), [4.5])
+
     def test_real_line_is_visible_even_when_no_bet_qualifies(self):
         card = {
             "match": "Manchester United vs Arsenal",
