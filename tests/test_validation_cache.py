@@ -47,6 +47,9 @@ class ValidationCacheTests(unittest.TestCase):
         same = select_validation_rows({"E0": [[self._row(1, xg=1.1)]]}, ("E0",))
         changed = select_validation_rows({"E0": [[self._row(1, xg=1.4)]]}, ("E0",))
         self.assertEqual(validation_cache_key(rows), validation_cache_key(same))
+        self.assertTrue(
+            validation_cache_key(rows).startswith("neuro_market_validation_v4_bootstrap1000_")
+        )
         self.assertNotEqual(validation_cache_key(rows), validation_cache_key(changed))
         self.assertNotEqual(validation_cache_key(rows, matrix_n=12),
                             validation_cache_key(rows, matrix_n=10))
