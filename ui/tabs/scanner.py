@@ -85,7 +85,7 @@ def _safe_filter(rows):
 
 
 def _is_actionable_recommendation(card: object) -> bool:
-    """True only for a fully priced, value-positive, Kelly-positive 1X2 bet."""
+    """True only for a fully priced, value-positive, Kelly-positive pick."""
     if not isinstance(card, dict):
         return False
     verdict = card.get("verdict")
@@ -120,7 +120,7 @@ def _is_actionable_recommendation(card: object) -> bool:
 
 
 def _qualified_bet_cards(cards: object) -> list[dict]:
-    """Build the user-facing shortlist; never substitute model-only candidates."""
+    """Build the one-best-pick-per-fixture shortlist; never use model-only picks."""
     if not isinstance(cards, list):
         return []
     return [card for card in cards if _is_actionable_recommendation(card)]
@@ -1449,7 +1449,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             ["🎯 Общий shortlist по лучшему исходу",
              "Все матчи и котировки"],
             index=0,
-            key="scanner_display_mode_v2",
+            key="scanner_display_mode_v3",
         )
         recommendation_mode = display_mode.startswith("🎯")
         group_by_day = c3.checkbox("Группировать по дням", True,
@@ -2366,7 +2366,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             logs.append(f"⚠️ Журнал прогнозов ИИ недоступен: {type(exc).__name__}: {str(exc)[:120]}")
 
         # Автодобавление — только в виртуальный портфель, не в аккаунт букмекера.
-        # Учитываем только реальные котировки 1X2, прошедшие все value-фильтры.
+        # Учитываем лучший по value исход матча, прошедший все фильтры своего рынка.
         new_bets = []
         total_stake = 0.0
         available_bank = float(D.get("bank") or 0.0)
