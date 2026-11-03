@@ -87,6 +87,7 @@ def best_value_market(
         candidate = deepcopy(verdict)
         candidate.update({
             "pick": pick,
+            "market_analysis": row.get("analysis") or "",
             "label": row.get("label") or pick,
             "prob": prob,
             "fair_odd": 1.0 / prob,

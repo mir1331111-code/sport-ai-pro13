@@ -93,7 +93,7 @@ def _is_actionable_recommendation(card: object) -> bool:
         verdict.get("real_odds")
         and verdict.get("value_passed")
         and verdict.get("is_bet")
-        and str(best[0]).upper() == "1X2"
+        and str(best[0]).upper() in {"1X2", "OU", "BTTS", "STAT"}
     ):
         return False
     pick = str(best[1] or "")
@@ -105,8 +105,8 @@ def _is_actionable_recommendation(card: object) -> bool:
         edge_value = float(verdict.get("edge"))
     except (TypeError, ValueError):
         return False
-    # The automatic 1X2 gate is deliberately strict: exact bookmaker quote,
-    # at least 5% EV and Edge, and a positive Kelly position.
+    # Every displayed recommendation has a validated market model, a complete
+    # same-bookmaker line, at least 5% EV and Edge, and positive Kelly.
     return (
         odd > 1.01
         and 0.0 < probability < 1.0
@@ -1082,7 +1082,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:8px 0 4px'>"
             "<div><div class='scanner-kicker'>SHORTLIST · AI MATCH DESK</div>"
             "<h2 style='margin:0'>На что ставить</h2>"
-            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>Только отобранные исходы. Расчёты — внутри, здесь главное решение и причина.</div></div>"
+            "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>Лучшие прошедшие отбор рынки: 1X2, тоталы, BTTS, угловые и карточки. Показываем только проверенные модели и реальные линии.</div></div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1130,6 +1130,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     + "</ul>"
                     if reason_items else ""
                 )
+                market_analysis = str(verdict.get("market_analysis") or "").strip()
+                market_analysis_html = (
+                    "<div class='pick-ai'><b>Анализ рынка</b>" + html.escape(market_analysis) + "</div>"
+                    if market_analysis else ""
+                )
                 independent_note = str(card.get("llm_opinion") or "").strip()
                 independent_html = (
                     "<div class='pick-ai'><b>Независимый анализ ИИ</b>"
@@ -1145,7 +1150,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"{render_fixture_header(card)}"
                     f"<div class='pick-match'>{html.escape(match_name)}</div>"
                     f"<div class='pick-time'>{html.escape(kickoff or 'Время начала уточняется')}</div>"
-                    f"<div class='pick-divider'></div><div class='pick-choice-label'>КОНКРЕТНАЯ СТАВКА · 1X2</div>"
+                    f"<div class='pick-divider'></div><div class='pick-choice-label'>КОНКРЕТНАЯ СТАВКА · {html.escape(str(_market))}</div>"
                     f"<div class='pick-choice'>{html.escape(pick_name)}</div>"
                     f"<div class='pick-meta'>"
                     f"<span class='pick-chip'>Коэффициент {float(best_odd):.2f}</span>"
@@ -1158,7 +1163,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f" · Источник: {html.escape(str(card.get('odds_source') or 'SStats'))}</div>"
                     f"<div class='pick-ai'><b>Почему прошла отбор</b>{reasons_html}"
                     f"Только полная линия одного букмекера; Edge и EV не ниже 5%; Kelly положительный.</div>"
-                    f"{independent_html}</article>",
+                    f"{market_analysis_html}{independent_html}</article>",
                     unsafe_allow_html=True,
                 )
             st.markdown("</div>", unsafe_allow_html=True)
@@ -1732,22 +1737,144 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 except Exception as exc:
                     logs.append(f"⚠️ Ошибка получения линии: {type(exc).__name__}")
 
-            # Если есть реальные кэфы — используем best_value_market
-            if market_odds:
+            # Build one cross-market candidate set. Secondary markets are
+            # admitted only when their exact line passed a leakage-safe historical test.
+            historical_stats = (
+                engine.match_stats.predict(h_en, a_en, lg)
+                if hasattr(engine, "match_stats") else {}
+            )
+            selection_odds = {}
+            selection_odds.update(market_odds)
+            selection_odds.update(total_market_odds)
+            selection_odds.update(btts_market_odds)
+            selection_odds.update(stat_market_odds)
+            market_source_by_pick = {
+                **{pick: odds_source for pick in market_odds},
+                **{pick: total_odds_source for pick in total_market_odds},
+                **{pick: btts_odds_source for pick in btts_market_odds},
+                **{pick: extra_market_source for pick in stat_market_odds},
+            }
+            market_validation_by_pick = {}
+            extra_rows = []
+
+            # Goal totals: only lines that passed the chronological benchmark
+            # may participate in the bet selector.
+            from model.historical_match_stats import poisson_over_probability
+            total_mean = float(P["lams"][0] or 0.0) + float(P["lams"][1] or 0.0)
+            total_validation = getattr(engine, "total_market_validation_by_line", {}) or {}
+            for selection in total_market_odds:
+                match = re.fullmatch(r"Т([БМ])\\s+(\\d+(?:[.,]\\d+)?)", str(selection), re.I)
+                if not match:
+                    continue
+                line_text = match.group(2).replace(",", ".")
+                line = float(line_text)
+                if not bool(total_validation.get(line_text)):
+                    continue
+                over_probability = poisson_over_probability(total_mean, line)
+                if over_probability is None:
+                    continue
+                is_over = match.group(1).upper() == "Б"
+                probability = over_probability if is_over else 1.0 - over_probability
+                extra_rows.append({
+                    "pick": selection,
+                    "label": f"Тотал голов {'больше' if is_over else 'меньше'} {line_text}",
+                    "prob": probability,
+                    "analysis": (
+                        f"Модель голов: ожидаемый тотал {total_mean:.2f}; "
+                        f"хронологический тест линии {line_text} пройден."
+                    ),
+                })
+                market_validation_by_pick[selection] = True
+
+            # Both-teams-to-score: require its own out-of-sample check and
+            # a complete same-bookmaker Yes/No line.
+            if bool(getattr(engine, "btts_market_validation", False)):
+                for selection, probability in (
+                    ("BTTS Да", float(P.get("btts") or 0.0)),
+                    ("BTTS Нет", 1.0 - float(P.get("btts") or 0.0)),
+                ):
+                    if selection not in btts_market_odds or not 0.0 < probability < 1.0:
+                        continue
+                    extra_rows.append({
+                        "pick": selection,
+                        "label": "Обе команды забьют — " + ("Да" if selection.endswith("Да") else "Нет"),
+                        "prob": probability,
+                        "analysis": "Независимый walk-forward тест BTTS пройден; цена проверяется по полной линии одного букмекера.",
+                    })
+                    market_validation_by_pick[selection] = True
+
+            # Corners/cards: forecast each exact bookmaker line from historical
+            # team/venue stats; only line-specific validated models are eligible.
+            stat_validation = getattr(engine, "stat_market_validation", {}) or {}
+            stat_specs = (("Угл", "corners", "Угловые"), ("Карты", "cards", "Карточки"))
+            for selection in stat_market_odds:
+                match = re.fullmatch(
+                    r"(Угл|Карты)\\s+(ТБ|ТМ)\\s+(\\d+(?:[.,]\\d+)?)",
+                    str(selection), re.I,
+                )
+                if not match:
+                    continue
+                code = "Угл" if match.group(1).casefold() == "угл" else "Карты"
+                market_key = "corners" if code == "Угл" else "cards"
+                label_prefix = "Угловые" if code == "Угл" else "Карточки"
+                line_text = match.group(3).replace(",", ".")
+                line = float(line_text)
+                pred = historical_stats.get(market_key) or {}
+                if not bool((stat_validation.get(market_key) or {}).get(line_text)):
+                    continue
+                if (
+                    pred.get("history_matches", 0) < 30
+                    or pred.get("home_team_games", 0) < 4
+                    or pred.get("away_team_games", 0) < 4
+                ):
+                    continue
+                over_probability = poisson_over_probability(pred.get("total"), line)
+                if over_probability is None:
+                    continue
+                is_over = match.group(2).upper() == "ТБ"
+                probability = over_probability if is_over else 1.0 - over_probability
+                extra_rows.append({
+                    "pick": selection,
+                    "label": f"{label_prefix} {'больше' if is_over else 'меньше'} {line_text}",
+                    "prob": probability,
+                    "analysis": (
+                        f"Ожидаемое значение: {float(pred.get('total')):.2f}; "
+                        f"история лиги: {pred.get('history_matches')} матчей, "
+                        f"у хозяев дома: {pred.get('home_team_games')}, "
+                        f"у гостей на выезде: {pred.get('away_team_games')}; "
+                        f"walk-forward линия {line_text} пройдена."
+                    ),
+                })
+                market_validation_by_pick[selection] = True
+
+            candidate_rows = list(rows_ or []) + extra_rows
+            best_odds_source = "no_market"
+            if selection_odds and candidate_rows:
                 chosen_verdict, best = best_value_market(
-                    verdict, rows_, market_odds, D["bank"], kelly_frac,
-                    min_prob, min_edge=max(min_edge, 0.05), min_ev=0.05,
+                    verdict,
+                    candidate_rows,
+                    selection_odds,
+                    D["bank"],
+                    kelly_frac,
+                    min_prob,
+                    min_edge=max(min_edge, 0.05),
+                    min_ev=0.05,
                     bookmaker_by_pick=bookmaker_by_pick,
+                    market_validation_by_pick=market_validation_by_pick,
                 )
                 if best is not None:
                     verdict = chosen_verdict
+                    best_odds_source = market_source_by_pick.get(best[1]) or (
+                        odds_source if best[0] == "1X2" else "unknown"
+                    )
                     funnel_counts["real"] += 1
                 else:
                     funnel_counts["model_only"] += 1
             else:
+                best = None
                 funnel_counts["model_only"] += 1
 
-            # No bookmaker price means no bet candidate. Fair odds are display-only.
+            # A rejected market remains visible as a forecast/quote, never as a bet.
             if best is None:
                 verdict["real_odds"] = False
                 verdict["odd"] = None
@@ -1755,29 +1882,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 verdict["edge"] = None
                 verdict["stake"] = 0.0
                 verdict["is_bet"] = False
-                # Keep the fetched line/source for display even when it fails
-                # value gates. "No bet" is not the same as "no odds found".
-                if not market_odds:
+                if not selection_odds:
                     odds_source = "no_market"
 
             if best:
                 matches_with_best += 1
                 funnel_counts["bet"] += 1
                 logs.append(
-                    f"✅ BET: {h_ru} — {a_ru} | "
-                    f"{best[1]} @ {best[2]:.2f} ({odds_source})")
+                    f"✅ BET: {h_ru} — {a_ru} | {best[1]} @ {best[2]:.2f} "
+                    f"({best[0]} · {best_odds_source})"
+                )
             else:
-                if market_odds:
-                    no_best_reason = (
-                        "no 1X2 pick passed min probability / edge >= "
-                        f"{max(min_edge, 0.05):.1%} / EV >= 5% / positive Kelly; "
-                        "check selected market line and model-vs-market gap"
-                    )
-                else:
-                    no_best_reason = "no validated real 1X2 bookmaker line"
+                no_best_reason = (
+                    "ни один доступный исход не прошёл историческую проверку, "
+                    "полную линию одного букмекера, вероятность, Edge >= 5%, "
+                    "EV >= 5% и положительный Kelly"
+                )
                 logs.append(
                     f"❌ NO BEST: {h_ru} — {a_ru} | "
-                    f"is_action={verdict.get('is_action')} | reason={no_best_reason}")
+                    f"is_action={verdict.get('is_action')} | reason={no_best_reason}"
+                )
 
             cards.append({
                 "div": lg,
@@ -1790,7 +1914,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "games": P["games"], "fh": fh, "fa": fa,
                 "fixture_id": r.get("fixture_id"),
                 "sstats_game_id": r.get("sstats_game_id"),
-                "historical_stats": (engine.match_stats.predict(h_en, a_en, lg) if hasattr(engine, "match_stats") else {}),
+                "historical_stats": historical_stats,
+                "total_market_validation_by_line": getattr(engine, "total_market_validation_by_line", {}),
+                "btts_market_validation": bool(getattr(engine, "btts_market_validation", False)),
+                "btts_market_validation_report": getattr(engine, "btts_market_validation_report", {}),
+                "stat_market_validation": getattr(engine, "stat_market_validation", {}),
+                "stat_market_validation_report": getattr(engine, "stat_market_validation_report", {}),
+                "best_odds_source": best_odds_source,
                 "date_iso": d.strftime("%Y-%m-%d"),
                 "time": r.get("Time") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
@@ -1964,7 +2094,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not best_card or not verdict_card.get("real_odds") or not verdict_card.get("value_passed"):
                     continue
                 pick = str(best_card[1])
-                if market_type(pick) != "1X2":
+                market_code = str(best_card[0]).upper()
+                if market_code not in {"1X2", "OU", "BTTS", "STAT"}:
                     continue
                 match_key = (str(card.get("match") or ""), pick)
                 if match_key in existing_keys:
@@ -1989,7 +2120,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "match_ru": card.get("match_ru", card.get("match", "")),
                     "div": card.get("div", ""),
                     "league": card.get("league", ""),
-                    "market": "1X2",
+                    "market": market_code,
                     "pick": pick,
                     "odds": odds_value,
                     "stake": stake_value,
@@ -1998,8 +2129,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "market_implied_raw": verdict_card.get("market_implied_raw"),
                     "probability_method": verdict_card.get("probability_method", "market_blend_0.4_model_delta"),
                     "status": "pending",
-                    "strat": "scanner_auto",
-                    "odds_source": card.get("odds_source", "unknown"),
+                    "strat": "scanner_auto_" + market_code.casefold(),
+                    "odds_source": card.get("best_odds_source") or card.get("odds_source", "unknown"),
                     "mode": "real",
                     "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": card.get("date_iso"),
@@ -2027,124 +2158,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
             logs.append(
                 "ℹ️ AUTO-PORTFOLIO: новых ставок 0; "
-                f"матчей с реальными кэфами 1X2={priced_count}/{len(cards)}, "
+                f"матчей с реальными котировками 1X2={priced_count}/{len(cards)}, "
                 f"прошедших value-фильтры={qualified_count}, "
                 f"текущих ожидающих ставок в ключах={pending_count}. "
-                "Если кэфы есть, но value=0, ни один исход не прошёл пороги "
+                "Если котировки есть, но value=0, ни один исход не прошёл пороги "
                 "вероятности/edge/EV/Kelly; ставки без value не добавляются."
             )
         elif not auto_add:
             logs.append("ℹ️ AUTO-PORTFOLIO выключен переключателем; ставки автоматически не добавлялись.")
 
-        # Totals are auto-added only after the historical market benchmark passes.
-        if auto_add:
-            for card in cards:
-                if not card.get("total_market_validation"):
-                    continue
-                try:
-                    over_p = float(card.get("over"))
-                except (TypeError, ValueError):
-                    continue
-                if not 0.0 < over_p < 1.0:
-                    continue
-                odds_by_pick = card.get("total_market_odds") or {}
-                no_vig_total = proportional_devig(
-                    odds_by_pick, ("ТБ 2.5", "ТМ 2.5"),
-                    bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
-                )
-                for pick, model_p in (("ТБ 2.5", over_p), ("ТМ 2.5", 1.0 - over_p)):
-                    match_key = (str(card.get("match") or ""), pick)
-                    if pick not in odds_by_pick or match_key in existing_keys:
-                        continue
-                    try:
-                        odd = float(odds_by_pick[pick])
-                        if not 1.01 < odd <= 100:
-                            continue
-                        implied = 1.0 / odd
-                        fair_market_p = (no_vig_total or {}).get(pick, implied)
-                        prob = blend_probability(model_p, fair_market_p, 0.40)
-                        edge_value = prob - fair_market_p
-                        ev_value = prob * odd - 1.0
-                        stake = kelly(prob, odd, available_bank, kelly_frac, cap=0.02)
-                    except (TypeError, ValueError, ZeroDivisionError):
-                        continue
-                    if (prob < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB)
-                            or edge_value < float(min_edge) or ev_value < 0.03
-                            or stake <= 0 or stake > available_bank):
-                        continue
-                    new_bets.append({
-                        "match": card.get("match", ""), "match_ru": card.get("match_ru", card.get("match", "")),
-                        "div": card.get("div", ""), "league": card.get("league", ""),
-                        "market": "OU", "pick": pick, "odds": odd, "stake": stake,
-                        "prob": prob, "model_prob": model_p, "market_implied_raw": implied,
-                        "probability_method": "market_blend_0.4_model_delta_devig" if no_vig_total else "market_blend_0.4_model_delta",
-                        "status": "pending", "strat": "scanner_auto_totals",
-                        "odds_source": card.get("total_odds_source", "highlightly"), "mode": "real",
-                        "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
-                        "date_iso": card.get("date_iso"), "match_time": card.get("time", ""),
-                        "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "fixture_id": card.get("fixture_id"), "score": None, "ev": ev_value,
-                    })
-                    existing_keys.add(match_key)
-                    available_bank -= stake
-                    total_stake += stake
-                    logs.append("AUTO-TOTALS: " + str(card.get("match_ru") or card.get("match") or "") + " | " + pick + " @ " + format(odd, ".2f"))
-
-        # BTTS is eligible only with an exact-market quote from a trusted source.
-        # It uses stricter probability, edge, EV, and fractional-Kelly bankroll gates.
-        if auto_add:
-            for card in cards:
-                extra_source = str(card.get("btts_odds_source") or "").casefold()
-                if extra_source not in {"sstats", "highlightly_fallback", "highlightly", "manual_import"}:
-                    continue
-                try:
-                    btts_p = float(card.get("btts"))
-                except (TypeError, ValueError):
-                    continue
-                if not 0.0 < btts_p < 1.0:
-                    continue
-                odds_by_pick = card.get("btts_market_odds") or {}
-                no_vig_btts = proportional_devig(
-                    odds_by_pick, ("BTTS Да", "BTTS Нет"),
-                    bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
-                )
-                for pick, model_p in (("BTTS Да", btts_p), ("BTTS Нет", 1.0 - btts_p)):
-                    match_key = (str(card.get("match") or ""), pick)
-                    if pick not in odds_by_pick or match_key in existing_keys:
-                        continue
-                    try:
-                        odd = float(odds_by_pick[pick])
-                        if not 1.01 < odd <= 100:
-                            continue
-                        implied = 1.0 / odd
-                        fair_market_p = (no_vig_btts or {}).get(pick, implied)
-                        prob = blend_probability(model_p, fair_market_p, 0.40)
-                        edge_value = prob - fair_market_p
-                        ev_value = prob * odd - 1.0
-                        stake = kelly(prob, odd, available_bank, kelly_frac, cap=0.02)
-                    except (TypeError, ValueError, ZeroDivisionError):
-                        continue
-                    if (prob < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB)
-                            or edge_value < float(min_edge) or ev_value < 0.03
-                            or stake <= 0 or stake > available_bank):
-                        continue
-                    new_bets.append({
-                        "match": card.get("match", ""), "match_ru": card.get("match_ru", card.get("match", "")),
-                        "div": card.get("div", ""), "league": card.get("league", ""),
-                        "market": "BTTS", "pick": pick, "odds": odd, "stake": stake,
-                        "prob": prob, "model_prob": model_p, "market_implied_raw": implied,
-                        "probability_method": "market_blend_0.4_model_delta_devig" if no_vig_btts else "market_blend_0.4_model_delta",
-                        "status": "pending", "strat": "scanner_auto_btts",
-                        "odds_source": extra_source, "mode": "real",
-                        "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
-                        "date_iso": card.get("date_iso"), "match_time": card.get("time", ""),
-                        "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        "fixture_id": card.get("fixture_id"), "score": None, "ev": ev_value,
-                    })
-                    existing_keys.add(match_key)
-                    available_bank -= stake
-                    total_stake += stake
-                    logs.append("AUTO-BTTS: " + str(card.get("match_ru") or card.get("match") or "") + " | " + pick + " @ " + format(odd, ".2f"))
+        # All supported markets share the same single-best-pick selection above.
+        # Separate OU/BTTS loops are intentionally removed to prevent multiple
+        # correlated bets from one fixture and to keep one best market per match.
 
         D2 = dict(D)
         D2["cards"] = cards
