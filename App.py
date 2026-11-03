@@ -283,7 +283,7 @@ def _auto_settle(D, force: bool = False):
         ready = settlement_ready(
             b.get("date_iso") or b.get("date"),
             b.get("match_time") or b.get("time"),
-            now=now,
+            kickoff_at=b.get("kickoff_utc"),
             grace=SETTLE_MIN_AGE,
         )
         if ready is False:
