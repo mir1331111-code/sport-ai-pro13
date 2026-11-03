@@ -361,7 +361,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
     ctx_hash = hashlib.sha256(
         json.dumps(cache_context, sort_keys=True, default=str).encode()
     ).hexdigest()
-    ck = f"llm_v8_multimarket_blind_{ctx_hash}"
+    ck = f"llm_v9_multimarket_blind_{ctx_hash}"
     cached = cache_get(ck, CACHE_TTL["llm"])
     if cached is not None:
         _log(f"CACHE HIT: {ctx_hash[:8]}")
@@ -386,7 +386,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
     def market_block(market_key: str, label: str) -> str:
         item = market_history.get(market_key) or {}
         if not item:
-            return f"{label}: исторические данные отсутствуют.\\n"
+            return f"{label}: исторические данные отсутствуют.\n"
         return (
             f"{label}: среднее хозяев в домашних матчах={item.get('home_for_avg', 'нет данных')}; "
             f"пропускают дома={item.get('home_against_avg', 'нет данных')}; "
@@ -394,23 +394,23 @@ def analyze_match(ctx: dict) -> Optional[str]:
             f"пропускают на выезде={item.get('away_against_avg', 'нет данных')}; "
             f"лиговая база={item.get('history_matches', 0)} матчей; "
             f"выборки хозяев дома={item.get('home_team_games', 0)}, "
-            f"гостей на выезде={item.get('away_team_games', 0)}.\\n"
+            f"гостей на выезде={item.get('away_team_games', 0)}.\n"
         )
 
     user_msg = (
-        f"Матч: {ctx.get('home', '—')} — {ctx.get('away', '—')}\\n"
-        f"Лига: {ctx.get('league', '—')}\\n"
-        f"Дата матча: {ctx.get('date', '—')}\\n"
-        "ИСТОРИЯ ГОЛОВ (фактические завершённые матчи, не прогноз основной модели):\\n"
+        f"Матч: {ctx.get('home', '—')} — {ctx.get('away', '—')}\n"
+        f"Лига: {ctx.get('league', '—')}\n"
+        f"Дата матча: {ctx.get('date', '—')}\n"
+        "ИСТОРИЯ ГОЛОВ (фактические завершённые матчи, не прогноз основной модели):\n"
         f"Голы хозяев дома за матч: {fmt('home_scored_at_home_avg')} "
         f"(выборка {features.get('home_home_sample', 0)}); "
-        f"пропущенные хозяевами дома: {fmt('home_conceded_at_home_avg')}.\\n"
+        f"пропущенные хозяевами дома: {fmt('home_conceded_at_home_avg')}.\n"
         f"Голы гостей на выезде за матч: {fmt('away_scored_away_avg')} "
         f"(выборка {features.get('away_away_sample', 0)}); "
-        f"пропущенные гостями на выезде: {fmt('away_conceded_away_avg')}.\\n"
+        f"пропущенные гостями на выезде: {fmt('away_conceded_away_avg')}.\n"
         f"Последняя форма: хозяева {ctx.get('fh') or 'нет данных'}, "
-        f"гости {ctx.get('fa') or 'нет данных'}.\\n"
-        "ИСТОРИЯ СЧЁТНЫХ РЫНКОВ (фактические данные, не коэффициенты):\\n"
+        f"гости {ctx.get('fa') or 'нет данных'}.\n"
+        "ИСТОРИЯ СЧЁТНЫХ РЫНКОВ (фактические данные, не коэффициенты):\n"
         + market_block("corners", "Угловые")
         + market_block("cards", "Карточки")
         + "Оцени 1X2 обязательно. Дополнительно оцени тоталы голов/ОЗ, угловые и карточки "
