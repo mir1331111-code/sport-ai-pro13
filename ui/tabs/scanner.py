@@ -19,9 +19,10 @@ from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture,
-                          sstats_upcoming_matches, sstats_odds_fixture)
+                          sstats_upcoming_matches, sstats_odds_fixture,
+                          footballapi_xg_history)
 from data.fixture_merge import merge_fixture_sources, fixture_key
-from model.engine import Engine
+from model.engine import Engine, _norm
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
 from betting.kelly import kelly, market_type
@@ -153,7 +154,7 @@ def _print_log(msg: str):
         pass
 
 
-def _train_engine(matrix_n, logs, update_loader):
+def _train_engine(matrix_n, logs, update_loader, footballapi_key=""):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     history_years = list(range(cur_year - 4, cur_year + 1))
@@ -190,6 +191,62 @@ def _train_engine(matrix_n, logs, update_loader):
                     f"n={metric['n']}, MAE={metric['mae']:.2f}"
                 )
         logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(league_rows)} матчей за {len(history_years)} сезонов")
+
+    # Enrich only the current Premier League season with genuine match xG.
+    # Football API's complimentary plan is limited to this season's EPL.
+    xg_rows = footballapi_xg_history(footballapi_key, logs) if footballapi_key else []
+    if xg_rows and "E0" in history and history["E0"]:
+        current_rows = history["E0"][-1]
+        index = {}
+        for row in current_rows:
+            date_value = parse_date(row.get("Date") or "")
+            if not date_value:
+                continue
+            key = (
+                date_value.date().isoformat(),
+                _norm(row.get("HomeTeam") or ""),
+                _norm(row.get("AwayTeam") or ""),
+            )
+            if all(key):
+                index[key] = row
+        enriched = added = already_present = 0
+        for xg_row in xg_rows:
+            date_value = parse_date(xg_row.get("Date") or "")
+            if not date_value:
+                continue
+            key = (
+                date_value.date().isoformat(),
+                _norm(xg_row.get("HomeTeam") or ""),
+                _norm(xg_row.get("AwayTeam") or ""),
+            )
+            if not all(key):
+                continue
+            existing = index.get(key)
+            if existing is not None:
+                if existing.get("HxG") not in (None, "") and existing.get("AxG") not in (None, ""):
+                    already_present += 1
+                    continue
+                existing["HxG"] = xg_row["HxG"]
+                existing["AxG"] = xg_row["AxG"]
+                existing["xg_source"] = xg_row.get("xg_source", "footballapi.org")
+                enriched += 1
+            else:
+                current_rows.append(dict(xg_row))
+                index[key] = current_rows[-1]
+                added += 1
+        current_rows.sort(
+            key=lambda row: parse_date(row.get("Date") or "") or datetime.min
+        )
+        logs.append(
+            f"✅ Football API xG применён: добавлено матчей={added}, "
+            f"обогащено строк={enriched}, xG уже были={already_present}."
+        )
+    elif not footballapi_key:
+        logs.append(
+            "ℹ️ xG API не подключён. xG-ветка модели готова, но без источника "
+            "в исторических строках используется обычная модель голов."
+        )
+
     # Separate leakage-safe historical walk-forward check for totals.
     # Other markets skip bootstrap here to keep the one-time cache rebuild practical.
     historical_rows = []
@@ -315,13 +372,14 @@ def _shared_engine_cache():
     return {"engines": {}, "lock": threading.RLock()}
 
 
-def _load_engine(matrix_n, logs, update_loader):
+def _load_engine(matrix_n, logs, update_loader, footballapi_key=""):
     """Reuse a fitted model across reruns/sessions; rebuild only on cache miss."""
     import pickle, gzip, os
     from config import DISK_CACHE_DIR
 
-    cache_key = f"{APP_VERSION}:{int(matrix_n)}"
-    session_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}"
+    xg_cache_tag = "xg_on" if str(footballapi_key or "").strip() else "xg_off"
+    cache_key = f"{APP_VERSION}:{int(matrix_n)}:{xg_cache_tag}"
+    session_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}_{xg_cache_tag}"
     try:
         session_engine = st.session_state.get(session_key)
         if (session_engine is not None
@@ -350,7 +408,7 @@ def _load_engine(matrix_n, logs, update_loader):
             )
             return cached
 
-        p = os.path.join(DISK_CACHE_DIR, f"engine_{APP_VERSION}_{matrix_n}.pkl.gz")
+        p = os.path.join(DISK_CACHE_DIR, f"engine_{APP_VERSION}_{matrix_n}_{xg_cache_tag}.pkl.gz")
         if os.path.exists(p):
             try:
                 with open(p, "rb") as f:
@@ -372,7 +430,7 @@ def _load_engine(matrix_n, logs, update_loader):
             except Exception as exc:
                 logs.append(f"⚠️ Кэш модели не прочитан ({type(exc).__name__}); создаю заново.")
 
-        engine = _train_engine(matrix_n, logs, update_loader)
+        engine = _train_engine(matrix_n, logs, update_loader, footballapi_key=footballapi_key)
         try:
             with open(p, "wb") as f:
                 f.write(gzip.compress(pickle.dumps(
@@ -1348,6 +1406,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         token = _runtime_secret("fdorg_token_input", "FDORG_TOKEN", "fdorg_token")
         sstats_key = _runtime_secret("sstats_api_key_input", "SSTATS_API_KEY", "sstats_api_key")
+        footballapi_key = _runtime_secret(
+            "footballapi_key_input", "FOOTBALLAPI_KEY", "footballapi_key"
+        )
         fixture_sources = []
         sstats_rows = []
         try:
@@ -1433,7 +1494,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             logs.append("⚠️ Матчи не найдены. Проверьте доступность источников расписания.")
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
-        engine = _load_engine(matrix_n, logs, update_loader)
+        engine = _load_engine(
+            matrix_n, logs, update_loader, footballapi_key=footballapi_key
+        )
 
         update_loader("🧠 Анализ матчей...", 0.80, logs)
         cards = []

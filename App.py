@@ -38,7 +38,8 @@ from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
-from data.sources import parse_date, fdorg_match_result, highlightly_connection_check, sstats_account_check  # noqa: E402
+from data.sources import (parse_date, fdorg_match_result, highlightly_connection_check,
+                          sstats_account_check, footballapi_xg_connection_check)  # noqa: E402
 from betting.settlement import determine_outcome  # noqa: E402
 from ui import theme  # noqa: E402
 from ui.tabs import scanner, portfolio, stats, calculator, backtest  # noqa: E402
@@ -53,7 +54,7 @@ SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)
 RETRY_EVERY = timedelta(minutes=60)
 STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 20
-SECRET_KEYS = ("fdorg_token", "highlightly_api_key", "sstats_api_key", "llm_api_key")
+SECRET_KEYS = ("fdorg_token", "highlightly_api_key", "sstats_api_key", "footballapi_key", "llm_api_key")
 
 
 def _configured_secret(*keys):
@@ -63,7 +64,7 @@ def _configured_secret(*keys):
             value = st.secrets.get(key, "")
             if value:
                 return str(value).strip()
-        for section_name in ("api", "apis", "secrets", "highlightly", "sstats"):
+        for section_name in ("api", "apis", "secrets", "highlightly", "sstats", "footballapi", "football_api"):
             section = st.secrets.get(section_name, {})
             if hasattr(section, "get"):
                 for key in keys:
@@ -592,6 +593,21 @@ with st.sidebar:
         value=_api_key_default("sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"),
         type="password", key="sstats_api_key_input",
         help="Ключ SStats.net. Расписание и коэффициенты загружаются автоматически при сканировании.")
+
+    footballapi_key = st.text_input(
+        "Football API key (xG · бесплатно, текущий сезон АПЛ)",
+        value=_api_key_default("footballapi_key", "FOOTBALLAPI_KEY", "footballapi_key"),
+        type="password", key="footballapi_key_input",
+        help="Даёт xG обеих команд для завершённых матчей текущего сезона Премьер-лиги. Бесплатный тариф: 50 запросов в день.")
+    if st.button("🔎 Проверить подключение xG Football API", key="check_footballapi_xg",
+                 use_container_width=True):
+        with st.spinner("Проверяю ключ и дневную квоту Football API…"):
+            _footballapi_check = footballapi_xg_connection_check(footballapi_key)
+        if _footballapi_check.get("ok"):
+            st.success(_footballapi_check.get("message", "Football API подключён."))
+            st.caption("xG доступен только в рамках покрытия текущего сезона АПЛ на бесплатном тарифе.")
+        else:
+            st.error(_footballapi_check.get("message", "Не удалось проверить Football API."))
     if st.button("🔎 Проверить подключение SStats.net", key="check_sstats_api",
                  use_container_width=True):
         with st.spinner("Проверяю ключ SStats, расписание и Odds…"):
@@ -638,6 +654,7 @@ with st.sidebar:
         "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
         "highlightly_api_key": ("highlightly_api_key_input", ("HIGHLIGHTLY_API_KEY",), ("HIGHLIGHTLY_API_KEY", "highlightly_api_key")),
         "sstats_api_key": ("sstats_api_key_input", ("SSTATS_API_KEY",), ("SSTATS_API_KEY", "sstats_api_key")),
+        "footballapi_key": ("footballapi_key_input", ("FOOTBALLAPI_KEY",), ("FOOTBALLAPI_KEY", "footballapi_key")),
         "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
     }
     _user_entered_keys = {}

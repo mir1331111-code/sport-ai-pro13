@@ -22,6 +22,7 @@ _ALLOWED_KEYS = {
     "api_football_key",
     "therundown_api_key",
     "sstats_api_key",
+    "footballapi_key",
     "highlightly_api_key",
     "llm_api_key",
 }

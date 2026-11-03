@@ -124,6 +124,327 @@ def _f(v):
         return None
 
 
+# ============ FOOTBALL API xG (COMPLIMENTARY PREMIER LEAGUE) ============
+FOOTBALLAPI_BASE = "https://api.footballapi.org/v1"
+
+
+def _footballapi_request(path: str, api_key: str, params=None, timeout=(4, 12)):
+    """Call Football API using its documented X-API-Key header; never log secrets."""
+    return _sess.get(
+        f"{FOOTBALLAPI_BASE}/{str(path).lstrip('/')}",
+        headers={"X-API-Key": str(api_key or "").strip(), "Accept": "application/json"},
+        params=dict(params or {}),
+        timeout=timeout,
+        proxies=NO_PROXY,
+    )
+
+
+def footballapi_xg_connection_check(api_key: str) -> dict:
+    """Check key status and quota via /usage, which the provider says is not counted."""
+    key = str(api_key or "").strip()
+    if not key:
+        return {"ok": False, "message": "FOOTBALLAPI_KEY не задан."}
+    try:
+        response = _footballapi_request("usage", key, timeout=(4, 10))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"Football API недоступен: {type(exc).__name__}.",
+        }
+    if response.status_code != 200:
+        return {
+            "ok": False,
+            "http_status": response.status_code,
+            "message": f"Football API отклонил проверку ключа: HTTP {response.status_code}.",
+        }
+    try:
+        payload = response.json() or {}
+        data = payload.get("data") or payload
+        if not isinstance(data, dict):
+            raise ValueError("unexpected usage response")
+    except Exception:
+        return {"ok": False, "message": "Football API вернул неожиданный формат /usage."}
+    if str(data.get("key_status") or "").casefold() != "active":
+        return {
+            "ok": False,
+            "message": "Ключ Football API не активен или был заменён.",
+        }
+    calls = data.get("calls_today")
+    limit = data.get("limit_per_day")
+    reads = str(data.get("reads") or "не указано")
+    plan = str(data.get("plan") or "Football API")
+    return {
+        "ok": True,
+        "plan": plan,
+        "reads": reads,
+        "calls_today": calls,
+        "limit_per_day": limit,
+        "limit_per_minute": data.get("limit_per_minute"),
+        "resets_at": data.get("resets_at"),
+        "message": (
+            f"Football API подключён: {plan}; доступ: {reads}; "
+            f"запросов сегодня: {calls}/{limit if limit is not None else 'без лимита'}."
+        ),
+    }
+
+
+def _footballapi_num(value, *, maximum=8.0):
+    try:
+        number = float(str(value).strip().replace(",", "."))
+        return number if math.isfinite(number) and 0.0 <= number <= maximum else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _footballapi_team_key(value):
+    import unicodedata
+    raw = unicodedata.normalize("NFKD", str(value or "").casefold())
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = re.sub(r"[^a-z0-9]+", "", raw)
+    for suffix in ("footballclub", "fc", "afc", "cf", "sc"):
+        if raw.endswith(suffix) and len(raw) > len(suffix) + 3:
+            raw = raw[:-len(suffix)]
+            break
+    return raw
+
+
+def parse_footballapi_xg_match(match: dict, stats_payload: dict) -> dict | None:
+    """Convert one completed Football API match + its two team-stat rows to model schema."""
+    if not isinstance(match, dict) or not isinstance(stats_payload, dict):
+        return None
+    status = str(match.get("match_status") or "").casefold()
+    if status != "finished":
+        return None
+    home = str(match.get("home_club_name") or "").strip()
+    away = str(match.get("away_club_name") or "").strip()
+    if not home or not away:
+        return None
+    date_text = str(
+        match.get("kickoff_local_date") or match.get("kickoff_date")
+        or str(match.get("kickoff_utc") or "")[:10]
+    )[:10]
+    parsed_date = parse_date(date_text)
+    if not parsed_date:
+        return None
+    try:
+        home_goals = int(match.get("regular_time_home_goals")
+                          if match.get("regular_time_home_goals") is not None
+                          else match.get("home_goals"))
+        away_goals = int(match.get("regular_time_away_goals")
+                          if match.get("regular_time_away_goals") is not None
+                          else match.get("away_goals"))
+    except (TypeError, ValueError):
+        return None
+    if home_goals < 0 or away_goals < 0:
+        return None
+
+    data = stats_payload.get("data") or stats_payload
+    if not isinstance(data, dict):
+        return None
+    stat_rows = data.get("stats") or []
+    if not isinstance(stat_rows, list):
+        return None
+    home_key, away_key = _footballapi_team_key(home), _footballapi_team_key(away)
+    xg_by_team = {}
+    for team_row in stat_rows:
+        if not isinstance(team_row, dict):
+            continue
+        team_key = _footballapi_team_key(team_row.get("club_name"))
+        team_stats = team_row.get("stats") or {}
+        if team_key and isinstance(team_stats, dict):
+            value = _footballapi_num(team_stats.get("expected_goals"))
+            if value is not None:
+                xg_by_team[team_key] = value
+    home_xg, away_xg = xg_by_team.get(home_key), xg_by_team.get(away_key)
+    if home_xg is None or away_xg is None:
+        return None
+    return {
+        "Date": parsed_date.strftime("%Y-%m-%d"),
+        "Div": "E0",
+        "HomeTeam": home,
+        "AwayTeam": away,
+        "FTHG": home_goals,
+        "FTAG": away_goals,
+        "HxG": home_xg,
+        "AxG": away_xg,
+        "xg_source": "footballapi.org",
+        "xg_match_id": str(match.get("match_id") or ""),
+    }
+
+
+def _footballapi_take_rate_slot() -> bool:
+    """Keep below the complimentary plan's 10 requests/minute ceiling."""
+    key = "footballapi_xg_request_times_v1"
+    now = datetime.now().timestamp()
+    previous = cache_get(key, 60) or []
+    if not isinstance(previous, list):
+        previous = []
+    recent = []
+    for item in previous:
+        try:
+            stamp = float(item)
+            if 0 <= now - stamp < 60:
+                recent.append(stamp)
+        except (TypeError, ValueError):
+            continue
+    # Leave one request/minute of headroom for a concurrent UI check or other user.
+    if len(recent) >= 9:
+        return False
+    recent.append(now)
+    cache_put(key, recent)
+    return True
+
+
+def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8) -> list:
+    """Fetch completed current-season Premier League xG gradually within the free quota.
+
+    The complimentary key only reads the current Premier League season. /usage
+    is not counted; this function reserves quota and rate-limit headroom, caches
+    individual match statistics, and never invents xG when the provider omits it.
+    """
+    key = str(api_key or "").strip()
+    if not key:
+        if logs is not None:
+            logs.append("ℹ️ Football API xG: FOOTBALLAPI_KEY не задан; xG-фид не подключён.")
+        return []
+
+    try:
+        usage_response = _footballapi_request("usage", key, timeout=(4, 10))
+        if usage_response.status_code != 200:
+            if logs is not None:
+                logs.append(f"⚠️ Football API /usage: HTTP {usage_response.status_code}")
+            return []
+        usage_payload = usage_response.json() or {}
+        usage_data = usage_payload.get("data") or usage_payload
+        if not isinstance(usage_data, dict) or str(usage_data.get("key_status") or "").casefold() != "active":
+            if logs is not None:
+                logs.append("⚠️ Football API xG: ключ не активен.")
+            return []
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ Football API /usage: {type(exc).__name__}")
+        return []
+
+    daily_limit = usage_data.get("limit_per_day")
+    calls_today = usage_data.get("calls_today")
+    try:
+        daily_remaining = (
+            max(0, int(daily_limit) - int(calls_today or 0) - 1)
+            if daily_limit is not None else 35
+        )
+    except (TypeError, ValueError):
+        daily_remaining = 0
+    stats_budget = min(max(0, int(max_detail_calls)), 8, daily_remaining)
+    if stats_budget <= 0:
+        if logs is not None:
+            logs.append(
+                "ℹ️ Football API xG: дневная квота почти исчерпана; "
+                f"использовано {calls_today}/{daily_limit} запросов."
+            )
+        return []
+
+    today = datetime.now()
+    season_start = today.year if today.month >= 7 else today.year - 1
+    matches_cache_key = f"footballapi_epl_matches_{season_start}"
+    matches = cache_get(matches_cache_key, 6 * 3600)
+    if not isinstance(matches, list):
+        if not _footballapi_take_rate_slot():
+            if logs is not None:
+                logs.append("ℹ️ Football API xG: минутный лимит запросов достигнут.")
+            return []
+        try:
+            response = _footballapi_request(
+                "matches",
+                key,
+                params={
+                    "competition": "premier-league",
+                    "season": season_start,
+                    "status": "finished",
+                    "per_page": 1000,
+                },
+                timeout=(5, 20),
+            )
+            if response.status_code != 200:
+                if logs is not None:
+                    logs.append(f"⚠️ Football API /matches: HTTP {response.status_code}")
+                return []
+            payload = response.json() or {}
+            matches = payload.get("data") or []
+            if not isinstance(matches, list):
+                if logs is not None:
+                    logs.append("⚠️ Football API /matches: неожиданный формат data.")
+                return []
+            cache_put(matches_cache_key, matches)
+        except Exception as exc:
+            if logs is not None:
+                logs.append(f"⚠️ Football API /matches: {type(exc).__name__}")
+            return []
+
+    matches = [
+        item for item in matches
+        if isinstance(item, dict)
+        and str(item.get("match_status") or "").casefold() == "finished"
+        and item.get("match_id")
+    ]
+    matches.sort(key=lambda item: str(item.get("kickoff_utc") or item.get("kickoff_date") or ""))
+
+    rows = []
+    fetched = 0
+    cached_count = 0
+    rate_limited = False
+    for match in matches:
+        match_id = str(match.get("match_id") or "").strip()
+        cache_key = f"footballapi_xg_match_v1_{match_id}"
+        cached = cache_get(cache_key, 365 * 86400)
+        if isinstance(cached, dict):
+            cached_count += 1
+            row = cached.get("row")
+            if isinstance(row, dict):
+                rows.append(row)
+            continue
+        if fetched >= stats_budget:
+            break
+        if not _footballapi_take_rate_slot():
+            rate_limited = True
+            break
+        try:
+            response = _footballapi_request(
+                f"matches/{match_id}/stats", key, timeout=(4, 12)
+            )
+            fetched += 1
+            if response.status_code == 429:
+                rate_limited = True
+                break
+            if response.status_code != 200:
+                # Do not cache access/coverage errors as a missing xG statistic.
+                if logs is not None and response.status_code not in (403, 404):
+                    logs.append(
+                        f"⚠️ Football API stats {match_id}: HTTP {response.status_code}"
+                    )
+                if response.status_code in (401, 403):
+                    break
+                cache_put(cache_key, {"row": None})
+                continue
+            payload = response.json() or {}
+            row = parse_footballapi_xg_match(match, payload)
+            cache_put(cache_key, {"row": row} if row else {"row": None})
+            if row:
+                rows.append(row)
+        except Exception as exc:
+            if logs is not None:
+                logs.append(f"⚠️ Football API stats {match_id}: {type(exc).__name__}")
+            continue
+
+    if logs is not None:
+        logs.append(
+            f"📈 Football API xG: завершённых матчей в сезоне={len(matches)}, "
+            f"xG-матчей в кэше/ответе={len(rows)}, новых запросов stats={fetched}, "
+            f"лимит скана={stats_budget}"
+            + ("; достигнут минутный/дневной лимит." if rate_limited else ".")
+        )
+    return rows
+
+
 # ============ FOOTBALL-DATA.CO.UK ============
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
