@@ -106,6 +106,23 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         self.assertGreater(report["markets"]["corners"]["9.5"]["n"], 0)
         self.assertIn("validation_passed", report["markets"]["cards"]["4.5"])
 
+        # A row without both red-card fields remains valid for corners but is
+        # excluded from the total-cards calibration sample.
+        incomplete_rows = [dict(row) for row in rows]
+        incomplete_rows[50].pop("HR")
+        incomplete_rows[50].pop("AR")
+        incomplete_report = walk_forward_market_validation(
+            incomplete_rows, min_history=15, min_n=10, bootstrap_samples=0,
+        )
+        self.assertEqual(
+            incomplete_report["markets"]["corners"]["9.5"]["n"],
+            report["markets"]["corners"]["9.5"]["n"],
+        )
+        self.assertEqual(
+            incomplete_report["markets"]["cards"]["4.5"]["n"],
+            report["markets"]["cards"]["4.5"]["n"] - 1,
+        )
+
     def test_history_stats_survive_pickle_round_trip_and_keep_defaultdicts(self):
         from model.engine import Engine
 
