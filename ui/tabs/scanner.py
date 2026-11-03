@@ -24,7 +24,7 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
 from data.fixture_merge import merge_fixture_sources, fixture_key
 from model.engine import Engine, _norm
 from model.validation_cache import select_validation_rows, validation_cache_key
-from model.market_forecasts import count_over_probability
+from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
 from betting.kelly import kelly, market_type
@@ -143,7 +143,7 @@ def _stat_market_lines(odds: dict, prefix: str) -> list[float]:
             line = float(match.group(1).replace(",", "."))
         except ValueError:
             continue
-        if 0.0 < line <= 30.0:
+        if 0.0 < line <= 30.0 and is_half_line(line):
             lines.add(line)
     return sorted(lines)
 
@@ -318,11 +318,11 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
             str(line): bool(report.get("validation_passed"))
             for line, report in line_reports.items()
         }
-        engine.total_market_validation = bool(
-            engine.total_market_validation_by_line.get("2.5", False)
-            or totals_market_is_validated(
-                engine.total_market_validation_report, min_n=500
-            )
+        # Line-vs-league-baseline validation is useful for forecast screening,
+        # but it is NOT proof of an edge over bookmakers. Automatic total-goals
+        # staking requires the separate paired candidate-vs-market benchmark.
+        engine.total_market_validation = totals_market_is_validated(
+            engine.total_market_validation_report, min_n=500
         )
         engine.btts_market_validation_report = totals_backtest.get("btts") or {}
         engine.btts_market_validation = bool(
@@ -1414,11 +1414,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         with portfolio_col:
             auto_add = st.checkbox(
                 "Автодобавление в виртуальный портфель",
-                value=True,
-                key="scanner_auto_add_qualified_v3",
+                value=False,
+                key="scanner_auto_add_qualified_v4",
                 help="Добавляются только прогнозы с реальными коэффициентами, прошедшие value-фильтры. Реальные ставки не размещаются.",
             )
-    auto_add = st.session_state.get("scanner_auto_add_qualified_v3", True)
+    auto_add = st.session_state.get("scanner_auto_add_qualified_v4", False)
 
     if not scan:
         fn = D.get("funnel")
@@ -2260,6 +2260,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not match:
                     continue
                 line = float(match.group(2).replace(",", "."))
+                # The binary probability/EV calculation has no push handling.
+                # Keep integer and quarter lines informational, never actionable.
+                if not is_half_line(line):
+                    continue
                 line_text = f"{line:g}"
                 if not bool(total_validation.get(line_text)):
                     continue
@@ -2318,6 +2322,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 market_key = "corners" if code == "Угл" else "cards"
                 label_prefix = "Угловые" if code == "Угл" else "Карточки"
                 line = float(match.group(3).replace(",", "."))
+                # Integer totals can push and quarter lines split the stake.
+                # This model prices only half-lines, so other quotes stay informational.
+                if not is_half_line(line):
+                    continue
                 line_text = f"{line:g}"
                 pred = historical_stats.get(market_key) or {}
                 if not bool((stat_validation.get(market_key) or {}).get(line_text)):
