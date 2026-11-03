@@ -241,3 +241,171 @@ class ForecastLedger:
                 "accuracy": correct / n,
                 "mean_clv": sum(clvs) / len(clvs) if clvs else None,
                 "clv_n": len(clvs)}
+
+
+
+MARKET_FORECAST_SCHEMA = """
+CREATE TABLE IF NOT EXISTS market_forecasts (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ forecast_key TEXT NOT NULL UNIQUE,
+ fixture_id TEXT NOT NULL, kickoff_at TEXT, forecast_at TEXT NOT NULL,
+ model_version TEXT NOT NULL, home_team TEXT NOT NULL, away_team TEXT NOT NULL,
+ league TEXT, market TEXT NOT NULL, selection TEXT NOT NULL,
+ probability REAL NOT NULL, entry_odds REAL NOT NULL, odds_source TEXT,
+ unit_stake REAL NOT NULL DEFAULT 1.0,
+ result_status TEXT CHECK(result_status IS NULL OR result_status IN ('won','lost','push','void')),
+ result_score TEXT, actual_value REAL, closing_odds REAL, settlement_source TEXT,
+ settled_at TEXT, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_forecasts_fixture ON market_forecasts(fixture_id);
+CREATE INDEX IF NOT EXISTS idx_market_forecasts_market ON market_forecasts(market);
+"""
+
+
+class MarketForecastLedger:
+    """Append-only record of each pre-match best-market pick and its result."""
+    VALID_MARKETS = {"1X2", "OU", "BTTS", "AH", "DC", "STAT"}
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = str(db_path)
+        if self.db_path != ":memory:":
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.executescript(MARKET_FORECAST_SCHEMA)
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=15)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def record_recommendation(
+        self, *, forecast_key: str, fixture_id: str, home_team: str, away_team: str,
+        model_version: str, market: str, selection: str, probability: float,
+        entry_odds: float, forecast_at: datetime | str,
+        kickoff_at: datetime | str | None = None, league: str | None = None,
+        odds_source: str | None = None, unit_stake: float = 1.0,
+    ) -> int:
+        required = (forecast_key, fixture_id, home_team, away_team, model_version, selection)
+        if any(not isinstance(v, str) or not v.strip() for v in required):
+            raise ValueError("forecast key, fixture, teams, model and selection are required")
+        market = str(market or "").upper().strip()
+        if market not in self.VALID_MARKETS:
+            raise ValueError("unsupported market: " + market)
+        probability, entry_odds, unit_stake = map(float, (probability, entry_odds, unit_stake))
+        if not math.isfinite(probability) or not 0 < probability < 1:
+            raise ValueError("probability must be in (0, 1)")
+        if not math.isfinite(entry_odds) or entry_odds <= 1:
+            raise ValueError("entry odds must be > 1")
+        if not math.isfinite(unit_stake) or unit_stake <= 0:
+            raise ValueError("unit stake must be positive")
+        stamp = _timestamp(forecast_at)
+        kickoff = _timestamp(kickoff_at) if kickoff_at is not None else None
+        values = (
+            str(forecast_key), str(fixture_id), kickoff, stamp, str(model_version),
+            str(home_team), str(away_team), league, market, str(selection),
+            probability, entry_odds, odds_source, unit_stake,
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO market_forecasts
+                (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,home_team,
+                 away_team,league,market,selection,probability,entry_odds,odds_source,
+                 unit_stake,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (*values, _timestamp(None)),
+            )
+            row = conn.execute(
+                """SELECT id,fixture_id,kickoff_at,forecast_at,model_version,home_team,
+                away_team,league,market,selection,probability,entry_odds,odds_source,unit_stake
+                FROM market_forecasts WHERE forecast_key=?""", (forecast_key,)
+            ).fetchone()
+            actual = tuple(row[k] for k in (
+                "fixture_id","kickoff_at","forecast_at","model_version","home_team",
+                "away_team","league","market","selection","probability","entry_odds",
+                "odds_source","unit_stake"
+            ))
+            if actual != values[1:]:
+                raise ValueError("forecast_key already exists with a different payload")
+            return int(row["id"])
+
+    def settle(
+        self, forecast_key: str, result_status: str, *, result_score: str | None = None,
+        actual_value: float | int | None = None, closing_odds: float | None = None,
+        settlement_source: str | None = None, settled_at: datetime | str | None = None,
+    ) -> bool:
+        status = str(result_status or "").lower()
+        if status not in {"won","lost","push","void"}:
+            raise ValueError("invalid result status")
+        if actual_value is not None:
+            if isinstance(actual_value, bool):
+                raise ValueError("actual value must be non-negative")
+            actual_value = float(actual_value)
+            if not math.isfinite(actual_value) or actual_value < 0:
+                raise ValueError("actual value must be non-negative")
+        if closing_odds is not None:
+            closing_odds = float(closing_odds)
+            if not math.isfinite(closing_odds) or closing_odds <= 1:
+                raise ValueError("closing odds must be > 1")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT result_status,result_score,actual_value FROM market_forecasts WHERE forecast_key=?",
+                (forecast_key,)
+            ).fetchone()
+            if row is None:
+                raise KeyError("unknown forecast_key: " + forecast_key)
+            if row["result_status"] is not None and row["result_status"] != status:
+                raise ValueError("conflicting settlement: result is immutable")
+            if row["result_score"] is not None and result_score is not None and row["result_score"] != result_score:
+                raise ValueError("conflicting settlement: score is immutable")
+            if row["actual_value"] is not None and actual_value is not None and not math.isclose(float(row["actual_value"]), actual_value):
+                raise ValueError("conflicting settlement: actual value is immutable")
+            conn.execute(
+                """UPDATE market_forecasts SET result_status=COALESCE(result_status,?),
+                result_score=COALESCE(result_score,?),actual_value=COALESCE(actual_value,?),
+                closing_odds=COALESCE(closing_odds,?),settlement_source=COALESCE(settlement_source,?),
+                settled_at=COALESCE(settled_at,?) WHERE forecast_key=?""",
+                (status,result_score,actual_value,closing_odds,settlement_source,_timestamp(settled_at),forecast_key)
+            )
+        return True
+
+    def rows(self) -> list[dict]:
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM market_forecasts ORDER BY forecast_at,id")]
+
+    @staticmethod
+    def _summary(rows: list[dict]) -> dict[str, Any]:
+        settled = [r for r in rows if r.get("result_status") is not None]
+        decisive = [r for r in settled if r.get("result_status") in {"won","lost"}]
+        wins = sum(r["result_status"] == "won" for r in decisive)
+        n = len(decisive)
+        turnover = sum(float(r["unit_stake"]) for r in decisive)
+        pnl = sum(float(r["unit_stake"]) * (
+            float(r["entry_odds"])-1 if r["result_status"] == "won" else -1
+        ) for r in decisive)
+        clvs = [float(r["entry_odds"])/float(r["closing_odds"])-1
+                for r in rows if r.get("closing_odds") is not None]
+        brier, logloss = [], []
+        for r in decisive:
+            p = float(r["probability"])
+            y = float(r["result_status"] == "won")
+            brier.append((p-y)**2)
+            logloss.append(-math.log(max(p if y else 1-p, 1e-15)))
+        return {
+            "n":len(rows),"settled":len(settled),"pending":len(rows)-len(settled),
+            "wins":wins,"losses":n-wins,
+            "pushes":sum(r["result_status"]=="push" for r in settled),
+            "voids":sum(r["result_status"]=="void" for r in settled),
+            "win_rate":wins/n if n else None,"turnover":turnover,"pnl":pnl,
+            "roi":pnl/turnover if turnover else None,
+            "avg_odds":sum(float(r["entry_odds"]) for r in decisive)/n if n else None,
+            "break_even_rate":sum(1/float(r["entry_odds"]) for r in decisive)/n if n else None,
+            "brier":sum(brier)/n if n else None,"log_loss":sum(logloss)/n if n else None,
+            "mean_clv":sum(clvs)/len(clvs) if clvs else None,"clv_n":len(clvs),
+        }
+
+    def metrics(self) -> dict[str, Any]:
+        rows = self.rows()
+        groups: dict[str,list[dict]] = {}
+        for row in rows:
+            groups.setdefault(str(row.get("market") or "OTHER"), []).append(row)
+        return {"overall":self._summary(rows),
+                "by_market":[{"market":m,**self._summary(group)} for m,group in sorted(groups.items())]}
