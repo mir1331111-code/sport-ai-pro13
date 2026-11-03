@@ -2363,6 +2363,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "stat_market_validation": getattr(engine, "stat_market_validation", {}),
                 "stat_market_validation_report": getattr(engine, "stat_market_validation_report", {}),
                 "best_odds_source": best_odds_source,
+                "market_odds_source_by_pick": dict(market_source_by_pick),
                 "date_iso": d.strftime("%Y-%m-%d"),
                 "time": r.get("Time") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
@@ -2548,6 +2549,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 match_key = (str(card.get("match") or ""), pick)
                 if match_key in existing_keys:
                     continue
+                market_family = (
+                    "winner" if market_code == "1X2"
+                    else "goals" if market_code == "OU"
+                    else "btts" if market_code == "BTTS"
+                    else "corners" if market_code == "STAT" and pick.startswith("Угл ")
+                    else "cards" if market_code == "STAT" and pick.startswith("Карты ")
+                    else None
+                )
                 try:
                     odds_value = float(best_card[2])
                     probability = float(verdict_card.get("prob") or 0.0)
@@ -2586,7 +2595,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "fixture_id": card.get("fixture_id"),
                     "sstats_game_id": card.get("sstats_game_id"),
-                    "market_forecast_key": card.get("market_forecast_key"),
+                    "market_forecast_key": (
+                        (card.get("market_forecast_keys") or {}).get(market_family)
+                        or (
+                            card.get("market_forecast_key")
+                            if card.get("best") and str(card["best"][1]) == pick
+                            else None
+                        )
+                    ),
                     "score": None,
                     "ev": ev_value,
                 }
