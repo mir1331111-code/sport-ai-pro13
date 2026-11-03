@@ -33,6 +33,69 @@ def _paired_picks(pick: str) -> tuple[str, ...] | None:
     return None
 
 
+def best_value_markets(
+    verdict: dict,
+    rows: list,
+    market_odds: dict | None,
+    bank: float,
+    kelly_frac: float,
+    min_prob: float,
+    *,
+    min_edge: float = 0.05,
+    min_ev: float = 0.05,
+    bookmaker_by_pick: dict | None = None,
+    market_validation_by_pick: dict | None = None,
+) -> dict:
+    """Select one independent best signal for each market family in a fixture.
+
+    A result in one family never filters another family. Every family is passed
+    through the same exact-price, line-validation, same-bookmaker, EV, edge and
+    Kelly gates as the combined selector.
+    """
+    if not isinstance(rows, list):
+        return {}
+    families = {
+        "winner": lambda pick: market_type(pick) == "1X2",
+        "goals": lambda pick: market_type(pick) == "OU",
+        "btts": lambda pick: market_type(pick) == "BTTS",
+        "corners": lambda pick: (
+            market_type(pick) == "STAT" and str(pick).startswith("Угл ")
+        ),
+        "cards": lambda pick: (
+            market_type(pick) == "STAT" and str(pick).startswith("Карты ")
+        ),
+    }
+    result = {}
+    for family, predicate in families.items():
+        family_rows = [
+            row for row in rows
+            if isinstance(row, dict) and predicate(str(row.get("pick") or ""))
+        ]
+        if not family_rows:
+            continue
+        chosen, best = best_value_market(
+            verdict, family_rows, market_odds, bank, kelly_frac, min_prob,
+            min_edge=min_edge, min_ev=min_ev,
+            bookmaker_by_pick=bookmaker_by_pick,
+            market_validation_by_pick=market_validation_by_pick,
+        )
+        if not chosen or not best:
+            continue
+        score = (
+            0.60 * max(-1.0, min(1.0, float(chosen.get("ev") or 0.0)))
+            + 0.25 * max(-1.0, min(1.0, float(chosen.get("edge") or 0.0)))
+            + 0.15 * float(chosen.get("prob") or 0.0)
+        )
+        result[family] = {
+            "verdict": chosen,
+            "best": best,
+            "score": score,
+            "market": str(best[0]),
+            "pick": str(best[1]),
+        }
+    return result
+
+
 def best_value_market(
     verdict: dict,
     rows: list,
