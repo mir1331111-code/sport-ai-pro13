@@ -1192,6 +1192,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"<span class='pick-chip'>Модель {float(model_prob):.1%}</span>"
                     if model_prob is not None else ""
                 )
+                xg_chip = (
+                    "<span class='pick-chip'>xG учтён</span>"
+                    if card.get("xg_used") else
+                    "<span class='pick-chip'>без xG</span>"
+                )
                 stake_text = f"Kelly {float(verdict.get('kelly_pct') or 0):.1%}"
                 reason_items = verdict.get("reasons") or []
                 reasons_html = (
@@ -1228,7 +1233,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"<span class='pick-chip'>{html.escape(edge_text)}</span>"
                     f"<span class='pick-chip'>{html.escape(ev_text)}</span>"
                     f"<span class='pick-chip'>{html.escape(stake_text)}</span>"
-                    f"{model_chip}</div>"
+                    f"{model_chip}{xg_chip}</div>"
                     f"<div class='pick-ai'><b>Линия букмекера</b>{html.escape(bookmaker)}"
                     f" · Источник: {html.escape(str(card.get('odds_source') or 'SStats'))}</div>"
                     f"<div class='pick-ai'><b>Почему прошла отбор</b>{reasons_html}"

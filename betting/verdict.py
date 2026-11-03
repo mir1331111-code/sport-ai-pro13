@@ -120,9 +120,21 @@ def build_verdict(
     tg = lh + la
 
     reasons.append(
-        f"Модель ожидает {tg:.2f} голов "
-        f"(xG {lh:.2f}-{la:.2f})"
+        f"Ожидаемые голы модели (λ): {tg:.2f} "
+        f"(хозяева {lh:.2f}, гости {la:.2f})"
     )
+    if P.get("xg_used"):
+        xg_weight = float(P.get("xg_weight") or 0.0)
+        xg_samples = int(P.get("xg_league_samples") or 0)
+        reasons.append(
+            f"xG действительно учтён: история лиги {xg_samples} матчей, "
+            f"средний вес xG в смешивании {xg_weight:.0%}."
+        )
+    else:
+        reasons.append(
+            "xG в этом прогнозе не использован: для этой лиги/команд "
+            "пока нет достаточной подтверждённой истории xG."
+        )
 
     if P["p1"] > 0.45:
         reasons.append(
