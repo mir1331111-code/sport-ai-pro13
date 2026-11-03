@@ -17,11 +17,11 @@ def _canonical_market_pick(pick: str) -> str:
     example ``BTTS да`` versus ``BTTS Да``). These are the same selection; an
     exact dictionary lookup must not silently discard an otherwise valid quote.
     """
-    text = re.sub(r"\\s+", " ", str(pick or "").strip())
+    text = re.sub(r"\s+", " ", str(pick or "").strip())
     if text in {"П1", "X", "П2"}:
         return text
 
-    total = re.fullmatch(r"Т([БМ])\\s+(\\d+(?:[.,]\\d+)?)", text, re.I)
+    total = re.fullmatch(r"Т([БМ])\s+(\d+(?:[.,]\d+)?)", text, re.I)
     if total:
         line = float(total.group(2).replace(",", "."))
         return f"Т{total.group(1).upper()} {line:g}"
@@ -31,7 +31,7 @@ def _canonical_market_pick(pick: str) -> str:
         side = btts.group(1).casefold()
         return "BTTS Да" if side in {"да", "yes"} else "BTTS Нет"
 
-    stat = re.fullmatch(r"(угл|карты)\\s+(ТБ|ТМ)\\s+(\\d+(?:[.,]\\d+)?)", text, re.I)
+    stat = re.fullmatch(r"(угл|карты)\s+(ТБ|ТМ)\s+(\d+(?:[.,]\d+)?)", text, re.I)
     if stat:
         prefix = "Угл" if stat.group(1).casefold() == "угл" else "Карты"
         line = float(stat.group(3).replace(",", "."))
