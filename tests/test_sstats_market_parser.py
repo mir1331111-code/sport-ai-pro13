@@ -331,6 +331,73 @@ class SStatsMarketParserTests(unittest.TestCase):
         self.assertEqual(parsed["total_market_odds"]["ТБ 3.5"], 2.20)
         self.assertEqual(parsed["total_market_odds"]["ТМ 3.5"], 1.65)
 
+    def test_two_way_prices_never_mix_best_over_and_under_from_different_books(self):
+        parsed = _sstats_parse_markets([
+            {
+                "bookmakerName": "Book A",
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [
+                        {"name": "Over 2.5", "value": "1.95"},
+                        {"name": "Under 2.5", "value": "1.75"},
+                    ],
+                }],
+            },
+            {
+                "bookmakerName": "Book B",
+                "odds": [{
+                    "marketName": "Total Goals",
+                    "odds": [
+                        {"name": "Over 2.5", "value": "1.80"},
+                        {"name": "Under 2.5", "value": "1.95"},
+                    ],
+                }],
+            },
+        ])
+        # Book A has the highest Over, but Book B has the lowest overround.
+        self.assertEqual(parsed["total_market_odds"]["ТБ 2.5"], 1.80)
+        self.assertEqual(parsed["total_market_odds"]["ТМ 2.5"], 1.95)
+        self.assertEqual(parsed["bookmaker_by_pick"]["ТБ 2.5"], "Book B")
+        self.assertEqual(parsed["bookmaker_by_pick"]["ТМ 2.5"], "Book B")
+        self.assertEqual(parsed["total_market_book_count"]["ТБ 2.5"], 2)
+        self.assertTrue(parsed["total_market_confirmed"]["ТБ 2.5"])
+
+    def test_btts_and_stat_pairs_keep_one_bookmaker(self):
+        parsed = _sstats_parse_markets([
+            {
+                "bookmakerName": "Book A",
+                "odds": [
+                    {"marketName": "Both Teams to Score", "odds": [
+                        {"name": "Yes", "value": "1.90"},
+                        {"name": "No", "value": "1.90"},
+                    ]},
+                    {"marketName": "Total Corners", "odds": [
+                        {"name": "Over 9.5", "value": "1.95"},
+                        {"name": "Under 9.5", "value": "1.75"},
+                    ]},
+                ],
+            },
+            {
+                "bookmakerName": "Book B",
+                "odds": [
+                    {"marketName": "Both Teams to Score", "odds": [
+                        {"name": "Yes", "value": "1.85"},
+                        {"name": "No", "value": "2.00"},
+                    ]},
+                    {"marketName": "Total Corners", "odds": [
+                        {"name": "Over 9.5", "value": "1.80"},
+                        {"name": "Under 9.5", "value": "1.95"},
+                    ]},
+                ],
+            },
+        ])
+        self.assertEqual(
+            parsed["bookmaker_by_pick"]["BTTS Да"],
+            parsed["bookmaker_by_pick"]["BTTS Нет"],
+        )
+        self.assertEqual(parsed["bookmaker_by_pick"]["Угл ТБ 9.5"], "Book B")
+        self.assertEqual(parsed["bookmaker_by_pick"]["Угл ТМ 9.5"], "Book B")
+
     def test_structured_line_does_not_allow_handicap_market_into_totals(self):
         parsed = _sstats_parse_markets([
             {"bookmakerName": "Book A", "odds": [{
