@@ -73,6 +73,6 @@ def validation_cache_key(rows, *, matrix_n=12):
         default=str,
     ).encode("utf-8")
     digest = hashlib.sha256(payload).hexdigest()
-    return f"neuro_market_validation_v3_{int(matrix_n)}_{digest}"
+    return f"neuro_market_validation_v4_bootstrap1000_{int(matrix_n)}_{digest}"
 
 
