@@ -3178,7 +3178,10 @@ def _sstats_parse_markets(odds_payload):
             ]
             # Every two-way market requires bookmaker identity on both sides.
             # Anonymous compact-feed values can never form a deviggable line.
-            if group in {"total_market_odds", "btts_market_odds", "stat_market_odds"}:
+            if group == "total_market_odds":
+                # Totals require identifiable bookmakers even for display;
+                # BTTS/stat quotes may remain visible without a book, but they
+                # will not form a coherent pair or actionable recommendation.
                 valid = [(odd, book) for odd, book in valid if book]
             if not valid:
                 continue
