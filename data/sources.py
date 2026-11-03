@@ -325,6 +325,19 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
             logs.append(f"⚠️ Football API /usage: {type(exc).__name__}")
         return []
 
+    today = datetime.now()
+    season_start = today.year if today.month >= 7 else today.year - 1
+    key_tag = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    daily_batch_key = f"footballapi_xg_daily_batch_{season_start}_{key_tag}"
+    daily_batch = cache_get(daily_batch_key, 18 * 3600)
+    if isinstance(daily_batch, list):
+        if logs is not None:
+            logs.append(
+                f"📈 Football API xG: дневная порция из кэша — "
+                f"{len(daily_batch)} матчей; повторная загрузка не требуется."
+            )
+        return daily_batch
+
     daily_limit = usage_data.get("limit_per_day")
     calls_today = usage_data.get("calls_today")
     try:
@@ -343,8 +356,6 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
             )
         return []
 
-    today = datetime.now()
-    season_start = today.year if today.month >= 7 else today.year - 1
     matches_cache_key = f"footballapi_epl_matches_{season_start}"
     matches = cache_get(matches_cache_key, 6 * 3600)
     if not isinstance(matches, list):
@@ -441,6 +452,7 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
                 logs.append(f"⚠️ Football API stats {match_id}: {type(exc).__name__}")
             continue
 
+    cache_put(daily_batch_key, rows)
     if logs is not None:
         logs.append(
             f"📈 Football API xG: завершённых матчей в сезоне={len(matches)}, "

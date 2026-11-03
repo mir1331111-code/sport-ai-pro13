@@ -23,6 +23,7 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
                           footballapi_xg_history)
 from data.fixture_merge import merge_fixture_sources, fixture_key
 from model.engine import Engine, _norm
+from model.validation_cache import select_validation_rows, validation_cache_key
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market
 from betting.kelly import kelly, market_type
@@ -164,8 +165,7 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
     train_divs = list(dict.fromkeys(priority_divs + supported_divs))
     engine = Engine(matrix_n=matrix_n)
     from model.historical_match_stats import (
-        HistoricalMatchStats, walk_forward_evaluate,
-        walk_forward_market_validation,
+        HistoricalMatchStats, walk_forward_market_validation,
     )
     engine.match_stats = HistoricalMatchStats()
     history = {}
@@ -183,13 +183,8 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                 logs.append(f"  {season_str(year)}: {len(rows)} матчей")
         history[dv] = seasons
         league_rows = [row for season_rows in seasons for row in season_rows]
-        evaluation = walk_forward_evaluate(league_rows, dv, min_history=30)
-        for market_name, metric in evaluation.items():
-            if metric["n"]:
-                logs.append(
-                    f"WF {DIV_NAMES.get(dv, dv)} {market_name}: "
-                    f"n={metric['n']}, MAE={metric['mae']:.2f}"
-                )
+        # Per-division walk-forward was redundant: the unified market validation
+        # below evaluates the selected multi-league sample once and is cached.
         logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(league_rows)} матчей за {len(history_years)} сезонов")
 
     # Enrich only the current Premier League season with genuine match xG.
@@ -247,21 +242,74 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
             "в исторических строках используется обычная модель голов."
         )
 
-    # Separate leakage-safe historical walk-forward check for totals.
-    # Other markets skip bootstrap here to keep the one-time cache rebuild practical.
-    historical_rows = []
-    for dv in train_divs:
-        for season_rows in history.get(dv, []):
-            for original in season_rows:
-                row = dict(original)
-                row["Div"] = dv
-                historical_rows.append(row)
-    try:
-        from model.walk_forward import walk_forward_compare, totals_market_is_validated
-        totals_backtest = walk_forward_compare(
-            historical_rows, matrix_n=matrix_n, bootstrap_samples=0,
-            totals_bootstrap_samples=250,
+    # The validation sample is intentionally bounded: full replays over every
+    # competition/season on each cold start made Streamlit appear frozen.
+    # 15 main leagues × latest 500 complete fixtures retains >500 observations
+    # across competitions for each supported market while limiting CPU time.
+    validation_divs = tuple(priority_divs)
+    validation_rows = select_validation_rows(
+        history, validation_divs, max_rows_per_league=500,
+    )
+    from security import cache_get, cache_put
+    from model.walk_forward import walk_forward_compare, totals_market_is_validated
+    validation_key = validation_cache_key(validation_rows, matrix_n=matrix_n)
+    cached_validation = cache_get(validation_key, 30 * 86400)
+
+    if isinstance(cached_validation, dict):
+        totals_backtest = cached_validation.get("totals_backtest") or {}
+        stat_report = cached_validation.get("stat_report") or {}
+        logs.append(
+            f"⚡ Историческая проверка из кэша: {len(validation_rows)} матчей, "
+            f"{len(validation_divs)} лиг."
         )
+    else:
+        update_loader(
+            f"Историческая проверка рынков: подготовлено {len(validation_rows)} матчей",
+            0.52, logs,
+        )
+        try:
+            totals_backtest = walk_forward_compare(
+                validation_rows, matrix_n=matrix_n, bootstrap_samples=0,
+                totals_bootstrap_samples=100,
+            )
+            update_loader(
+                "Проверка угловых и карточек (хронологический тест)",
+                0.68, logs,
+            )
+            stat_report = walk_forward_market_validation(
+                validation_rows, min_history=30, min_n=500, bootstrap_samples=100,
+            )
+            cache_put(validation_key, {
+                "totals_backtest": totals_backtest,
+                "stat_report": stat_report,
+            })
+            logs.append(
+                f"Историческая проверка рассчитана: {len(validation_rows)} матчей, "
+                f"{len(validation_divs)} лиг; результат сохранён в кэш."
+            )
+        except Exception as exc:
+            totals_backtest = {}
+            stat_report = {}
+            engine.total_market_validation = False
+            engine.total_market_validation_by_line = {}
+            engine.total_market_validation_report = {
+                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
+            }
+            engine.btts_market_validation = False
+            engine.btts_market_validation_report = {
+                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
+            }
+            engine.stat_market_validation = {}
+            engine.stat_market_validation_report = {
+                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
+            }
+            logs.append(
+                "⚠️ Историческая проверка рынков не завершилась: "
+                f"{type(exc).__name__}: {str(exc)[:160]}. "
+                "Непроверенные рынки закрыты для рекомендаций."
+            )
+
+    if totals_backtest:
         engine.total_market_validation_report = totals_backtest.get(
             "goals_over25_candidate_minus_market", {})
         line_reports = totals_backtest.get("goals_totals_by_line") or {}
@@ -271,15 +319,19 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
         }
         engine.total_market_validation = bool(
             engine.total_market_validation_by_line.get("2.5", False)
-            or totals_market_is_validated(engine.total_market_validation_report, min_n=500)
+            or totals_market_is_validated(
+                engine.total_market_validation_report, min_n=500
+            )
         )
-        btts_report = totals_backtest.get("btts") or {}
-        engine.btts_market_validation_report = btts_report
-        engine.btts_market_validation = bool(btts_report.get("validation_passed"))
+        engine.btts_market_validation_report = totals_backtest.get("btts") or {}
+        engine.btts_market_validation = bool(
+            engine.btts_market_validation_report.get("validation_passed")
+        )
         total_diff = engine.total_market_validation_report.get("differences", {})
         total_ci = engine.total_market_validation_report.get("confidence_intervals_95", {})
         logs.append(
-            f"Исторический walk-forward тоталов: прогнозов={totals_backtest.get('goals_over25', {}).get('n', 0)}, "
+            f"Исторический walk-forward тоталов: прогнозов="
+            f"{totals_backtest.get('goals_over25', {}).get('n', 0)}, "
             f"парных с рынком={engine.total_market_validation_report.get('n', 0)}, "
             f"источники={totals_backtest.get('goals_over25_market_sources', {})}"
         )
@@ -306,13 +358,12 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                 f"допуск={'да' if line_report.get('validation_passed') else 'нет'}"
             )
         logs.append(
-            f"BTTS: WF n={btts_report.get('candidate', {}).get('n', 0)}, "
-            f"пар={btts_report.get('candidate_minus_baseline', {}).get('n', 0)}, "
+            f"BTTS: WF n={engine.btts_market_validation_report.get('candidate', {}).get('n', 0)}, "
+            f"пар={engine.btts_market_validation_report.get('candidate_minus_baseline', {}).get('n', 0)}, "
             f"допуск={'да' if engine.btts_market_validation else 'нет'}"
         )
-        stat_report = walk_forward_market_validation(
-            historical_rows, min_history=30, min_n=500, bootstrap_samples=250,
-        )
+
+    if stat_report:
         engine.stat_market_validation_report = stat_report
         engine.stat_market_validation = {
             market: {
@@ -330,15 +381,21 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                     f"ΔBrier={diff.get('brier')}, ΔLogLoss={diff.get('log_loss')}, "
                     f"допуск={'да' if passed else 'нет'}"
                 )
-    except Exception as exc:
+    if not totals_backtest and not stat_report:
         engine.total_market_validation = False
         engine.total_market_validation_by_line = {}
-        engine.total_market_validation_report = {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
         engine.btts_market_validation = False
-        engine.btts_market_validation_report = {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
         engine.stat_market_validation = {}
-        engine.stat_market_validation_report = {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
-        logs.append(f"Историческая проверка рынков голов/BTTS/статистики не выполнена: {type(exc).__name__}: {str(exc)[:160]}")
+        update_loader(
+            "Проверка рынков не завершена; непроверенные рынки отключены",
+            0.74, logs,
+        )
+    else:
+        update_loader(
+            "Исторические рынки проверены; завершаю обучение модели",
+            0.76, logs,
+        )
+
     total = sum(len(src) for dv in train_divs for src in history.get(dv, []))
     processed = 0
     trained = 0
@@ -360,7 +417,7 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                 if processed % 50 == 0:
                     update_loader(
                         f"Обучение [{processed}/{total}]",
-                        0.5 + processed / max(1, total) * 0.3, logs)
+                        0.76 + processed / max(1, total) * 0.22, logs)
     engine.trained_n = trained
     logs.append(f"Обучено: {trained}")
     return engine
