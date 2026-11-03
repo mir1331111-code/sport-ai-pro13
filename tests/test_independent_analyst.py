@@ -272,8 +272,8 @@ class IndependentAnalystTests(unittest.TestCase):
         self.assertTrue(request["response_format"]["json_schema"]["strict"])
         self.assertEqual(len(request["messages"]), 1)
         prompt = request["messages"][0]["content"]
-        self.assertIn(analyst.LLM_SYSTEM_PROMPT + "\\n\\n", prompt)
-        self.assertNotIn("\\\\n\\\\n", prompt)
+        self.assertIn(analyst.LLM_SYSTEM_PROMPT + "\n\n", prompt)
+        self.assertNotIn("\\n\\n", prompt)
         self.assertIn("САМОСТОЯТЕЛЬНЫЙ ПРОГНОЗ ИИ", result)
 
     def test_gpt_oss_retries_empty_length_completion_with_larger_budget(self):
