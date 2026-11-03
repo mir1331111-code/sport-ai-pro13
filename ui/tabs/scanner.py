@@ -2307,6 +2307,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             logs.append(
                 "📚 Журнал прогнозов: "
                 f"модель +{tracked['main_recorded']}, ИИ +{tracked['ai_recorded']}, "
+                f"рынки +{tracked['market_recorded']}, "
                 f"без времени старта пропущено {tracked['skipped_no_time']}, "
                 f"после старта пропущено {tracked['skipped_started']}, "
                 f"ошибок {tracked['invalid']}"
@@ -2332,10 +2333,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     continue
                 pick = str(best_card[1])
                 market_code = str(best_card[0]).upper()
-                # Goal-score settlement is available for 1X2/OU/BTTS. Corners
-                # and cards remain shortlist-only until statistic-score settlement
-                # exists; never freeze bankroll for a bet the app cannot settle.
-                if market_code not in {"1X2", "OU", "BTTS"}:
+                # STAT bets are manually settled from actual match statistics
+                # in the portfolio; goal-score auto-settlement remains disabled.
+                if market_code not in {"1X2", "OU", "BTTS", "STAT"}:
                     continue
                 match_key = (str(card.get("match") or ""), pick)
                 if match_key in existing_keys:
@@ -2377,6 +2377,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "match_time": card.get("time", ""),
                     "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "fixture_id": card.get("fixture_id"),
+                    "market_forecast_key": card.get("market_forecast_key"),
                     "score": None,
                     "ev": ev_value,
                 }
