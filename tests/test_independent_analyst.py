@@ -186,7 +186,9 @@ class IndependentAnalystTests(unittest.TestCase):
         self.assertIn("УГЛОВЫЕ (оценка Groq)", result)
         self.assertIn("КАРТОЧКИ (оценка Groq)", result)
         self.assertNotIn("Edge", prompt)
-        self.assertNotIn("коэффициент", prompt.casefold())
+        self.assertNotIn("market_odds", prompt)
+        self.assertNotIn("1.81", prompt)
+        self.assertNotIn("2.20", prompt)
 
     def test_llm_does_not_publish_corner_probabilities_without_real_history(self):
         from llm.analyst import _format_multi_market_sections

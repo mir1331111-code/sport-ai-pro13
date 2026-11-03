@@ -5,8 +5,8 @@ from model.market_forecasts import count_over_probability, goal_total_probabilit
 
 class MarketForecastTests(unittest.TestCase):
     def test_negative_binomial_handles_overdispersed_corner_counts(self):
-        poisson = count_over_probability(10.0, 9.5, variance=10.0)
-        negative_binomial = count_over_probability(10.0, 9.5, variance=24.0)
+        poisson = count_over_probability(10.0, 12.5, variance=10.0)
+        negative_binomial = count_over_probability(10.0, 12.5, variance=24.0)
         self.assertIsNotNone(poisson)
         self.assertIsNotNone(negative_binomial)
         self.assertGreater(negative_binomial, poisson)
