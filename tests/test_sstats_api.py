@@ -155,6 +155,50 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(request_mock.call_args.args[0], "Games/list")
 
     @patch.object(sources, "_sstats_request")
+    @patch.object(sources, "_sstats_timezone", return_value=(None, 2))
+    @patch.object(sources, "cache_put")
+    @patch.object(sources, "cache_get", return_value=None)
+    def test_legacy_match_id_resolution_requires_exact_unique_match(
+        self, _cache_get, _cache_put, _timezone, request_mock
+    ):
+        request_mock.return_value = _Response(200, {
+            "status": "success",
+            "data": [{
+                "id": 9876, "date": "2026-11-02T18:00:00",
+                "homeTeam": {"name": "Arsenal"},
+                "awayTeam": {"name": "Chelsea"},
+            }],
+        })
+        result = sources.sstats_find_match_id(
+            "2026-11-02", "Arsenal", "Chelsea", "private-key"
+        )
+        self.assertEqual(result, 9876)
+        self.assertEqual(request_mock.call_args.args[0], "Games/list")
+        params = request_mock.call_args.kwargs["params"]
+        self.assertEqual(params["Date"], "2026-11-02")
+        self.assertTrue(params["Ended"])
+
+    @patch.object(sources, "_sstats_request")
+    @patch.object(sources, "_sstats_timezone", return_value=(None, 2))
+    @patch.object(sources, "cache_put")
+    @patch.object(sources, "cache_get", return_value=None)
+    def test_legacy_match_id_resolution_rejects_ambiguous_matches(
+        self, _cache_get, _cache_put, _timezone, request_mock
+    ):
+        game = {
+            "date": "2026-11-02T18:00:00",
+            "homeTeam": {"name": "Arsenal"},
+            "awayTeam": {"name": "Chelsea"},
+        }
+        request_mock.return_value = _Response(200, {
+            "status": "success",
+            "data": [dict(game, id=1), dict(game, id=2)],
+        })
+        self.assertIsNone(sources.sstats_find_match_id(
+            "2026-11-02", "Arsenal", "Chelsea", "private-key"
+        ))
+
+    @patch.object(sources, "_sstats_request")
     @patch.object(sources, "cache_put")
     @patch.object(sources, "cache_get", return_value=None)
     def test_final_match_statistics_returns_corners_and_all_cards(
