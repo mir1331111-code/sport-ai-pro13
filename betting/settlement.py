@@ -59,23 +59,31 @@ def settlement_not_before(
         return absolute + grace
 
     date_part = None
+    embedded_local_time = None
     raw_date = str(match_date or "").strip()
     if isinstance(match_date, datetime):
         date_part = match_date.date()
+        if match_date.tzinfo is None and match_date.time() != time.min:
+            embedded_local_time = match_date.time()
     elif isinstance(match_date, date):
         date_part = match_date
     elif raw_date:
         try:
-            date_part = datetime.fromisoformat(
-                raw_date.replace("Z", "+00:00")
-            ).date()
+            parsed_date = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+            date_part = parsed_date.date()
+            if parsed_date.tzinfo is None and parsed_date.time() != time.min:
+                embedded_local_time = parsed_date.time()
         except ValueError:
             for fmt in (
-                "%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y",
-                "%d-%m-%Y", "%d/%m/%y",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+                "%d/%m/%Y %H:%M", "%Y-%m-%d", "%d.%m.%Y",
+                "%d/%m/%Y", "%d-%m-%Y", "%d/%m/%y",
             ):
                 try:
-                    date_part = datetime.strptime(raw_date[:10], fmt).date()
+                    parsed_date = datetime.strptime(raw_date[:19], fmt)
+                    date_part = parsed_date.date()
+                    if parsed_date.time() != time.min:
+                        embedded_local_time = parsed_date.time()
                     break
                 except ValueError:
                     continue
@@ -85,6 +93,8 @@ def settlement_not_before(
     # A naive clock is expressed in an unspecified provider-local timezone.
     # UTC can be as late as local time +12h (UTC-12), so wait that margin.
     raw_time = str(match_time or "").strip()
+    if not raw_time and embedded_local_time is not None:
+        raw_time = embedded_local_time.isoformat()
     if raw_time:
         try:
             if "T" in raw_time or " " in raw_time:
