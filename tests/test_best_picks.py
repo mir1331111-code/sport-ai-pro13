@@ -1,6 +1,6 @@
 import unittest
 
-from betting.best_picks import best_value_market, _paired_picks
+from betting.best_picks import best_value_market, best_value_markets, _paired_picks
 from betting.kelly import market_type
 
 
@@ -95,6 +95,66 @@ class BestValueMarketTests(unittest.TestCase):
         )
         self.assertIsNone(chosen)
         self.assertIsNone(best)
+
+    def test_best_picks_are_selected_independently_for_each_market_family(self):
+        rows = [
+            {"pick": "П1", "prob": 0.90, "label": "П1"},
+            {"pick": "ТБ 2.5", "prob": 0.90, "label": "ТБ 2.5"},
+            {"pick": "BTTS Да", "prob": 0.90, "label": "BTTS Да"},
+            {"pick": "Угл ТБ 9.5", "prob": 0.90, "label": "Угл ТБ 9.5"},
+            {"pick": "Карты ТБ 4.5", "prob": 0.90, "label": "Карты ТБ 4.5"},
+        ]
+        odds = {
+            "П1": 2.20,
+            "ТБ 2.5": 2.20, "ТМ 2.5": 2.20,
+            "BTTS Да": 2.20, "BTTS Нет": 2.20,
+            "Угл ТБ 9.5": 2.20, "Угл ТМ 9.5": 2.20,
+            "Карты ТБ 4.5": 2.20, "Карты ТМ 4.5": 2.20,
+        }
+        books = {
+            key: "Book A" for key in odds
+        }
+        validation = {row["pick"]: True for row in rows if row["pick"] != "П1"}
+
+        result = best_value_markets(
+            _verdict(), rows, odds, bank=1000, kelly_frac=0.25,
+            min_prob=0.50, bookmaker_by_pick=books,
+            market_validation_by_pick=validation,
+        )
+
+        self.assertEqual(
+            set(result),
+            {"winner", "goals", "btts", "corners", "cards"},
+        )
+        self.assertEqual(result["winner"]["pick"], "П1")
+        self.assertEqual(result["goals"]["pick"], "ТБ 2.5")
+        self.assertEqual(result["btts"]["pick"], "BTTS Да")
+        self.assertEqual(result["corners"]["pick"], "Угл ТБ 9.5")
+        self.assertEqual(result["cards"]["pick"], "Карты ТБ 4.5")
+
+    def test_missing_or_mixed_price_pair_rejects_only_its_own_market(self):
+        rows = [
+            {"pick": "П1", "prob": 0.90},
+            {"pick": "BTTS Да", "prob": 0.90},
+            {"pick": "Угл ТБ 9.5", "prob": 0.90},
+        ]
+        odds = {
+            "П1": 2.20,
+            "BTTS Да": 2.20, "BTTS Нет": 2.20,
+            "Угл ТБ 9.5": 2.20, "Угл ТМ 9.5": 2.20,
+        }
+        books = {
+            "BTTS Да": "Book A", "BTTS Нет": "Book B",
+            "Угл ТБ 9.5": "Book A", "Угл ТМ 9.5": "Book A",
+        }
+        result = best_value_markets(
+            _verdict(), rows, odds, bank=1000, kelly_frac=0.25,
+            min_prob=0.50, bookmaker_by_pick=books,
+            market_validation_by_pick={
+                "BTTS Да": True, "Угл ТБ 9.5": True,
+            },
+        )
+        self.assertEqual(set(result), {"winner", "corners"})
 
     def test_never_creates_bet_from_fair_odds_or_missing_market(self):
         chosen, best = best_value_market(
