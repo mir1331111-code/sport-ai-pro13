@@ -347,7 +347,7 @@ class IndependentAnalystTests(unittest.TestCase):
             "choices": [{
                 "message": {
                     "content": [
-                        {"type": "text", "text": "{\\"probabilities\\": {}"},
+                        {"type": "text", "text": r'{"probabilities": {'},
                         {"type": "text", "text": "}"},
                     ],
                     "reasoning": "private chain of thought",
@@ -356,7 +356,7 @@ class IndependentAnalystTests(unittest.TestCase):
             }],
             "usage": {"completion_tokens": 20},
         })
-        self.assertEqual(content, '{\\"probabilities\\": {}}')
+        self.assertEqual(content, r'{"probabilities": {}}')
         self.assertEqual(diagnostics["finish_reason"], "stop")
         self.assertNotIn("private chain", content)
 
