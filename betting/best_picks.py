@@ -26,7 +26,7 @@ def _canonical_market_pick(pick: str) -> str:
         line = float(total.group(2).replace(",", "."))
         return f"Т{total.group(1).upper()} {line:g}"
 
-    btts = re.fullmatch(r"BTTS\\s+(да|yes|нет|no)", text, re.I)
+    btts = re.fullmatch(r"BTTS\s+(да|yes|нет|no)", text, re.I)
     if btts:
         side = btts.group(1).casefold()
         return "BTTS Да" if side in {"да", "yes"} else "BTTS Нет"
