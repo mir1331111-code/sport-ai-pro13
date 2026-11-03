@@ -246,26 +246,71 @@ def record_scan_forecasts(
                 except (ValueError, TypeError):
                     stats["invalid"] += 1
 
-        best = card.get("best")
-        if isinstance(best, (tuple, list)) and len(best) >= 5:
-            try:
-                market, selection = str(best[0]).upper().strip(), str(best[1]).strip()
-                price, probability = float(best[2]), float(best[4])
-                key = f"{fixture_id}|{main_version}|market|{now.isoformat()}"
-                card["market_forecast_key"] = key
-                if key not in existing_market:
-                    market_ledger.record_recommendation(
-                        forecast_key=key, fixture_id=fixture_id, home_team=home,
-                        away_team=away, league=league, model_version=main_version,
-                        market=market, selection=selection, probability=probability,
-                        entry_odds=price, forecast_at=now, kickoff_at=kickoff,
-                        odds_source=str(card.get("best_odds_source") or card.get("odds_source") or "") or None,
-                        unit_stake=1.0,
+        # Keep one immutable audit row for every independently selected market,
+        # not just the global best pick for the fixture.
+        recommendations = card.get("best_by_market")
+        if isinstance(recommendations, dict) and recommendations:
+            keys_by_market = card.setdefault("market_forecast_keys", {})
+            for family, recommendation in recommendations.items():
+                if not isinstance(recommendation, dict):
+                    continue
+                best = recommendation.get("best")
+                if not isinstance(best, (tuple, list)) or len(best) < 5:
+                    continue
+                try:
+                    market, selection = str(best[0]).upper().strip(), str(best[1]).strip()
+                    price, probability = float(best[2]), float(best[4])
+                    key = (
+                        f"{fixture_id}|{main_version}|market|"
+                        f"{str(family).casefold()}|{now.isoformat()}"
                     )
-                    existing_market.add(key)
-                    stats["market_recorded"] += 1
-            except (ValueError, TypeError, IndexError):
-                stats["invalid"] += 1
+                    keys_by_market[str(family)] = key
+                    if key not in existing_market:
+                        market_ledger.record_recommendation(
+                            forecast_key=key, fixture_id=fixture_id, home_team=home,
+                            away_team=away, league=league, model_version=main_version,
+                            market=market, selection=selection, probability=probability,
+                            entry_odds=price, forecast_at=now, kickoff_at=kickoff,
+                            odds_source=str(
+                                card.get("market_odds_source_by_pick", {}).get(selection)
+                                or card.get("best_odds_source") or card.get("odds_source") or ""
+                            ) or None,
+                            unit_stake=1.0,
+                        )
+                        existing_market.add(key)
+                        stats["market_recorded"] += 1
+                    # Preserve the legacy scalar key only for the global best pick.
+                    global_best = card.get("best")
+                    if (
+                        isinstance(global_best, (tuple, list)) and len(global_best) >= 2
+                        and str(global_best[1]).strip() == selection
+                    ):
+                        card["market_forecast_key"] = key
+                except (ValueError, TypeError, IndexError):
+                    stats["invalid"] += 1
+        else:
+            # Backward compatibility for older saved scan cards and callers.
+            best = card.get("best")
+            if isinstance(best, (tuple, list)) and len(best) >= 5:
+                try:
+                    market, selection = str(best[0]).upper().strip(), str(best[1]).strip()
+                    price, probability = float(best[2]), float(best[4])
+                    key = f"{fixture_id}|{main_version}|market|{now.isoformat()}"
+                    card["market_forecast_key"] = key
+                    if key not in existing_market:
+                        market_ledger.record_recommendation(
+                            forecast_key=key, fixture_id=fixture_id, home_team=home,
+                            away_team=away, league=league, model_version=main_version,
+                            market=market, selection=selection, probability=probability,
+                            entry_odds=price, forecast_at=now, kickoff_at=kickoff,
+                            odds_source=str(card.get("best_odds_source") or card.get("odds_source") or "") or None,
+                            unit_stake=1.0,
+                        )
+                        existing_market.add(key)
+                        stats["market_recorded"] += 1
+                except (ValueError, TypeError, IndexError):
+                    stats["invalid"] += 1
+
     return stats
 
 
