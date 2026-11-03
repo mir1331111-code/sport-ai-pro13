@@ -20,7 +20,32 @@ def valid_card():
 
 
 class RecommendationShortlistTests(unittest.TestCase):
-    def test_keeps_only_fully_qualified_named_bookmaker_1x2_bets(self):
+    def test_independent_market_recommendations_can_appear_in_shortlist(self):
+        winner = valid_card()
+
+        total = valid_card()
+        total["best"] = ("OU", "ТБ 2.5", 2.10, 0.12, 0.54, 10.0)
+        total["bookmaker_by_pick"] = {"ТБ 2.5": "Book B"}
+
+        corners = valid_card()
+        corners["best"] = ("STAT", "Угл ТБ 9.5", 2.10, 0.12, 0.54, 10.0)
+        corners["bookmaker_by_pick"] = {"Угл ТБ 9.5": "Book C"}
+
+        cards = valid_card()
+        cards["best"] = ("STAT", "Карты ТМ 4.5", 2.10, 0.12, 0.54, 10.0)
+        cards["bookmaker_by_pick"] = {"Карты ТМ 4.5": "Book D"}
+
+        btts = valid_card()
+        btts["best"] = ("BTTS", "BTTS Да", 2.10, 0.12, 0.54, 10.0)
+        btts["bookmaker_by_pick"] = {"BTTS Да": "Book E"}
+
+        self.assertTrue(_is_actionable_recommendation(winner))
+        self.assertEqual(
+            _qualified_bet_cards([winner, total, corners, cards, btts]),
+            [winner, total, corners, cards, btts],
+        )
+
+    def test_shortlist_rejects_missing_bookmaker_value_and_kelly(self):
         eligible = valid_card()
         no_bookmaker = valid_card()
         no_bookmaker["bookmaker_by_pick"] = {}
@@ -34,14 +59,11 @@ class RecommendationShortlistTests(unittest.TestCase):
         low_edge["verdict"]["edge"] = 0.049
         low_ev = valid_card()
         low_ev["best"] = ("1X2", "П1", 2.24, 0.049, 0.54, 10.0)
-        non_1x2 = valid_card()
-        non_1x2["best"] = ("OU", "ТБ 2.5", 1.9, 0.12, 0.54, 10.0)
 
-        self.assertTrue(_is_actionable_recommendation(eligible))
         self.assertEqual(
             _qualified_bet_cards([
                 eligible, no_bookmaker, model_only, no_value,
-                no_kelly, low_edge, low_ev, non_1x2,
+                no_kelly, low_edge, low_ev,
             ]),
             [eligible],
         )
