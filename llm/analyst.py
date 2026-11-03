@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sys
 from typing import Optional
@@ -46,6 +47,33 @@ def _as_number(value) -> float:
         return number if number == number and abs(number) != float("inf") else 0.0
     except (TypeError, ValueError):
         return 0.0
+
+
+MIN_TEAM_VENUE_SAMPLE = 5
+
+
+def has_sufficient_history(features: object) -> bool:
+    """Require real venue-specific history before asking an LLM for probabilities."""
+    if not isinstance(features, dict):
+        return False
+    try:
+        home_sample = int(features.get("home_home_sample") or 0)
+        away_sample = int(features.get("away_away_sample") or 0)
+    except (TypeError, ValueError):
+        return False
+    if min(home_sample, away_sample) < MIN_TEAM_VENUE_SAMPLE:
+        return False
+    for name in (
+        "home_scored_at_home_avg", "home_conceded_at_home_avg",
+        "away_scored_away_avg", "away_conceded_away_avg",
+    ):
+        try:
+            value = float(features.get(name))
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(value) or value < 0:
+            return False
+    return True
 
 
 def _pick_code(value: object) -> str:
@@ -167,6 +195,15 @@ def analyze_match(ctx: dict) -> Optional[str]:
     api_key = ctx.get("api_key")
     if not api_key:
         _log("ERROR: api_key пустой")
+        return None
+
+    features = ctx.get("independent_features")
+    if not has_sufficient_history(features):
+        _log(
+            "SKIP: недостаточно фактической истории для независимого прогноза "
+            f"(нужно >= {MIN_TEAM_VENUE_SAMPLE} домашних матчей хозяев и "
+            f">= {MIN_TEAM_VENUE_SAMPLE} выездных матчей гостей)"
+        )
         return None
 
     provider = ctx.get("provider") or "Groq (бесплатно, быстро)"
