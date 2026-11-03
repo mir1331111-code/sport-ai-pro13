@@ -81,6 +81,48 @@ def _safe_filter(rows):
     return out
 
 
+def _is_actionable_recommendation(card: object) -> bool:
+    """True only for a fully priced, value-positive, Kelly-positive 1X2 bet."""
+    if not isinstance(card, dict):
+        return False
+    verdict = card.get("verdict")
+    best = card.get("best")
+    if not isinstance(verdict, dict) or not isinstance(best, (tuple, list)) or len(best) < 6:
+        return False
+    if not (
+        verdict.get("real_odds")
+        and verdict.get("value_passed")
+        and verdict.get("is_bet")
+        and str(best[0]).upper() == "1X2"
+    ):
+        return False
+    pick = str(best[1] or "")
+    bookmaker = (card.get("bookmaker_by_pick") or {}).get(pick)
+    if not pick or not str(bookmaker or "").strip():
+        return False
+    try:
+        odd, ev, probability, stake = map(float, (best[2], best[3], best[4], best[5]))
+        edge_value = float(verdict.get("edge"))
+    except (TypeError, ValueError):
+        return False
+    # The automatic 1X2 gate is deliberately strict: exact bookmaker quote,
+    # at least 5% EV and Edge, and a positive Kelly position.
+    return (
+        odd > 1.01
+        and 0.0 < probability < 1.0
+        and ev >= 0.05
+        and edge_value >= 0.05
+        and stake > 0.0
+    )
+
+
+def _qualified_bet_cards(cards: object) -> list[dict]:
+    """Build the user-facing shortlist; never substitute model-only candidates."""
+    if not isinstance(cards, list):
+        return []
+    return [card for card in cards if _is_actionable_recommendation(card)]
+
+
 def _stat_market_lines(odds: dict, prefix: str) -> list[float]:
     """Return the exact half/integer lines present in an SStats corner/card quote map."""
     if not isinstance(odds, dict):
@@ -977,10 +1019,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             st.info("Нажми ⚡ СКАН.")
             return
 
-        qualified = [c for c in all_cards
-                     if c.get("best") is not None
-                     and (c.get("verdict") or {}).get("real_odds")
-                     and (c.get("verdict") or {}).get("value_passed")]
+        qualified = _qualified_bet_cards(all_cards)
         try:
             from betting.ranking import rank_score
             qualified.sort(key=lambda c: (
@@ -1009,63 +1048,75 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
         else:
             st.markdown("<div class='pick-feed'>", unsafe_allow_html=True)
-            for rank, card in enumerate(qualified[:6], start=1):
+            for rank, card in enumerate(qualified[:5], start=1):
                 verdict = card.get("verdict") or {}
                 match_name = str(card.get("match_ru") or card.get("match") or "Матч")
                 league_name = str(card.get("league") or "Футбол")
                 best_result = card.get("best")
-                # best_value_market returns (market_type, pick, real_odd, ev, prob, stake).
-                # Never stringify that tuple as the pick label or treat real_odds=True as price 1.00.
-                best_pick = best_result[1] if isinstance(best_result, (tuple, list)) and len(best_result) >= 3 else None
-                best_odd = best_result[2] if isinstance(best_result, (tuple, list)) and len(best_result) >= 3 else None
-                pick_name = str(
-                    verdict.get("label") or verdict.get("pick") or best_pick
-                    or card.get("best_pick") or "Исход выбран моделью"
-                )
-                odd = verdict.get("odd")
-                if odd is None:
-                    odd = best_odd if best_odd is not None else card.get("best_odds")
-                try:
-                    odd_text = f"Коэффициент {float(odd):.2f}" if odd is not None else ""
-                except (TypeError, ValueError):
-                    odd_text = ""
+                # best_value_market: (market_type, pick, odd, EV, probability, Kelly stake).
+                _market, best_pick, best_odd, best_ev, best_prob, best_stake = best_result[:6]
+                pick_name = str(verdict.get("label") or best_pick)
+                bookmaker = str((card.get("bookmaker_by_pick") or {}).get(best_pick) or "Букмекер не указан")
                 date_text = str(card.get("date") or "")
                 time_text = str(card.get("time") or "")
                 kickoff = " · ".join(v for v in (date_text, time_text) if v)
-                comment = next((str(card.get(k)).strip() for k in (
-                    "ai_comment", "ai_analysis", "llm_comment", "commentary",
-                    "explanation", "reason", "analysis_text", "why_pick"
-                ) if card.get(k) and str(card.get(k)).strip()), "")
-                status_text = "ОТОБРАНО" if verdict.get("value_passed") else "НА ПРОВЕРКЕ"
-                status_class = "" if verdict.get("value_passed") else " watch"
-                probability = verdict.get("prob")
-                prob_chip = ""
                 try:
-                    if probability is not None:
-                        prob_chip = f"<span class='pick-chip'>Оценка модели {float(probability)*100:.0f}%</span>"
+                    edge_value = float(verdict.get("edge"))
+                    edge_text = f"Edge +{edge_value:.1%}"
                 except (TypeError, ValueError):
-                    pass
-                comment_html = (
-                    "<div class='pick-ai'><b>Комментарий ИИ</b>" + html.escape(comment) + "</div>"
-                    if comment else
-                    "<div class='pick-ai pick-ai-empty'><b>Комментарий</b>Отдельный текстовый комментарий ИИ для этого матча пока не сформирован.</div>"
+                    edge_text = "Edge —"
+                try:
+                    ev_text = f"EV +{float(best_ev):.1%}"
+                except (TypeError, ValueError):
+                    ev_text = "EV —"
+                prob_text = f"Итоговая оценка {float(best_prob):.1%}"
+                model_prob = verdict.get("model_prob")
+                model_chip = (
+                    f"<span class='pick-chip'>Модель {float(model_prob):.1%}</span>"
+                    if model_prob is not None else ""
                 )
-                odd_html = f"<span class='pick-chip'>{html.escape(odd_text)}</span>" if odd_text else ""
+                stake_text = f"Kelly {float(verdict.get('kelly_pct') or 0):.1%}"
+                reason_items = verdict.get("reasons") or []
+                reasons_html = (
+                    "<ul style='margin:6px 0 0 18px;padding:0'>"
+                    + "".join(f"<li>{html.escape(str(reason))}</li>" for reason in reason_items[:4])
+                    + "</ul>"
+                    if reason_items else ""
+                )
+                independent_note = str(card.get("llm_opinion") or "").strip()
+                independent_html = (
+                    "<div class='pick-ai'><b>Независимый анализ ИИ</b>"
+                    + html.escape(independent_note) + "</div>"
+                    if independent_note else
+                    "<div class='pick-ai pick-ai-empty'><b>Независимый анализ</b>"
+                    "Не получен для этого матча; решение основано на основной модели и проверенной линии букмекера.</div>"
+                )
                 st.markdown(
-                    f"<article class='pick-story' style='animation-delay:{min(rank-1,5)*55}ms'>"
+                    f"<article class='pick-story' style='animation-delay:{min(rank-1,4)*55}ms'>"
                     f"<div class='pick-story-top'><span class='pick-league'>{html.escape(league_name)}</span>"
-                    f"<span class='pick-status{status_class}'>{status_text}</span></div>"
-                    f"{render_fixture_header(card)}" + f"<div class='pick-match'>{html.escape(match_name)}</div>"
+                    f"<span class='pick-status'>ПРОШЛО ФИЛЬТРЫ</span></div>"
+                    f"{render_fixture_header(card)}"
+                    f"<div class='pick-match'>{html.escape(match_name)}</div>"
                     f"<div class='pick-time'>{html.escape(kickoff or 'Время начала уточняется')}</div>"
-                    f"<div class='pick-divider'></div><div class='pick-choice-label'>Наш выбор</div>"
+                    f"<div class='pick-divider'></div><div class='pick-choice-label'>КОНКРЕТНАЯ СТАВКА · 1X2</div>"
                     f"<div class='pick-choice'>{html.escape(pick_name)}</div>"
-                    f"<div class='pick-meta'>{odd_html}{prob_chip}</div>"
-                    f"{comment_html}</article>",
+                    f"<div class='pick-meta'>"
+                    f"<span class='pick-chip'>Коэффициент {float(best_odd):.2f}</span>"
+                    f"<span class='pick-chip'>{html.escape(prob_text)}</span>"
+                    f"<span class='pick-chip'>{html.escape(edge_text)}</span>"
+                    f"<span class='pick-chip'>{html.escape(ev_text)}</span>"
+                    f"<span class='pick-chip'>{html.escape(stake_text)}</span>"
+                    f"{model_chip}</div>"
+                    f"<div class='pick-ai'><b>Линия букмекера</b>{html.escape(bookmaker)}"
+                    f" · Источник: {html.escape(str(card.get('odds_source') or 'SStats'))}</div>"
+                    f"<div class='pick-ai'><b>Почему прошла отбор</b>{reasons_html}"
+                    f"Только полная линия одного букмекера; Edge и EV не ниже 5%; Kelly положительный.</div>"
+                    f"{independent_html}</article>",
                     unsafe_allow_html=True,
                 )
             st.markdown("</div>", unsafe_allow_html=True)
 
-        c1, c2, c3 = st.columns([2, 2, 2])
+        c1, c2, c3 = st.columns([2, 3, 2])
         sort_mode = c1.selectbox(
             "Сортировка",
             ["По общему рейтингу",
@@ -1073,17 +1124,27 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
              "По вероятности (высокие сначала)",
              "По дате (ближайшие сначала)"],
             key="scanner_sort")
-        show_hidden = c2.checkbox("Только сильные модели", False,
-                                   key="scanner_show_hidden")
+        display_mode = c2.selectbox(
+            "Что показывать",
+            ["🎯 Только подтверждённые ставки",
+             "Все матчи и котировки (справочно)"],
+            index=0,
+            key="scanner_display_mode_v2",
+        )
+        recommendation_mode = display_mode.startswith("🎯")
         group_by_day = c3.checkbox("Группировать по дням", True,
                                     key="scanner_group_by_day")
 
-        if show_hidden:
-            cards_view = [c for c in all_cards
-                          if (c.get("verdict") or {}).get("is_action")]
-        else:
-            # Manual bookmaker odds should be available for every scanned fixture.
-            cards_view = all_cards
+        # Default mode is deliberately a short, actionable shortlist.
+        # Full fixture/market browsing is opt-in and explicitly informational.
+        cards_view = qualified if recommendation_mode else all_cards
+        if recommendation_mode:
+            st.caption(
+                "Главный режим показывает только готовые 1X2-сигналы: реальная полная линия "
+                "одного букмекера, заданный минимум вероятности, Edge ≥ 5%, EV ≥ 5% и "
+                "положительный Kelly. Угловые, карточки, BTTS и тоталы пока справочные "
+                "до отдельной исторической проверки."
+            )
 
         if sort_mode.startswith("По дате"):
             cards_view.sort(key=lambda c: parse_card_date(c))
@@ -1102,7 +1163,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     (c.get("verdict", {}).get("prob") or 0)))
 
         if not cards_view:
-            st.warning("Ничего не найдено.")
+            if recommendation_mode:
+                st.info(
+                    "Сегодня нет матчей, которые прошли все критерии отбора. "
+                    "Это нормальный результат: сканер не будет предлагать ставку ради количества. "
+                    "Переключи режим на «Все матчи и котировки (справочно)», чтобы посмотреть рынок."
+                )
+            else:
+                st.warning("Матчи для отображения не найдены.")
             return
 
         market_counts = {
@@ -1122,13 +1190,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "handicap": sum(bool(x.get("asian_handicap_market_odds")) for x in cards_view),
         }
         market_tabs = st.tabs([
-            f"Тоталы: котировки {market_counts['goals']} · подтверждены {market_counts['goals_confirmed']}",
-            f"Все матчи ({len(cards_view)})",
-            f"Победа / 1X2 ({market_counts['winner']})",
-            f"Обе забьют ({market_counts['btts']})",
-            f"Угловые ({market_counts['corners']})",
-            f"Карточки ({market_counts['cards']})",
-            f"Форы ({market_counts['handicap']})",
+            f"Тоталы · справочно ({market_counts['goals']}, проверены {market_counts['goals_confirmed']})",
+            f"{'Отобранные ставки' if recommendation_mode else 'Все матчи'} ({len(cards_view)})",
+            f"1X2 · линии ({market_counts['winner']})",
+            f"Обе забьют · справочно ({market_counts['btts']})",
+            f"Угловые · справочно ({market_counts['corners']})",
+            f"Карточки · справочно ({market_counts['cards']})",
+            f"Форы · справочно ({market_counts['handicap']})",
         ])
 
         # Totals is the default workspace: show model forecasts for every
