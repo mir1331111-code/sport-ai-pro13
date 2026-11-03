@@ -601,7 +601,10 @@ def _load_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_
     finally:
         model_lock.release()
 
-def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, min_ev=0.03, market_filter=None):
+def _render_manual_odds_block(
+    c, D, kelly_frac, min_prob=0.40, min_edge=0.03, min_ev=0.03,
+    market_filter=None, market_recommendation=None,
+):
     """Понятный ввод букмекерского коэффициента для выбранного рынка."""
     v = c.get("verdict", {})
     stat_preds = c.get("historical_stats") or {}
@@ -657,6 +660,41 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
     source_odds = c.get("market_odds") or {}
     total_odds = c.get("total_market_odds") or {}
     btts_odds = c.get("btts_market_odds") or {}
+    all_market_odds = {}
+    for price_group in (source_odds, total_odds, btts_odds, stat_odds):
+        if isinstance(price_group, dict):
+            all_market_odds.update(price_group)
+    bookmaker_by_pick = c.get("bookmaker_by_pick") or {}
+
+    def has_coherent_market_line(candidate_pick):
+        kind = market_type(candidate_pick)
+        if kind == "1X2":
+            return True
+        if kind == "OU":
+            matched = re.fullmatch(
+                r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", str(candidate_pick), re.I
+            )
+            if not matched:
+                return False
+            line = matched.group(1).replace(",", ".")
+            paired = (f"ТБ {line}", f"ТМ {line}")
+        elif kind == "BTTS":
+            paired = ("BTTS Да", "BTTS Нет")
+        elif kind == "STAT":
+            matched = re.fullmatch(
+                r"(Угл|Карты)\s+Т[БМ]\s+(\d+(?:[.,]\d+)?)",
+                str(candidate_pick), re.I,
+            )
+            if not matched:
+                return False
+            prefix = "Угл" if matched.group(1).casefold() == "угл" else "Карты"
+            line = matched.group(2).replace(",", ".")
+            paired = (f"{prefix} ТБ {line}", f"{prefix} ТМ {line}")
+        else:
+            return False
+        return proportional_devig(
+            all_market_odds, paired, bookmaker_by_pick=bookmaker_by_pick
+        ) is not None
 
     def quote_for(candidate_pick):
         kind = market_type(candidate_pick)
@@ -811,7 +849,27 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
         auto_quote_exists = False
         has_positive_value = False
 
+    # Dedicated market tabs render their own independently selected best pick.
+    rec_verdict = None
+    if isinstance(market_recommendation, dict):
+        candidate_verdict = market_recommendation.get("verdict")
+        candidate_best = market_recommendation.get("best")
+        if isinstance(candidate_verdict, dict) and isinstance(candidate_best, (tuple, list)) and len(candidate_best) >= 6:
+            try:
+                rec_verdict = candidate_verdict
+                pick = str(candidate_best[1])
+                selected_label = str(candidate_verdict.get("label") or candidate_best[1])
+                selected_odd = float(candidate_best[2])
+                selected_ev = float(candidate_verdict.get("ev"))
+                selected_edge = float(candidate_verdict.get("edge"))
+                model_prob = float(candidate_verdict.get("model_prob") or candidate_verdict.get("prob"))
+                auto_quote_exists = True
+                has_positive_value = bool(candidate_verdict.get("value_passed"))
+            except (TypeError, ValueError):
+                rec_verdict = None
+
     selected_market_type = market_type(pick)
+    market_pair_validated = has_coherent_market_line(pick)
     if selected_market_type == "1X2":
         market_is_validated = True
         validation_note = ""
@@ -824,17 +882,16 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             if line_match else ""
         )
         line_reports = c.get("total_market_validation_by_line") or {}
-        history_validated = (
-            bool(line_reports[line_key])
-            if line_key in line_reports else bool(c.get("total_market_validation"))
-        )
+        # Only an explicitly tested exact line is eligible. A passing 2.5
+        # line must never validate 1.5, 3.5, or another untested line.
+        history_validated = bool(line_reports.get(line_key, False))
         source = str(c.get("total_odds_source") or "").casefold()
         book_count = int((c.get("total_market_book_count") or {}).get(pick) or 0)
         quote_corroborated = (
             source != "sstats"
             or bool((c.get("total_market_confirmed") or {}).get(pick))
         )
-        market_is_validated = history_validated and quote_corroborated
+        market_is_validated = history_validated and quote_corroborated and market_pair_validated
         validation_notes = []
         if not history_validated:
             validation_notes.append(
@@ -845,13 +902,18 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                 f"Котировка тотала получена только от {book_count or 1} букмекера. "
                 "Для допуска нужна вторая независимая котировка."
             )
+        if not market_pair_validated:
+            validation_notes.append("Нет обеих сторон линии у одного и того же букмекера.")
         validation_note = " ".join(validation_notes)
     elif selected_market_type == "BTTS":
-        market_is_validated = bool(c.get("btts_market_validation"))
-        validation_note = (
-            "" if market_is_validated else
-            "BTTS не прошёл собственную историческую walk-forward проверку."
-        )
+        history_validated = bool(c.get("btts_market_validation"))
+        market_is_validated = history_validated and market_pair_validated
+        validation_notes = []
+        if not history_validated:
+            validation_notes.append("BTTS не прошёл собственную историческую walk-forward проверку.")
+        if not market_pair_validated:
+            validation_notes.append("Нет обеих сторон BTTS у одного и того же букмекера.")
+        validation_note = " ".join(validation_notes)
     elif selected_market_type == "STAT":
         stat_match = re.fullmatch(
             r"(Угл|Карты)\s+Т[БМ]\s+(\d+(?:[.,]\d+)?)",
@@ -873,7 +935,10 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
             )
             source = str(c.get("extra_market_source") or "").casefold()
             quote_source_valid = source in {"highlightly", "manual_import", "sstats"}
-            market_is_validated = line_validated and history_sufficient and quote_source_valid
+            market_is_validated = (
+                line_validated and history_sufficient and quote_source_valid
+                and market_pair_validated
+            )
             validation_parts = []
             if not line_validated:
                 validation_parts.append(
@@ -883,6 +948,8 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                 validation_parts.append("Недостаточно фактической истории по этой паре команд.")
             if not quote_source_valid:
                 validation_parts.append("Нет подтверждённой котировки на этот рынок.")
+            if not market_pair_validated:
+                validation_parts.append("Нет обеих сторон линии у одного и того же букмекера.")
             validation_note = " ".join(validation_parts)
         else:
             market_is_validated = False
@@ -961,16 +1028,28 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
 
     if manual_odd is not None and manual_odd > 1.01 and 0.0 < model_prob < 1.0:
         market_implied = 1.0 / manual_odd
-        # Do not blend bookmaker implied probability into the model probability:
-        # that can make a bad quote look like a stronger prediction than the model.
-        prob = model_prob
-        ev = prob * manual_odd - 1
-        edge = prob - market_implied
-        stake = kelly(prob, manual_odd, D["bank"], kelly_frac, cap=0.02)
+        if rec_verdict is not None:
+            # Preserve the blended probability and risk metrics selected for this
+            # exact market using a complete same-bookmaker line.
+            prob = float(rec_verdict.get("prob"))
+            ev = float(rec_verdict.get("ev"))
+            edge = float(rec_verdict.get("edge"))
+            stake = float(rec_verdict.get("stake"))
+            market_fair_probability = rec_verdict.get("market_fair_prob")
+        else:
+            # Informational fallback; a two-way market without a complete
+            # same-bookmaker line cannot pass the validation gate below.
+            prob = model_prob
+            ev = prob * manual_odd - 1
+            edge = prob - market_implied
+            stake = kelly(prob, manual_odd, D["bank"], kelly_frac, cap=0.02)
+            market_fair_probability = None
 
         with col_metrics.expander("Детали (по желанию)", expanded=False):
             st.write(f"Вероятность модели: {prob * 100:.1f}%")
             st.write(f"Вероятность из коэффициента до снятия маржи: {market_implied * 100:.1f}%")
+            if market_fair_probability is not None:
+                st.write(f"Вероятность рынка без маржи (один букмекер): {float(market_fair_probability) * 100:.1f}%")
             st.write(f"Преимущество модели: {edge * 100:+.1f}%")
             st.write(f"Ожидаемая доходность: {ev * 100:+.1f}%")
             if abs(model_prob - market_implied) >= 0.20:
@@ -1014,6 +1093,15 @@ def _render_manual_odds_block(c, D, kelly_frac, min_prob=0.40, min_edge=0.03, mi
                     "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                     "fixture_id": c.get("fixture_id"),
                     "sstats_game_id": c.get("sstats_game_id"),
+                    "market_forecast_key": (
+                        (c.get("market_forecast_keys") or {}).get(market_filter)
+                        if market_filter else c.get("market_forecast_key")
+                    ),
+                    "probability_method": (
+                        rec_verdict.get("probability_method")
+                        if rec_verdict is not None
+                        else "market_model_raw_price_informational"
+                    ),
                     "score": None, "ev": ev,
                 }
                 D2["bets"] = list(D.get("bets") or []) + [new_bet]
