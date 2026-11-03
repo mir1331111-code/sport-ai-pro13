@@ -958,12 +958,14 @@ def _render_manual_odds_block(
         market_is_validated = False
         validation_note = "Для этого рынка нет отдельной исторической проверки."
 
-    if has_positive_value and market_is_validated:
-        st.success("Есть подтверждённый коэффициент и модельный перевес.")
+    if rec_verdict is not None and has_positive_value and market_is_validated:
+        st.success("Рынок прошёл независимый отбор: полная линия, историческая проверка и положительный Value.")
     elif has_positive_value and not market_is_validated:
-        st.warning(validation_note + " Ставку не рекомендовать.")
+        st.warning((validation_note or "Рынок не прошёл подтверждение.") + " Ставку не рекомендовать.")
+    elif auto_quote_exists and rec_verdict is None:
+        st.caption("Котировка и модельная оценка есть, но этот исход не прошёл независимый отбор рынка.")
     elif auto_quote_exists and not market_is_validated:
-        st.caption(validation_note or "Коэффициент есть, но историческая надёжность не подтверждена — не ставить.")
+        st.caption(validation_note or "Историческая надёжность или линия букмекера не подтверждена — не ставить.")
     elif auto_quote_exists:
         st.caption("Коэффициент есть, но надёжного преимущества не подтверждено — не ставить.")
     else:
@@ -974,7 +976,7 @@ def _render_manual_odds_block(
     if selected_odd is not None:
         st.markdown(
             f"<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;margin:8px 0;border:1px solid #285f51;border-radius:12px;background:linear-gradient(120deg,#102923,#101b22)'>"
-            f"<div><div style='font-size:11px;letter-spacing:.12em;color:#8fd8bd;font-weight:700'>{'НАШ ВЫБОР' if market_is_validated else 'КОТИРОВКА · РЫНОК НЕ ПРОВЕРЕН'}</div>"
+            f"<div><div style='font-size:11px;letter-spacing:.12em;color:#8fd8bd;font-weight:700'>{'НАШ ВЫБОР' if rec_verdict is not None and market_is_validated else 'КОТИРОВКА · НЕТ ОТБОРА' if rec_verdict is None else 'КОТИРОВКА · РЫНОК НЕ ПРОВЕРЕН'}</div>"
             f"<strong style='font-size:20px;color:#f1f7f5'>{html.escape(selected_label)}</strong></div>"
             f"<div style='font-size:22px;font-weight:800;color:#8fe2c1;white-space:nowrap'>КФ {selected_odd:.2f}</div></div>",
             unsafe_allow_html=True,
@@ -1000,10 +1002,17 @@ def _render_manual_odds_block(
     if source_odd is not None:
         manual_odd = source_odd
         quote_is_confirmed = True
-        source_label = str((
-            c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"}
+        selected_kind = market_type(pick)
+        source_label = str(
+            c.get("total_odds_source") if selected_kind == "OU"
+            else c.get("btts_odds_source") if selected_kind == "BTTS"
+            else c.get("extra_market_source") if selected_kind == "STAT"
             else c.get("odds_source")
-        ) or "SStats")
+            or "SStats"
+        )
+        if selected_kind != "1X2" and not market_pair_validated:
+            quote_is_confirmed = False
+            source_label += " · нет полной пары одного букмекера"
         if market_type(pick) == "OU" and str(c.get("total_odds_source") or "").casefold() == "sstats":
             book_name = (c.get("bookmaker_by_pick") or {}).get(pick)
             book_count = int((c.get("total_market_book_count") or {}).get(pick) or 0)
@@ -1089,9 +1098,17 @@ def _render_manual_odds_block(
                     "odds": manual_odd, "stake": stake,
                     "prob": prob, "model_prob": model_prob,
                     "market_implied_raw": market_implied,
-                    "probability_method": "market_blend_0.4_model_delta",
                     "status": "pending", "strat": "scanner_auto_recommendation",
-                    "odds_source": str((c.get("extra_market_source", c.get("total_odds_source")) if market_type(pick) in {"OU", "BTTS", "STAT"} else c.get("odds_source")) or "Highlightly"),
+                    "odds_source": str(
+                        (c.get("market_odds_source_by_pick") or {}).get(pick)
+                        or (
+                            c.get("total_odds_source") if selected_kind == "OU"
+                            else c.get("btts_odds_source") if selected_kind == "BTTS"
+                            else c.get("extra_market_source") if selected_kind == "STAT"
+                            else c.get("odds_source")
+                        )
+                        or "unknown"
+                    ),
                     "mode": "real",
                     "date": (parse_date(c.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": c.get("date_iso"),
