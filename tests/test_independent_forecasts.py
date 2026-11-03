@@ -100,6 +100,53 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(rows[0]["odds_source"], "test-book")
         self.assertEqual(card["market_forecast_key"], rows[0]["forecast_key"])
 
+    def test_scan_audits_each_market_family_independently(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        now = datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc)
+        card = {
+            "match": "Home FC vs Away FC", "match_ru": "Home FC — Away FC",
+            "div": "E0", "league": "Premier League", "date_iso": "2026-10-25",
+            "time": "16:30", "p1": .52, "px": .28, "p2": .20,
+            "market_odds": {"П1": 2.1, "X": 3.4, "П2": 3.8},
+            "best": ("1X2", "П1", 2.1, .20, .60, 1.0),
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", "П1", 2.1, .20, .60, 1.0),
+                    "verdict": {"prob": .60},
+                },
+                "goals": {
+                    "best": ("OU", "ТБ 2.5", 1.95, .15, .58, 1.0),
+                    "verdict": {"prob": .58},
+                },
+                "corners": {
+                    "best": ("STAT", "Угл ТБ 9.5", 1.90, .18, .62, 1.0),
+                    "verdict": {"prob": .62},
+                },
+            },
+            "market_odds_source_by_pick": {
+                "П1": "Book A", "ТБ 2.5": "Book B", "Угл ТБ 9.5": "Book C",
+            },
+        }
+
+        first = record_scan_forecasts([card], db_path=path, now=now)
+        second = record_scan_forecasts([card], db_path=path, now=now)
+        rows = MarketForecastLedger(path).rows()
+
+        self.assertEqual(first["market_recorded"], 3)
+        self.assertEqual(second["market_recorded"], 0)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(
+            {row["market"] for row in rows}, {"1X2", "OU", "STAT"}
+        )
+        self.assertEqual(
+            set(card["market_forecast_keys"]), {"winner", "goals", "corners"}
+        )
+        self.assertEqual(
+            card["market_forecast_key"], card["market_forecast_keys"]["winner"]
+        )
+
     def test_scan_does_not_record_after_kickoff_or_without_time(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
