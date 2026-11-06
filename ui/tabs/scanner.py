@@ -755,6 +755,18 @@ def _render_manual_odds_block(
     """Понятный ввод букмекерского коэффициента для выбранного рынка."""
     v = c.get("verdict", {})
     stat_preds = c.get("historical_stats") or {}
+    if market_filter is None:
+        winner_summary = market_forecast_summary(c, "winner")
+        if winner_summary is not None:
+            strong_label = (
+                f"СИЛЬНЫЙ ПРОГНОЗ 1X2 ≥{STRONG_FORECAST_MIN_PROB:.0%}"
+                if winner_summary.get("strong_forecast") else
+                f"прогноз 1X2 ниже порога сильного {STRONG_FORECAST_MIN_PROB:.0%}"
+            )
+            st.caption(
+                f"{strong_label} · {winner_summary['label']} "
+                f"{winner_summary['probability']:.1%}; это вероятность модели, не гарантия."
+            )
     from model.historical_match_stats import poisson_over_probability
     market_options = {
         "Победа хозяев (П1)": ("П1", float(c.get("p1") or 0)),
