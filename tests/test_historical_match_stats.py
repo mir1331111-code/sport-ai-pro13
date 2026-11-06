@@ -53,11 +53,11 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         model = HistoricalMatchStats(min_team_games=1)
         self.assertFalse(model.learn_step({
             "HomeTeam": "Alpha", "AwayTeam": "Beta",
-            "HC": 5.5, "AC": 4, "HY": 2, "AY": 1, "HR": 0, "AR": 0,
+            "HC": 5.5, "AC": 4, "HY": 2, "AY": 1,
         }, "E0"))
         self.assertFalse(model.learn_step({
             "HomeTeam": "Alpha", "AwayTeam": "Beta",
-            "HC": 5, "AC": 4, "HY": 2, "AY": 1.5, "HR": 0, "AR": 0,
+            "HY": 2, "AY": 1.5, "HR": 0, "AR": 0,
         }, "E0"))
         self.assertEqual(model.predict("Alpha", "Beta", "E0"), {})
 
