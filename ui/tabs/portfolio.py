@@ -265,11 +265,99 @@ def _render_bet(b, D, index, context="def"):
                 st.rerun()
 
 
+def _latest_value_signals(D: dict) -> list[dict]:
+    """Unadded, fully validated Value signals from the latest scan (not portfolio bets)."""
+    existing = {
+        (str(b.get("match") or ""), str(b.get("pick") or ""))
+        for b in (D.get("bets") or [])
+        if isinstance(b, dict)
+    }
+    rows = []
+    for card in D.get("cards") or []:
+        if not isinstance(card, dict):
+            continue
+        best = card.get("best")
+        verdict = card.get("verdict") or {}
+        if not isinstance(best, (tuple, list)) or len(best) < 6:
+            continue
+        if not verdict.get("real_odds") or not verdict.get("value_passed"):
+            continue
+        match = str(card.get("match_ru") or card.get("match") or "Матч")
+        pick = str(best[1])
+        identity = (str(card.get("match") or ""), pick)
+        if identity in existing:
+            continue
+        try:
+            odd, ev, probability = float(best[2]), float(best[3]), float(best[4])
+        except (TypeError, ValueError):
+            continue
+        if not (1.01 < odd <= 100 and 0 < probability < 1):
+            continue
+        try:
+            edge = float(verdict.get("edge"))
+        except (TypeError, ValueError):
+            edge = None
+        rows.append({
+            "Дата": str(card.get("date") or card.get("date_iso") or "—"),
+            "Матч": match,
+            "Лига": str(card.get("league") or "—"),
+            "Рынок": str(best[0]),
+            "Исход": pick,
+            "Кэф": odd,
+            "Вероятность": probability,
+            "Edge": edge,
+            "EV": ev,
+            "Источник": str(
+                (card.get("market_odds_source_by_pick") or {}).get(pick)
+                or card.get("best_odds_source") or card.get("odds_source") or "—"
+            ),
+            "_sort_probability": probability,
+            "_match_key": identity,
+        })
+    rows.sort(key=lambda row: (
+        -row["_sort_probability"], -float(row["EV"]), row["Дата"], row["Матч"]
+    ))
+    return rows
+
+
+def _render_latest_signals(D: dict) -> int:
+    rows = _latest_value_signals(D)
+    if not rows:
+        return 0
+    st.subheader("🎯 Сигналы последнего сканирования — ещё не ставки")
+    st.caption(
+        "Это исходы, прошедшие проверку реальной цены и Value. Они пока не являются "
+        "позициями портфеля: банк и экспозиция не меняются, пока сигнал отдельно не добавлен."
+    )
+    display_rows = [{
+        "Дата": row["Дата"], "Матч": row["Матч"], "Лига": row["Лига"],
+        "Рынок": row["Рынок"], "Исход": row["Исход"], "Кэф": round(row["Кэф"], 2),
+        "Вероятность": f"{row['Вероятность']:.1%}",
+        "Edge": "—" if row["Edge"] is None else f"{row['Edge']:+.1%}",
+        "EV": f"{row['EV']:+.1%}", "Источник": row["Источник"],
+    } for row in rows]
+    st.dataframe(display_rows, width="stretch", hide_index=True)
+    return len(rows)
+
+
 def render():
     D = st.session_state.data
     st.header("💼 Портфель")
-    if not D["bets"]:
-        st.warning("Пусто. После СКАНа ставки появятся здесь.")
+    signal_count = _render_latest_signals(D)
+    bets = [b for b in (D.get("bets") or []) if isinstance(b, dict)]
+    if not bets:
+        if signal_count:
+            st.info(
+                f"В портфеле пока 0 ставок; найдено {signal_count} проверенных сигналов выше. "
+                "Автодобавление отключено по умолчанию. Чтобы создать виртуальные позиции, "
+                "открой «Сканер» → «Настройки сканера» → «Автодобавление в виртуальный портфель» "
+                "и выполни новый скан. Реальные ставки у букмекера программа не размещает."
+            )
+        else:
+            st.info(
+                "Портфель пока пуст. После нового сканирования здесь появятся проверенные "
+                "Value-сигналы для просмотра; сигналы без подтверждённой цены не становятся ставками."
+            )
         return
 
     c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
