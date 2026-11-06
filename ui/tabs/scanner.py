@@ -1986,19 +1986,20 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         def _render_ranked_market_card(card, family):
             st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+            summary = market_forecast_summary(card, family)
             summary_text = _market_summary_caption(card, family)
-            if summary_text:
-                    strength_threshold = float(
-                summary.get("strength_threshold") or STRONG_FORECAST_MIN_PROB
-            )
-            strength_label = (
-                f"СИЛЬНЫЙ ПРОГНОЗ ≥{strength_threshold:.0%}"
-                if summary.get("strong_forecast") else
-                f"ниже порога сильного прогноза {strength_threshold:.0%}"
-            )
-            st.caption(
-                f"{strength_label} · {summary_text} · прогноз модели, не гарантия и не подтверждённая ставка"
-            )
+            if summary is not None and summary_text:
+                strength_threshold = float(
+                    summary.get("strength_threshold") or STRONG_FORECAST_MIN_PROB
+                )
+                strength_label = (
+                    f"СИЛЬНЫЙ ПРОГНОЗ ≥{strength_threshold:.0%}"
+                    if summary.get("strong_forecast") else
+                    f"ниже порога сильного прогноза {strength_threshold:.0%}"
+                )
+                st.caption(
+                    f"{strength_label} · {summary_text} · прогноз модели, не гарантия и не подтверждённая ставка"
+                )
             else:
                 st.caption(
                     "Для этого матча нет достаточной истории, чтобы рассчитать отдельный прогноз этого рынка."
