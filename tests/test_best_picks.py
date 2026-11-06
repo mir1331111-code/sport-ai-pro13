@@ -226,5 +226,40 @@ class BestValueMarketTests(unittest.TestCase):
         self.assertIsNone(best)
 
 
+    def test_1x2_requires_explicit_market_validation_and_complete_book_line(self):
+        rows = [{"pick": "П1", "prob": 0.70, "label": "Победа хозяев"}]
+        full_line = {"П1": 2.10, "X": 3.40, "П2": 4.00}
+        same_book = {"П1": "Book A", "X": "Book A", "П2": "Book A"}
+
+        missing_validation = best_value_market(
+            _verdict(), rows, full_line, bank=1000, kelly_frac=0.25,
+            min_prob=0.50, bookmaker_by_pick=same_book,
+        )
+        missing_draw_price = best_value_market(
+            _verdict(), rows, {"П1": 2.10, "П2": 4.00},
+            bank=1000, kelly_frac=0.25, min_prob=0.50,
+            bookmaker_by_pick={"П1": "Book A", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
+        )
+        mixed_books = best_value_market(
+            _verdict(), rows, full_line, bank=1000, kelly_frac=0.25,
+            min_prob=0.50,
+            bookmaker_by_pick={"П1": "Book A", "X": "Book B", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
+        )
+        accepted = best_value_market(
+            _verdict(), rows, full_line, bank=1000, kelly_frac=0.25,
+            min_prob=0.50, bookmaker_by_pick=same_book,
+            market_validation_by_pick={"П1": True},
+        )
+
+        self.assertEqual(missing_validation, (None, None))
+        self.assertEqual(missing_draw_price, (None, None))
+        self.assertEqual(mixed_books, (None, None))
+        self.assertIsNotNone(accepted[0])
+        self.assertIsNotNone(accepted[1])
+
+
+
 if __name__ == "__main__":
     unittest.main()
