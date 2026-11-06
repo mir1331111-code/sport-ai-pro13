@@ -2624,11 +2624,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 **{pick: btts_odds_source for pick in btts_market_odds},
                 **{pick: extra_market_source for pick in stat_market_odds},
             }
-            market_validation_by_pick = {}
+            # Value flags are stricter than forecast flags. A full historical
+            # bookmaker benchmark must pass before any market enters the selector.
+            winner_market_validation = bool(
+                getattr(engine, "winner_market_validation", False)
+            )
+            market_validation_by_pick = {
+                pick: winner_market_validation for pick in ("П1", "X", "П2")
+            }
             extra_rows = []
 
-            # Goal totals: only lines that passed the chronological benchmark
-            # may participate in the bet selector.
+            # Only full-time O/U 2.5 has a paired out-of-sample comparison
+            # against de-vig bookmaker prices. Other totals remain forecasts.
             from model.historical_match_stats import poisson_over_probability
             total_mean = float(P["lams"][0] or 0.0) + float(P["lams"][1] or 0.0)
             total_validation = getattr(engine, "total_market_validation_by_line", {}) or {}
@@ -2642,7 +2649,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not is_half_line(line):
                     continue
                 line_text = f"{line:g}"
-                if not bool(total_validation.get(line_text)):
+                if (
+                    abs(line - 2.5) > 1e-9
+                    or not bool(getattr(engine, "total_market_validation", False))
+                    or not bool(total_validation.get(line_text))
+                ):
                     continue
                 # SStats totals need both a coherent same-book pair and quotes
                 # corroborated by at least two independent bookmakers.
@@ -2667,72 +2678,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 })
                 market_validation_by_pick[selection] = True
 
-            # Both-teams-to-score: require its own out-of-sample check and
-            # a complete same-bookmaker Yes/No line.
-            if bool(getattr(engine, "btts_market_validation", False)):
-                for selection, probability in (
-                    ("BTTS Да", float(P.get("btts") or 0.0)),
-                    ("BTTS Нет", 1.0 - float(P.get("btts") or 0.0)),
-                ):
-                    if selection not in btts_market_odds or not 0.0 < probability < 1.0:
-                        continue
-                    extra_rows.append({
-                        "pick": selection,
-                        "label": "Обе команды забьют — " + ("Да" if selection.endswith("Да") else "Нет"),
-                        "prob": probability,
-                        "analysis": "Независимый walk-forward тест BTTS пройден; цена проверяется по полной линии одного букмекера.",
-                    })
-                    market_validation_by_pick[selection] = True
-
-            # Corners/cards: forecast each exact bookmaker line from historical
-            # team/venue stats; only line-specific validated models are eligible.
-            stat_validation = getattr(engine, "stat_market_validation", {}) or {}
-            stat_specs = (("Угл", "corners", "Угловые"), ("Карты", "cards", "Карточки"))
-            for selection in stat_market_odds:
-                match = re.fullmatch(
-                    r"(Угл|Карты)\s+(ТБ|ТМ)\s+(\d+(?:[.,]\d+)?)",
-                    str(selection), re.I,
-                )
-                if not match:
-                    continue
-                code = "Угл" if match.group(1).casefold() == "угл" else "Карты"
-                market_key = "corners" if code == "Угл" else "cards"
-                label_prefix = "Угловые" if code == "Угл" else "Карточки"
-                line = float(match.group(3).replace(",", "."))
-                # Integer totals can push and quarter lines split the stake.
-                # This model prices only half-lines, so other quotes stay informational.
-                if not is_half_line(line):
-                    continue
-                line_text = f"{line:g}"
-                pred = historical_stats.get(market_key) or {}
-                if not bool((stat_validation.get(market_key) or {}).get(line_text)):
-                    continue
-                if (
-                    pred.get("history_matches", 0) < 30
-                    or pred.get("home_team_games", 0) < 4
-                    or pred.get("away_team_games", 0) < 4
-                ):
-                    continue
-                over_probability = count_over_probability(
-                    pred.get("total"), line, pred.get("total_variance")
-                )
-                if over_probability is None:
-                    continue
-                is_over = match.group(2).upper() == "ТБ"
-                probability = over_probability if is_over else 1.0 - over_probability
-                extra_rows.append({
-                    "pick": selection,
-                    "label": f"{label_prefix} {'больше' if is_over else 'меньше'} {line_text}",
-                    "prob": probability,
-                    "analysis": (
-                        f"Ожидаемое значение: {float(pred.get('total')):.2f}; "
-                        f"история лиги: {pred.get('history_matches')} матчей, "
-                        f"у хозяев дома: {pred.get('home_team_games')}, "
-                        f"у гостей на выезде: {pred.get('away_team_games')}; "
-                        f"walk-forward линия {line_text} пройдена."
-                    ),
-                })
-                market_validation_by_pick[selection] = True
+            # BTTS, corners and cards still receive independent model forecasts
+            # in their own tabs. Their current walk-forward reports compare with
+            # a league-rate baseline, not an untouched bookmaker benchmark, so
+            # they must not enter the Value/EV selector yet.
 
             candidate_rows = list(rows_ or []) + extra_rows
             # Evaluate each family independently before computing the one-best
@@ -2812,6 +2761,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "fixture_id": r.get("fixture_id"),
                 "sstats_game_id": r.get("sstats_game_id"),
                 "historical_stats": historical_stats,
+                "winner_market_validation": bool(getattr(engine, "winner_market_validation", False)),
+                "winner_market_validation_report": getattr(engine, "winner_market_validation_report", {}),
+                "total_market_validation": bool(getattr(engine, "total_market_validation", False)),
                 "total_market_validation_by_line": getattr(engine, "total_market_validation_by_line", {}),
                 "btts_market_validation": bool(getattr(engine, "btts_market_validation", False)),
                 "btts_market_validation_report": getattr(engine, "btts_market_validation_report", {}),
