@@ -1840,7 +1840,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
              "По вероятности (высокие сначала)",
              "По дате (ближайшие сначала)"],
             index=0,
-            key="scanner_sort_v4")
+            key="scanner_sort_v5")
         display_mode = c2.selectbox(
             "Что показывать",
             ["⭐ Вероятные исходы (все матчи)",
