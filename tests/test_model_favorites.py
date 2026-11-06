@@ -1,6 +1,6 @@
 import unittest
 
-from betting.favorites import model_favorite, rank_model_favorites
+from betting.ranking import model_favorite, rank_model_favorites
 
 
 class ModelFavoriteTests(unittest.TestCase):
