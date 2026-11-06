@@ -11,6 +11,8 @@ from typing import Any
 
 from model.historical_match_stats import poisson_over_probability
 from model.market_forecasts import count_over_probability
+from config import STRONG_FORECAST_MIN_PROB
+from betting.ranking import balanced_value_score
 
 
 # Exclude values so close to 0/1 that rounded count distributions can look certain.
@@ -43,7 +45,7 @@ def _sample(value: Any) -> int:
     return max(0, number)
 
 
-def market_forecast_summary(card: object, family: str) -> dict | None:
+def _market_forecast_summary(card: object, family: str) -> dict | None:
     """Return one independently calculated, comparable forecast per market.
 
     Goals are compared on O/U 2.5; BTTS on Yes/No; corners on O/U 8.5; cards
@@ -168,28 +170,80 @@ def market_forecast_summary(card: object, family: str) -> dict | None:
     }
 
 
+def market_forecast_summary(card: object, family: str) -> dict | None:
+    """Return a market forecast with a separate 65% strong-forecast label."""
+    summary = _market_forecast_summary(card, family)
+    if summary is None:
+        return None
+    summary["strength_threshold"] = float(STRONG_FORECAST_MIN_PROB)
+    summary["strong_forecast"] = (
+        float(summary["probability"]) >= float(STRONG_FORECAST_MIN_PROB)
+    )
+    return summary
+
+
 def rank_market_forecasts(
     cards: object, family: str, limit: int | None = None,
+    *, mode: str = "probability",
 ) -> list[dict]:
-    """Rank only fixtures with a usable forecast for this market.
+    """Rank independent forecasts by event probability or balanced validated value.
 
-    The market probability is the primary key. Historical support is used only
-    as a tie-breaker; the 1X2 probability is never read for secondary markets.
+    In balanced mode, probability remains the largest score component. EV and
+    edge can contribute only through a recommendation already accepted by the
+    strict bookmaker-benchmark selector; unvalidated prices are ignored.
     """
     if not isinstance(cards, list):
         return []
     ranked = []
+    ranking_mode = str(mode or "probability").casefold()
     for card in cards:
         summary = market_forecast_summary(card, family)
-        if summary is not None:
-            ranked.append({"card": card, **summary})
-    ranked.sort(key=lambda item: (
-        -float(item["probability"]),
-        -int(item.get("history_matches") or 0),
-        -int(item.get("team_samples") or 0),
-        str(item["card"].get("date_iso") or item["card"].get("date") or ""),
-        str(item["card"].get("match") or item["card"].get("match_ru") or ""),
-    ))
+        if summary is None:
+            continue
+        ranking_score = float(summary["probability"])
+        if ranking_mode == "balanced":
+            recommendation = (card.get("best_by_market") or {}).get(family)
+            value_verdict = (
+                recommendation.get("verdict")
+                if isinstance(recommendation, dict) else None
+            )
+            value_best = (
+                recommendation.get("best")
+                if isinstance(recommendation, dict) else None
+            )
+            # EV/edge influence display order only after the existing strict
+            # market validation, complete-line, EV, edge and Kelly gates passed.
+            if (
+                isinstance(value_verdict, dict)
+                and isinstance(value_best, (tuple, list))
+                and len(value_best) >= 6
+                and bool(value_verdict.get("value_passed"))
+            ):
+                ranking_score = balanced_value_score(
+                    summary["probability"],
+                    value_verdict.get("ev"),
+                    value_verdict.get("edge"),
+                )
+        ranked.append({
+            "card": card, **summary, "ranking_score": ranking_score,
+        })
+    if ranking_mode == "balanced":
+        ranked.sort(key=lambda item: (
+            -float(item["ranking_score"]),
+            -float(item["probability"]),
+            -int(item.get("history_matches") or 0),
+            -int(item.get("team_samples") or 0),
+            str(item["card"].get("date_iso") or item["card"].get("date") or ""),
+            str(item["card"].get("match") or item["card"].get("match_ru") or ""),
+        ))
+    else:
+        ranked.sort(key=lambda item: (
+            -float(item["probability"]),
+            -int(item.get("history_matches") or 0),
+            -int(item.get("team_samples") or 0),
+            str(item["card"].get("date_iso") or item["card"].get("date") or ""),
+            str(item["card"].get("match") or item["card"].get("match_ru") or ""),
+        ))
     if limit is not None:
         try:
             ranked = ranked[:max(0, int(limit))]

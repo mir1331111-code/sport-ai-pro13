@@ -6,6 +6,7 @@ import json
 import csv
 import io
 import html
+import math
 import time
 import hashlib
 import threading
@@ -14,7 +15,10 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 
-from config import APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE
+from config import (
+    APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE,
+    STRONG_FORECAST_MIN_PROB,
+)
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
@@ -39,7 +43,7 @@ from ui.cards import (render_verdict_card, translate_team,
 
 LLM_TOP_N = 8
 MAX_STAKE_PCT = 0.05
-AUTO_PORTFOLIO_MIN_PROB = 0.65  # Hard confidence gate for virtual-portfolio additions.
+AUTO_PORTFOLIO_MIN_PROB = STRONG_FORECAST_MIN_PROB  # Shared 65% gate; separate from Value proof.
 MARKET_FORECAST_DISPLAY_LIMIT = 20
 
 
@@ -815,8 +819,8 @@ def _render_manual_odds_block(
     def has_coherent_market_line(candidate_pick):
         kind = market_type(candidate_pick)
         if kind == "1X2":
-            return True
-        if kind == "OU":
+            paired = ("П1", "X", "П2")
+        elif kind == "OU":
             matched = re.fullmatch(
                 r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", str(candidate_pick), re.I
             )
@@ -1047,6 +1051,25 @@ def _render_manual_odds_block(
                 rec_verdict = None
 
     selected_market_type = market_type(pick)
+    if market_filter is None:
+        try:
+            selected_probability = float(model_prob)
+        except (TypeError, ValueError):
+            selected_probability = None
+        if (
+            selected_probability is not None
+            and math.isfinite(selected_probability)
+            and 0.0 < selected_probability < 1.0
+        ):
+            strength_label = (
+                f"СИЛЬНЫЙ ПРОГНОЗ ≥{STRONG_FORECAST_MIN_PROB:.0%}"
+                if selected_probability >= STRONG_FORECAST_MIN_PROB else
+                f"прогноз ниже порога сильного {STRONG_FORECAST_MIN_PROB:.0%}"
+            )
+            st.caption(
+                f"{strength_label} · {selected_label} "
+                f"{selected_probability:.1%}; это вероятность модели, не гарантия."
+            )
     market_pair_validated = has_coherent_market_line(pick)
     if selected_market_type == "1X2":
         market_is_validated = (
@@ -1820,12 +1843,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         c1, c2, c3 = st.columns([2, 3, 2])
         sort_mode = c1.selectbox(
             "Сортировка",
-            ["По общему рейтингу",
+            ["По сбалансированному рейтингу",
              "По EV (высокие сначала)",
              "По вероятности (высокие сначала)",
              "По дате (ближайшие сначала)"],
-            index=2,
-            key="scanner_sort_v4")
+            index=0,
+            key="scanner_sort_v5")
         display_mode = c2.selectbox(
             "Что показывать",
             ["⭐ Вероятные исходы (все матчи)",
@@ -1911,17 +1934,24 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
             for family in ("winner", "goals", "btts", "corners", "cards")
         }
-        forecast_counts = {
-            family: len(rank_market_forecasts(market_pool, family))
+        ranked_forecast_pool = {
+            family: rank_market_forecasts(market_pool, family)
             for family in ("winner", "goals", "btts", "corners", "cards")
         }
+        forecast_counts = {
+            family: len(items) for family, items in ranked_forecast_pool.items()
+        }
+        strong_forecast_counts = {
+            family: sum(bool(item.get("strong_forecast")) for item in items)
+            for family, items in ranked_forecast_pool.items()
+        }
         market_tabs = st.tabs([
-            f"Тоталы · прогнозы {forecast_counts['goals']} / Value {signal_counts['goals']} / цены {quote_counts['goals']}",
+            f"Тоталы · прогнозы {forecast_counts['goals']} (сильных {strong_forecast_counts['goals']}) / Value {signal_counts['goals']} / цены {quote_counts['goals']}",
             f"{'Общий shortlist' if recommendation_mode else 'Все матчи'} ({len(cards_view)})",
-            f"1X2 · прогнозы {forecast_counts['winner']} / Value {signal_counts['winner']} / цены {quote_counts['winner']}",
-            f"BTTS · прогнозы {forecast_counts['btts']} / Value {signal_counts['btts']} / цены {quote_counts['btts']}",
-            f"Угловые · прогнозы {forecast_counts['corners']} / Value {signal_counts['corners']} / цены {quote_counts['corners']}",
-            f"Карточки · прогнозы {forecast_counts['cards']} / Value {signal_counts['cards']} / цены {quote_counts['cards']}",
+            f"1X2 · прогнозы {forecast_counts['winner']} (сильных {strong_forecast_counts['winner']}) / Value {signal_counts['winner']} / цены {quote_counts['winner']}",
+            f"BTTS · прогнозы {forecast_counts['btts']} (сильных {strong_forecast_counts['btts']}) / Value {signal_counts['btts']} / цены {quote_counts['btts']}",
+            f"Угловые · прогнозы {forecast_counts['corners']} (сильных {strong_forecast_counts['corners']}) / Value {signal_counts['corners']} / цены {quote_counts['corners']}",
+            f"Карточки · прогнозы {forecast_counts['cards']} (сильных {strong_forecast_counts['cards']}) / Value {signal_counts['cards']} / цены {quote_counts['cards']}",
             f"Форы · котировки {quote_counts['handicap']}",
         ])
 
@@ -1976,9 +2006,20 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         def _render_ranked_market_card(card, family):
             st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+            summary = market_forecast_summary(card, family)
             summary_text = _market_summary_caption(card, family)
-            if summary_text:
-                st.caption(summary_text + " · прогноз модели, не гарантия и не подтверждённая ставка")
+            if summary is not None and summary_text:
+                strength_threshold = float(
+                    summary.get("strength_threshold") or STRONG_FORECAST_MIN_PROB
+                )
+                strength_label = (
+                    f"СИЛЬНЫЙ ПРОГНОЗ ≥{strength_threshold:.0%}"
+                    if summary.get("strong_forecast") else
+                    f"ниже порога сильного прогноза {strength_threshold:.0%}"
+                )
+                st.caption(
+                    f"{strength_label} · {summary_text} · прогноз модели, не гарантия и не подтверждённая ставка"
+                )
             else:
                 st.caption(
                     "Для этого матча нет достаточной истории, чтобы рассчитать отдельный прогноз этого рынка."
@@ -2028,7 +2069,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             [card for card in market_pool if _market_recommendation(card, "goals")]
             if recommendation_mode else
             [item["card"] for item in rank_market_forecasts(
-                market_pool, "goals", limit=MARKET_FORECAST_DISPLAY_LIMIT
+                market_pool, "goals", limit=MARKET_FORECAST_DISPLAY_LIMIT,
+                mode="balanced" if sort_mode.startswith("По сбалансированному") else "probability",
             )] if probability_mode else
             [card for card in market_pool if card.get("total_market_odds")]
         )
@@ -2121,6 +2163,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     ranked_market = rank_market_forecasts(
                         market_pool, market_filter,
                         limit=MARKET_FORECAST_DISPLAY_LIMIT,
+                        mode="balanced" if sort_mode.startswith("По сбалансированному") else "probability",
                     )
                     selected_cards = [item["card"] for item in ranked_market]
                     # If a statistical market has quotes but lacks enough team
@@ -2152,8 +2195,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         )
                 if probability_mode and selected_cards:
                     st.caption(
-                        f"Показаны матчи с наибольшей расчётной вероятностью именно рынка «{market_label}», "
-                        f"отсортированные по его собственной модели. Максимум "
+                        f"Показаны независимые прогнозы рынка «{market_label}». "
+                        f"Сильный прогноз — от {STRONG_FORECAST_MIN_PROB:.0%}. "
+                        f"В сбалансированной сортировке 60% веса даёт вероятность; EV и Edge учитываются "
+                        f"только у уже прошедших строгий Value-отбор. Максимум "
                         f"{MARKET_FORECAST_DISPLAY_LIMIT} матчей; отсутствие Value не скрывает прогноз."
                     )
                 for card in selected_cards:

@@ -7,6 +7,7 @@ from copy import deepcopy
 from betting.verdict import refine_with_real_odds
 from betting.kelly import market_type
 from betting.market_math import proportional_devig
+from betting.ranking import balanced_value_score
 from model.market_forecasts import is_half_line
 
 
@@ -126,10 +127,8 @@ def best_value_markets(
         )
         if not chosen or not best:
             continue
-        score = (
-            0.60 * max(-1.0, min(1.0, float(chosen.get("ev") or 0.0)))
-            + 0.25 * max(-1.0, min(1.0, float(chosen.get("edge") or 0.0)))
-            + 0.15 * float(chosen.get("prob") or 0.0)
+        score = balanced_value_score(
+            chosen.get("prob"), chosen.get("ev"), chosen.get("edge"),
         )
         result[family] = {
             "verdict": chosen,
@@ -247,10 +246,8 @@ def best_value_market(
             "C" if confidence_score >= 50 else "D"
         )
 
-        score = (
-            0.60 * max(-1.0, min(1.0, float(refined["ev"])))
-            + 0.25 * max(-1.0, min(1.0, float(refined["edge"])))
-            + 0.15 * final_prob
+        score = balanced_value_score(
+            final_prob, refined.get("ev"), refined.get("edge"),
         )
         qualified.append((score, refined, best))
 

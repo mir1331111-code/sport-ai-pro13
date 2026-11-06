@@ -886,7 +886,15 @@ with st.sidebar:
         "<div style='font-size:.72rem;color:#8b93a7;margin-bottom:6px;'>"
         "🎯 Параметры</div>",
         unsafe_allow_html=True)
-    min_prob = st.slider("Мин. P %", 30, 85, 40, 1) / 100
+    min_prob = st.slider(
+        "Мин. P для отбора Value %",
+        30, 85, 40, 1,
+        help=(
+            "Минимум вероятности для Value-кандидатов. Отдельная метка «Сильный прогноз» "
+            "присваивается при вероятности от 65%; этот порог не заменяет историческую "
+            "проверку рынка, Edge, EV и Kelly."
+        ),
+    ) / 100
     min_edge = st.slider("Мин. Edge %", 0, 15, 3, 1) / 100
     kelly_frac = st.slider("Kelly", 0.05, 0.40, 0.25, 0.05)
     st.caption(f"Версия приложения: {APP_VERSION} · build 2026-10-26")

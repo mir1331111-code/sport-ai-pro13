@@ -5,6 +5,10 @@ import os
 APP_VERSION = "13.12.0"
 DATA_VERSION = 17
 
+# A model forecast is labelled strong at or above this event probability.
+# This display classification is separate from Value/EV/Edge/Kelly approval.
+STRONG_FORECAST_MIN_PROB = 0.65
+
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(_APP_DIR, "neuro.db")
 LOCAL_FILE = os.path.join(_APP_DIR, "neuro_local.json")
