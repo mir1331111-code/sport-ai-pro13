@@ -110,6 +110,8 @@ def model_favorite(card: object) -> dict | None:
     sample_games = _number(card.get("games"), 0.0) or 0.0
     if sample_games <= 0:
         features = card.get("independent_features") or {}
+        if not isinstance(features, dict):
+            features = {}
         home_sample = _number(features.get("home_home_sample"), 0.0) or 0.0
         away_sample = _number(features.get("away_away_sample"), 0.0) or 0.0
         sample_games = min(home_sample, away_sample)
