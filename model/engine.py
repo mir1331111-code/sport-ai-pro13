@@ -829,6 +829,95 @@ class Engine:
             "xg_weight": (sum(xg_weights) / len(xg_weights)) if xg_weights else 0.0,
         }
 
+    def _learn_observed_match(self, item: dict, prediction: dict) -> None:
+        """Attach one observed result after its forecast has already been made."""
+        hg = float(item["home_goals"])
+        ag = float(item["away_goals"])
+        if hg > ag:
+            outcome = 0
+        elif hg == ag:
+            outcome = 1
+        else:
+            outcome = 2
+
+        self.calib_logits += [
+            self._logit(prediction["p1_raw"]),
+            self._logit(prediction["x_raw"]),
+            self._logit(prediction["p2_raw"]),
+        ]
+        self.calib_outcomes += [
+            1.0 if outcome == 0 else 0.0,
+            1.0 if outcome == 1 else 0.0,
+            1.0 if outcome == 2 else 0.0,
+        ]
+        if len(self.calib_logits) > 12000:
+            del self.calib_logits[:-12000]
+        if len(self.calib_outcomes) > 12000:
+            del self.calib_outcomes[:-12000]
+
+        self.match_count += 1
+        if self.match_count % 150 == 0:
+            self.refit_calibrator()
+
+        row = dict(item.get("row") or {})
+        row["Div"] = item.get("league") or "G"
+        self.add(
+            item["home"], item["away"], hg, ag, row,
+            match_num=item.get("match_num"),
+            total=item.get("total"),
+            match_date=item.get("match_date"),
+        )
+
+    def learn_batch(self, matches: list[dict]) -> list[dict]:
+        """Forecast a same-date batch before ingesting any result from that batch.
+
+        The production trainer uses this for all leagues on a calendar date.
+        It prevents one fixture's same-day final score from entering the
+        probabilities or calibration targets of another fixture whose kickoff
+        order is unknown in the historical CSV.
+        """
+        if not isinstance(matches, list):
+            raise TypeError("matches must be a list of mappings")
+        pending = []
+        predictions = []
+        for item in matches:
+            if not isinstance(item, dict):
+                raise TypeError("each match must be a mapping")
+            home = str(item.get("home") or "").strip()
+            away = str(item.get("away") or "").strip()
+            if not home or not away:
+                raise ValueError("home and away team names are required")
+            try:
+                hg = float(item["home_goals"])
+                ag = float(item["away_goals"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("completed home/away scores are required") from exc
+            if (
+                not math.isfinite(hg) or not math.isfinite(ag)
+                or hg < 0 or ag < 0 or not hg.is_integer() or not ag.is_integer()
+            ):
+                raise ValueError("completed scores must be finite non-negative integers")
+            league = str(item.get("league") or "G")
+            prediction = self.predict(
+                home, away, league,
+                match_date=item.get("match_date"),
+                cup=is_cup(league),
+            )
+            clean = dict(item)
+            clean.update({
+                "home": home, "away": away,
+                "home_goals": int(hg), "away_goals": int(ag),
+                "league": league,
+            })
+            pending.append((clean, prediction))
+            predictions.append(prediction)
+
+        # No model state, Elo, form, team rates or calibrator targets are changed
+        # until every prediction in this batch has been produced.
+        for item, prediction in pending:
+            self._learn_observed_match(item, prediction)
+        return predictions
+
     def learn_step(
         self,
         h,
@@ -841,80 +930,10 @@ class Engine:
         total=None,
         match_date=None,
     ) -> dict:
-        """
-        Walk-forward learning step.
-
-        Порядок критически важен:
-
-        1. predict() — результат текущего матча ещё неизвестен.
-        2. сохраняем prediction для calibration history.
-        3. добавляем фактический результат в модель.
-
-        Поэтому текущий матч не обучает сам себя до prediction.
-        """
-
-        P = self.predict(
-            h,
-            a,
-            lg,
-            match_date=match_date,
-            cup=is_cup(lg),
-        )
-
-        # ---------------------------------------------------------
-        # Calibration target
-        # ---------------------------------------------------------
-
-        if hg > ag:
-            outcome = 0
-        elif hg == ag:
-            outcome = 1
-        else:
-            outcome = 2
-
-        self.calib_logits += [
-            self._logit(P["p1_raw"]),
-            self._logit(P["x_raw"]),
-            self._logit(P["p2_raw"]),
-        ]
-
-        self.calib_outcomes += [
-            1.0 if outcome == 0 else 0.0,
-            1.0 if outcome == 1 else 0.0,
-            1.0 if outcome == 2 else 0.0,
-        ]
-
-        # Ограничиваем историю calibration.
-        if len(self.calib_logits) > 12000:
-            del self.calib_logits[:-12000]
-
-        if len(self.calib_outcomes) > 12000:
-            del self.calib_outcomes[:-12000]
-
-        self.match_count += 1
-
-        # Переобучаем calibration только после накопления
-        # достаточного количества новых результатов.
-        if self.match_count % 150 == 0:
-            self.refit_calibrator()
-
-        if row is None:
-            row = {}
-
-        row = dict(row)
-        row["Div"] = lg
-
-        # Фактический результат попадает в Engine только здесь,
-        # после формирования prediction.
-        self.add(
-            h,
-            a,
-            hg,
-            ag,
-            row,
-            match_num=match_num,
-            total=total,
-            match_date=match_date,
-        )
-
-        return P
+        """Single-match convenience wrapper around the leakage-safe batch API."""
+        item = {
+            "home": h, "away": a, "home_goals": hg, "away_goals": ag,
+            "row": row or {}, "league": lg, "match_num": match_num,
+            "total": total, "match_date": match_date,
+        }
+        return self.learn_batch([item])[0]

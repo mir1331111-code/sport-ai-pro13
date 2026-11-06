@@ -85,6 +85,20 @@ class IndependentMarketRankingTests(unittest.TestCase):
         self.assertIsNone(market_forecast_summary(bad, "btts"))
         self.assertIsNone(market_forecast_summary(bad, "goals"))
 
+    def test_zero_and_certain_probabilities_are_not_promoted(self):
+        at_zero = _card(
+            "Zero FC vs Team", p1=0.0, over=0.0, btts=0.0,
+            corners=0.1, cards=0.1,
+        )
+        at_one = _card(
+            "Certain FC vs Team", p1=1.0, over=1.0, btts=1.0,
+            corners=50.0, cards=50.0,
+        )
+        for family in ("winner", "goals", "btts", "corners", "cards"):
+            with self.subTest(family=family):
+                self.assertIsNone(market_forecast_summary(at_zero, family))
+                self.assertIsNone(market_forecast_summary(at_one, family))
+
     def test_limit_is_applied_after_market_specific_ranking(self):
         high = _card("High vs Low", p1=.6, over=.9, btts=.6, corners=12, cards=5)
         low = _card("Low vs High", p1=.6, over=.6, btts=.6, corners=9, cards=3)

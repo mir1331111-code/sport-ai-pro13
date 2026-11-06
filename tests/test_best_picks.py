@@ -27,21 +27,26 @@ def _rows():
 class BestValueMarketTests(unittest.TestCase):
     def test_selects_1x2_market_with_value_after_market_blend(self):
         chosen, best = best_value_market(
-            _verdict(), _rows(), {"П1": 2.10, "ТБ 2.5": 1.90},
+            _verdict(), _rows(),
+            {"П1": 2.10, "X": 3.80, "П2": 5.00, "ТБ 2.5": 1.90},
             bank=1000, kelly_frac=0.25, min_prob=0.50,
+            bookmaker_by_pick={"П1": "Book A", "X": "Book A", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
         )
         self.assertIsNotNone(chosen)
         self.assertEqual(chosen["pick"], "П1")
         self.assertTrue(chosen["real_odds"])
         self.assertTrue(chosen["value_passed"])
-        self.assertEqual(chosen["probability_method"], "market_blend_0.4_model_delta")
+        self.assertEqual(chosen["probability_method"], "market_blend_0.4_model_delta_devig")
         self.assertEqual(best[1], "П1")
         self.assertEqual(best[2], 2.10)
 
     def test_confidence_uses_market_blended_probability_not_raw_model_probability(self):
         chosen, best = best_value_market(
-            _verdict(), _rows(), {"П1": 2.10},
+            _verdict(), _rows(), {"П1": 2.10, "X": 3.80, "П2": 5.00},
             bank=1000, kelly_frac=0.25, min_prob=0.50,
+            bookmaker_by_pick={"П1": "Book A", "X": "Book A", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
         )
         self.assertIsNotNone(best)
         self.assertAlmostEqual(chosen["confidence_score"], chosen["prob"] * 100, places=1)
@@ -141,7 +146,7 @@ class BestValueMarketTests(unittest.TestCase):
             {"pick": "Карты ТБ 4.5", "prob": 0.90, "label": "Карты ТБ 4.5"},
         ]
         odds = {
-            "П1": 2.20,
+            "П1": 2.20, "X": 2.20, "П2": 2.20,
             "ТБ 2.5": 2.20, "ТМ 2.5": 2.20,
             "BTTS Да": 2.20, "BTTS Нет": 2.20,
             "Угл ТБ 9.5": 2.20, "Угл ТМ 9.5": 2.20,
@@ -150,7 +155,7 @@ class BestValueMarketTests(unittest.TestCase):
         books = {
             key: "Book A" for key in odds
         }
-        validation = {row["pick"]: True for row in rows if row["pick"] != "П1"}
+        validation = {row["pick"]: True for row in rows}
 
         result = best_value_markets(
             _verdict(), rows, odds, bank=1000, kelly_frac=0.25,
@@ -175,11 +180,12 @@ class BestValueMarketTests(unittest.TestCase):
             {"pick": "Угл ТБ 9.5", "prob": 0.90},
         ]
         odds = {
-            "П1": 2.20,
+            "П1": 2.20, "X": 3.50, "П2": 4.20,
             "BTTS Да": 2.20, "BTTS Нет": 2.20,
             "Угл ТБ 9.5": 2.20, "Угл ТМ 9.5": 2.20,
         }
         books = {
+            "П1": "Book A", "X": "Book A", "П2": "Book A",
             "BTTS Да": "Book A", "BTTS Нет": "Book B",
             "Угл ТБ 9.5": "Book A", "Угл ТМ 9.5": "Book A",
         }
@@ -187,7 +193,7 @@ class BestValueMarketTests(unittest.TestCase):
             _verdict(), rows, odds, bank=1000, kelly_frac=0.25,
             min_prob=0.50, bookmaker_by_pick=books,
             market_validation_by_pick={
-                "BTTS Да": True, "Угл ТБ 9.5": True,
+                "П1": True, "BTTS Да": True, "Угл ТБ 9.5": True,
             },
         )
         self.assertEqual(set(result), {"winner", "corners"})
@@ -201,19 +207,58 @@ class BestValueMarketTests(unittest.TestCase):
 
     def test_rejects_price_without_edge_and_ev_thresholds(self):
         chosen, best = best_value_market(
-            _verdict(), _rows(), {"П1": 1.60},
+            _verdict(), _rows(), {"П1": 1.60, "X": 3.80, "П2": 5.00},
             bank=1000, kelly_frac=0.25, min_prob=0.50,
+            bookmaker_by_pick={"П1": "Book A", "X": "Book A", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
         )
         self.assertIsNone(chosen)
         self.assertIsNone(best)
 
     def test_probability_threshold_is_applied_to_blended_probability(self):
         chosen, best = best_value_market(
-            _verdict(), _rows(), {"П1": 2.10},
+            _verdict(), _rows(), {"П1": 2.10, "X": 3.80, "П2": 5.00},
             bank=1000, kelly_frac=0.25, min_prob=0.60,
+            bookmaker_by_pick={"П1": "Book A", "X": "Book A", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
         )
         self.assertIsNone(chosen)
         self.assertIsNone(best)
+
+
+    def test_1x2_requires_explicit_market_validation_and_complete_book_line(self):
+        rows = [{"pick": "П1", "prob": 0.70, "label": "Победа хозяев"}]
+        full_line = {"П1": 2.10, "X": 3.40, "П2": 4.00}
+        same_book = {"П1": "Book A", "X": "Book A", "П2": "Book A"}
+
+        missing_validation = best_value_market(
+            _verdict(), rows, full_line, bank=1000, kelly_frac=0.25,
+            min_prob=0.50, bookmaker_by_pick=same_book,
+        )
+        missing_draw_price = best_value_market(
+            _verdict(), rows, {"П1": 2.10, "П2": 4.00},
+            bank=1000, kelly_frac=0.25, min_prob=0.50,
+            bookmaker_by_pick={"П1": "Book A", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
+        )
+        mixed_books = best_value_market(
+            _verdict(), rows, full_line, bank=1000, kelly_frac=0.25,
+            min_prob=0.50,
+            bookmaker_by_pick={"П1": "Book A", "X": "Book B", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
+        )
+        accepted = best_value_market(
+            _verdict(), rows, full_line, bank=1000, kelly_frac=0.25,
+            min_prob=0.50, bookmaker_by_pick=same_book,
+            market_validation_by_pick={"П1": True},
+        )
+
+        self.assertEqual(missing_validation, (None, None))
+        self.assertEqual(missing_draw_price, (None, None))
+        self.assertEqual(mixed_books, (None, None))
+        self.assertIsNotNone(accepted[0])
+        self.assertIsNotNone(accepted[1])
+
 
 
 if __name__ == "__main__":

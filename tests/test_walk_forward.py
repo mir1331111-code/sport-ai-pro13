@@ -40,5 +40,42 @@ class WalkForwardTests(unittest.TestCase):
         self.assertIsNone(result["candidate"]["log_loss"])
 
 
+    def test_fractional_goal_scores_are_skipped_not_truncated(self):
+        result = walk_forward_compare([{
+            "Date": "2024-01-01", "Div": "E0",
+            "HomeTeam": "A", "AwayTeam": "B",
+            "FTHG": 1.5, "FTAG": 0,
+        }])
+        self.assertEqual(result["n"], 0)
+        self.assertEqual(result["skipped"], 1)
+
+    def test_market_gate_bootstrap_can_run_without_full_model_bootstrap(self):
+        rows = []
+        for index in range(40):
+            stamp = (date(2024, 1, 1) + timedelta(days=index)).isoformat()
+            rows.append({
+                "Date": stamp,
+                "Div": "E0",
+                "HomeTeam": f"Home{index % 5}",
+                "AwayTeam": f"Away{index % 7}",
+                "FTHG": index % 3,
+                "FTAG": (index + 1) % 3,
+                "B365H": 2.10,
+                "B365D": 3.40,
+                "B365A": 3.80,
+            })
+        result = walk_forward_compare(
+            rows, bootstrap_samples=0, market_bootstrap_samples=30,
+            totals_bootstrap_samples=0,
+        )
+        paired = result["candidate_minus_market"]
+        self.assertEqual(paired["n"], 40)
+        self.assertIsNotNone(paired["confidence_intervals_95"]["brier"]["low"])
+        self.assertIsNotNone(paired["confidence_intervals_95"]["log_loss"]["high"])
+        self.assertEqual(result["candidate"]["confidence_intervals_95"]["brier"]["low"], None)
+        self.assertEqual(result["market_bootstrap_samples"], 30)
+
+
+
 if __name__ == "__main__":
     unittest.main()

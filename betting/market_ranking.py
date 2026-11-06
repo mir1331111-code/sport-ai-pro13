@@ -13,6 +13,9 @@ from model.historical_match_stats import poisson_over_probability
 from model.market_forecasts import count_over_probability
 
 
+# Exclude values so close to 0/1 that rounded count distributions can look certain.
+PROBABILITY_EPSILON = 1e-5
+
 _STAT_SPECS = {
     "corners": {"key": "corners", "prefix": "Угл", "line": 8.5, "label": "Угловые"},
     "cards": {"key": "cards", "prefix": "Карты", "line": 3.5, "label": "Карточки"},
@@ -24,7 +27,12 @@ def _finite_probability(value: Any) -> float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if math.isfinite(number) and 0.0 <= number <= 1.0 else None
+    return (
+        number
+        if math.isfinite(number)
+        and PROBABILITY_EPSILON < number < 1.0 - PROBABILITY_EPSILON
+        else None
+    )
 
 
 def _sample(value: Any) -> int:
@@ -68,8 +76,9 @@ def market_forecast_summary(card: object, family: str) -> dict | None:
             "family": family, "pick": pick, "label": labels[pick],
             "probability": probabilities[pick],
             "reference_line": None, "expected_total": None,
-            "history_matches": _sample(card.get("games")),
-            "team_samples": 0, "basis": "1X2 distribution",
+            "history_matches": 0,
+            "team_samples": _sample(card.get("games")),
+            "basis": "1X2 distribution",
         }
 
     if family == "goals":
@@ -96,8 +105,9 @@ def market_forecast_summary(card: object, family: str) -> dict | None:
             "label": f"{pick} · Тотал голов",
             "probability": probability, "over_probability": over,
             "reference_line": 2.5, "expected_total": mean,
-            "history_matches": _sample(card.get("games")),
-            "team_samples": 0, "basis": "score model",
+            "history_matches": 0,
+            "team_samples": _sample(card.get("games")),
+            "basis": "score model",
         }
 
     if family == "btts":
@@ -111,8 +121,9 @@ def market_forecast_summary(card: object, family: str) -> dict | None:
             "label": "Обе забьют — " + ("Да" if yes >= 0.5 else "Нет"),
             "probability": probability, "yes_probability": yes,
             "reference_line": None, "expected_total": None,
-            "history_matches": _sample(card.get("games")),
-            "team_samples": 0, "basis": "score model",
+            "history_matches": 0,
+            "team_samples": _sample(card.get("games")),
+            "basis": "score model",
         }
 
     spec = _STAT_SPECS.get(family)
@@ -136,9 +147,9 @@ def market_forecast_summary(card: object, family: str) -> dict | None:
         or not math.isfinite(mean) or mean <= 0
     ):
         return None
-    over = count_over_probability(
+    over = _finite_probability(count_over_probability(
         mean, spec["line"], prediction.get("total_variance")
-    )
+    ))
     if over is None:
         return None
     pick = (

@@ -24,6 +24,7 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
 from data.fixture_merge import merge_fixture_sources, fixture_key
 from model.engine import Engine, _norm
 from model.validation_cache import select_validation_rows, validation_cache_key
+from model.training import prepare_completed_training_rows, train_engine_chronologically
 from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
@@ -358,7 +359,9 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
     )
     from security import cache_get, cache_put
     from model.walk_forward import walk_forward_compare, totals_market_is_validated
-    validation_key = validation_cache_key(validation_rows, matrix_n=matrix_n)
+    validation_key = validation_cache_key(
+        validation_rows, matrix_n=matrix_n, model_version=APP_VERSION,
+    )
     cached_validation = cache_get(validation_key, 30 * 86400)
 
     if isinstance(cached_validation, dict):
@@ -376,7 +379,7 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
         try:
             totals_backtest = walk_forward_compare(
                 validation_rows, matrix_n=matrix_n, bootstrap_samples=0,
-                totals_bootstrap_samples=1000,
+                totals_bootstrap_samples=1000, market_bootstrap_samples=1000,
             )
             update_loader(
                 "Проверка угловых и карточек (хронологический тест)",
@@ -396,6 +399,10 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
         except Exception as exc:
             totals_backtest = {}
             stat_report = {}
+            engine.winner_market_validation = False
+            engine.winner_market_validation_report = {
+                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
+            }
             engine.total_market_validation = False
             engine.total_market_validation_by_line = {}
             engine.total_market_validation_report = {
@@ -416,6 +423,14 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
             )
 
     if totals_backtest:
+        # Value requires an out-of-sample improvement over a de-vigged
+        # bookmaker benchmark, not merely a high model probability.
+        engine.winner_market_validation_report = (
+            totals_backtest.get("candidate_minus_market") or {}
+        )
+        engine.winner_market_validation = totals_market_is_validated(
+            engine.winner_market_validation_report, min_n=500
+        )
         engine.total_market_validation_report = totals_backtest.get(
             "goals_over25_candidate_minus_market", {})
         line_reports = totals_backtest.get("goals_totals_by_line") or {}
@@ -441,6 +456,15 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
             f"парных с рынком={engine.total_market_validation_report.get('n', 0)}, "
             f"источники={totals_backtest.get('goals_over25_market_sources', {})}"
         )
+        winner_diff = engine.winner_market_validation_report.get("differences", {})
+        winner_ci = engine.winner_market_validation_report.get("confidence_intervals_95", {})
+        logs.append(
+            f"1X2 vs рынок: пар={engine.winner_market_validation_report.get('n', 0)}, "
+            f"ΔBrier={winner_diff.get('brier')}, ΔLogLoss={winner_diff.get('log_loss')}, "
+            f"CI Brier={winner_ci.get('brier', {}).get('low')}…{winner_ci.get('brier', {}).get('high')}, "
+            f"CI LogLoss={winner_ci.get('log_loss', {}).get('low')}…{winner_ci.get('log_loss', {}).get('high')}; "
+            f"Value-допуск={'да' if engine.winner_market_validation else 'нет'}"
+        )
         if total_diff:
             logs.append(
                 f"ТБ/ТМ vs рынок: ΔBrier={total_diff.get('brier'):.4f}, "
@@ -449,9 +473,14 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                 f"LogLoss={total_ci.get('log_loss', {}).get('low')}…{total_ci.get('log_loss', {}).get('high')}"
             )
         logs.append(
-            "Тоталы допущены к ручному автодобавлению."
+            "1X2 допущен к Value только при полной линии одного букмекера."
+            if engine.winner_market_validation else
+            "1X2 пока forecast-only: нет ≥500 парных матчей с доказанным улучшением над de-vig рынком."
+        )
+        logs.append(
+            "ТБ/ТМ 2.5 допущены к Value только при полной линии одного букмекера."
             if engine.total_market_validation else
-            "Тоталы не допущены: нужно ≥500 парных матчей и статистически подтверждённое улучшение Brier и LogLoss."
+            "Тоталы пока forecast-only: нет ≥500 парных матчей с доказанным улучшением над de-vig рынком."
         )
         for line, line_report in line_reports.items():
             metric = line_report.get("metrics") or {}
@@ -461,12 +490,14 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                 f"baseline-пар={paired.get('n', 0)}, "
                 f"ΔBrier={(paired.get('differences') or {}).get('brier')}, "
                 f"ΔLogLoss={(paired.get('differences') or {}).get('log_loss')}, "
-                f"допуск={'да' if line_report.get('validation_passed') else 'нет'}"
+                f"лучше средней лиги={'да' if line_report.get('validation_passed') else 'нет'}; "
+                f"букмекерский Value=не проверен"
             )
         logs.append(
             f"BTTS: WF n={engine.btts_market_validation_report.get('candidate', {}).get('n', 0)}, "
             f"пар={engine.btts_market_validation_report.get('candidate_minus_baseline', {}).get('n', 0)}, "
-            f"допуск={'да' if engine.btts_market_validation else 'нет'}"
+            f"лучше средней лиги={'да' if engine.btts_market_validation else 'нет'}; "
+            "букмекерский Value=не проверен"
         )
 
     if stat_report:
@@ -485,9 +516,12 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                 logs.append(
                     f"WF {market} {line}: n={report.get('n', 0)}, "
                     f"ΔBrier={diff.get('brier')}, ΔLogLoss={diff.get('log_loss')}, "
-                    f"допуск={'да' if passed else 'нет'}"
+                    f"лучше средней лиги={'да' if passed else 'нет'}; "
+                    "букмекерский Value=не проверен"
                 )
     if not totals_backtest and not stat_report:
+        engine.winner_market_validation = False
+        engine.winner_market_validation_report = {}
         engine.total_market_validation = False
         engine.total_market_validation_by_line = {}
         engine.btts_market_validation = False
@@ -502,30 +536,35 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
             0.76, logs,
         )
 
-    total = sum(len(src) for dv in train_divs for src in history.get(dv, []))
-    processed = 0
-    trained = 0
-    for dv in train_divs:
-        for src in history.get(dv, []):
-            for r in src:
-                try:
-                    hg = float(r.get("FTHG", 0))
-                    ag = float(r.get("FTAG", 0))
-                    engine.learn_step(
-                        r["HomeTeam"], r["AwayTeam"], hg, ag, r,
-                        lg=dv, match_num=processed, total=total,
-                        match_date=parse_date(r.get("Date", "")))
-                    engine.match_stats.learn_step(r, dv)
-                    trained += 1
-                except Exception:
-                    pass
-                processed += 1
-                if processed % 50 == 0:
-                    update_loader(
-                        f"Обучение [{processed}/{total}]",
-                        0.76 + processed / max(1, total) * 0.22, logs)
-    engine.trained_n = trained
-    logs.append(f"Обучено: {trained}")
+    training_rows, skipped_rows = prepare_completed_training_rows(
+        history, train_divs,
+    )
+    if not training_rows:
+        raise RuntimeError(
+            "Не найдено ни одного исторического матча с валидной датой, "
+            "командами и финальным счётом; обучение остановлено без подстановки 0:0."
+        )
+
+    def _training_progress(processed, total):
+        if processed % 50 == 0 or processed == total:
+            update_loader(
+                f"Хронологическое обучение [{processed}/{total}]",
+                0.76 + processed / max(1, total) * 0.22, logs,
+            )
+
+    training_summary = train_engine_chronologically(
+        engine, engine.match_stats, training_rows,
+        on_progress=_training_progress,
+    )
+    engine.trained_n = training_summary["trained"]
+    logs.append(
+        f"Обучено хронологически: {training_summary['trained']} матчей, "
+        f"{training_summary['days']} календарных дней; "
+        f"пропущено без даты={skipped_rows['missing_date']}, "
+        f"без команд={skipped_rows['missing_teams']}, "
+        f"без валидного финального счёта={skipped_rows['missing_or_invalid_score']}, "
+        f"невалидных строк={skipped_rows['invalid_row']}."
+    )
     return engine
 
 
@@ -1010,8 +1049,20 @@ def _render_manual_odds_block(
     selected_market_type = market_type(pick)
     market_pair_validated = has_coherent_market_line(pick)
     if selected_market_type == "1X2":
-        market_is_validated = True
-        validation_note = ""
+        market_is_validated = (
+            bool(c.get("winner_market_validation")) and market_pair_validated
+        )
+        validation_parts = []
+        if not c.get("winner_market_validation"):
+            validation_parts.append(
+                "Модель пока не доказала статистически значимое улучшение над de-vig букмекерским рынком "
+                "на ≥500 парных исторических матчах. Это прогноз, не Value-ставка."
+            )
+        if not market_pair_validated:
+            validation_parts.append(
+                "Нет полной линии П1/X/П2 у одного идентифицированного букмекера."
+            )
+        validation_note = " ".join(validation_parts)
     elif selected_market_type == "OU":
         # Validate the exact goal-total line, not whichever line happened to
         # make the fixture's global shortlist.
@@ -1030,11 +1081,23 @@ def _render_manual_odds_block(
             source != "sstats"
             or bool((c.get("total_market_confirmed") or {}).get(pick))
         )
-        market_is_validated = history_validated and quote_corroborated and market_pair_validated
+        bookmaker_benchmark_validated = (
+            abs(float(line_key or 0.0) - 2.5) < 1e-9
+            and bool(c.get("total_market_validation"))
+        )
+        market_is_validated = (
+            history_validated and bookmaker_benchmark_validated
+            and quote_corroborated and market_pair_validated
+        )
         validation_notes = []
         if not history_validated:
             validation_notes.append(
                 f"Линия тотала {line_key or 'выбранная'} не прошла отдельную историческую проверку."
+            )
+        if not bookmaker_benchmark_validated:
+            validation_notes.append(
+                "Для этой линии нет подтверждённого улучшения модели над de-vig букмекерским рынком; "
+                "проверка против средней лиги не даёт права на Value."
             )
         if not quote_corroborated:
             validation_notes.append(
@@ -1045,11 +1108,12 @@ def _render_manual_odds_block(
             validation_notes.append("Нет обеих сторон линии у одного и того же букмекера.")
         validation_note = " ".join(validation_notes)
     elif selected_market_type == "BTTS":
-        history_validated = bool(c.get("btts_market_validation"))
-        market_is_validated = history_validated and market_pair_validated
-        validation_notes = []
-        if not history_validated:
-            validation_notes.append("BTTS не прошёл собственную историческую walk-forward проверку.")
+        # Existing BTTS walk-forward compares against the league base rate,
+        # not an untouched bookmaker benchmark. Keep the forecast visible only.
+        market_is_validated = False
+        validation_notes = [
+            "BTTS пока не прошёл отдельный out-of-sample тест против de-vig букмекерского рынка."
+        ]
         if not market_pair_validated:
             validation_notes.append("Нет обеих сторон BTTS у одного и того же букмекера.")
         validation_note = " ".join(validation_notes)
@@ -1074,11 +1138,12 @@ def _render_manual_odds_block(
             )
             source = str(c.get("extra_market_source") or "").casefold()
             quote_source_valid = source in {"highlightly", "manual_import", "sstats"}
-            market_is_validated = (
-                line_validated and history_sufficient and quote_source_valid
-                and market_pair_validated
-            )
-            validation_parts = []
+            # The current statistical walk-forward compares with a league
+            # baseline, not bookmaker prices. It is not an actionable Value gate.
+            market_is_validated = False
+            validation_parts = [
+                "Модель угловых/карточек пока не прошла парный исторический тест против de-vig букмекерского рынка."
+            ]
             if not line_validated:
                 validation_parts.append(
                     f"Линия {stat_line} рынка {stat_name} не прошла собственный walk-forward тест."
@@ -1154,7 +1219,10 @@ def _render_manual_odds_block(
             else c.get("odds_source")
             or "SStats"
         )
-        if selected_kind != "1X2" and not market_pair_validated:
+        if selected_kind == "1X2" and not market_pair_validated:
+            quote_is_confirmed = False
+            source_label += " · нет полной линии одного букмекера"
+        elif selected_kind != "1X2" and not market_pair_validated:
             quote_is_confirmed = False
             source_label += " · нет полной пары одного букмекера"
         if market_type(pick) == "OU" and str(c.get("total_odds_source") or "").casefold() == "sstats":
@@ -1900,8 +1968,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"история лиги {history_n}; домашняя/выездная выборка "
                     f"{summary.get('home_team_games', 0)}/{summary.get('away_team_games', 0)}"
                 )
-            elif history_n:
-                details.append(f"историческая выборка модели {history_n}")
+            elif summary.get("team_samples"):
+                details.append(
+                    f"минимальная выборка матчей команд: {summary['team_samples']}"
+                )
             return " · ".join(details)
 
         def _render_ranked_market_card(card, family):
@@ -2082,8 +2152,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         )
                 if probability_mode and selected_cards:
                     st.caption(
-                        f"Показаны сильнейшие прогнозы именно рынка «{market_label}», "
-                        f"отсортированные по его собственной вероятности. Максимум "
+                        f"Показаны матчи с наибольшей расчётной вероятностью именно рынка «{market_label}», "
+                        f"отсортированные по его собственной модели. Максимум "
                         f"{MARKET_FORECAST_DISPLAY_LIMIT} матчей; отсутствие Value не скрывает прогноз."
                     )
                 for card in selected_cards:
@@ -2588,11 +2658,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 **{pick: btts_odds_source for pick in btts_market_odds},
                 **{pick: extra_market_source for pick in stat_market_odds},
             }
-            market_validation_by_pick = {}
+            # Value flags are stricter than forecast flags. A full historical
+            # bookmaker benchmark must pass before any market enters the selector.
+            winner_market_validation = bool(
+                getattr(engine, "winner_market_validation", False)
+            )
+            market_validation_by_pick = {
+                pick: winner_market_validation for pick in ("П1", "X", "П2")
+            }
             extra_rows = []
 
-            # Goal totals: only lines that passed the chronological benchmark
-            # may participate in the bet selector.
+            # Only full-time O/U 2.5 has a paired out-of-sample comparison
+            # against de-vig bookmaker prices. Other totals remain forecasts.
             from model.historical_match_stats import poisson_over_probability
             total_mean = float(P["lams"][0] or 0.0) + float(P["lams"][1] or 0.0)
             total_validation = getattr(engine, "total_market_validation_by_line", {}) or {}
@@ -2606,7 +2683,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if not is_half_line(line):
                     continue
                 line_text = f"{line:g}"
-                if not bool(total_validation.get(line_text)):
+                if (
+                    abs(line - 2.5) > 1e-9
+                    or not bool(getattr(engine, "total_market_validation", False))
+                    or not bool(total_validation.get(line_text))
+                ):
                     continue
                 # SStats totals need both a coherent same-book pair and quotes
                 # corroborated by at least two independent bookmakers.
@@ -2631,72 +2712,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 })
                 market_validation_by_pick[selection] = True
 
-            # Both-teams-to-score: require its own out-of-sample check and
-            # a complete same-bookmaker Yes/No line.
-            if bool(getattr(engine, "btts_market_validation", False)):
-                for selection, probability in (
-                    ("BTTS Да", float(P.get("btts") or 0.0)),
-                    ("BTTS Нет", 1.0 - float(P.get("btts") or 0.0)),
-                ):
-                    if selection not in btts_market_odds or not 0.0 < probability < 1.0:
-                        continue
-                    extra_rows.append({
-                        "pick": selection,
-                        "label": "Обе команды забьют — " + ("Да" if selection.endswith("Да") else "Нет"),
-                        "prob": probability,
-                        "analysis": "Независимый walk-forward тест BTTS пройден; цена проверяется по полной линии одного букмекера.",
-                    })
-                    market_validation_by_pick[selection] = True
-
-            # Corners/cards: forecast each exact bookmaker line from historical
-            # team/venue stats; only line-specific validated models are eligible.
-            stat_validation = getattr(engine, "stat_market_validation", {}) or {}
-            stat_specs = (("Угл", "corners", "Угловые"), ("Карты", "cards", "Карточки"))
-            for selection in stat_market_odds:
-                match = re.fullmatch(
-                    r"(Угл|Карты)\s+(ТБ|ТМ)\s+(\d+(?:[.,]\d+)?)",
-                    str(selection), re.I,
-                )
-                if not match:
-                    continue
-                code = "Угл" if match.group(1).casefold() == "угл" else "Карты"
-                market_key = "corners" if code == "Угл" else "cards"
-                label_prefix = "Угловые" if code == "Угл" else "Карточки"
-                line = float(match.group(3).replace(",", "."))
-                # Integer totals can push and quarter lines split the stake.
-                # This model prices only half-lines, so other quotes stay informational.
-                if not is_half_line(line):
-                    continue
-                line_text = f"{line:g}"
-                pred = historical_stats.get(market_key) or {}
-                if not bool((stat_validation.get(market_key) or {}).get(line_text)):
-                    continue
-                if (
-                    pred.get("history_matches", 0) < 30
-                    or pred.get("home_team_games", 0) < 4
-                    or pred.get("away_team_games", 0) < 4
-                ):
-                    continue
-                over_probability = count_over_probability(
-                    pred.get("total"), line, pred.get("total_variance")
-                )
-                if over_probability is None:
-                    continue
-                is_over = match.group(2).upper() == "ТБ"
-                probability = over_probability if is_over else 1.0 - over_probability
-                extra_rows.append({
-                    "pick": selection,
-                    "label": f"{label_prefix} {'больше' if is_over else 'меньше'} {line_text}",
-                    "prob": probability,
-                    "analysis": (
-                        f"Ожидаемое значение: {float(pred.get('total')):.2f}; "
-                        f"история лиги: {pred.get('history_matches')} матчей, "
-                        f"у хозяев дома: {pred.get('home_team_games')}, "
-                        f"у гостей на выезде: {pred.get('away_team_games')}; "
-                        f"walk-forward линия {line_text} пройдена."
-                    ),
-                })
-                market_validation_by_pick[selection] = True
+            # BTTS, corners and cards still receive independent model forecasts
+            # in their own tabs. Their current walk-forward reports compare with
+            # a league-rate baseline, not an untouched bookmaker benchmark, so
+            # they must not enter the Value/EV selector yet.
 
             candidate_rows = list(rows_ or []) + extra_rows
             # Evaluate each family independently before computing the one-best
@@ -2776,6 +2795,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "fixture_id": r.get("fixture_id"),
                 "sstats_game_id": r.get("sstats_game_id"),
                 "historical_stats": historical_stats,
+                "winner_market_validation": bool(getattr(engine, "winner_market_validation", False)),
+                "winner_market_validation_report": getattr(engine, "winner_market_validation_report", {}),
+                "total_market_validation": bool(getattr(engine, "total_market_validation", False)),
                 "total_market_validation_by_line": getattr(engine, "total_market_validation_by_line", {}),
                 "btts_market_validation": bool(getattr(engine, "btts_market_validation", False)),
                 "btts_market_validation_report": getattr(engine, "btts_market_validation_report", {}),
@@ -2793,7 +2815,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "markets": historical_stats,
                 },
                 "xg_used": bool(P.get("xg_used")),
-                "total_market_validation": bool(getattr(engine, "total_market_validation", False)),
                 "total_market_validation_report": getattr(engine, "total_market_validation_report", {}),
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],

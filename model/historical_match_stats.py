@@ -102,10 +102,13 @@ class HistoricalMatchStats:
                 hr, ar = _num(row.get("HR")), _num(row.get("AR"))
                 if h is None or a is None or hr is None or ar is None:
                     continue
+                if not all(value.is_integer() for value in (h, a, hr, ar)):
+                    continue
                 h += hr
                 a += ar
-            if h is None or a is None:
-                continue
+            else:
+                if h is None or a is None or not h.is_integer() or not a.is_integer():
+                    continue
             values[market] = (h, a)
         if not values:
             return False
@@ -264,6 +267,8 @@ def walk_forward_market_validation(
                     hr, ar = _num(row.get("HR")), _num(row.get("AR"))
                     if all(value is not None for value in (hy, ay, hr, ar)):
                         actual = hy + ay + hr + ar
+                if actual is not None and not float(actual).is_integer():
+                    actual = None
                 forecast = forecasts.get(market) or {}
                 league_rows = model.league[league][market]
                 if (
@@ -359,11 +364,17 @@ def walk_forward_evaluate(rows, league="G", min_history=30):
             forecasts = model.predict(home, away, league)
             actuals = {}
             hc, ac = _num(row.get("HC")), _num(row.get("AC"))
-            if hc is not None and ac is not None:
+            if (
+                hc is not None and ac is not None
+                and hc.is_integer() and ac.is_integer()
+            ):
                 actuals["corners"] = hc + ac
             hy, ay = _num(row.get("HY")), _num(row.get("AY"))
             hr, ar = _num(row.get("HR")), _num(row.get("AR"))
-            if all(value is not None for value in (hy, ay, hr, ar)):
+            if (
+                all(value is not None for value in (hy, ay, hr, ar))
+                and all(value.is_integer() for value in (hy, ay, hr, ar))
+            ):
                 actuals["cards"] = hy + ay + hr + ar
             for market, actual in actuals.items():
                 forecast = forecasts.get(market)

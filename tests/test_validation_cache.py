@@ -42,13 +42,27 @@ class ValidationCacheTests(unittest.TestCase):
         history = {"E0": [[invalid, missing_team, self._row(3)]]}
         self.assertEqual(len(select_validation_rows(history, ("E0",))), 1)
 
+    def test_fractional_goal_scores_are_excluded_from_validation_rows(self):
+        fractional = self._row(1)
+        fractional["FTHG"] = "1.5"
+        valid = self._row(2)
+        rows = select_validation_rows({"E0": [[fractional, valid]]}, ("E0",))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["FTHG"], 1)
+
     def test_fingerprint_is_stable_and_invalidated_by_xg_changes(self):
         rows = select_validation_rows({"E0": [[self._row(1, xg=1.1)]]}, ("E0",))
         same = select_validation_rows({"E0": [[self._row(1, xg=1.1)]]}, ("E0",))
         changed = select_validation_rows({"E0": [[self._row(1, xg=1.4)]]}, ("E0",))
         self.assertEqual(validation_cache_key(rows), validation_cache_key(same))
         self.assertTrue(
-            validation_cache_key(rows).startswith("neuro_market_validation_v4_bootstrap1000_")
+            validation_cache_key(rows, model_version="13.12.0").startswith(
+                "neuro_market_validation_v5_13.12.0_bootstrap1000_"
+            )
+        )
+        self.assertNotEqual(
+            validation_cache_key(rows, model_version="13.11.0"),
+            validation_cache_key(rows, model_version="13.12.0"),
         )
         self.assertNotEqual(validation_cache_key(rows), validation_cache_key(changed))
         self.assertNotEqual(validation_cache_key(rows, matrix_n=12),

@@ -22,6 +22,18 @@ def _get(row, *names):
             return row[name]
     return None
 
+def _strict_score(value):
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0 or not number.is_integer():
+        return None
+    return int(number)
+
+
 
 def _parse_date(value):
     """Parse ISO timestamps and Football-Data day/month/year CSV dates."""
@@ -148,26 +160,26 @@ def _paired_differences(left_records, right_records, *, bootstrap_samples=1000, 
     """Paired left-minus-right score differences on the same fixtures."""
     if not left_records or len(left_records) != len(right_records):
         return {"n": 0, "differences": {}, "confidence_intervals_95": {}}
-    left = [_record_scores(r) for r in left_records]
-    right = [_record_scores(r) for r in right_records]
+    left = np.asarray([_record_scores(r) for r in left_records], dtype=float)
+    right = np.asarray([_record_scores(r) for r in right_records], dtype=float)
+    diffs = left - right
     names = ("brier", "log_loss", "rps_hda_order", "accuracy")
-    diffs = [[a[i] - b[i] for i in range(4)] for a, b in zip(left, right)]
-    means = [sum(row[i] for row in diffs) / len(diffs) for i in range(4)]
-    rng = random.Random(seed)
-    samples = {name: [] for name in names}
-    for _ in range(max(0, int(bootstrap_samples))):
-        picked = [diffs[rng.randrange(len(diffs))] for _ in range(len(diffs))]
-        for i, name in enumerate(names):
-            samples[name].append(sum(row[i] for row in picked) / len(picked))
+    means = diffs.mean(axis=0).tolist()
+    samples = _bootstrap_mean_samples(diffs, bootstrap_samples, seed)
     intervals = {}
-    for name in names:
-        values = sorted(samples[name])
-        intervals[name] = ({"low": values[int(.025 * (len(values)-1))],
-                            "high": values[int(.975 * (len(values)-1))]}
-                           if values else {"low": None, "high": None})
-    return {"n": len(diffs), "differences": dict(zip(names, means)),
-            "confidence_intervals_95": intervals,
-            "note": "Negative values favor left model for proper scoring rules; positive accuracy difference favors left."}
+    for index, name in enumerate(names):
+        values = sorted(samples[index])
+        intervals[name] = (
+            {"low": values[int(.025 * (len(values)-1))],
+             "high": values[int(.975 * (len(values)-1))]}
+            if values else {"low": None, "high": None}
+        )
+    return {
+        "n": len(diffs),
+        "differences": dict(zip(names, means)),
+        "confidence_intervals_95": intervals,
+        "note": "Negative values favor left model for proper scoring rules; positive accuracy difference favors left.",
+    }
 
 
 def _probs(prediction):
@@ -320,7 +332,11 @@ def totals_market_is_validated(report, *, min_n=500):
     return True
 
 
-def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 180.0, bootstrap_samples: int = 1000, totals_bootstrap_samples: int | None = None) -> dict:
+def walk_forward_compare(
+    rows, *, matrix_n: int = 12, half_life_days: float = 180.0,
+    bootstrap_samples: int = 1000, totals_bootstrap_samples: int | None = None,
+    market_bootstrap_samples: int | None = None,
+) -> dict:
     """Compare goals-only and xG engines on identical chronological fixtures.
 
     All fixtures on the same calendar date are predicted before any result from
@@ -334,10 +350,10 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             stamp = _parse_date(_get(row, "Date", "date", "match_date", "kickoff_date"))
             home = _get(row, "HomeTeam", "home_team", "home")
             away = _get(row, "AwayTeam", "away_team", "away")
-            hg = int(_get(row, "FTHG", "home_goals", "hg"))
-            ag = int(_get(row, "FTAG", "away_goals", "ag"))
+            hg = _strict_score(_get(row, "FTHG", "home_goals", "hg"))
+            ag = _strict_score(_get(row, "FTAG", "away_goals", "ag"))
             league = str(_get(row, "Div", "league", "competition") or "G")
-            if stamp is None or not home or not away or hg < 0 or ag < 0:
+            if stamp is None or not home or not away or hg is None or ag is None:
                 skipped += 1
                 continue
             prepared.append((stamp, str(league), str(home), str(away), hg, ag, row))
@@ -470,6 +486,7 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
     metrics = {name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=1729)
                for name, value in records.items() if not name.startswith("goals_over25")}
     totals_bs = bootstrap_samples if totals_bootstrap_samples is None else max(0, int(totals_bootstrap_samples))
+    market_bs = bootstrap_samples if market_bootstrap_samples is None else max(0, int(market_bootstrap_samples))
     goals_over25_metrics = _binary_metrics(records["goals_over25"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_market_metrics = _binary_metrics(records["goals_over25_market"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_candidate_market_metrics = _binary_metrics(records["goals_over25_candidate_on_market"], bootstrap_samples=totals_bs, seed=31415)
@@ -545,11 +562,12 @@ def walk_forward_compare(rows, *, matrix_n: int = 12, half_life_days: float = 18
             records["goals_over25_candidate_on_market"], records["goals_over25_market"],
             bootstrap_samples=totals_bs, seed=31416),
         "market_devig_methods": {name: metrics[name] for name in ("market", "market_power", "market_shin") if name in metrics},
-        "candidate_minus_market": _paired_differences(records["candidate_on_market"], records["market"], bootstrap_samples=bootstrap_samples, seed=2720),
+        "candidate_minus_market": _paired_differences(records["candidate_on_market"], records["market"], bootstrap_samples=market_bs, seed=2720),
         "candidate_minus_market_power": _paired_differences(records.get("candidate_on_market_power", []), records.get("market_power", []), bootstrap_samples=bootstrap_samples, seed=2721),
         "candidate_minus_market_shin": _paired_differences(records.get("candidate_on_market_shin", []), records.get("market_shin", []), bootstrap_samples=bootstrap_samples, seed=2722),
         "half_life_days": float(half_life_days),
         "bootstrap_samples": int(bootstrap_samples),
+        "market_bootstrap_samples": int(market_bs),
         "delta_candidate_minus_baseline": {
             key: delta(candidate_metrics, base_metrics, key)
             for key in ("brier", "log_loss", "accuracy")

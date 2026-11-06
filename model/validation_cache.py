@@ -44,7 +44,7 @@ def select_validation_rows(history, divisions, *, max_rows_per_league=500):
                 if (
                     stamp is None or not home or not away
                     or not math.isfinite(hg) or not math.isfinite(ag)
-                    or hg < 0 or ag < 0
+                    or hg < 0 or ag < 0 or not hg.is_integer() or not ag.is_integer()
                 ):
                     continue
                 row = dict(original)
@@ -63,7 +63,7 @@ def select_validation_rows(history, divisions, *, max_rows_per_league=500):
     return selected
 
 
-def validation_cache_key(rows, *, matrix_n=12):
+def validation_cache_key(rows, *, matrix_n=12, model_version="unspecified"):
     """Fingerprint exact validation inputs; new scores, xG or market fields invalidate it."""
     payload = json.dumps(
         list(rows or []),
@@ -73,6 +73,7 @@ def validation_cache_key(rows, *, matrix_n=12):
         default=str,
     ).encode("utf-8")
     digest = hashlib.sha256(payload).hexdigest()
-    return f"neuro_market_validation_v4_bootstrap1000_{int(matrix_n)}_{digest}"
+    version = str(model_version or "unspecified").strip().replace("/", "_").replace(" ", "_")
+    return f"neuro_market_validation_v5_{version}_bootstrap1000_{int(matrix_n)}_{digest}"
 
 

@@ -156,10 +156,9 @@ def best_value_market(
 ):
     """Choose the best market only from tested forecasts and exact bookmaker lines.
 
-    1X2 retains backward-compatible raw-implied fallback when provenance is absent.
-    Two-way markets require both sides from the same named bookmaker and an
-    explicit line-specific historical-validation flag. No 1X2 or other-market
-    price may be substituted for the requested market.
+    Every market requires an explicit out-of-sample bookmaker-benchmark flag
+    and a complete coherent line from one named bookmaker. No single-price
+    fallback is promoted to Value, and no other-market price may be substituted.
     """
     if not isinstance(market_odds, dict) or not market_odds:
         return None, None
@@ -175,7 +174,7 @@ def best_value_market(
         kind = market_type(pick)
         if kind not in {"1X2", "OU", "BTTS", "STAT"}:
             continue
-        if kind != "1X2" and not bool(market_validation_by_pick.get(pick)):
+        if not bool(market_validation_by_pick.get(pick)):
             continue
         try:
             prob = float(row.get("prob"))
@@ -189,8 +188,8 @@ def best_value_market(
         no_vig = proportional_devig(
             market_odds, paired_picks or (), bookmaker_by_pick=bookmaker_by_pick
         )
-        if kind != "1X2" and no_vig is None:
-            # Do not compare two-way prices taken from different bookmakers.
+        if no_vig is None:
+            # Do not compare incomplete lines or prices assembled across books.
             continue
 
         candidate_row = dict(row)
