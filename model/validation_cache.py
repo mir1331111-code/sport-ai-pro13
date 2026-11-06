@@ -44,7 +44,7 @@ def select_validation_rows(history, divisions, *, max_rows_per_league=500):
                 if (
                     stamp is None or not home or not away
                     or not math.isfinite(hg) or not math.isfinite(ag)
-                    or hg < 0 or ag < 0
+                    or hg < 0 or ag < 0 or not hg.is_integer() or not ag.is_integer()
                 ):
                     continue
                 row = dict(original)
