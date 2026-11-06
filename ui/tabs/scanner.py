@@ -1731,12 +1731,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     favorite_card.get("match_ru") or favorite_card.get("match") or "Матч"
                 )
                 favorite_league = str(favorite_card.get("league") or "Футбол")
-                favorite_kickoff = " · ".join(
-                    str(value) for value in (
-                        favorite_card.get("date") or "",
-                        favorite_card.get("time") or "",
-                    ) if value
-                )
+                favorite_date_text = str(favorite_card.get("date") or "")
+                favorite_time_text = str(favorite_card.get("time") or "").strip()
+                favorite_kickoff = favorite_date_text
+                if favorite_time_text and favorite_time_text not in favorite_date_text:
+                    favorite_kickoff = " · ".join(
+                        value for value in (favorite_date_text, favorite_time_text) if value
+                    )
                 favorite_probability = float(favorite_item["probability"])
                 favorite_margin = float(favorite_item["probability_margin"])
                 favorite_sample = int(favorite_item["sample_games"])
