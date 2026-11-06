@@ -14,7 +14,7 @@ from model.market_forecasts import count_over_probability
 
 
 # Exclude values so close to 0/1 that rounded count distributions can look certain.
-PROBABILITY_EPSILON = 1e-6
+PROBABILITY_EPSILON = 1e-5
 
 _STAT_SPECS = {
     "corners": {"key": "corners", "prefix": "Угл", "line": 8.5, "label": "Угловые"},
