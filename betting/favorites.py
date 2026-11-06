@@ -6,6 +6,7 @@ bookmaker prices, EV, edge, Kelly and market validation remain separate gates.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import unicodedata
@@ -59,7 +60,6 @@ def _fixture_key(card: dict, index: int) -> tuple:
 def _duplicate_quality(card: dict) -> tuple:
     """Resolve duplicate provider rows by forecast quality and data coverage."""
     favorite = model_favorite(card)
-    score = favorite["rank_score"] if favorite else 0.0
     odds = sum(
         len(card.get(field) or {})
         for field in (
@@ -174,7 +174,9 @@ def rank_model_favorites(cards: object, limit: int | None = None) -> list[dict]:
         -item["sample_games"],
         str(item["card"].get("date_iso") or item["card"].get("date") or ""),
         str(item["card"].get("match") or item["card"].get("match_ru") or ""),
-        hashlib.sha256(repr(_fixture_key(item["card"], 0)).encode("utf-8")).hexdigest(),
+        hashlib.sha256(
+            json.dumps(item["card"], ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest(),
     ))
     if limit is not None:
         try:
