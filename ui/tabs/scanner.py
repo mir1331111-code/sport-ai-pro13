@@ -1051,30 +1051,23 @@ def _render_manual_odds_block(
 
     selected_market_type = market_type(pick)
     if market_filter is None:
-        forecast_family = (
-            "winner" if selected_market_type == "1X2"
-            else "goals" if selected_market_type == "OU"
-            else "btts" if selected_market_type == "BTTS"
-            else "corners" if selected_market_type == "STAT" and pick.startswith("Угл ")
-            else "cards" if selected_market_type == "STAT" and pick.startswith("Карты ")
-            else None
-        )
-        selected_summary = (
-            market_forecast_summary(c, forecast_family)
-            if forecast_family else None
-        )
-        if selected_summary is not None:
-            strength_threshold = float(
-                selected_summary.get("strength_threshold") or STRONG_FORECAST_MIN_PROB
-            )
+        try:
+            selected_probability = float(model_prob)
+        except (TypeError, ValueError):
+            selected_probability = None
+        if (
+            selected_probability is not None
+            and math.isfinite(selected_probability)
+            and 0.0 < selected_probability < 1.0
+        ):
             strength_label = (
-                f"СИЛЬНЫЙ ПРОГНОЗ ≥{strength_threshold:.0%}"
-                if selected_summary.get("strong_forecast") else
-                f"прогноз ниже порога сильного {strength_threshold:.0%}"
+                f"СИЛЬНЫЙ ПРОГНОЗ ≥{STRONG_FORECAST_MIN_PROB:.0%}"
+                if selected_probability >= STRONG_FORECAST_MIN_PROB else
+                f"прогноз ниже порога сильного {STRONG_FORECAST_MIN_PROB:.0%}"
             )
             st.caption(
-                f"{strength_label} · {selected_summary['label']} "
-                f"{selected_summary['probability']:.1%}; это вероятность модели, не гарантия."
+                f"{strength_label} · {selected_label} "
+                f"{selected_probability:.1%}; это вероятность модели, не гарантия."
             )
     market_pair_validated = has_coherent_market_line(pick)
     if selected_market_type == "1X2":
