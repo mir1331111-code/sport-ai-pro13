@@ -267,6 +267,8 @@ def walk_forward_market_validation(
                     hr, ar = _num(row.get("HR")), _num(row.get("AR"))
                     if all(value is not None for value in (hy, ay, hr, ar)):
                         actual = hy + ay + hr + ar
+                if actual is not None and not float(actual).is_integer():
+                    actual = None
                 forecast = forecasts.get(market) or {}
                 league_rows = model.league[league][market]
                 if (
