@@ -490,12 +490,14 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                 f"baseline-пар={paired.get('n', 0)}, "
                 f"ΔBrier={(paired.get('differences') or {}).get('brier')}, "
                 f"ΔLogLoss={(paired.get('differences') or {}).get('log_loss')}, "
-                f"допуск={'да' if line_report.get('validation_passed') else 'нет'}"
+                f"лучше средней лиги={'да' if line_report.get('validation_passed') else 'нет'}; "
+                f"букмекерский Value=не проверен"
             )
         logs.append(
             f"BTTS: WF n={engine.btts_market_validation_report.get('candidate', {}).get('n', 0)}, "
             f"пар={engine.btts_market_validation_report.get('candidate_minus_baseline', {}).get('n', 0)}, "
-            f"допуск={'да' if engine.btts_market_validation else 'нет'}"
+            f"лучше средней лиги={'да' if engine.btts_market_validation else 'нет'}; "
+            "букмекерский Value=не проверен"
         )
 
     if stat_report:
@@ -514,7 +516,8 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                 logs.append(
                     f"WF {market} {line}: n={report.get('n', 0)}, "
                     f"ΔBrier={diff.get('brier')}, ΔLogLoss={diff.get('log_loss')}, "
-                    f"допуск={'да' if passed else 'нет'}"
+                    f"лучше средней лиги={'да' if passed else 'нет'}; "
+                    "букмекерский Value=не проверен"
                 )
     if not totals_backtest and not stat_report:
         engine.winner_market_validation = False
