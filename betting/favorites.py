@@ -133,14 +133,14 @@ def model_favorite(card: object) -> dict | None:
         ("П2", f"Победа {away}" if away else "Победа гостей"),
     )
     pick, label = outcomes[best_idx]
-    if probability >= 0.70 and sample_games >= 5:
-        strength = "Высокая вероятность"
-    elif probability >= 0.62 and sample_games >= 5:
+    if probability >= 0.70:
         strength = "Сильный фаворит"
-    elif probability >= 0.55:
-        strength = "Умеренное преимущество"
-    else:
+    elif probability >= 0.60:
+        strength = "Фаворит"
+    elif probability >= 0.52:
         strength = "Небольшое преимущество"
+    else:
+        strength = "Равный матч"
 
     return {
         "pick": pick,
