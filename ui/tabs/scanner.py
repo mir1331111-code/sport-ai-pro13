@@ -28,6 +28,7 @@ from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
 from betting.ranking import model_favorite, rank_model_favorites, rank_score
+from betting.market_ranking import market_forecast_summary, rank_market_forecasts
 from betting.kelly import kelly, market_type
 from betting.market_math import blend_probability, proportional_devig
 from llm.analyst import LLMRateLimitError, analyze_match, has_sufficient_history
@@ -38,6 +39,7 @@ from ui.cards import (render_verdict_card, translate_team,
 LLM_TOP_N = 8
 MAX_STAKE_PCT = 0.05
 AUTO_PORTFOLIO_MIN_PROB = 0.65  # Hard confidence gate for virtual-portfolio additions.
+MARKET_FORECAST_DISPLAY_LIMIT = 20
 
 
 def _runtime_secret(session_key: str, *names: str) -> str:
@@ -744,7 +746,9 @@ def _render_manual_odds_block(
     for stat_market, market_code, label_prefix, default_lines in stat_specs:
         pred = stat_preds.get(stat_market) or {}
         quoted_lines = _stat_market_lines(stat_odds, market_code)
-        lines = quoted_lines or list(default_lines)
+        # Keep the stable reference line available even when the bookmaker only
+        # publishes alternative lines; the card will label it as model-only.
+        lines = sorted(set(quoted_lines) | set(default_lines))
         if pred.get("total") is not None and pred.get("history_matches", 0) >= 30:
             for line in lines:
                 over_p = count_over_probability(
@@ -963,9 +967,21 @@ def _render_manual_odds_block(
         auto_quote_exists = True
         has_positive_value = False
     else:
-        selected_label, (pick, model_prob) = max(
-            candidate_options.items(), key=lambda row: row[1][1]
+        summary = market_forecast_summary(c, market_filter) if market_filter else None
+        preferred_pick = str((summary or {}).get("pick") or "")
+        preferred = next(
+            (
+                (label, item) for label, item in candidate_options.items()
+                if str(item[0]) == preferred_pick
+            ),
+            None,
         )
+        if preferred is None:
+            selected_label, (pick, model_prob) = max(
+                candidate_options.items(), key=lambda row: row[1][1]
+            )
+        else:
+            selected_label, (pick, model_prob) = preferred
         selected_odd = None
         selected_ev = None
         selected_edge = None
@@ -1827,13 +1843,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
             for family in ("winner", "goals", "btts", "corners", "cards")
         }
+        forecast_counts = {
+            family: len(rank_market_forecasts(market_pool, family))
+            for family in ("winner", "goals", "btts", "corners", "cards")
+        }
         market_tabs = st.tabs([
-            f"Тоталы · сигналы {signal_counts['goals']} / цены {quote_counts['goals']}",
+            f"Тоталы · прогнозы {forecast_counts['goals']} / Value {signal_counts['goals']} / цены {quote_counts['goals']}",
             f"{'Общий shortlist' if recommendation_mode else 'Все матчи'} ({len(cards_view)})",
-            f"1X2 · сигналы {signal_counts['winner']} / цены {quote_counts['winner']}",
-            f"BTTS · сигналы {signal_counts['btts']} / цены {quote_counts['btts']}",
-            f"Угловые · сигналы {signal_counts['corners']} / цены {quote_counts['corners']}",
-            f"Карточки · сигналы {signal_counts['cards']} / цены {quote_counts['cards']}",
+            f"1X2 · прогнозы {forecast_counts['winner']} / Value {signal_counts['winner']} / цены {quote_counts['winner']}",
+            f"BTTS · прогнозы {forecast_counts['btts']} / Value {signal_counts['btts']} / цены {quote_counts['btts']}",
+            f"Угловые · прогнозы {forecast_counts['corners']} / Value {signal_counts['corners']} / цены {quote_counts['corners']}",
+            f"Карточки · прогнозы {forecast_counts['cards']} / Value {signal_counts['cards']} / цены {quote_counts['cards']}",
             f"Форы · котировки {quote_counts['handicap']}",
         ])
 
@@ -1863,38 +1883,84 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 else None
             )
 
+        def _market_summary_caption(card, family):
+            summary = market_forecast_summary(card, family)
+            if not summary:
+                return None
+            details = [
+                f"Модельный прогноз: {summary['label']} — {summary['probability']:.1%}",
+            ]
+            if summary.get("reference_line") is not None:
+                details.append(f"контрольная линия {summary['reference_line']:g}")
+            if summary.get("expected_total") is not None:
+                details.append(f"ожидаемый тотал {summary['expected_total']:.2f}")
+            history_n = int(summary.get("history_matches") or 0)
+            if family in {"corners", "cards"}:
+                details.append(
+                    f"история лиги {history_n}; домашняя/выездная выборка "
+                    f"{summary.get('home_team_games', 0)}/{summary.get('away_team_games', 0)}"
+                )
+            elif history_n:
+                details.append(f"историческая выборка модели {history_n}")
+            return " · ".join(details)
+
+        def _render_ranked_market_card(card, family):
+            st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+            summary_text = _market_summary_caption(card, family)
+            if summary_text:
+                st.caption(summary_text + " · прогноз модели, не гарантия и не подтверждённая ставка")
+            else:
+                st.caption(
+                    "Для этого матча нет достаточной истории, чтобы рассчитать отдельный прогноз этого рынка."
+                )
+            _render_manual_odds_block(
+                card, D, kelly_frac, min_prob, min_edge,
+                market_filter=family,
+                market_recommendation=_market_recommendation(card, family),
+            )
+
         def _sort_market_cards(cards, family):
             def _key(card):
                 recommendation = _market_recommendation(card, family)
                 result = (recommendation or {}).get("verdict") or {}
+                summary = market_forecast_summary(card, family) or {}
+                market_probability = float(summary.get("probability") or 0.0)
+                market_history = int(summary.get("history_matches") or 0)
+                market_team_sample = int(summary.get("team_samples") or 0)
                 if sort_mode.startswith("По дате"):
                     return (0 if recommendation else 1, parse_card_date(card))
                 if sort_mode.startswith("По вероятности"):
-                    # In probability mode every market tab follows the same
-                    # unique-fixture ranking; a Value flag must not promote a
-                    # lower-probability event above a stronger forecast.
-                    favorite = model_favorite(card) or {}
+                    # Every tab ranks with its own event probability; 1X2 is
+                    # never used as a proxy for totals, BTTS, corners or cards.
                     return (
-                        -float(favorite.get("probability") or 0.0),
-                        -float(favorite.get("probability_margin") or 0.0),
-                        -int(favorite.get("sample_games") or 0),
+                        -market_probability,
+                        -market_history,
+                        -market_team_sample,
                     )
                 if sort_mode.startswith("По EV"):
                     return (
                         0 if recommendation else 1,
                         -float(result.get("ev") or -1.0),
+                        -market_probability,
                     )
                 return (
                     0 if recommendation else 1,
                     -float((recommendation or {}).get("score") or -1.0),
+                    -market_probability,
+                    -market_history,
+                    -market_team_sample,
                 )
             return sorted(cards, key=_key)
 
-        # Each family is independently ranked over the full fixture pool.
-        # In recommendation mode only its own passed signals are shown.
+        # Forecast lists are market-specific. They are not derived from the
+        # global 1X2 shortlist and do not repeat every fixture on every tab.
         goal_cards = (
             [card for card in market_pool if _market_recommendation(card, "goals")]
-            if recommendation_mode else market_pool
+            if recommendation_mode else
+            [item["card"] for item in rank_market_forecasts(
+                market_pool, "goals", limit=MARKET_FORECAST_DISPLAY_LIMIT
+            )] if probability_mode else
+            [card for card in market_pool if card.get("total_market_odds")]
         )
         goal_cards = _sort_market_cards(goal_cards, "goals")
         with market_tabs[0]:
@@ -1914,12 +1980,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "Котировок на тоталы в источниках нет. Модельные оценки не являются "
                     "ставкой без реальной цены."
                 )
+            st.caption(
+                f"Показаны отдельные прогнозы тотала, ранжированные по вероятности события "
+                f"(не по рейтингу 1X2); максимум {MARKET_FORECAST_DISPLAY_LIMIT} матчей."
+            )
             for card in goal_cards:
-                st.markdown(render_fixture_header(card), unsafe_allow_html=True)
-                _render_manual_odds_block(
-                    card, D, kelly_frac, min_prob, min_edge, market_filter="goals",
-                    market_recommendation=_market_recommendation(card, "goals"),
-                )
+                _render_ranked_market_card(card, "goals")
 
         with market_tabs[1]:
             if not cards_view:
@@ -1982,9 +2048,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         if _market_recommendation(card, market_filter)
                     ]
                 elif probability_mode:
-                    # Do not hide a fixture just because its bookmaker has not
-                    # published this secondary market; keep its forecast visible.
-                    selected_cards = list(market_pool)
+                    ranked_market = rank_market_forecasts(
+                        market_pool, market_filter,
+                        limit=MARKET_FORECAST_DISPLAY_LIMIT,
+                    )
+                    selected_cards = [item["card"] for item in ranked_market]
+                    # If a statistical market has quotes but lacks enough team
+                    # history for a forecast, retain a small diagnostic sample.
+                    if not selected_cards and market_filter in {"corners", "cards"}:
+                        selected_cards = [
+                            card for card in market_pool if has_market_quote(card)
+                        ][:5]
                 else:
                     selected_cards = [
                         card for card in market_pool if has_market_quote(card)
@@ -2006,13 +2080,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             f"Нет подтверждённых котировок на {market_label} для найденных матчей. "
                             "Коэффициенты 1X2 не подставляются вместо отсутствующего рынка."
                         )
-                for card in selected_cards:
-                    st.markdown(render_fixture_header(card), unsafe_allow_html=True)
-                    _render_manual_odds_block(
-                        card, D, kelly_frac, min_prob, min_edge,
-                        market_filter=market_filter,
-                        market_recommendation=_market_recommendation(card, market_filter),
+                if probability_mode and selected_cards:
+                    st.caption(
+                        f"Показаны сильнейшие прогнозы именно рынка «{market_label}», "
+                        f"отсортированные по его собственной вероятности. Максимум "
+                        f"{MARKET_FORECAST_DISPLAY_LIMIT} матчей; отсутствие Value не скрывает прогноз."
                     )
+                for card in selected_cards:
+                    _render_ranked_market_card(card, market_filter)
 
         with market_tabs[6]:
             handicap_cards = [card for card in market_pool if card.get("asian_handicap_market_odds")]
