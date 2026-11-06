@@ -33,6 +33,34 @@ SCALE_EDGE = 0.08     # Edge 8% = отлично
 SCALE_KELLY = 0.05    # Kelly 5% = максимальный риск
 
 
+def balanced_value_score(probability, ev=None, edge=None) -> float:
+    """Balanced display/selection score; it never decides Value eligibility.
+
+    Event probability has 60% weight. Executable EV and no-vig edge contribute
+    25% and 15% only when both were produced by an already validated market
+    candidate. With no validated price, ranking falls back to probability.
+    """
+    try:
+        probability = float(probability)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(probability):
+        return 0.0
+    probability = max(0.0, min(1.0, probability))
+    if ev is None and edge is None:
+        return probability
+    try:
+        ev_value = float(ev)
+        edge_value = float(edge)
+    except (TypeError, ValueError):
+        return probability
+    if not math.isfinite(ev_value) or not math.isfinite(edge_value):
+        return probability
+    ev_score = max(0.0, min(1.0, ev_value / SCALE_EV))
+    edge_score = max(0.0, min(1.0, edge_value / SCALE_EDGE))
+    return 0.60 * probability + 0.25 * ev_score + 0.15 * edge_score
+
+
 def _sigmoid(x: float, scale: float) -> float:
     """Гладкая нормализация в [0;1]. x=0 → 0.5, x=scale → ~0.73, x=2*scale → ~0.88."""
     if scale <= 0:
