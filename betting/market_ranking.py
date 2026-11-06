@@ -176,8 +176,17 @@ def market_forecast_summary(card: object, family: str) -> dict | None:
     if summary is None:
         return None
     summary["strength_threshold"] = float(STRONG_FORECAST_MIN_PROB)
+    # The score-model forecasts rely on team history; a high prior-driven
+    # probability without at least five observed matches per team is not a
+    # strong forecast. Corners/cards already enforce their own stricter
+    # market-specific history checks before a summary can be returned.
+    summary["history_sufficient"] = (
+        family in {"corners", "cards"}
+        or _sample(summary.get("team_samples")) >= 5
+    )
     summary["strong_forecast"] = (
-        float(summary["probability"]) >= float(STRONG_FORECAST_MIN_PROB)
+        summary["history_sufficient"]
+        and float(summary["probability"]) >= float(STRONG_FORECAST_MIN_PROB)
     )
     return summary
 
