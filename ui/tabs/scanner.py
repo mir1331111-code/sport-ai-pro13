@@ -2028,39 +2028,43 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "footballapi_key_input", "FOOTBALLAPI_KEY", "footballapi_key"
         )
         fixture_sources = []
+        tsdb_rows = []
+        espn_rows = []
+        fdorg_rows = []
         sstats_rows = []
         source_counts = {"TheSportsDB": 0, "ESPN": 0, "football-data.org": 0, "SStats": 0}
         try:
             tsdb_rows = tsdb_matches(days, logs)
             source_counts["TheSportsDB"] = len(tsdb_rows)
-            fixture_sources.extend(tsdb_rows)
         except Exception as exc:
             logs.append(f"⚠️ TheSportsDB fixtures: {type(exc).__name__}")
         try:
             espn_rows = espn_matches(days, logs)
             source_counts["ESPN"] = len(espn_rows)
-            fixture_sources.extend(espn_rows)
         except Exception as exc:
             logs.append(f"⚠️ ESPN fixtures: {type(exc).__name__}")
         if token:
             try:
                 fdorg_rows = fdorg_matches(days, token, logs)
                 source_counts["football-data.org"] = len(fdorg_rows)
-                fixture_sources.extend(fdorg_rows)
             except Exception as exc:
                 logs.append(f"⚠️ football-data.org fixtures: {type(exc).__name__}")
         if sstats_key:
             try:
-                # SStats is appended last: when the same fixture is already in another
-                # schedule feed, merge_fixture_sources preserves that row and fills
-                # its missing bookmaker prices and SStats game ID from this source.
                 sstats_rows = sstats_upcoming_matches(days, sstats_key, logs)
                 source_counts["SStats"] = len(sstats_rows)
-                fixture_sources.extend(sstats_rows)
             except Exception as exc:
                 logs.append(f"⚠️ SStats fixtures/odds: {type(exc).__name__}")
         else:
             logs.append("ℹ️ SSTATS_API_KEY не настроен — бесплатный источник SStats пропущен.")
+
+        # Merge from highest-quality competition metadata to broad schedule feeds.
+        # SStats remains last for odds enrichment, while fixture_merge can now
+        # upgrade generic Div/League placeholders when it sees a specific league.
+        fixture_sources.extend(fdorg_rows)
+        fixture_sources.extend(tsdb_rows)
+        fixture_sources.extend(espn_rows)
+        fixture_sources.extend(sstats_rows)
         logs.append(
             "📡 Источники расписания: " + " · ".join(
                 f"{name} {count}" for name, count in source_counts.items()
