@@ -11,12 +11,6 @@ import re
 import unicodedata
 
 
-PROBABILITY_WEIGHT = 0.75
-SEPARATION_WEIGHT = 0.15
-SAMPLE_WEIGHT = 0.10
-SAMPLE_FULL_WEIGHT_GAMES = 12
-
-
 def _number(value, default=None):
     try:
         number = float(value)
@@ -74,8 +68,8 @@ def _duplicate_quality(card: dict) -> tuple:
         )
     )
     return (
-        score,
         favorite["probability"] if favorite else 0.0,
+        favorite["probability_margin"] if favorite else 0.0,
         favorite["sample_games"] if favorite else 0,
         int(bool(card.get("xg_used"))),
         odds,
@@ -116,15 +110,11 @@ def model_favorite(card: object) -> dict | None:
         away_sample = _number(features.get("away_away_sample"), 0.0) or 0.0
         sample_games = min(home_sample, away_sample)
     sample_games = max(0.0, sample_games)
-    sample_support = min(1.0, sample_games / SAMPLE_FULL_WEIGHT_GAMES)
-
-    # Probability is dominant; separation and observed team history break ties
-    # and demote fragile high probabilities based on tiny samples.
-    rank_score = (
-        PROBABILITY_WEIGHT * probability
-        + SEPARATION_WEIGHT * margin
-        + SAMPLE_WEIGHT * sample_support
-    )
+    # Probability is the strict primary key. Separation and sample size are
+    # used only as tie-breakers; a lower-probability event never jumps above a
+    # higher-probability event because it has more historical matches.
+    sample_support = min(1.0, sample_games / 12.0)
+    rank_score = probability
 
     home, away = _teams(card)
     outcomes = (
@@ -179,7 +169,6 @@ def rank_model_favorites(cards: object, limit: int | None = None) -> list[dict]:
 
     ranked = list(unique.values())
     ranked.sort(key=lambda item: (
-        -item["rank_score"],
         -item["probability"],
         -item["probability_margin"],
         -item["sample_games"],
