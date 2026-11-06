@@ -127,6 +127,26 @@ class ModelFavoriteTests(unittest.TestCase):
         self.assertEqual(forward[0]["card"]["league"], "Serie A")
         self.assertEqual(reverse[0]["card"]["league"], "Serie A")
 
+    def test_ranking_deduplicates_known_team_aliases_but_keeps_reserve_matches(self):
+        senior_a = {
+            "match": "Manchester United vs Brighton", "date_iso": "2026-11-06",
+            "p1": 0.61, "px": 0.22, "p2": 0.17, "games": 12,
+        }
+        senior_b = {
+            "match": "Man Utd vs Brighton & Hove Albion", "date_iso": "2026-11-06",
+            "p1": 0.70, "px": 0.18, "p2": 0.12, "games": 12,
+        }
+        reserve = {
+            "match": "Manchester United B vs Brighton", "date_iso": "2026-11-06",
+            "p1": 0.66, "px": 0.19, "p2": 0.15, "games": 12,
+        }
+        ranked = rank_model_favorites([senior_a, senior_b, reserve])
+        self.assertEqual(len(ranked), 2)
+        self.assertEqual(ranked[0]["card"]["match"], reserve["match"])
+        self.assertTrue(
+            any(item["card"]["match"] == senior_b["match"] for item in ranked)
+        )
+
     def test_fixture_limit_is_applied_after_unique_probability_ranking(self):
         cards = [
             {"match": f"Team {i} vs Opponent", "date_iso": "2026-11-06",
