@@ -378,8 +378,8 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
         )
         try:
             totals_backtest = walk_forward_compare(
-                validation_rows, matrix_n=matrix_n, bootstrap_samples=1000,
-                totals_bootstrap_samples=1000,
+                validation_rows, matrix_n=matrix_n, bootstrap_samples=0,
+                totals_bootstrap_samples=1000, market_bootstrap_samples=1000,
             )
             update_loader(
                 "Проверка угловых и карточек (хронологический тест)",
