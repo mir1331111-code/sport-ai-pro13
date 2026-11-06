@@ -1046,13 +1046,20 @@ def _render_manual_odds_block(
     selected_market_type = market_type(pick)
     market_pair_validated = has_coherent_market_line(pick)
     if selected_market_type == "1X2":
-        market_is_validated = bool(c.get("winner_market_validation"))
-        validation_note = (
-            ""
-            if market_is_validated else
-            "Модель пока не доказала статистически значимое улучшение над de-vig букмекерским рынком "
-            "на ≥500 парных исторических матчах. Это прогноз, не Value-ставка."
+        market_is_validated = (
+            bool(c.get("winner_market_validation")) and market_pair_validated
         )
+        validation_parts = []
+        if not c.get("winner_market_validation"):
+            validation_parts.append(
+                "Модель пока не доказала статистически значимое улучшение над de-vig букмекерским рынком "
+                "на ≥500 парных исторических матчах. Это прогноз, не Value-ставка."
+            )
+        if not market_pair_validated:
+            validation_parts.append(
+                "Нет полной линии П1/X/П2 у одного идентифицированного букмекера."
+            )
+        validation_note = " ".join(validation_parts)
     elif selected_market_type == "OU":
         # Validate the exact goal-total line, not whichever line happened to
         # make the fixture's global shortlist.
@@ -2137,8 +2144,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         )
                 if probability_mode and selected_cards:
                     st.caption(
-                        f"Показаны сильнейшие прогнозы именно рынка «{market_label}», "
-                        f"отсортированные по его собственной вероятности. Максимум "
+                        f"Показаны матчи с наибольшей расчётной вероятностью именно рынка «{market_label}», "
+                        f"отсортированные по его собственной модели. Максимум "
                         f"{MARKET_FORECAST_DISPLAY_LIMIT} матчей; отсутствие Value не скрывает прогноз."
                     )
                 for card in selected_cards:
