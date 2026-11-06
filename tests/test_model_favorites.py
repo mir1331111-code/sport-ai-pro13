@@ -77,13 +77,25 @@ class ModelFavoriteTests(unittest.TestCase):
             ["High vs Other", "Low vs Other"],
         )
 
-    def test_data_support_breaks_close_probability_ranks(self):
+    def test_probability_always_outranks_larger_sample(self):
+        higher_probability = {
+            "match": "Higher Probability vs Other", "p1": 0.66, "px": 0.20, "p2": 0.14,
+            "games": 1,
+        }
+        lower_probability = {
+            "match": "Lower Probability vs Other", "p1": 0.65, "px": 0.20, "p2": 0.15,
+            "games": 12,
+        }
+        ranked = rank_model_favorites([lower_probability, higher_probability])
+        self.assertEqual(ranked[0]["card"]["match"], "Higher Probability vs Other")
+
+    def test_data_support_breaks_equal_probability_ranks(self):
         weak_sample = {
             "match": "Weak Sample vs Other", "p1": 0.66, "px": 0.20, "p2": 0.14,
             "games": 1,
         }
         strong_sample = {
-            "match": "Strong Sample vs Other", "p1": 0.65, "px": 0.20, "p2": 0.15,
+            "match": "Strong Sample vs Other", "p1": 0.66, "px": 0.20, "p2": 0.14,
             "games": 12,
         }
         ranked = rank_model_favorites([weak_sample, strong_sample])
