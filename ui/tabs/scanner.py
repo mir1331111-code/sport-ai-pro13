@@ -1695,10 +1695,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # or automatic betting recommendations.
         favorite_history_floor = 5
         favorite_candidates = rank_model_favorites(all_cards)
-        favorite_matches = [
-            item for item in favorite_candidates
-            if int(item.get("sample_games") or 0) >= favorite_history_floor
-        ][:10]
+        favorite_matches = rank_model_favorites(
+            all_cards, limit=10, min_sample_games=favorite_history_floor
+        )
         low_history_favorites = sum(
             1 for item in favorite_candidates
             if int(item.get("sample_games") or 0) < favorite_history_floor
