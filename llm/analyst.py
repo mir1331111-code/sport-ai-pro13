@@ -48,7 +48,7 @@ def _retry_after_seconds(response) -> float | None:
         pass
 
     match = re.search(
-        r"(?:try again in|retry after)\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(?:s|sec|seconds)\\b",
+        r"(?:try again in|retry after)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|seconds)\b",
         message,
         re.IGNORECASE,
     )
@@ -685,6 +685,17 @@ def analyze_match(ctx: dict) -> Optional[str]:
                 if r.status_code == 200:
                     data = r.json()
                     content, diagnostics = _extract_chat_completion(data)
+                elif r.status_code == 429:
+                    retry_after = _retry_after_seconds(r)
+                    _log(
+                        "RATE LIMIT HTTP 429 во время повтора GPT-OSS; "
+                        + (
+                            f"повтор не раньше чем через {retry_after:.1f}с"
+                            if retry_after is not None
+                            else "время сброса лимита не указано"
+                        )
+                    )
+                    raise LLMRateLimitError(retry_after)
                 else:
                     _log(f"RETRY ERROR HTTP {r.status_code}: {r.text[:240]}")
 
