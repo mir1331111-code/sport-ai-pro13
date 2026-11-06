@@ -125,29 +125,16 @@ class HistoricalMatchStats:
         result = {}
         for market in _FIELDS:
             league_rows = self.league[league][market]
+            if not league_rows:
+                continue
+            lh = sum(x[0] for x in league_rows) / len(league_rows)
+            la = sum(x[1] for x in league_rows) / len(league_rows)
             h = self.teams[league][home][market]
             a = self.teams[league][away][market]
             h_for = h["home_for"]
             h_against = h["home_against"]
             a_for = a["away_for"]
             a_against = a["away_against"]
-            if not league_rows:
-                # Return sample diagnostics even when this competition has no
-                # usable historical HC/AC or card observations. Do not invent a
-                # league/team mean merely to make an odds card look populated.
-                result[market] = {
-                    "home": None, "away": None, "total": None,
-                    "total_variance": None, "league_home_avg": None,
-                    "league_away_avg": None,
-                    "home_for_avg": None, "home_against_avg": None,
-                    "away_for_avg": None, "away_against_avg": None,
-                    "history_matches": 0,
-                    "home_team_games": len(h_for),
-                    "away_team_games": len(a_for),
-                }
-                continue
-            lh = sum(x[0] for x in league_rows) / len(league_rows)
-            la = sum(x[1] for x in league_rows) / len(league_rows)
             home_for_avg = sum(h_for) / len(h_for) if h_for else None
             home_against_avg = sum(h_against) / len(h_against) if h_against else None
             away_for_avg = sum(a_for) / len(a_for) if a_for else None
