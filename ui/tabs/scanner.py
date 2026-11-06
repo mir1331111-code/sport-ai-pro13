@@ -911,10 +911,30 @@ def _render_manual_odds_block(
                     for selection, price in sorted(actual_quotes)
                 )
                 st.caption("Реальные котировки SStats по доступным линиям: " + quote_text)
-                st.info(
-                    "Котировки есть, но для этих линий недостаточно исторических данных, "
-                    "чтобы рассчитать вероятность. Ставку не рекомендую."
-                )
+                stat_name = "corners" if market_filter == "corners" else "cards"
+                stat_history = stat_preds.get(stat_name) or {}
+                history_n = int(stat_history.get("history_matches") or 0)
+                home_n = int(stat_history.get("home_team_games") or 0)
+                away_n = int(stat_history.get("away_team_games") or 0)
+                league_name = str(c.get("league") or "неизвестная лига")
+                div_code = str(c.get("div") or "G")
+                if history_n == 0:
+                    reason = (
+                        f"Для лиги «{league_name}» (код {div_code}) в обучающей выборке нет "
+                        f"подтверждённых исторических данных {('HC/AC' if stat_name == 'corners' else 'HY/AY/HR/AR')}."
+                    )
+                elif history_n < 30:
+                    reason = (
+                        f"По лиге «{league_name}» (код {div_code}) найдено только {history_n} "
+                        "матчей с полной статистикой; требуется минимум 30."
+                    )
+                else:
+                    reason = (
+                        f"История лиги: {history_n} матчей; домашних матчей хозяев: {home_n}; "
+                        f"выездных матчей гостей: {away_n}. Для оценки пары нужно минимум "
+                        "4 домашних и 4 выездных наблюдения."
+                    )
+                st.info(reason + " Коэффициенты получены, но вероятность не рассчитывается; ставку не рекомендую.")
             else:
                 st.info("Для этого матча SStats не вернул котировки этого статистического рынка.")
         else:
@@ -1048,7 +1068,12 @@ def _render_manual_odds_block(
                     f"Линия {stat_line} рынка {stat_name} не прошла собственный walk-forward тест."
                 )
             if not history_sufficient:
-                validation_parts.append("Недостаточно фактической истории по этой паре команд.")
+                validation_parts.append(
+                    "Недостаточно фактической истории: "
+                    f"лига {stat_prediction.get('history_matches', 0)}/30, "
+                    f"хозяева дома {stat_prediction.get('home_team_games', 0)}/4, "
+                    f"гости на выезде {stat_prediction.get('away_team_games', 0)}/4."
+                )
             if not quote_source_valid:
                 validation_parts.append("Нет подтверждённой котировки на этот рынок.")
             if not market_pair_validated:
