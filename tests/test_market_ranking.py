@@ -94,6 +94,17 @@ class IndependentMarketRankingTests(unittest.TestCase):
                 self.assertTrue(passed["strong_forecast"])
                 self.assertFalse(failed["strong_forecast"])
 
+    def test_strong_forecast_requires_team_history_for_score_markets(self):
+        no_history = _card(
+            "No history vs Team", p1=0.70, over=0.72, btts=0.71,
+            corners=10.0, cards=5.0, games=0,
+        )
+        for family in ("winner", "goals", "btts"):
+            with self.subTest(family=family):
+                summary = market_forecast_summary(no_history, family)
+                self.assertFalse(summary["history_sufficient"])
+                self.assertFalse(summary["strong_forecast"])
+
     def test_balanced_ranking_uses_only_already_approved_value_metrics(self):
         high_probability = _card(
             "High probability vs Team", p1=0.78, over=0.60, btts=0.60,
