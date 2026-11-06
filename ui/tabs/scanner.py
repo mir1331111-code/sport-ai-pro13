@@ -1219,7 +1219,10 @@ def _render_manual_odds_block(
             else c.get("odds_source")
             or "SStats"
         )
-        if selected_kind != "1X2" and not market_pair_validated:
+        if selected_kind == "1X2" and not market_pair_validated:
+            quote_is_confirmed = False
+            source_label += " · нет полной линии одного букмекера"
+        elif selected_kind != "1X2" and not market_pair_validated:
             quote_is_confirmed = False
             source_label += " · нет полной пары одного букмекера"
         if market_type(pick) == "OU" and str(c.get("total_odds_source") or "").casefold() == "sstats":
