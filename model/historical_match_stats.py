@@ -102,10 +102,13 @@ class HistoricalMatchStats:
                 hr, ar = _num(row.get("HR")), _num(row.get("AR"))
                 if h is None or a is None or hr is None or ar is None:
                     continue
+                if not all(value.is_integer() for value in (h, a, hr, ar)):
+                    continue
                 h += hr
                 a += ar
-            if h is None or a is None:
-                continue
+            else:
+                if h is None or a is None or not h.is_integer() or not a.is_integer():
+                    continue
             values[market] = (h, a)
         if not values:
             return False
