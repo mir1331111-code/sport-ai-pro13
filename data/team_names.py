@@ -248,8 +248,8 @@ def normalize_team(name: str) -> str:
     # In particular, never use substring aliases such as "Atletico Madrid" to
     # turn "Atletico Madrid B" into the senior club.
     reserve_marker = re.search(
-        r"(?:^| )(?:b|b team|ii|iii|iv|u\s*\d{2}|under\s*[- ]?\s*\d{2}|"
-        r"youth|reserves?|academy|castilla|atletic)(?: |$)",
+        r"(?:^| )(?:b|c|b team|c team|ii|iii|iv|u\s*\d{2}|under\s*[- ]?\s*\d{2}|"
+        r"youth|reserves?|academy|castilla)(?: |$)",
         key,
     )
     if reserve_marker:
@@ -258,7 +258,9 @@ def normalize_team(name: str) -> str:
     # Only strip known organizational prefixes/suffixes, then retry exact aliases.
     parts = key.split()
     prefixes = {"fc", "afc", "cf", "sc", "ac", "as", "ss", "us", "rc", "sk"}
-    suffixes = {"fc", "afc", "cf", "sc", "ac", "town", "rovers", "county", "club"}
+    # "Town", "Rovers" and "County" are identity-bearing club-name words,
+    # not generic suffixes; stripping them can merge different teams.
+    suffixes = {"fc", "afc", "cf", "sc", "ac", "club"}
     if parts and parts[0] in prefixes:
         parts = parts[1:]
     if parts and parts[-1] in suffixes:
