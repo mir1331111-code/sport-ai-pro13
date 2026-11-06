@@ -55,6 +55,90 @@ class ModelFavoriteTests(unittest.TestCase):
         ranked = rank_model_favorites([later, earlier])
         self.assertEqual(ranked[0]["card"]["match"], "Alpha vs Away")
 
+    def test_order_is_independent_of_source_position_and_prioritizes_probability(self):
+        low = {
+            "match": "Low vs Other", "date_iso": "2026-11-06",
+            "p1": 0.56, "px": 0.24, "p2": 0.20, "games": 12,
+            "verdict": {"ev": 0.80},
+        }
+        high = {
+            "match": "High vs Other", "date_iso": "2026-11-06",
+            "p1": 0.71, "px": 0.17, "p2": 0.12, "games": 12,
+            "verdict": {"ev": -0.50},
+        }
+        forward = rank_model_favorites([low, high])
+        reverse = rank_model_favorites([high, low])
+        self.assertEqual(
+            [row["card"]["match"] for row in forward],
+            ["High vs Other", "Low vs Other"],
+        )
+        self.assertEqual(
+            [row["card"]["match"] for row in reverse],
+            ["High vs Other", "Low vs Other"],
+        )
+
+    def test_probability_always_outranks_larger_sample(self):
+        higher_probability = {
+            "match": "Higher Probability vs Other", "p1": 0.66, "px": 0.20, "p2": 0.14,
+            "games": 1,
+        }
+        lower_probability = {
+            "match": "Lower Probability vs Other", "p1": 0.65, "px": 0.20, "p2": 0.15,
+            "games": 12,
+        }
+        ranked = rank_model_favorites([lower_probability, higher_probability])
+        self.assertEqual(ranked[0]["card"]["match"], "Higher Probability vs Other")
+
+    def test_data_support_breaks_equal_probability_ranks(self):
+        weak_sample = {
+            "match": "Weak Sample vs Other", "p1": 0.66, "px": 0.20, "p2": 0.14,
+            "games": 1,
+        }
+        strong_sample = {
+            "match": "Strong Sample vs Other", "p1": 0.66, "px": 0.20, "p2": 0.14,
+            "games": 12,
+        }
+        ranked = rank_model_favorites([weak_sample, strong_sample])
+        self.assertEqual(ranked[0]["card"]["match"], "Strong Sample vs Other")
+        self.assertEqual(ranked[0]["sample_games"], 12)
+
+    def test_clearer_favorite_breaks_equal_probability_tie(self):
+        narrow = {"match": "Narrow vs Other", "p1": 0.62, "px": 0.35, "p2": 0.03, "games": 12}
+        clear = {"match": "Clear vs Other", "p1": 0.62, "px": 0.20, "p2": 0.18, "games": 12}
+        ranked = rank_model_favorites([narrow, clear])
+        self.assertEqual(ranked[0]["card"]["match"], "Clear vs Other")
+        self.assertGreater(ranked[0]["probability_margin"], ranked[1]["probability_margin"])
+
+    def test_duplicate_fixture_keeps_best_forecast_not_first_provider_row(self):
+        first = {
+            "match": "Alpha FC vs Beta FC", "date_iso": "2026-11-06",
+            "league": "Soccer", "p1": 0.55, "px": 0.25, "p2": 0.20,
+            "games": 5, "fixture_id": "tsdb-1",
+        }
+        better = {
+            "match": "Alpha vs Beta", "date_iso": "2026-11-06",
+            "league": "Serie A", "p1": 0.71, "px": 0.17, "p2": 0.12,
+            "games": 12, "fixture_id": "sstats-2",
+        }
+        forward = rank_model_favorites([first, better])
+        reverse = rank_model_favorites([better, first])
+        self.assertEqual(len(forward), 1)
+        self.assertEqual(len(reverse), 1)
+        self.assertEqual(forward[0]["card"]["league"], "Serie A")
+        self.assertEqual(reverse[0]["card"]["league"], "Serie A")
+
+    def test_fixture_limit_is_applied_after_unique_probability_ranking(self):
+        cards = [
+            {"match": f"Team {i} vs Opponent", "date_iso": "2026-11-06",
+             "p1": 0.50 + i * 0.02, "px": 0.30, "p2": 0.20 - i * 0.02,
+             "games": 12}
+            for i in range(6)
+        ]
+        ranked = rank_model_favorites(cards, limit=3)
+        self.assertEqual(len(ranked), 3)
+        self.assertEqual(ranked[0]["card"]["match"], "Team 5 vs Opponent")
+        self.assertEqual(ranked[-1]["card"]["match"], "Team 3 vs Opponent")
+
     def test_does_not_mutate_original_fixture_cards(self):
         card = {"match": "A vs B", "p1": 0.65, "px": 0.2, "p2": 0.15}
         before = dict(card)
