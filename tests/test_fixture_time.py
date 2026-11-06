@@ -36,6 +36,15 @@ class FixtureKickoffTimeTests(unittest.TestCase):
             datetime(2026, 11, 7, 0, 30, tzinfo=ZoneInfo("Europe/Amsterdam")),
         )
 
+    def test_same_day_future_local_kickoff_remains_pre_match(self):
+        kickoff = fixture_kickoff_local(
+            {"Date": "2026-11-06", "Time": "23:30"},
+            timezone_name="Europe/Amsterdam",
+        )
+        now = datetime(2026, 11, 6, 23, 20, tzinfo=ZoneInfo("Europe/Amsterdam"))
+        self.assertIsNotNone(kickoff)
+        self.assertGreater(kickoff, now)
+
     def test_naive_kickoff_utc_is_treated_as_utc(self):
         kickoff = fixture_kickoff_local(
             {"kickoff_utc": "2026-11-06T22:00:00"},
