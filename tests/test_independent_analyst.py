@@ -377,6 +377,72 @@ class IndependentAnalystTests(unittest.TestCase):
         self.assertEqual(meta["reasoning_tokens"], 50)
         self.assertNotIn("must not be shown", empty)
 
+    def test_groq_rate_limit_uses_retry_after_and_raises_for_batch_stop(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import llm.analyst as analyst
+
+        message = (
+            "Rate limit reached for model openai/gpt-oss-20b. "
+            "Please try again in 13.305s."
+        )
+        response = SimpleNamespace(
+            status_code=429,
+            text=message,
+            headers={},
+            json=lambda: {"error": {"message": message}},
+        )
+        ctx = {
+            "api_key": "unit-test-key",
+            "provider": "Groq (бесплатно, быстро)",
+            "model": "openai/gpt-oss-20b",
+            "home": "Home FC", "away": "Away FC",
+            "league": "Test League", "date": "2026-11-06",
+            "independent_features": {
+                "home_scored_at_home_avg": 1.2,
+                "home_conceded_at_home_avg": 0.8,
+                "away_scored_away_avg": 1.0,
+                "away_conceded_away_avg": 1.3,
+                "home_home_sample": 5,
+                "away_away_sample": 5,
+            },
+        }
+        with (
+            patch.object(analyst, "cache_get", return_value=None),
+            patch.object(analyst, "cache_put"),
+            patch.object(analyst.usage, "llm_remaining", return_value=5),
+            patch.object(analyst.usage, "llm_increment") as increment,
+            patch.object(analyst._sess, "post", return_value=response) as post,
+        ):
+            with self.assertRaises(analyst.LLMRateLimitError) as raised:
+                analyst.analyze_match(ctx)
+
+        self.assertAlmostEqual(raised.exception.retry_after_seconds, 13.305)
+        self.assertEqual(post.call_count, 1)
+        increment.assert_called_once_with(1)
+
+    def test_retry_after_header_takes_precedence_over_error_text(self):
+        from types import SimpleNamespace
+        from llm.analyst import _retry_after_seconds
+
+        response = SimpleNamespace(
+            headers={"Retry-After": "7.5"},
+            text="Please try again in 20s",
+            json=lambda: {"error": {"message": "Please try again in 20s"}},
+        )
+        self.assertEqual(_retry_after_seconds(response), 7.5)
+
+    def test_rate_limit_parser_handles_missing_or_invalid_retry_after(self):
+        from types import SimpleNamespace
+        from llm.analyst import _retry_after_seconds
+
+        response = SimpleNamespace(
+            headers={},
+            text="Temporary provider error",
+            json=lambda: {"error": {"message": "Temporary provider error"}},
+        )
+        self.assertIsNone(_retry_after_seconds(response))
+
     def test_analyze_match_skips_without_minimum_venue_history(self):
         from unittest.mock import patch
         import llm.analyst as analyst
