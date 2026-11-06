@@ -24,6 +24,7 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
 from data.fixture_merge import merge_fixture_sources, fixture_key
 from model.engine import Engine, _norm
 from model.validation_cache import select_validation_rows, validation_cache_key
+from model.training import prepare_completed_training_rows, train_engine_chronologically
 from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
@@ -358,7 +359,9 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
     )
     from security import cache_get, cache_put
     from model.walk_forward import walk_forward_compare, totals_market_is_validated
-    validation_key = validation_cache_key(validation_rows, matrix_n=matrix_n)
+    validation_key = validation_cache_key(
+        validation_rows, matrix_n=matrix_n, model_version=APP_VERSION,
+    )
     cached_validation = cache_get(validation_key, 30 * 86400)
 
     if isinstance(cached_validation, dict):
@@ -375,7 +378,7 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
         )
         try:
             totals_backtest = walk_forward_compare(
-                validation_rows, matrix_n=matrix_n, bootstrap_samples=0,
+                validation_rows, matrix_n=matrix_n, bootstrap_samples=1000,
                 totals_bootstrap_samples=1000,
             )
             update_loader(
@@ -396,6 +399,10 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
         except Exception as exc:
             totals_backtest = {}
             stat_report = {}
+            engine.winner_market_validation = False
+            engine.winner_market_validation_report = {
+                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
+            }
             engine.total_market_validation = False
             engine.total_market_validation_by_line = {}
             engine.total_market_validation_report = {
@@ -416,6 +423,14 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
             )
 
     if totals_backtest:
+        # Value requires an out-of-sample improvement over a de-vigged
+        # bookmaker benchmark, not merely a high model probability.
+        engine.winner_market_validation_report = (
+            totals_backtest.get("candidate_minus_market") or {}
+        )
+        engine.winner_market_validation = totals_market_is_validated(
+            engine.winner_market_validation_report, min_n=500
+        )
         engine.total_market_validation_report = totals_backtest.get(
             "goals_over25_candidate_minus_market", {})
         line_reports = totals_backtest.get("goals_totals_by_line") or {}
@@ -441,6 +456,15 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
             f"парных с рынком={engine.total_market_validation_report.get('n', 0)}, "
             f"источники={totals_backtest.get('goals_over25_market_sources', {})}"
         )
+        winner_diff = engine.winner_market_validation_report.get("differences", {})
+        winner_ci = engine.winner_market_validation_report.get("confidence_intervals_95", {})
+        logs.append(
+            f"1X2 vs рынок: пар={engine.winner_market_validation_report.get('n', 0)}, "
+            f"ΔBrier={winner_diff.get('brier')}, ΔLogLoss={winner_diff.get('log_loss')}, "
+            f"CI Brier={winner_ci.get('brier', {}).get('low')}…{winner_ci.get('brier', {}).get('high')}, "
+            f"CI LogLoss={winner_ci.get('log_loss', {}).get('low')}…{winner_ci.get('log_loss', {}).get('high')}; "
+            f"Value-допуск={'да' if engine.winner_market_validation else 'нет'}"
+        )
         if total_diff:
             logs.append(
                 f"ТБ/ТМ vs рынок: ΔBrier={total_diff.get('brier'):.4f}, "
@@ -449,9 +473,14 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                 f"LogLoss={total_ci.get('log_loss', {}).get('low')}…{total_ci.get('log_loss', {}).get('high')}"
             )
         logs.append(
-            "Тоталы допущены к ручному автодобавлению."
+            "1X2 допущен к Value только при полной линии одного букмекера."
+            if engine.winner_market_validation else
+            "1X2 пока forecast-only: нет ≥500 парных матчей с доказанным улучшением над de-vig рынком."
+        )
+        logs.append(
+            "ТБ/ТМ 2.5 допущены к Value только при полной линии одного букмекера."
             if engine.total_market_validation else
-            "Тоталы не допущены: нужно ≥500 парных матчей и статистически подтверждённое улучшение Brier и LogLoss."
+            "Тоталы пока forecast-only: нет ≥500 парных матчей с доказанным улучшением над de-vig рынком."
         )
         for line, line_report in line_reports.items():
             metric = line_report.get("metrics") or {}
@@ -488,6 +517,8 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
                     f"допуск={'да' if passed else 'нет'}"
                 )
     if not totals_backtest and not stat_report:
+        engine.winner_market_validation = False
+        engine.winner_market_validation_report = {}
         engine.total_market_validation = False
         engine.total_market_validation_by_line = {}
         engine.btts_market_validation = False
@@ -502,30 +533,35 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
             0.76, logs,
         )
 
-    total = sum(len(src) for dv in train_divs for src in history.get(dv, []))
-    processed = 0
-    trained = 0
-    for dv in train_divs:
-        for src in history.get(dv, []):
-            for r in src:
-                try:
-                    hg = float(r.get("FTHG", 0))
-                    ag = float(r.get("FTAG", 0))
-                    engine.learn_step(
-                        r["HomeTeam"], r["AwayTeam"], hg, ag, r,
-                        lg=dv, match_num=processed, total=total,
-                        match_date=parse_date(r.get("Date", "")))
-                    engine.match_stats.learn_step(r, dv)
-                    trained += 1
-                except Exception:
-                    pass
-                processed += 1
-                if processed % 50 == 0:
-                    update_loader(
-                        f"Обучение [{processed}/{total}]",
-                        0.76 + processed / max(1, total) * 0.22, logs)
-    engine.trained_n = trained
-    logs.append(f"Обучено: {trained}")
+    training_rows, skipped_rows = prepare_completed_training_rows(
+        history, train_divs,
+    )
+    if not training_rows:
+        raise RuntimeError(
+            "Не найдено ни одного исторического матча с валидной датой, "
+            "командами и финальным счётом; обучение остановлено без подстановки 0:0."
+        )
+
+    def _training_progress(processed, total):
+        if processed % 50 == 0 or processed == total:
+            update_loader(
+                f"Хронологическое обучение [{processed}/{total}]",
+                0.76 + processed / max(1, total) * 0.22, logs,
+            )
+
+    training_summary = train_engine_chronologically(
+        engine, engine.match_stats, training_rows,
+        on_progress=_training_progress,
+    )
+    engine.trained_n = training_summary["trained"]
+    logs.append(
+        f"Обучено хронологически: {training_summary['trained']} матчей, "
+        f"{training_summary['days']} календарных дней; "
+        f"пропущено без даты={skipped_rows['missing_date']}, "
+        f"без команд={skipped_rows['missing_teams']}, "
+        f"без валидного финального счёта={skipped_rows['missing_or_invalid_score']}, "
+        f"невалидных строк={skipped_rows['invalid_row']}."
+    )
     return engine
 
 
