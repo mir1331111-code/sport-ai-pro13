@@ -33,7 +33,7 @@ def _score(value: Any) -> int | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    if not math.isfinite(number) or number < 0 or not number.is_integer() or number > 20:
+    if not math.isfinite(number) or number < 0 or not number.is_integer():
         return None
     return int(number)
 
