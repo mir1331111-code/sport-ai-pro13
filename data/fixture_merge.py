@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 import re
-import unicodedata
+from data.team_names import normalize_team
 
 
 def _team_key(value) -> str:
-    text = unicodedata.normalize("NFKD", str(value or "").casefold())
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = re.sub(r"\b(football club|fc|afc|cf|sc|ac)\b", " ", text)
-    return re.sub(r"[^a-z0-9]+", "", text)
+    """Use the same conservative exact-alias identity as score reconciliation."""
+    return normalize_team(str(value or ""))
 
 
 def fixture_key(row: dict) -> tuple:

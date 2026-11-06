@@ -1,6 +1,7 @@
 """data/team_names.py — нормализация названий команд."""
 from __future__ import annotations
 import re
+import unicodedata
 
 # Словарь алиасов: любое написание → каноническое имя
 ALIASES = {
@@ -144,6 +145,8 @@ ALIASES = {
     # ===== Франция =====
     "psg": "psg",
     "paris": "psg",
+    "paris fc": "paris_fc",
+    "paris football club": "paris_fc",
     "paris sg": "psg",
     "paris saint germain": "psg",
     "псж": "psg",
@@ -220,45 +223,54 @@ ALIASES = {
 }
 
 
+def _alias_key(value: str) -> str:
+    """Canonical exact-match key; punctuation/accents vary across providers."""
+    text = unicodedata.normalize("NFKD", str(value or "").casefold())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"[^a-zа-я0-9]+", " ", text).strip()
+
+
+_ALIAS_LOOKUP = {_alias_key(alias): canonical for alias, canonical in ALIASES.items()}
+
+
 def normalize_team(name: str) -> str:
-    """Normalize common aliases without merging distinct clubs or age groups."""
+    """Normalize exact provider aliases without fuzzy-merging different teams."""
     if not name:
         return ""
-    s = re.sub(r"\s+", " ", str(name).strip().lower())
 
-    # Exact aliases must be resolved before removing generic club prefixes:
-    # "Manchester United" and "Manchester City" are different teams.
-    if s in ALIASES:
-        return ALIASES[s]
+    key = _alias_key(name)
+    if not key:
+        return ""
+    if key in _ALIAS_LOOKUP:
+        return _ALIAS_LOOKUP[key]
 
-    for prefix in ("fc ", "afc ", "cf ", "sc ", "ac ", "as ", "ss ", "us ", "rc ", "sk "):
-        if s.startswith(prefix):
-            s = s[len(prefix):].strip()
-            break
-    if s in ALIASES:
-        return ALIASES[s]
+    # Keep reserves, B teams, academies and age groups separate from senior teams.
+    # In particular, never use substring aliases such as "Atletico Madrid" to
+    # turn "Atletico Madrid B" into the senior club.
+    reserve_marker = re.search(
+        r"(?:^| )(?:b|c|b team|c team|ii|iii|iv|u\s*\d{2}|under\s*[- ]?\s*\d{2}|"
+        r"youth|reserves?|academy|castilla)(?: |$)",
+        key,
+    )
+    if reserve_marker:
+        return re.sub(r"[^a-zа-я0-9]", "", key)
 
-    # Preserve age-group/reserve markers: an U21/reserve fixture must not be
-    # normalized to the senior team just because its name contains an alias.
-    if re.search(r"\b(?:u\s*\d{2}|under\s*[- ]?\s*\d{2}|youth|reserves?|ii)\b", s):
-        return re.sub(r"[^a-zа-я0-9]", "", s)
+    # Only strip known organizational prefixes/suffixes, then retry exact aliases.
+    parts = key.split()
+    prefixes = {"fc", "afc", "cf", "sc", "ac", "as", "ss", "us", "rc", "sk"}
+    # "Town", "Rovers" and "County" are identity-bearing club-name words,
+    # not generic suffixes; stripping them can merge different teams.
+    suffixes = {"fc", "afc", "cf", "sc", "ac", "club"}
+    if parts and parts[0] in prefixes:
+        parts = parts[1:]
+    if parts and parts[-1] in suffixes:
+        parts = parts[:-1]
+    key = " ".join(parts)
+    if key in _ALIAS_LOOKUP:
+        return _ALIAS_LOOKUP[key]
 
-    # Only remove suffixes that are organizational labels, not identity-bearing
-    # words such as "United", "City" or "Utd".
-    for suffix in (" fc", " afc", " cf", " sc", " ac", " town", " rovers", " county", " club"):
-        if s.endswith(suffix):
-            s = s[:-len(suffix)].strip()
-            break
-    if s in ALIASES:
-        return ALIASES[s]
-
-    # Substring aliases are a fallback for common provider variants only.
-    for alias, canonical in sorted(ALIASES.items(), key=lambda kv: -len(kv[0])):
-        if len(alias) >= 5 and alias in s:
-            return canonical
-
-    return re.sub(r"[^a-zа-я0-9]", "", s)
-
+    # Unknown clubs are compared conservatively by their complete normalized name.
+    return re.sub(r"[^a-zа-я0-9]", "", key)
 
 def teams_match(name1: str, name2: str) -> bool:
     """Проверяет, что два названия — одна и та же команда."""

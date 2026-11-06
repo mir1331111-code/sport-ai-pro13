@@ -65,6 +65,28 @@ class FixtureMergeTests(unittest.TestCase):
             fixture_key({"Date": "2026-10-20", "HomeTeam": "Atletico", "AwayTeam": "Club"}),
         )
 
+    def test_fixture_key_matches_provider_aliases_without_merging_reserves(self):
+        self.assertEqual(
+            fixture_key({
+                "Date": "2026-11-06", "HomeTeam": "Man Utd",
+                "AwayTeam": "Brighton & Hove Albion",
+            }),
+            fixture_key({
+                "Date": "2026-11-06", "HomeTeam": "Manchester United",
+                "AwayTeam": "Brighton",
+            }),
+        )
+        self.assertNotEqual(
+            fixture_key({
+                "Date": "2026-11-06", "HomeTeam": "Atletico Madrid B",
+                "AwayTeam": "Real Madrid Castilla",
+            }),
+            fixture_key({
+                "Date": "2026-11-06", "HomeTeam": "Atletico Madrid",
+                "AwayTeam": "Real Madrid",
+            }),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
