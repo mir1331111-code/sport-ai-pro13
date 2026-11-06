@@ -15,6 +15,52 @@ from security import cache_get, cache_put
 from storage import usage
 
 
+class LLMRateLimitError(RuntimeError):
+    """Provider rate limit; callers should stop the current batch instead of retrying."""
+
+    def __init__(self, retry_after_seconds: float | None = None):
+        self.retry_after_seconds = retry_after_seconds
+        detail = (
+            f"; retry after ~{retry_after_seconds:.1f}s"
+            if retry_after_seconds is not None else ""
+        )
+        super().__init__("LLM provider returned HTTP 429" + detail)
+
+
+def _retry_after_seconds(response) -> float | None:
+    """Read a provider's Retry-After header or its natural-language error message."""
+    headers = getattr(response, "headers", {}) or {}
+    raw_header = headers.get("Retry-After") or headers.get("retry-after")
+    try:
+        value = float(raw_header)
+        if math.isfinite(value) and value >= 0:
+            return value
+    except (TypeError, ValueError):
+        pass
+
+    message = str(getattr(response, "text", "") or "")
+    try:
+        payload = response.json()
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            message = str(error.get("message") or message)
+    except Exception:
+        pass
+
+    match = re.search(
+        r"(?:try again in|retry after)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|seconds)\b",
+        message,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+        return value if math.isfinite(value) and value >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _log(msg: str):
     try:
         print(f"[LLM] {msg}", file=sys.stdout, flush=True)
@@ -602,6 +648,18 @@ def analyze_match(ctx: dict) -> Optional[str]:
                        timeout=45 if is_gpt_oss else 30, proxies=NO_PROXY)
         usage.llm_increment(1)
         _log(f"RESPONSE: HTTP {r.status_code}, len={len(r.text)}")
+        if r.status_code == 429:
+            retry_after = _retry_after_seconds(r)
+            _log(
+                "RATE LIMIT HTTP 429: "
+                + (
+                    f"повтор не раньше чем через {retry_after:.1f}с"
+                    if retry_after is not None
+                    else "провайдер не указал время сброса лимита"
+                )
+                + "; прекращаем дальнейшие вызовы в этом скане"
+            )
+            raise LLMRateLimitError(retry_after)
         if r.status_code != 200:
             _log(f"ERROR HTTP {r.status_code}: {r.text[:300]}")
             return None
@@ -627,6 +685,17 @@ def analyze_match(ctx: dict) -> Optional[str]:
                 if r.status_code == 200:
                     data = r.json()
                     content, diagnostics = _extract_chat_completion(data)
+                elif r.status_code == 429:
+                    retry_after = _retry_after_seconds(r)
+                    _log(
+                        "RATE LIMIT HTTP 429 во время повтора GPT-OSS; "
+                        + (
+                            f"повтор не раньше чем через {retry_after:.1f}с"
+                            if retry_after is not None
+                            else "время сброса лимита не указано"
+                        )
+                    )
+                    raise LLMRateLimitError(retry_after)
                 else:
                     _log(f"RETRY ERROR HTTP {r.status_code}: {r.text[:240]}")
 
@@ -659,6 +728,8 @@ def analyze_match(ctx: dict) -> Optional[str]:
         cache_put(ck, None)
         return None
 
+    except LLMRateLimitError:
+        raise
     except requests.exceptions.Timeout:
         _log("ERROR: timeout 30s")
         return None
