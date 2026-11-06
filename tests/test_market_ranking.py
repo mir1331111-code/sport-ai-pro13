@@ -77,6 +77,59 @@ class IndependentMarketRankingTests(unittest.TestCase):
         self.assertIsNone(market_forecast_summary(insufficient, "cards"))
         self.assertEqual(rank_market_forecasts([insufficient], "corners"), [])
 
+    def test_strong_forecast_threshold_is_65_percent_and_inclusive(self):
+        at_threshold = _card(
+            "Threshold FC vs Team", p1=0.65, over=0.65, btts=0.65,
+            corners=10.0, cards=5.0,
+        )
+        below_threshold = _card(
+            "Below FC vs Team", p1=0.649, over=0.649, btts=0.649,
+            corners=10.0, cards=5.0,
+        )
+        for family in ("winner", "goals", "btts"):
+            with self.subTest(family=family):
+                passed = market_forecast_summary(at_threshold, family)
+                failed = market_forecast_summary(below_threshold, family)
+                self.assertEqual(passed["strength_threshold"], 0.65)
+                self.assertTrue(passed["strong_forecast"])
+                self.assertFalse(failed["strong_forecast"])
+
+    def test_balanced_ranking_uses_only_already_approved_value_metrics(self):
+        high_probability = _card(
+            "High probability vs Team", p1=0.80, over=0.60, btts=0.60,
+            corners=10.0, cards=5.0,
+        )
+        unvalidated_value = _card(
+            "Unvalidated price vs Team", p1=0.79, over=0.60, btts=0.60,
+            corners=10.0, cards=5.0,
+        )
+        unvalidated_value["best_by_market"] = {
+            "winner": {
+                "verdict": {"value_passed": False, "ev": 0.50, "edge": 0.40},
+                "best": ("1X2", "П1", 2.5, 0.5, 0.79, 1.0),
+            }
+        }
+        validated_value = _card(
+            "Validated value vs Team", p1=0.74, over=0.60, btts=0.60,
+            corners=10.0, cards=5.0,
+        )
+        validated_value["best_by_market"] = {
+            "winner": {
+                "verdict": {
+                    "value_passed": True, "ev": 0.10, "edge": 0.08, "prob": 0.75,
+                },
+                "best": ("1X2", "П1", 2.2, 0.10, 0.75, 10.0),
+            }
+        }
+        ranked = rank_market_forecasts(
+            [high_probability, unvalidated_value, validated_value],
+            "winner", mode="balanced",
+        )
+        self.assertEqual(ranked[0]["card"], validated_value)
+        self.assertEqual(ranked[1]["card"], high_probability)
+        self.assertEqual(ranked[2]["card"], unvalidated_value)
+        self.assertAlmostEqual(ranked[0]["ranking_score"], 0.844, places=6)
+
     def test_invalid_probabilities_are_not_ranked(self):
         bad = _card(
             "Bad FC vs Data FC", p1=0.95, over=1.2, btts=-0.2,
