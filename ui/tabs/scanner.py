@@ -27,7 +27,7 @@ from model.validation_cache import select_validation_rows, validation_cache_key
 from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
-from betting.favorites import model_favorite, rank_model_favorites
+from betting.ranking import model_favorite, rank_model_favorites, rank_score
 from betting.kelly import kelly, market_type
 from betting.market_math import blend_probability, proportional_devig
 from llm.analyst import LLMRateLimitError, analyze_match, has_sufficient_history
