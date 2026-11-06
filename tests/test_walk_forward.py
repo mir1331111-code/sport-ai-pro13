@@ -40,6 +40,15 @@ class WalkForwardTests(unittest.TestCase):
         self.assertIsNone(result["candidate"]["log_loss"])
 
 
+    def test_fractional_goal_scores_are_skipped_not_truncated(self):
+        result = walk_forward_compare([{
+            "Date": "2024-01-01", "Div": "E0",
+            "HomeTeam": "A", "AwayTeam": "B",
+            "FTHG": 1.5, "FTAG": 0,
+        }])
+        self.assertEqual(result["n"], 0)
+        self.assertEqual(result["skipped"], 1)
+
     def test_market_gate_bootstrap_can_run_without_full_model_bootstrap(self):
         rows = []
         for index in range(40):
