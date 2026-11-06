@@ -79,9 +79,14 @@ def market_forecast_summary(card: object, family: str) -> dict | None:
             return None
         if not math.isfinite(mean) or mean <= 0:
             return None
-        over = _finite_probability(card.get("over"))
-        if over is None:
+        raw_over = card.get("over")
+        if raw_over in (None, ""):
             over = poisson_over_probability(mean, 2.5)
+        else:
+            # An invalid model output must not be silently replaced by a
+            # different approximation; only a genuinely missing value may
+            # use the explicit score-model fallback.
+            over = _finite_probability(raw_over)
         if over is None:
             return None
         pick = "ТБ 2.5" if over >= 0.5 else "ТМ 2.5"
