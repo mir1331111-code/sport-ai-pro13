@@ -1,77 +1,193 @@
-"""Rank fixtures by the model's most likely 1X2 outcome.
+"""Select unique fixtures by strongest, better-supported 1X2 forecasts.
 
-This is a forecast-only ordering helper. It deliberately does not use bookmaker
-prices, EV, or value gates and must never be treated as bet authorization.
+This ranking controls display/analysis priority only. It is not a betting signal:
+bookmaker prices, EV, edge, Kelly and market validation remain separate gates.
 """
 from __future__ import annotations
 
+import hashlib
 import math
+import re
+import unicodedata
+
+
+PROBABILITY_WEIGHT = 0.75
+SEPARATION_WEIGHT = 0.15
+SAMPLE_WEIGHT = 0.10
+SAMPLE_FULL_WEIGHT_GAMES = 12
+
+
+def _number(value, default=None):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _team_key(value) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").casefold())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"\b(football club|fc|afc|cf|sc|ac)\b", " ", text)
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _teams(card: dict) -> tuple[str, str]:
+    home = str(card.get("home") or card.get("HomeTeam") or "").strip()
+    away = str(card.get("away") or card.get("AwayTeam") or "").strip()
+    if home and away:
+        return home, away
+    match_ru = str(card.get("match_ru") or "")
+    if " — " in match_ru:
+        return tuple(part.strip() for part in match_ru.split(" — ", 1))
+    match = str(card.get("match") or "")
+    if " vs " in match.casefold():
+        parts = re.split(r"\s+vs\s+", match, maxsplit=1, flags=re.IGNORECASE)
+        if len(parts) == 2:
+            return parts[0].strip(), parts[1].strip()
+    return home, away
+
+
+def _fixture_key(card: dict, index: int) -> tuple:
+    """Provider-independent event identity; source order is never used to pick a winner."""
+    home, away = _teams(card)
+    date = str(card.get("date_iso") or card.get("date") or "")[:10]
+    home_key, away_key = _team_key(home), _team_key(away)
+    if date and home_key and away_key:
+        return ("fixture", date, home_key, away_key)
+    fixture_id = str(card.get("fixture_id") or card.get("sstats_game_id") or "").strip()
+    if fixture_id:
+        return ("id", fixture_id)
+    # An unidentifiable row is retained instead of being accidentally collapsed.
+    return ("row", index)
+
+
+def _duplicate_quality(card: dict) -> tuple:
+    """Resolve duplicate provider rows by forecast quality and data coverage."""
+    favorite = model_favorite(card)
+    score = favorite["rank_score"] if favorite else 0.0
+    odds = sum(
+        len(card.get(field) or {})
+        for field in (
+            "market_odds", "total_market_odds", "btts_market_odds",
+            "stat_market_odds", "asian_handicap_market_odds",
+        )
+    )
+    return (
+        score,
+        favorite["probability"] if favorite else 0.0,
+        favorite["sample_games"] if favorite else 0,
+        int(bool(card.get("xg_used"))),
+        odds,
+        str(card.get("fixture_id") or ""),
+        str(card.get("league") or ""),
+        str(card.get("match") or ""),
+    )
 
 
 def model_favorite(card: object) -> dict | None:
-    """Return the most likely 1X2 outcome for a fixture, or None for bad inputs."""
+    """Return the most likely 1X2 outcome plus a reliability-aware ranking score."""
     if not isinstance(card, dict):
         return None
 
     probabilities = []
     for key in ("p1", "px", "p2"):
-        try:
-            value = float(card.get(key))
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        value = _number(card.get(key))
+        if value is None or not 0.0 <= value <= 1.0:
             return None
         probabilities.append(value)
 
     total = sum(probabilities)
-    # Reject percentages, partial probability sets, and malformed model output.
+    # Reject percentages, partial distributions, and malformed model output.
     if total <= 0.0 or not 0.90 <= total <= 1.10:
         return None
 
-    home = str(card.get("home") or card.get("HomeTeam") or "").strip()
-    away = str(card.get("away") or card.get("AwayTeam") or "").strip()
-    match_ru = str(card.get("match_ru") or "").strip()
-    if (not home or not away) and " — " in match_ru:
-        home, away = (part.strip() for part in match_ru.split(" — ", 1))
-    if (not home or not away) and " vs " in str(card.get("match") or ""):
-        home, away = (
-            part.strip() for part in str(card.get("match") or "").split(" vs ", 1)
-        )
+    order = sorted(range(3), key=lambda idx: probabilities[idx], reverse=True)
+    best_idx, second_idx = order[0], order[1]
+    probability = probabilities[best_idx]
+    margin = max(0.0, probability - probabilities[second_idx])
 
-    outcomes = (
-        ("П1", f"Победа {home}" if home else "Победа хозяев", probabilities[0]),
-        ("X", "Ничья", probabilities[1]),
-        ("П2", f"Победа {away}" if away else "Победа гостей", probabilities[2]),
+    sample_games = _number(card.get("games"), 0.0) or 0.0
+    if sample_games <= 0:
+        features = card.get("independent_features") or {}
+        home_sample = _number(features.get("home_home_sample"), 0.0) or 0.0
+        away_sample = _number(features.get("away_away_sample"), 0.0) or 0.0
+        sample_games = min(home_sample, away_sample)
+    sample_games = max(0.0, sample_games)
+    sample_support = min(1.0, sample_games / SAMPLE_FULL_WEIGHT_GAMES)
+
+    # Probability is dominant; separation and observed team history break ties
+    # and demote fragile high probabilities based on tiny samples.
+    rank_score = (
+        PROBABILITY_WEIGHT * probability
+        + SEPARATION_WEIGHT * margin
+        + SAMPLE_WEIGHT * sample_support
     )
-    pick, label, probability = max(outcomes, key=lambda item: item[2])
+
+    home, away = _teams(card)
+    outcomes = (
+        ("П1", f"Победа {home}" if home else "Победа хозяев"),
+        ("X", "Ничья"),
+        ("П2", f"Победа {away}" if away else "Победа гостей"),
+    )
+    pick, label = outcomes[best_idx]
+    if probability >= 0.70 and sample_games >= 5:
+        strength = "Высокая вероятность"
+    elif probability >= 0.62 and sample_games >= 5:
+        strength = "Сильный фаворит"
+    elif probability >= 0.55:
+        strength = "Умеренное преимущество"
+    else:
+        strength = "Небольшое преимущество"
+
     return {
         "pick": pick,
         "label": label,
         "probability": probability,
-        "strength": (
-            "Сильный фаворит" if probability >= 0.70 else
-            "Фаворит" if probability >= 0.60 else
-            "Небольшое преимущество" if probability >= 0.52 else
-            "Равный матч"
-        ),
+        "probability_margin": margin,
+        "sample_games": int(sample_games),
+        "sample_support": sample_support,
+        "rank_score": rank_score,
+        "strength": strength,
     }
 
 
-def rank_model_favorites(cards: object) -> list[dict]:
-    """Return forecastable fixtures, strongest 1X2 probability first."""
+def rank_model_favorites(cards: object, limit: int | None = None) -> list[dict]:
+    """Return unique fixtures ranked by probability, decisiveness and data support.
+
+    Duplicate fixtures are resolved by the strongest forecast/data row, not by
+    whichever provider or row happens to appear first in the input list.
+    """
     if not isinstance(cards, list):
         return []
 
-    ranked = []
-    for card in cards:
+    unique = {}
+    for index, card in enumerate(cards):
         favorite = model_favorite(card)
         if favorite is None:
             continue
-        ranked.append({"card": card, **favorite})
+        key = _fixture_key(card, index)
+        candidate = {"card": card, **favorite}
+        current = unique.get(key)
+        if current is None:
+            unique[key] = candidate
+            continue
+        if _duplicate_quality(card) > _duplicate_quality(current["card"]):
+            unique[key] = candidate
 
+    ranked = list(unique.values())
     ranked.sort(key=lambda item: (
+        -item["rank_score"],
         -item["probability"],
+        -item["probability_margin"],
+        -item["sample_games"],
         str(item["card"].get("date_iso") or item["card"].get("date") or ""),
-        str(item["card"].get("match") or ""),
+        str(item["card"].get("match") or item["card"].get("match_ru") or ""),
+        hashlib.sha256(repr(_fixture_key(item["card"], 0)).encode("utf-8")).hexdigest(),
     ))
+    if limit is not None:
+        try:
+            ranked = ranked[:max(0, int(limit))]
+        except (TypeError, ValueError):
+            pass
     return ranked
