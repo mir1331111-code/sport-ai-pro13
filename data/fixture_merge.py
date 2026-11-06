@@ -21,6 +21,18 @@ def fixture_key(row: dict) -> tuple:
     )
 
 
+def _generic_div(value) -> bool:
+    return str(value or "").strip().casefold() in {"", "g", "general", "unknown", "other"}
+
+
+def _generic_league(value) -> bool:
+    normalized = re.sub(r"[^a-zа-я0-9]+", " ", str(value or "").casefold()).strip()
+    return normalized in {
+        "", "soccer", "football", "матч", "лига", "unknown", "other",
+        "неизвестно", "—", "-",
+    }
+
+
 def merge_fixture_sources(*sources) -> list:
     """Merge source lists, keeping the earliest provider's richer row.
 
@@ -46,7 +58,26 @@ def merge_fixture_sources(*sources) -> list:
                 order.append(key)
                 continue
             current = merged[key]
+
+            # A generic first-provider label must not mask a precise competition
+            # supplied later (e.g. TSDB "Soccer" followed by SStats "Eredivisie").
+            # The historical corners/cards model is indexed by Div, so keeping
+            # Div="G" would make a well-covered league look as if it had no history.
+            incoming_div = row.get("Div") or row.get("div")
+            current_div = current.get("Div") or current.get("div")
+            if _generic_div(current_div) and not _generic_div(incoming_div):
+                current["Div"] = incoming_div
+                if current.get("div") is not None:
+                    current["div"] = incoming_div
+
+            incoming_league = row.get("League") or row.get("league")
+            current_league = current.get("League") or current.get("league")
+            if _generic_league(current_league) and not _generic_league(incoming_league):
+                current["League"] = incoming_league
+                if current.get("league") is not None:
+                    current["league"] = incoming_league
+
             for name, value in row.items():
-                if current.get(name) in (None, "", {} , []) and value not in (None, "", {}, []):
+                if current.get(name) in (None, "", {}, []) and value not in (None, "", {}, []):
                     current[name] = value
     return [merged[key] for key in order]

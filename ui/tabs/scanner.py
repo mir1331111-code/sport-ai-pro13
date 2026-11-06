@@ -911,10 +911,30 @@ def _render_manual_odds_block(
                     for selection, price in sorted(actual_quotes)
                 )
                 st.caption("Реальные котировки SStats по доступным линиям: " + quote_text)
-                st.info(
-                    "Котировки есть, но для этих линий недостаточно исторических данных, "
-                    "чтобы рассчитать вероятность. Ставку не рекомендую."
-                )
+                stat_name = "corners" if market_filter == "corners" else "cards"
+                stat_history = stat_preds.get(stat_name) or {}
+                history_n = int(stat_history.get("history_matches") or 0)
+                home_n = int(stat_history.get("home_team_games") or 0)
+                away_n = int(stat_history.get("away_team_games") or 0)
+                league_name = str(c.get("league") or "неизвестная лига")
+                div_code = str(c.get("div") or "G")
+                if history_n == 0:
+                    reason = (
+                        f"Для лиги «{league_name}» (код {div_code}) в обучающей выборке нет "
+                        f"подтверждённых исторических данных {('HC/AC' if stat_name == 'corners' else 'HY/AY/HR/AR')}."
+                    )
+                elif history_n < 30:
+                    reason = (
+                        f"По лиге «{league_name}» (код {div_code}) найдено только {history_n} "
+                        "матчей с полной статистикой; требуется минимум 30."
+                    )
+                else:
+                    reason = (
+                        f"История лиги: {history_n} матчей; домашних матчей хозяев: {home_n}; "
+                        f"выездных матчей гостей: {away_n}. Для оценки пары нужно минимум "
+                        "4 домашних и 4 выездных наблюдения."
+                    )
+                st.info(reason + " Коэффициенты получены, но вероятность не рассчитывается; ставку не рекомендую.")
             else:
                 st.info("Для этого матча SStats не вернул котировки этого статистического рынка.")
         else:
@@ -1048,7 +1068,12 @@ def _render_manual_odds_block(
                     f"Линия {stat_line} рынка {stat_name} не прошла собственный walk-forward тест."
                 )
             if not history_sufficient:
-                validation_parts.append("Недостаточно фактической истории по этой паре команд.")
+                validation_parts.append(
+                    "Недостаточно фактической истории: "
+                    f"лига {stat_prediction.get('history_matches', 0)}/30, "
+                    f"хозяева дома {stat_prediction.get('home_team_games', 0)}/4, "
+                    f"гости на выезде {stat_prediction.get('away_team_games', 0)}/4."
+                )
             if not quote_source_valid:
                 validation_parts.append("Нет подтверждённой котировки на этот рынок.")
             if not market_pair_validated:
@@ -2028,39 +2053,43 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "footballapi_key_input", "FOOTBALLAPI_KEY", "footballapi_key"
         )
         fixture_sources = []
+        tsdb_rows = []
+        espn_rows = []
+        fdorg_rows = []
         sstats_rows = []
         source_counts = {"TheSportsDB": 0, "ESPN": 0, "football-data.org": 0, "SStats": 0}
         try:
             tsdb_rows = tsdb_matches(days, logs)
             source_counts["TheSportsDB"] = len(tsdb_rows)
-            fixture_sources.extend(tsdb_rows)
         except Exception as exc:
             logs.append(f"⚠️ TheSportsDB fixtures: {type(exc).__name__}")
         try:
             espn_rows = espn_matches(days, logs)
             source_counts["ESPN"] = len(espn_rows)
-            fixture_sources.extend(espn_rows)
         except Exception as exc:
             logs.append(f"⚠️ ESPN fixtures: {type(exc).__name__}")
         if token:
             try:
                 fdorg_rows = fdorg_matches(days, token, logs)
                 source_counts["football-data.org"] = len(fdorg_rows)
-                fixture_sources.extend(fdorg_rows)
             except Exception as exc:
                 logs.append(f"⚠️ football-data.org fixtures: {type(exc).__name__}")
         if sstats_key:
             try:
-                # SStats is appended last: when the same fixture is already in another
-                # schedule feed, merge_fixture_sources preserves that row and fills
-                # its missing bookmaker prices and SStats game ID from this source.
                 sstats_rows = sstats_upcoming_matches(days, sstats_key, logs)
                 source_counts["SStats"] = len(sstats_rows)
-                fixture_sources.extend(sstats_rows)
             except Exception as exc:
                 logs.append(f"⚠️ SStats fixtures/odds: {type(exc).__name__}")
         else:
             logs.append("ℹ️ SSTATS_API_KEY не настроен — бесплатный источник SStats пропущен.")
+
+        # Merge from highest-quality competition metadata to broad schedule feeds.
+        # SStats remains last for odds enrichment, while fixture_merge can now
+        # upgrade generic Div/League placeholders when it sees a specific league.
+        fixture_sources.extend(fdorg_rows)
+        fixture_sources.extend(tsdb_rows)
+        fixture_sources.extend(espn_rows)
+        fixture_sources.extend(sstats_rows)
         logs.append(
             "📡 Источники расписания: " + " · ".join(
                 f"{name} {count}" for name, count in source_counts.items()

@@ -35,6 +35,12 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         self.assertGreater(pred["corners"]["total_variance"], 0)
         self.assertIn("home_against_avg", pred["cards"])
 
+    def test_unseen_league_returns_no_forecast(self):
+        model = HistoricalMatchStats()
+        # Unknown competitions have no observations; the model must not invent
+        # league averages merely to populate a card.
+        self.assertEqual(model.predict("Venezia", "Udinese", "G"), {})
+
     def test_missing_statistics_do_not_become_zero(self):
         model = HistoricalMatchStats()
         self.assertFalse(model.learn_step({
