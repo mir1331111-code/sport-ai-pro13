@@ -1585,14 +1585,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Forecast favorites are ranked independently of bookmaker value gates.
         # They are displayed as model probabilities, never as guaranteed winners
         # or automatic betting recommendations.
-        favorite_matches = rank_model_favorites(all_cards)
+        favorite_matches = rank_model_favorites(all_cards, limit=10)
         st.markdown(
             "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:18px 0 4px'>"
             "<div><div class='scanner-kicker'>MODEL FAVORITES · 1X2</div>"
             "<h2 style='margin:0'>Самые вероятные исходы</h2>"
             "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>"
-            "Топ-10 по вероятности П1 / ничьей / П2 среди всех матчей скана. "
-            "Это прогноз модели, а не гарантия победы и не подтверждение Value.</div></div>"
+            "Топ-10 уникальных матчей. Вероятность — главный фактор; рейтинг также учитывает "
+            "отрыв от второго исхода и объём истории команд. Это не гарантия победы и не Value.</div></div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1611,6 +1611,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     ) if value
                 )
                 favorite_probability = float(favorite_item["probability"])
+                favorite_score = float(favorite_item["rank_score"])
+                favorite_margin = float(favorite_item["probability_margin"])
+                favorite_sample = int(favorite_item["sample_games"])
                 with favorite_columns[(favorite_rank - 1) % 2]:
                     st.markdown(
                         "<div style='padding:13px 15px;margin:7px 0;border:1px solid rgba(118,159,180,.28);"
@@ -1624,7 +1627,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"{html.escape(favorite_item['label'])} · {favorite_probability:.1%}</div>"
                         f"<div style='color:#9aaab3;font-size:12px;margin-top:4px'>"
                         f"{html.escape(favorite_kickoff or 'Время начала уточняется')} · "
-                        "модельная вероятность 1X2</div></div>",
+                        f"отрыв от второго исхода {favorite_margin:.1%} · история команд {favorite_sample} матчей"
+                        f"</div><div style='color:#8fd8bd;font-size:11px;margin-top:3px'>"
+                        f"Рейтинг отбора {favorite_score:.3f} · вероятность не равна гарантии"
+                        f"</div></div>",
                         unsafe_allow_html=True,
                     )
         else:
@@ -1776,7 +1782,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             cards_view.sort(key=lambda c: parse_card_date(c))
         elif sort_mode.startswith("По вероятности"):
             cards_view.sort(
-                key=lambda c: -(model_favorite(c) or {}).get("probability", 0.0))
+                key=lambda c: -(model_favorite(c) or {}).get("rank_score", 0.0))
         elif sort_mode.startswith("По EV"):
             cards_view.sort(
                 key=lambda c: -(c.get("verdict", {}).get("ev") or -1))
@@ -1862,15 +1868,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if sort_mode.startswith("По дате"):
                     return (0 if recommendation else 1, parse_card_date(card))
                 if sort_mode.startswith("По вероятности"):
-                    # In forecast view, sort every family by the fixture's most
-                    # likely 1X2 outcome; in Value mode use the validated market
-                    # probability from that family's own recommendation.
-                    probability = (
-                        float(result.get("prob") or 0.0)
-                        if recommendation else
-                        float((model_favorite(card) or {}).get("probability") or 0.0)
+                    # In probability mode every market tab follows the same
+                    # unique-fixture ranking; a Value flag must not promote a
+                    # lower-probability event above a stronger forecast.
+                    favorite = model_favorite(card) or {}
+                    return (
+                        -float(favorite.get("rank_score") or 0.0),
+                        -float(favorite.get("probability") or 0.0),
                     )
-                    return (0 if recommendation else 1, -probability)
                 if sort_mode.startswith("По EV"):
                     return (
                         0 if recommendation else 1,
@@ -2788,28 +2793,21 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if has_sufficient_history(c.get("independent_features"))
         ]
         skipped_low_history = len(eligible_llm_cards) - len(action_cards)
+        # De-duplicate before spending the small independent-LLM quota. Keep
+        # the strongest supported forecast row for every unique fixture.
+        action_cards = [
+            item["card"] for item in rank_model_favorites(action_cards)
+        ]
         # Give Groq's small TPM budget to the strongest model favourites first.
         # The actual probabilities and favourite are still excluded from the LLM prompt.
         def _llm_priority(card):
-            try:
-                favorite_probability = max(
-                    float(card.get("p1") or 0.0),
-                    float(card.get("px") or 0.0),
-                    float(card.get("p2") or 0.0),
-                )
-            except (TypeError, ValueError):
-                favorite_probability = 0.0
-            try:
-                sample_size = min(
-                    int((card.get("independent_features") or {}).get("home_home_sample") or 0),
-                    int((card.get("independent_features") or {}).get("away_away_sample") or 0),
-                )
-            except (TypeError, ValueError):
-                sample_size = 0
+            favorite = model_favorite(card) or {}
+            ranking_score = float(favorite.get("rank_score") or 0.0)
+            sample_size = int(favorite.get("sample_games") or 0)
             stable_key = hashlib.sha256(
                 f"{card.get('date_iso','')}|{card.get('match','')}".encode("utf-8")
             ).hexdigest()
-            return (-favorite_probability, -sample_size, stable_key)
+            return (-ranking_score, -sample_size, stable_key)
 
         action_cards.sort(key=_llm_priority)
         llm_done = 0
