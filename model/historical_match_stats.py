@@ -364,11 +364,17 @@ def walk_forward_evaluate(rows, league="G", min_history=30):
             forecasts = model.predict(home, away, league)
             actuals = {}
             hc, ac = _num(row.get("HC")), _num(row.get("AC"))
-            if hc is not None and ac is not None:
+            if (
+                hc is not None and ac is not None
+                and hc.is_integer() and ac.is_integer()
+            ):
                 actuals["corners"] = hc + ac
             hy, ay = _num(row.get("HY")), _num(row.get("AY"))
             hr, ar = _num(row.get("HR")), _num(row.get("AR"))
-            if all(value is not None for value in (hy, ay, hr, ar)):
+            if (
+                all(value is not None for value in (hy, ay, hr, ar))
+                and all(value.is_integer() for value in (hy, ay, hr, ar))
+            ):
                 actuals["cards"] = hy + ay + hr + ar
             for market, actual in actuals.items():
                 forecast = forecasts.get(market)
