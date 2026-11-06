@@ -22,6 +22,18 @@ def _get(row, *names):
             return row[name]
     return None
 
+def _strict_score(value):
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0 or not number.is_integer():
+        return None
+    return int(number)
+
+
 
 def _parse_date(value):
     """Parse ISO timestamps and Football-Data day/month/year CSV dates."""
@@ -338,10 +350,10 @@ def walk_forward_compare(
             stamp = _parse_date(_get(row, "Date", "date", "match_date", "kickoff_date"))
             home = _get(row, "HomeTeam", "home_team", "home")
             away = _get(row, "AwayTeam", "away_team", "away")
-            hg = int(_get(row, "FTHG", "home_goals", "hg"))
-            ag = int(_get(row, "FTAG", "away_goals", "ag"))
+            hg = _strict_score(_get(row, "FTHG", "home_goals", "hg"))
+            ag = _strict_score(_get(row, "FTAG", "away_goals", "ag"))
             league = str(_get(row, "Div", "league", "competition") or "G")
-            if stamp is None or not home or not away or hg < 0 or ag < 0:
+            if stamp is None or not home or not away or hg is None or ag is None:
                 skipped += 1
                 continue
             prepared.append((stamp, str(league), str(home), str(away), hg, ag, row))
