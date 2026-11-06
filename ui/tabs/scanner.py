@@ -1591,8 +1591,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "<div><div class='scanner-kicker'>MODEL FAVORITES · 1X2</div>"
             "<h2 style='margin:0'>Самые вероятные исходы</h2>"
             "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>"
-            "Топ-10 уникальных матчей. Вероятность — главный фактор; рейтинг также учитывает "
-            "отрыв от второго исхода и объём истории команд. Это не гарантия победы и не Value.</div></div>"
+            "Топ-10 уникальных матчей. Сначала — самая высокая вероятность; при равенстве "
+            "учитываются отрыв от второго исхода и объём истории. Это не гарантия победы.</div></div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -1611,7 +1611,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     ) if value
                 )
                 favorite_probability = float(favorite_item["probability"])
-                favorite_score = float(favorite_item["rank_score"])
                 favorite_margin = float(favorite_item["probability_margin"])
                 favorite_sample = int(favorite_item["sample_games"])
                 with favorite_columns[(favorite_rank - 1) % 2]:
@@ -1629,7 +1628,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"{html.escape(favorite_kickoff or 'Время начала уточняется')} · "
                         f"отрыв от второго исхода {favorite_margin:.1%} · история команд {favorite_sample} матчей"
                         f"</div><div style='color:#8fd8bd;font-size:11px;margin-top:3px'>"
-                        f"Рейтинг отбора {favorite_score:.3f} · вероятность не равна гарантии"
+                        f"Сортировка: вероятность → отрыв → история · это не гарантия"
                         f"</div></div>",
                         unsafe_allow_html=True,
                     )
@@ -1781,8 +1780,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         if sort_mode.startswith("По дате"):
             cards_view.sort(key=lambda c: parse_card_date(c))
         elif sort_mode.startswith("По вероятности"):
-            cards_view.sort(
-                key=lambda c: -(model_favorite(c) or {}).get("rank_score", 0.0))
+            cards_view.sort(key=lambda c: (
+                -float((model_favorite(c) or {}).get("probability") or 0.0),
+                -float((model_favorite(c) or {}).get("probability_margin") or 0.0),
+                -int((model_favorite(c) or {}).get("sample_games") or 0),
+            ))
         elif sort_mode.startswith("По EV"):
             cards_view.sort(
                 key=lambda c: -(c.get("verdict", {}).get("ev") or -1))
@@ -1873,8 +1875,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     # lower-probability event above a stronger forecast.
                     favorite = model_favorite(card) or {}
                     return (
-                        -float(favorite.get("rank_score") or 0.0),
                         -float(favorite.get("probability") or 0.0),
+                        -float(favorite.get("probability_margin") or 0.0),
+                        -int(favorite.get("sample_games") or 0),
                     )
                 if sort_mode.startswith("По EV"):
                     return (
@@ -2802,12 +2805,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # The actual probabilities and favourite are still excluded from the LLM prompt.
         def _llm_priority(card):
             favorite = model_favorite(card) or {}
-            ranking_score = float(favorite.get("rank_score") or 0.0)
+            probability = float(favorite.get("probability") or 0.0)
+            margin = float(favorite.get("probability_margin") or 0.0)
             sample_size = int(favorite.get("sample_games") or 0)
             stable_key = hashlib.sha256(
                 f"{card.get('date_iso','')}|{card.get('match','')}".encode("utf-8")
             ).hexdigest()
-            return (-ranking_score, -sample_size, stable_key)
+            return (-probability, -margin, -sample_size, stable_key)
 
         action_cards.sort(key=_llm_priority)
         llm_done = 0
