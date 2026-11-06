@@ -30,7 +30,7 @@ from betting.best_picks import best_value_market, best_value_markets
 from betting.favorites import model_favorite, rank_model_favorites
 from betting.kelly import kelly, market_type
 from betting.market_math import blend_probability, proportional_devig
-from llm.analyst import analyze_match, has_sufficient_history
+from llm.analyst import LLMRateLimitError, analyze_match, has_sufficient_history
 from model.independent_forecasts import historical_features, record_scan_forecasts
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label, render_fixture_header)
@@ -2759,30 +2759,54 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if has_sufficient_history(c.get("independent_features"))
         ]
         skipped_low_history = len(eligible_llm_cards) - len(action_cards)
-        # Deterministic hash sampling spreads the limited LLM budget across fixtures
-        # without prioritizing the main model's favourite pick, confidence, or odds value.
-        action_cards.sort(key=lambda c: hashlib.sha256(
-            f"{c.get('date_iso','')}|{c.get('match','')}".encode("utf-8")
-        ).hexdigest())
+        # Give Groq's small TPM budget to the strongest model favourites first.
+        # The actual probabilities and favourite are still excluded from the LLM prompt.
+        def _llm_priority(card):
+            try:
+                favorite_probability = max(
+                    float(card.get("p1") or 0.0),
+                    float(card.get("px") or 0.0),
+                    float(card.get("p2") or 0.0),
+                )
+            except (TypeError, ValueError):
+                favorite_probability = 0.0
+            try:
+                sample_size = min(
+                    int((card.get("independent_features") or {}).get("home_home_sample") or 0),
+                    int((card.get("independent_features") or {}).get("away_away_sample") or 0),
+                )
+            except (TypeError, ValueError):
+                sample_size = 0
+            stable_key = hashlib.sha256(
+                f"{card.get('date_iso','')}|{card.get('match','')}".encode("utf-8")
+            ).hexdigest()
+            return (-favorite_probability, -sample_size, stable_key)
+
+        action_cards.sort(key=_llm_priority)
         llm_done = 0
+        # Groq GPT-OSS in the deployed account reported an 8,000 TPM cap.
+        # Three independent fixture reviews per scan avoid flooding that shared
+        # budget; stop immediately on the first 429 instead of retrying every card.
+        llm_batch_limit = min(3, LLM_TOP_N) if "groq" in str(llm_prov).casefold() else LLM_TOP_N
 
         logs.append(
             f"🤖 LLM подготовка: key={'есть' if llm_key else 'НЕТ'} | "
             f"provider={llm_prov} | "
             f"analysis_cards={len(action_cards)} | "
+            f"batch_limit={llm_batch_limit} | "
             f"skipped_low_history={skipped_low_history} | "
             f"remaining={usage.llm_remaining()}")
 
         if llm_key and usage.llm_remaining() > 0 and action_cards:
-            for i_, card in enumerate(action_cards[:LLM_TOP_N]):
+            for i_, card in enumerate(action_cards[:llm_batch_limit]):
                 if usage.llm_remaining() <= 0:
                     logs.append("🤖 LLM: лимит")
                     break
                 if i_ > 0:
                     time.sleep(2)
                 update_loader(
-                    f"🤖 Независимый ИИ-анализ [{i_+1}/{min(LLM_TOP_N, len(action_cards))}]",
-                    0.90 + 0.08 * (i_+1) / LLM_TOP_N, logs)
+                    f"🤖 Независимый ИИ-анализ [{i_+1}/{min(llm_batch_limit, len(action_cards))}]",
+                    0.90 + 0.08 * (i_+1) / max(1, llm_batch_limit), logs)
                 v_ = card.get("verdict", {})
                 # Blind AI context: the statistical model's probabilities, selected outcome,
                 # confidence, EV and market prices are deliberately not passed to the LLM.
@@ -2805,6 +2829,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 }
                 try:
                     opinion = analyze_match(ctx_llm)
+                except LLMRateLimitError as exc:
+                    retry_after = exc.retry_after_seconds
+                    logs.append(
+                        "⛔ Groq ограничил запросы по токенам в минуту. "
+                        "Остальные LLM-вызовы остановлены, чтобы не усугублять лимит. "
+                        + (
+                            f"Повторить новый скан примерно через {retry_after:.0f} сек."
+                            if retry_after is not None
+                            else "Попробуйте новый скан после сброса лимита провайдера."
+                        )
+                    )
+                    break
                 except Exception as exc:
                     opinion = None
                     logs.append(
