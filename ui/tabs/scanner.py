@@ -755,18 +755,6 @@ def _render_manual_odds_block(
     """Понятный ввод букмекерского коэффициента для выбранного рынка."""
     v = c.get("verdict", {})
     stat_preds = c.get("historical_stats") or {}
-    if market_filter is None:
-        winner_summary = market_forecast_summary(c, "winner")
-        if winner_summary is not None:
-            strong_label = (
-                f"СИЛЬНЫЙ ПРОГНОЗ 1X2 ≥{STRONG_FORECAST_MIN_PROB:.0%}"
-                if winner_summary.get("strong_forecast") else
-                f"прогноз 1X2 ниже порога сильного {STRONG_FORECAST_MIN_PROB:.0%}"
-            )
-            st.caption(
-                f"{strong_label} · {winner_summary['label']} "
-                f"{winner_summary['probability']:.1%}; это вероятность модели, не гарантия."
-            )
     from model.historical_match_stats import poisson_over_probability
     market_options = {
         "Победа хозяев (П1)": ("П1", float(c.get("p1") or 0)),
@@ -1062,6 +1050,32 @@ def _render_manual_odds_block(
                 rec_verdict = None
 
     selected_market_type = market_type(pick)
+    if market_filter is None:
+        forecast_family = (
+            "winner" if selected_market_type == "1X2"
+            else "goals" if selected_market_type == "OU"
+            else "btts" if selected_market_type == "BTTS"
+            else "corners" if selected_market_type == "STAT" and pick.startswith("Угл ")
+            else "cards" if selected_market_type == "STAT" and pick.startswith("Карты ")
+            else None
+        )
+        selected_summary = (
+            market_forecast_summary(c, forecast_family)
+            if forecast_family else None
+        )
+        if selected_summary is not None:
+            strength_threshold = float(
+                selected_summary.get("strength_threshold") or STRONG_FORECAST_MIN_PROB
+            )
+            strength_label = (
+                f"СИЛЬНЫЙ ПРОГНОЗ ≥{strength_threshold:.0%}"
+                if selected_summary.get("strong_forecast") else
+                f"прогноз ниже порога сильного {strength_threshold:.0%}"
+            )
+            st.caption(
+                f"{strength_label} · {selected_summary['label']} "
+                f"{selected_summary['probability']:.1%}; это вероятность модели, не гарантия."
+            )
     market_pair_validated = has_coherent_market_line(pick)
     if selected_market_type == "1X2":
         market_is_validated = (
