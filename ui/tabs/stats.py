@@ -7,6 +7,7 @@ import streamlit as st
 from storage import sqlite_store as db
 from config import DB_FILE
 from model.independent_forecasts import comparison_report, settle_due_forecasts
+from model.forecast_ledger import ForecastLedger
 from model.forecast_ledger import MarketForecastLedger
 
 
@@ -21,11 +22,118 @@ def _sharpe(returns: list, periods_per_year: int = 252) -> float:
     return (mu / sigma) * (periods_per_year ** 0.5)
 
 
+def _scan_summary(cards: object) -> dict[str, int]:
+    """Summarize current-scan fixtures without treating forecasts as bets."""
+    valid_cards = [card for card in cards or [] if isinstance(card, dict)]
+    forecasted = quoted_1x2 = quoted_any = value_signals = ai_opinions = 0
+    for card in valid_cards:
+        try:
+            probabilities = [float(card.get(key)) for key in ("p1", "px", "p2")]
+            if all(0 <= p <= 1 for p in probabilities) and 0.90 <= sum(probabilities) <= 1.10:
+                forecasted += 1
+        except (TypeError, ValueError):
+            pass
+        market_odds = card.get("market_odds") or {}
+        if isinstance(market_odds, dict) and market_odds:
+            quoted_1x2 += 1
+        if any(
+            isinstance(card.get(field), dict) and bool(card.get(field))
+            for field in (
+                "market_odds", "total_market_odds", "btts_market_odds",
+                "stat_market_odds", "asian_handicap_market_odds",
+            )
+        ):
+            quoted_any += 1
+        verdict = card.get("verdict") or {}
+        best = card.get("best")
+        if (
+            isinstance(best, (tuple, list)) and len(best) >= 6
+            and verdict.get("real_odds") and verdict.get("value_passed")
+        ):
+            value_signals += 1
+        if str(card.get("llm_opinion") or "").strip():
+            ai_opinions += 1
+    return {
+        "matches": len(valid_cards),
+        "forecasted": forecasted,
+        "quoted_1x2": quoted_1x2,
+        "quoted_any": quoted_any,
+        "value_signals": value_signals,
+        "ai_opinions": ai_opinions,
+    }
+
+
+def _render_forecast_journal(D):
+    summary = _scan_summary(D.get("cards") or [])
+    st.subheader("🔎 Результаты последнего сканирования")
+    if not summary["matches"]:
+        st.info("Пока нет сохранённого скана. Запусти сканер — здесь появятся прогнозы и охват котировок.")
+    else:
+        columns = st.columns(5)
+        columns[0].metric("Матчей проанализировано", summary["matches"])
+        columns[1].metric("Прогнозов 1X2", summary["forecasted"])
+        columns[2].metric("Матчей с 1X2", summary["quoted_1x2"])
+        columns[3].metric("С Value-сигналом", summary["value_signals"])
+        columns[4].metric("Мнений ИИ", summary["ai_opinions"])
+        st.caption(
+            f"Котировки хотя бы одного рынка есть у {summary['quoted_any']} матчей. "
+            "Прогнозы и котировки не равны ставкам в портфеле."
+        )
+
+    funnel = D.get("funnel") or {}
+    if funnel:
+        st.caption(
+            "Сводка последнего скана: "
+            f"источники расписания — {funnel.get('src', 0)}; "
+            f"найдено Value-сигналов — {funnel.get('found', 0)}; "
+            f"добавлено в портфель — {funnel.get('added', 0)}; "
+            f"LLM-мнений — {funnel.get('llm', 0)}."
+        )
+
+    try:
+        rows = ForecastLedger(DB_FILE).rows()
+        main_rows = [
+            row for row in rows
+            if str(row.get("model_version") or "").startswith("main-model-")
+        ]
+        ai_rows = [
+            row for row in rows
+            if str(row.get("model_version") or "").startswith("independent-llm-")
+        ]
+        if rows:
+            settled_main = sum(row.get("result") in {"H", "D", "A"} for row in main_rows)
+            settled_ai = sum(row.get("result") in {"H", "D", "A"} for row in ai_rows)
+            journal_columns = st.columns(4)
+            journal_columns[0].metric("Журнал: прогнозы модели", len(main_rows))
+            journal_columns[1].metric("Журнал: прогнозы ИИ", len(ai_rows))
+            journal_columns[2].metric("Результат подтверждён · модель", settled_main)
+            journal_columns[3].metric("Результат подтверждён · ИИ", settled_ai)
+            st.caption(
+                "Журнал хранит прогнозы, сделанные до начала матча. "
+                "Точность, Brier и Log loss рассчитываются только после подтверждённого FT."
+            )
+    except Exception as exc:
+        st.warning(f"Журнал прогнозов пока недоступен: {type(exc).__name__}: {str(exc)[:120]}")
+
+
 def _render_overview(D):
+    _render_forecast_journal(D)
+    st.divider()
+    st.subheader("💼 Статистика виртуального портфеля")
     bets = [b for b in D.get("bets", []) if isinstance(b, dict)]
     if not bets:
-        st.info("Ставок пока нет. Сделай ⚡ СКАН.")
+        st.info(
+            "Ставок в портфеле пока нет. Это не означает, что прогнозов нет: "
+            "они показаны выше. Win Rate, PnL и ROI появятся после добавления и закрытия ставок."
+        )
+        bank = float(D.get("bank", 10000))
+        initial = float(D.get("meta", {}).get("initial_bank", 10000))
+        growth = ((bank - initial) / initial * 100) if initial else 0
+        b1, b2 = st.columns(2)
+        b1.metric("Текущий банкролл", f"{bank:.0f}")
+        b2.metric("Изменение к начальному банку", f"{growth:+.1f}%")
         return
+
     total = len(bets)
     pending = [b for b in bets if b.get("status") == "pending"]
     won = [b for b in bets if b.get("status") == "won"]
@@ -34,24 +142,28 @@ def _render_overview(D):
     void = [b for b in bets if b.get("status") == "void"]
     closed = len(won) + len(lost)
     total_stake = sum(float(b.get("stake") or 0) for b in bets)
+    closed_stake = sum(
+        float(b.get("stake") or 0) for b in bets
+        if b.get("status") in {"won", "lost"}
+    )
     total_pnl = 0.0
     for b in bets:
-        s_ = b.get("status")
+        status = b.get("status")
         stake = float(b.get("stake") or 0)
         odds = float(b.get("odds") or 1)
-        if s_ == "won":
+        if status == "won":
             total_pnl += stake * (odds - 1)
-        elif s_ == "lost":
+        elif status == "lost":
             total_pnl -= stake
-    winrate = (len(won) / closed * 100) if closed else 0.0
-    roi = (total_pnl / total_stake * 100) if total_stake else 0.0
+    winrate = (len(won) / closed * 100) if closed else None
+    roi = (total_pnl / closed_stake * 100) if closed_stake else None
 
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Всего", total)
+    k1.metric("Всего ставок", total)
     k2.metric("В работе", len(pending))
-    k3.metric("WinRate", f"{winrate:.1f}%")
-    k4.metric("PnL", f"{total_pnl:+.2f}")
-    k5.metric("ROI", f"{roi:+.2f}%")
+    k3.metric("WinRate", "—" if winrate is None else f"{winrate:.1f}%")
+    k4.metric("PnL", f"{total_pnl:+.2f}" if closed else "—")
+    k5.metric("ROI закрытых ставок", "—" if roi is None else f"{roi:+.2f}%")
 
     bank = float(D.get("bank", 10000))
     initial = float(D.get("meta", {}).get("initial_bank", 10000))
@@ -59,7 +171,7 @@ def _render_overview(D):
     k1, k2, k3 = st.columns(3)
     k1.metric("Банкролл", f"{bank:.0f}", f"{growth:+.1f}%")
     k2.metric("Заморожено", f"{sum(float(b.get('stake') or 0) for b in pending):.0f}")
-    k3.metric("В обороте всего", f"{total_stake:.0f}")
+    k3.metric("Сумма стейков", f"{total_stake:.0f}")
 
     st.divider()
     s1, s2, s3, s4 = st.columns(4)
@@ -67,6 +179,9 @@ def _render_overview(D):
     s2.metric("🔴 Проиграно", len(lost))
     s3.metric("⚪ Возврат", len(push))
     s4.metric("⬜ Void", len(void))
+
+    if not closed:
+        st.info("Закрытых ставок пока нет. Прибыльность стратегии ещё нельзя оценить.")
 
     try:
         history = db.bank_history(limit=5000)
