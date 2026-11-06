@@ -16,7 +16,7 @@ import math
 import hashlib
 import json
 import re
-import unicodedata
+from data.team_names import normalize_team
 from typing import Optional
 
 
@@ -228,10 +228,8 @@ def _number(value, default=None):
 
 
 def _team_key(value) -> str:
-    text = unicodedata.normalize("NFKD", str(value or "").casefold())
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = re.sub(r"\b(football club|fc|afc|cf|sc|ac)\b", " ", text)
-    return re.sub(r"[^a-z0-9]+", "", text)
+    """Use exact team aliases for provider-independent fixture deduplication."""
+    return normalize_team(str(value or ""))
 
 
 def _teams(card: dict) -> tuple[str, str]:
