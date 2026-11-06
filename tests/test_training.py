@@ -69,11 +69,14 @@ class ChronologicalTrainingTests(unittest.TestCase):
     def test_chronological_trainer_uses_one_batch_per_calendar_day(self):
         history = {
             "E0": [[
-                self.row("02/01/2024", "B", "C", 0, 1),
-                self.row("01/01/2024", "A", "B", 1, 0),
+                self.row("02/01/2024", "B", "C", 0, 1,
+                         HC=5, AC=4, HY=2, AY=1, HR=0, AR=0),
+                self.row("01/01/2024", "A", "B", 1, 0,
+                         HC=6, AC=3, HY=1, AY=1, HR=0, AR=0),
             ]],
             "SP1": [[
-                self.row("01/01/2024", "C", "D", 2, 0),
+                self.row("01/01/2024", "C", "D", 2, 0,
+                         HC=4, AC=5, HY=2, AY=1, HR=0, AR=0),
             ]],
         }
         rows, skipped = prepare_completed_training_rows(history, ("E0", "SP1"))
