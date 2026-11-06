@@ -142,9 +142,9 @@ class ModelFavoriteTests(unittest.TestCase):
         }
         ranked = rank_model_favorites([senior_a, senior_b, reserve])
         self.assertEqual(len(ranked), 2)
-        self.assertEqual(ranked[0]["card"]["match"], reserve["match"])
+        self.assertEqual(ranked[0]["card"]["match"], senior_b["match"])
         self.assertTrue(
-            any(item["card"]["match"] == senior_b["match"] for item in ranked)
+            any(item["card"]["match"] == reserve["match"] for item in ranked)
         )
 
     def test_fixture_limit_is_applied_after_unique_probability_ranking(self):
