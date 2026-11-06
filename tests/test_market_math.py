@@ -52,6 +52,7 @@ class MarketMathTests(unittest.TestCase):
         chosen, best = best_value_market(
             verdict, rows, odds, bank=1000, kelly_frac=0.25, min_prob=0.50,
             bookmaker_by_pick=books,
+            market_validation_by_pick={"П1": True},
         )
         self.assertIsNotNone(best)
         self.assertEqual(chosen["market_fair_prob_source"], "complete_market_proportional_devig")
