@@ -5,6 +5,7 @@ from betting.best_picks import (
     _canonical_market_pick,
 )
 from betting.kelly import market_type
+from betting.ranking import balanced_value_score
 
 
 def _verdict():
@@ -225,6 +226,17 @@ class BestValueMarketTests(unittest.TestCase):
         self.assertIsNone(chosen)
         self.assertIsNone(best)
 
+
+    def test_balanced_score_prioritizes_probability_but_rewards_validated_value(self):
+        high_probability_only = balanced_value_score(0.80)
+        lower_probability_with_validated_value = balanced_value_score(0.74, 0.10, 0.08)
+        lower_probability_without_value = balanced_value_score(0.74)
+        self.assertGreater(high_probability_only, lower_probability_without_value)
+        self.assertGreater(
+            lower_probability_with_validated_value,
+            high_probability_only,
+        )
+        self.assertAlmostEqual(lower_probability_with_validated_value, 0.844)
 
     def test_1x2_requires_explicit_market_validation_and_complete_book_line(self):
         rows = [{"pick": "П1", "prob": 0.70, "label": "Победа хозяев"}]
