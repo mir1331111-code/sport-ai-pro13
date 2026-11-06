@@ -145,6 +145,8 @@ ALIASES = {
     # ===== Франция =====
     "psg": "psg",
     "paris": "psg",
+    "paris fc": "paris_fc",
+    "paris football club": "paris_fc",
     "paris sg": "psg",
     "paris saint germain": "psg",
     "псж": "psg",
