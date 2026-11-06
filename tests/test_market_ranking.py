@@ -96,11 +96,11 @@ class IndependentMarketRankingTests(unittest.TestCase):
 
     def test_balanced_ranking_uses_only_already_approved_value_metrics(self):
         high_probability = _card(
-            "High probability vs Team", p1=0.80, over=0.60, btts=0.60,
+            "High probability vs Team", p1=0.78, over=0.60, btts=0.60,
             corners=10.0, cards=5.0,
         )
         unvalidated_value = _card(
-            "Unvalidated price vs Team", p1=0.79, over=0.60, btts=0.60,
+            "Unvalidated price vs Team", p1=0.77, over=0.60, btts=0.60,
             corners=10.0, cards=5.0,
         )
         unvalidated_value["best_by_market"] = {
