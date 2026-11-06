@@ -96,3 +96,19 @@ The Statistics tab's **AI versus model** view compares the two probability distr
 
 These metrics are forecast-quality measures, not betting ROI. A small sample is not enough to establish which forecaster is better. Live AI scores and comparative performance appear only after genuine forecasts have been logged before kickoff and trustworthy final results have been confirmed; no synthetic performance numbers are prefilled.
 
+## Algorithm integrity update 13.12.0
+
+The production trainer now prepares only historical fixtures with a valid date, non-empty team identities, and finite non-negative integer final scores. Missing scores are never replaced with 0-0. All configured leagues are merged into one global chronological stream; every fixture on a calendar date is forecast before any result from that date is ingested. This prevents same-day results from leaking into later same-day forecasts and calibration updates. The training log reports excluded rows by reason.
+
+The historical validation cache is fingerprinted by the application/model version as well as the exact input rows and matrix size. A model-version change therefore forces a fresh walk-forward calculation instead of reusing a report produced by an earlier algorithm.
+
+The scanner separates **model forecasts** from **actionable Value**:
+- 1X2 is eligible for Value only after at least 500 paired historical fixtures show lower Brier score and log loss than a complete de-vig bookmaker 1X2 line, with both paired 95% bootstrap intervals below zero. The live quote must also be a complete line attributed to one named bookmaker.
+- Full-time goals over/under 2.5 has the same paired bookmaker-benchmark requirement and also retains its exact-line chronological check and same-bookmaker live-price requirements.
+- Other goals lines, BTTS, corners and cards remain forecast-only until their own exact-market, paired bookmaker benchmark is implemented and passes out-of-sample checks. A comparison against the league average alone is not evidence of bookmaker value.
+- A market may still appear as a high-ranked model forecast without being approved as a bet. Forecast probability, Value status, and portfolio eligibility are separate concepts.
+
+The 1X2 market benchmark uses its own paired bootstrap resampling budget so the bookmaker promotion gate can be calculated without paying for unnecessary bootstrap intervals on every diagnostic metric. The validation cache is versioned to invalidate reports from older model logic.
+
+These controls are deliberately conservative: a market may show no Value picks until sufficient independent historical evidence and attributable bookmaker prices are available. Do not lower these gates merely to increase the number of displayed bets.
+
