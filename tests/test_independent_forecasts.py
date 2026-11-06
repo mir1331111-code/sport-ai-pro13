@@ -219,5 +219,68 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(len(ledger.rows(settled_only=True)), 2)
 
 
+    def test_forecast_result_lookup_waits_for_full_time_grace(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="grace", fixture_id="ind:2026-10-25:grace",
+            home_team="Home", away_team="Away", model_version="main-model-vX",
+            probabilities={"H": .5, "D": .3, "A": .2},
+            forecast_at=now - timedelta(hours=4),
+            kickoff_at=now - timedelta(hours=2), league="L",
+        )
+        with patch("data.scores.find_match_score", return_value={
+            "home": 1, "away": 0, "status": "FT", "source": "test",
+        }) as lookup:
+            early = settle_due_forecasts(db_path=path, now=now)
+            self.assertEqual(early["fixtures_checked"], 0)
+            lookup.assert_not_called()
+
+            ready_at = now + timedelta(minutes=16)
+            ready = settle_due_forecasts(db_path=path, now=ready_at)
+            self.assertEqual(ready["fixtures_checked"], 1)
+            self.assertEqual(ready["forecasts_settled"], 1)
+            lookup.assert_called_once()
+
+    def test_missing_score_lookup_is_throttled_between_streamlit_reruns(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="retry", fixture_id="ind:2026-10-25:retry",
+            home_team="Home", away_team="Away", model_version="main-model-vX",
+            probabilities={"H": .5, "D": .3, "A": .2},
+            forecast_at=now - timedelta(hours=6),
+            kickoff_at=now - timedelta(hours=4), league="L",
+        )
+        with patch("data.scores.find_match_score", return_value=None) as lookup:
+            first = settle_due_forecasts(db_path=path, now=now)
+            self.assertEqual(first["fixtures_checked"], 1)
+            lookup.assert_called_once()
+
+        with patch("data.scores.find_match_score", return_value=None) as lookup:
+            second = settle_due_forecasts(
+                db_path=path, now=now + timedelta(minutes=10),
+            )
+            self.assertEqual(second["fixtures_checked"], 0)
+            lookup.assert_not_called()
+
+        with patch("data.scores.find_match_score", return_value={
+            "home": 0, "away": 0, "status": "FT", "source": "test",
+        }) as lookup:
+            later = settle_due_forecasts(
+                db_path=path, now=now + timedelta(hours=7),
+            )
+            self.assertEqual(later["fixtures_checked"], 1)
+            self.assertEqual(later["forecasts_settled"], 1)
+            lookup.assert_called_once()
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,8 @@ import os
 import re
 import unicodedata
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import sqlite3
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -314,26 +315,74 @@ def record_scan_forecasts(
     return stats
 
 
+def _load_result_lookup_state(db_path: str | Path) -> dict[str, str]:
+    """Load persisted retry deadlines so missing live scores are not polled every rerun."""
+    if str(db_path) == ":memory:":
+        return {}
+    with sqlite3.connect(str(db_path), timeout=15) as conn:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS forecast_result_checks (
+                fixture_id TEXT PRIMARY KEY,
+                checked_at TEXT NOT NULL,
+                retry_after TEXT NOT NULL,
+                last_status TEXT
+            )"""
+        )
+        rows = conn.execute(
+            "SELECT fixture_id, retry_after FROM forecast_result_checks"
+        ).fetchall()
+    return {str(fixture_id): str(retry_after) for fixture_id, retry_after in rows}
+
+
+def _save_result_lookup_state(
+    db_path: str | Path, fixture_id: str, now: datetime,
+    retry_after: datetime, status: str,
+) -> None:
+    """Persist a bounded retry schedule for this fixture's score lookup."""
+    if str(db_path) == ":memory:":
+        return
+    with sqlite3.connect(str(db_path), timeout=15) as conn:
+        conn.execute(
+            """INSERT INTO forecast_result_checks
+                (fixture_id, checked_at, retry_after, last_status)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(fixture_id) DO UPDATE SET
+                checked_at=excluded.checked_at,
+                retry_after=excluded.retry_after,
+                last_status=excluded.last_status""",
+            (fixture_id, now.isoformat(), retry_after.isoformat(), status),
+        )
+
+
 def settle_due_forecasts(
     *, db_path: str | Path = DB_FILE, timezone_name: str | None = None,
     now: datetime | None = None, max_fixtures: int = 20, max_age_days: int = 14,
 ) -> dict[str, int]:
-    """Settle only matched, completed FT scores from the app's existing trusted score adapters."""
+    """Settle only matched, completed FT scores after a conservative post-kickoff grace.
+
+    Provider feeds contain completed matches only. Wait 2h15 after kickoff before
+    querying, check oldest fixtures first, and persist a retry deadline after a
+    miss so Streamlit reruns do not hammer the score providers every ten minutes.
+    """
     ledger = ForecastLedger(db_path)
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
     now_utc = now.astimezone(timezone.utc)
     local_today = now_utc.astimezone(_timezone(timezone_name)).date()
+    grace = timedelta(hours=2, minutes=15)
+    missing_retry = timedelta(hours=6)
+    non_ft_retry = timedelta(days=1)
+    confirmed_retry = timedelta(days=365)
+    lookup_state = _load_result_lookup_state(db_path)
+
     groups: dict[str, list[dict]] = defaultdict(list)
     for row in ledger.rows():
         if row.get("result") is not None or not row.get("kickoff_at"):
             continue
         try:
             kickoff = datetime.fromisoformat(str(row["kickoff_at"]).replace("Z", "+00:00"))
-            if kickoff.tzinfo is None:
-                continue
-            if kickoff.astimezone(timezone.utc) > now_utc:
+            if kickoff.tzinfo is None or kickoff.astimezone(timezone.utc) + grace > now_utc:
                 continue
             fixture_id = str(row.get("fixture_id") or "")
             parts = fixture_id.split(":", 2)
@@ -350,35 +399,8 @@ def settle_due_forecasts(
 
     fixtures = sorted(
         groups.items(),
-        key=lambda pair: max(str(r.get("kickoff_at") or "") for r in pair[1]),
-        reverse=True,
-    )[:max(0, int(max_fixtures))]
-    looked_up = settled = errors = 0
-    if fixtures:
-        from data.scores import find_match_score
-    for fixture_id, rows in fixtures:
-        sample = rows[0]
-        date_iso = fixture_id.split(":", 2)[1]
-        looked_up += 1
-        try:
-            score = find_match_score(
-                str(sample["home_team"]), str(sample["away_team"]), date_iso,
-            )
-            # AET and penalty shootouts are deliberately not treated as regulation-time FT.
-            if not score or str(score.get("status") or "").upper() != "FT":
-                continue
-            home_score, away_score = int(score["home"]), int(score["away"])
-            result = "H" if home_score > away_score else "A" if home_score < away_score else "D"
-            for row in rows:
-                if row.get("result") is None:
-                    ledger.settle(
-                        str(row["forecast_key"]), result,
-                        home_score=home_score, away_score=away_score,
-                        settled_at=now_utc, closing_odds_source=str(score.get("source") or ""),
-                    )
-                    settled += 1
-        except Exception:
-            errors += 1
+        key=lambda pair: min(str(r.get("kickoff_at") or "") for r in pair[1]),
+    )
     market_ledger = MarketForecastLedger(db_path)
     market_groups: dict[str, list[dict]] = defaultdict(list)
     for row in market_ledger.rows():
@@ -389,7 +411,7 @@ def settle_due_forecasts(
             continue
         try:
             kickoff = datetime.fromisoformat(str(row["kickoff_at"]).replace("Z", "+00:00"))
-            if kickoff.tzinfo is None or kickoff.astimezone(timezone.utc) > now_utc:
+            if kickoff.tzinfo is None or kickoff.astimezone(timezone.utc) + grace > now_utc:
                 continue
             fixture_id = str(row.get("fixture_id") or "")
             parts = fixture_id.split(":", 2)
@@ -401,37 +423,104 @@ def settle_due_forecasts(
         except (ValueError, TypeError):
             continue
 
+    looked_up = settled = errors = 0
     market_checked = market_settled = 0
-    if market_groups:
+    score_cache: dict[str, dict | None] = {}
+    if fixtures or market_groups:
         from data.scores import find_match_score
-        from betting.settlement import determine_outcome
-    for fixture_id, rows in sorted(
-        market_groups.items(),
-        key=lambda pair: max(str(row.get("kickoff_at") or "") for row in pair[1]),
-        reverse=True,
-    )[:max(0, int(max_fixtures))]:
-        sample = rows[0]
-        market_checked += 1
-        try:
-            score = find_match_score(
-                str(sample["home_team"]), str(sample["away_team"]), fixture_id.split(":", 2)[1],
+
+        def _score_for_fixture(fixture_id: str, sample: dict, date_iso: str):
+            nonlocal looked_up, errors
+            if fixture_id in score_cache:
+                return score_cache[fixture_id]
+            retry_value = lookup_state.get(fixture_id)
+            if retry_value:
+                try:
+                    retry_at = datetime.fromisoformat(retry_value.replace("Z", "+00:00"))
+                except ValueError:
+                    retry_at = now_utc
+                if retry_at.tzinfo is not None and retry_at > now_utc:
+                    score_cache[fixture_id] = None
+                    return None
+            if looked_up >= max(0, int(max_fixtures)):
+                score_cache[fixture_id] = None
+                return None
+            looked_up += 1
+            try:
+                score = find_match_score(
+                    str(sample["home_team"]), str(sample["away_team"]), date_iso,
+                )
+            except Exception:
+                errors += 1
+                score = None
+            status = str((score or {}).get("status") or "").upper()
+            try:
+                if status == "FT":
+                    int(score["home"])
+                    int(score["away"])
+                    delay = confirmed_retry
+                elif score:
+                    delay = non_ft_retry
+                else:
+                    delay = missing_retry
+            except (KeyError, TypeError, ValueError):
+                delay = missing_retry
+            next_check = now_utc + delay
+            _save_result_lookup_state(
+                db_path, fixture_id, now_utc, next_check, status or "NOT_FOUND",
+            )
+            lookup_state[fixture_id] = next_check.isoformat()
+            score_cache[fixture_id] = score
+            return score
+
+        for fixture_id, rows in fixtures:
+            sample = rows[0]
+            date_iso = fixture_id.split(":", 2)[1]
+            score = _score_for_fixture(fixture_id, sample, date_iso)
+            if not score or str(score.get("status") or "").upper() != "FT":
+                continue
+            try:
+                home_score, away_score = int(score["home"]), int(score["away"])
+                result = "H" if home_score > away_score else "A" if home_score < away_score else "D"
+                for row in rows:
+                    if row.get("result") is None:
+                        ledger.settle(
+                            str(row["forecast_key"]), result,
+                            home_score=home_score, away_score=away_score,
+                            settled_at=now_utc, closing_odds_source=str(score.get("source") or ""),
+                        )
+                        settled += 1
+            except (KeyError, TypeError, ValueError):
+                errors += 1
+
+        for fixture_id, rows in sorted(
+            market_groups.items(),
+            key=lambda pair: min(str(row.get("kickoff_at") or "") for row in pair[1]),
+        ):
+            sample = rows[0]
+            market_checked += 1
+            score = _score_for_fixture(
+                fixture_id, sample, fixture_id.split(":", 2)[1],
             )
             if not score or str(score.get("status") or "").upper() != "FT":
                 continue
-            hg, ag = int(score["home"]), int(score["away"])
-            for row in rows:
-                outcome, _reason = determine_outcome(
-                    str(row["market"]), str(row["selection"]), hg, ag
-                )
-                if outcome is not None:
-                    market_ledger.settle(
-                        str(row["forecast_key"]), outcome, result_score=f"{hg}:{ag}",
-                        settlement_source=str(score.get("source") or "verified_ft_score"),
-                        settled_at=now_utc,
+            try:
+                hg, ag = int(score["home"]), int(score["away"])
+                from betting.settlement import determine_outcome
+                for row in rows:
+                    outcome, _reason = determine_outcome(
+                        str(row["market"]), str(row["selection"]), hg, ag
                     )
-                    market_settled += 1
-        except Exception:
-            errors += 1
+                    if outcome is not None:
+                        market_ledger.settle(
+                            str(row["forecast_key"]), outcome, result_score=f"{hg}:{ag}",
+                            settlement_source=str(score.get("source") or "verified_ft_score"),
+                            settled_at=now_utc,
+                        )
+                        market_settled += 1
+            except (KeyError, TypeError, ValueError):
+                errors += 1
+
     return {
         "fixtures_checked": looked_up, "forecasts_settled": settled,
         "market_fixtures_checked": market_checked,
