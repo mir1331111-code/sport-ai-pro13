@@ -1962,8 +1962,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"история лиги {history_n}; домашняя/выездная выборка "
                     f"{summary.get('home_team_games', 0)}/{summary.get('away_team_games', 0)}"
                 )
-            elif history_n:
-                details.append(f"историческая выборка модели {history_n}")
+            elif summary.get("team_samples"):
+                details.append(
+                    f"минимальная выборка матчей команд: {summary['team_samples']}"
+                )
             return " · ".join(details)
 
         def _render_ranked_market_card(card, family):
