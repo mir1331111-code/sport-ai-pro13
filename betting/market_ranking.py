@@ -24,7 +24,7 @@ def _finite_probability(value: Any) -> float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if math.isfinite(number) and 0.0 <= number <= 1.0 else None
+    return number if math.isfinite(number) and 0.0 < number < 1.0 else None
 
 
 def _sample(value: Any) -> int:
@@ -139,9 +139,9 @@ def market_forecast_summary(card: object, family: str) -> dict | None:
         or not math.isfinite(mean) or mean <= 0
     ):
         return None
-    over = count_over_probability(
+    over = _finite_probability(count_over_probability(
         mean, spec["line"], prediction.get("total_variance")
-    )
+    ))
     if over is None:
         return None
     pick = (
