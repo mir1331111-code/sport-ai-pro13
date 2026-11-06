@@ -2042,11 +2042,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 strength_threshold = float(
                     summary.get("strength_threshold") or STRONG_FORECAST_MIN_PROB
                 )
-                strength_label = (
-                    f"СИЛЬНЫЙ ПРОГНОЗ ≥{strength_threshold:.0%}"
-                    if summary.get("strong_forecast") else
-                    f"ниже порога сильного прогноза {strength_threshold:.0%}"
-                )
+                if not summary.get("history_sufficient", True):
+                    strength_label = "НЕДОСТАТОЧНО ИСТОРИИ КОМАНД (нужно не менее 5 матчей)"
+                elif summary.get("strong_forecast"):
+                    strength_label = f"СИЛЬНЫЙ ПРОГНОЗ ≥{strength_threshold:.0%}"
+                else:
+                    strength_label = f"ниже порога сильного прогноза {strength_threshold:.0%}"
                 st.caption(
                     f"{strength_label} · {summary_text} · прогноз модели, не гарантия и не подтверждённая ставка"
                 )
@@ -2274,7 +2275,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         scan_timezone = app_timezone()
         scan_now = datetime.now(scan_timezone)
-        today = scan_now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
         today_date = scan_now.date()
         logs = []
 
