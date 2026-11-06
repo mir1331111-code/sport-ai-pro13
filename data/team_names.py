@@ -248,7 +248,7 @@ def normalize_team(name: str) -> str:
     # In particular, never use substring aliases such as "Atletico Madrid" to
     # turn "Atletico Madrid B" into the senior club.
     reserve_marker = re.search(
-        r"(?:^| )(?:b|b team|ii|iii|iv|u\\s*\\d{2}|under\\s*[- ]?\\s*\\d{2}|"
+        r"(?:^| )(?:b|b team|ii|iii|iv|u\s*\d{2}|under\s*[- ]?\s*\d{2}|
         r"youth|reserves?|academy|castilla|atletic)(?: |$)",
         key,
     )
