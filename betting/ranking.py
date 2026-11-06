@@ -377,7 +377,9 @@ def model_favorite(card: object) -> dict | None:
     }
 
 
-def rank_model_favorites(cards: object, limit: int | None = None) -> list[dict]:
+def rank_model_favorites(
+    cards: object, limit: int | None = None, *, min_sample_games: int = 0,
+) -> list[dict]:
     """Return unique fixtures ranked by probability, decisiveness and data support.
 
     Duplicate fixtures are resolved by the strongest forecast/data row, not by
@@ -386,10 +388,15 @@ def rank_model_favorites(cards: object, limit: int | None = None) -> list[dict]:
     if not isinstance(cards, list):
         return []
 
+    try:
+        minimum_history = max(0, int(min_sample_games))
+    except (TypeError, ValueError):
+        minimum_history = 0
+
     unique = {}
     for index, card in enumerate(cards):
         favorite = model_favorite(card)
-        if favorite is None:
+        if favorite is None or favorite["sample_games"] < minimum_history:
             continue
         key = _fixture_key(card, index)
         candidate = {"card": card, **favorite}
