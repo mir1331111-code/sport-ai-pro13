@@ -1046,8 +1046,13 @@ def _render_manual_odds_block(
     selected_market_type = market_type(pick)
     market_pair_validated = has_coherent_market_line(pick)
     if selected_market_type == "1X2":
-        market_is_validated = True
-        validation_note = ""
+        market_is_validated = bool(c.get("winner_market_validation"))
+        validation_note = (
+            ""
+            if market_is_validated else
+            "Модель пока не доказала статистически значимое улучшение над de-vig букмекерским рынком "
+            "на ≥500 парных исторических матчах. Это прогноз, не Value-ставка."
+        )
     elif selected_market_type == "OU":
         # Validate the exact goal-total line, not whichever line happened to
         # make the fixture's global shortlist.
@@ -1066,11 +1071,23 @@ def _render_manual_odds_block(
             source != "sstats"
             or bool((c.get("total_market_confirmed") or {}).get(pick))
         )
-        market_is_validated = history_validated and quote_corroborated and market_pair_validated
+        bookmaker_benchmark_validated = (
+            abs(float(line_key or 0.0) - 2.5) < 1e-9
+            and bool(c.get("total_market_validation"))
+        )
+        market_is_validated = (
+            history_validated and bookmaker_benchmark_validated
+            and quote_corroborated and market_pair_validated
+        )
         validation_notes = []
         if not history_validated:
             validation_notes.append(
                 f"Линия тотала {line_key or 'выбранная'} не прошла отдельную историческую проверку."
+            )
+        if not bookmaker_benchmark_validated:
+            validation_notes.append(
+                "Для этой линии нет подтверждённого улучшения модели над de-vig букмекерским рынком; "
+                "проверка против средней лиги не даёт права на Value."
             )
         if not quote_corroborated:
             validation_notes.append(
@@ -1081,11 +1098,12 @@ def _render_manual_odds_block(
             validation_notes.append("Нет обеих сторон линии у одного и того же букмекера.")
         validation_note = " ".join(validation_notes)
     elif selected_market_type == "BTTS":
-        history_validated = bool(c.get("btts_market_validation"))
-        market_is_validated = history_validated and market_pair_validated
-        validation_notes = []
-        if not history_validated:
-            validation_notes.append("BTTS не прошёл собственную историческую walk-forward проверку.")
+        # Existing BTTS walk-forward compares against the league base rate,
+        # not an untouched bookmaker benchmark. Keep the forecast visible only.
+        market_is_validated = False
+        validation_notes = [
+            "BTTS пока не прошёл отдельный out-of-sample тест против de-vig букмекерского рынка."
+        ]
         if not market_pair_validated:
             validation_notes.append("Нет обеих сторон BTTS у одного и того же букмекера.")
         validation_note = " ".join(validation_notes)
@@ -1110,11 +1128,12 @@ def _render_manual_odds_block(
             )
             source = str(c.get("extra_market_source") or "").casefold()
             quote_source_valid = source in {"highlightly", "manual_import", "sstats"}
-            market_is_validated = (
-                line_validated and history_sufficient and quote_source_valid
-                and market_pair_validated
-            )
-            validation_parts = []
+            # The current statistical walk-forward compares with a league
+            # baseline, not bookmaker prices. It is not an actionable Value gate.
+            market_is_validated = False
+            validation_parts = [
+                "Модель угловых/карточек пока не прошла парный исторический тест против de-vig букмекерского рынка."
+            ]
             if not line_validated:
                 validation_parts.append(
                     f"Линия {stat_line} рынка {stat_name} не прошла собственный walk-forward тест."
@@ -2781,7 +2800,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "markets": historical_stats,
                 },
                 "xg_used": bool(P.get("xg_used")),
-                "total_market_validation": bool(getattr(engine, "total_market_validation", False)),
                 "total_market_validation_report": getattr(engine, "total_market_validation_report", {}),
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
