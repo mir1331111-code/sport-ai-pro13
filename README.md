@@ -112,3 +112,17 @@ The 1X2 market benchmark uses its own paired bootstrap resampling budget so the 
 
 These controls are deliberately conservative: a market may show no Value picks until sufficient independent historical evidence and attributable bookmaker prices are available. Do not lower these gates merely to increase the number of displayed bets.
 
+## Balanced forecast profile and strong-forecast threshold
+
+The default scanner ordering is now **balanced** rather than probability-only or EV-only. In the combined shortlist, the display score weights model confidence at 55%, expected value at 20%, no-vig edge at 15%, and fractional Kelly at 10%. In the market-specific tabs, an already-approved Value recommendation is ranked with 60% event probability, 25% executable EV, and 15% no-vig edge. These are display-order weights only; they do not change eligibility.
+
+A dedicated `STRONG_FORECAST_MIN_PROB = 0.65` setting labels a market forecast as **strong** when its own selected event probability is at least 65% (inclusive). Forecasts below 65% remain visible in the full forecast view but are clearly labelled as below the strong threshold. The setting is shared with the existing 65% virtual-portfolio probability floor; it does not replace the user-adjustable minimum probability for Value candidates.
+
+Important separation:
+- EV and edge affect balanced ordering only when the fixture already has a recommendation from the strict Value selector. That means the exact market passed its out-of-sample bookmaker benchmark, a complete line from one named bookmaker, the minimum Edge and EV, and positive Kelly.
+- Forecasts without a validated Value recommendation are ranked by their own event probability. Unverified or incomplete odds cannot improve their rank.
+- The Value gates, bookmaker benchmarks, Edge/EV floors, 2% Kelly stake cap and settlement rules have not been relaxed.
+- The 65% label is not a claim of 65% historical accuracy and is not a guarantee. Actual calibration and profitability must still be measured from immutable pre-match forecasts and settled outcomes.
+
+The scanner's manual 1X2 view also now requires a complete P1/X/P2 line attributed to the same named bookmaker before it labels the market line coherent.
+
