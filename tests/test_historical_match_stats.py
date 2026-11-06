@@ -49,6 +49,18 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         }, "E0"))
         self.assertEqual(model.predict("Alpha", "Beta", "E0"), {})
 
+    def test_fractional_match_statistics_are_not_training_observations(self):
+        model = HistoricalMatchStats(min_team_games=1)
+        self.assertFalse(model.learn_step({
+            "HomeTeam": "Alpha", "AwayTeam": "Beta",
+            "HC": 5.5, "AC": 4, "HY": 2, "AY": 1, "HR": 0, "AR": 0,
+        }, "E0"))
+        self.assertFalse(model.learn_step({
+            "HomeTeam": "Alpha", "AwayTeam": "Beta",
+            "HC": 5, "AC": 4, "HY": 2, "AY": 1.5, "HR": 0, "AR": 0,
+        }, "E0"))
+        self.assertEqual(model.predict("Alpha", "Beta", "E0"), {})
+
     def test_missing_red_card_fields_do_not_become_zero_card_observations(self):
         model = HistoricalMatchStats(min_team_games=1)
         self.assertTrue(model.learn_step({
