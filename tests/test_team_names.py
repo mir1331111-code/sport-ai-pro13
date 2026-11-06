@@ -17,6 +17,11 @@ class TeamNameNormalizationTests(unittest.TestCase):
         self.assertTrue(teams_match("Man City", "Manchester City"))
         self.assertTrue(teams_match("FC Barcelona", "Barcelona"))
 
+    def test_paris_fc_is_not_merged_with_paris_saint_germain(self):
+        self.assertEqual(normalize_team("Paris Saint-Germain"), "psg")
+        self.assertEqual(normalize_team("Paris FC"), "paris_fc")
+        self.assertFalse(teams_match("Paris FC", "PSG"))
+
     def test_youth_teams_do_not_collapse_to_senior_team(self):
         self.assertNotEqual(
             normalize_team("Manchester City U21"),
