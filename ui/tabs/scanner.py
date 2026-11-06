@@ -26,6 +26,7 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
                           sstats_upcoming_matches, sstats_odds_fixture,
                           footballapi_xg_history)
 from data.fixture_merge import merge_fixture_sources, fixture_key
+from data.fixture_time import app_timezone, fixture_kickoff_local
 from model.engine import Engine, _norm
 from model.validation_cache import select_validation_rows, validation_cache_key
 from model.training import prepare_completed_training_rows, train_engine_chronologically
@@ -1692,17 +1693,37 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Forecast favorites are ranked independently of bookmaker value gates.
         # They are displayed as model probabilities, never as guaranteed winners
         # or automatic betting recommendations.
-        favorite_matches = rank_model_favorites(all_cards, limit=10)
+        favorite_history_floor = 5
+        favorite_candidates = rank_model_favorites(all_cards)
+        favorite_matches = [
+            item for item in favorite_candidates
+            if int(item.get("sample_games") or 0) >= favorite_history_floor
+        ][:10]
+        low_history_favorites = sum(
+            1 for item in favorite_candidates
+            if int(item.get("sample_games") or 0) < favorite_history_floor
+        )
+        strong_favorites = sum(
+            1 for item in favorite_matches
+            if float(item.get("probability") or 0.0) >= STRONG_FORECAST_MIN_PROB
+        )
         st.markdown(
             "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:18px 0 4px'>"
             "<div><div class='scanner-kicker'>MODEL FAVORITES · 1X2</div>"
             "<h2 style='margin:0'>Самые вероятные исходы</h2>"
             "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>"
-            "Топ-10 уникальных матчей. Сначала — самая высокая вероятность; при равенстве "
-            "учитываются отрыв от второго исхода и объём истории. Это не гарантия победы.</div></div>"
+            f"Топ-10 уникальных матчей с историей не менее {favorite_history_floor} матчей у каждой команды. "
+            f"Сильных прогнозов ≥{STRONG_FORECAST_MIN_PROB:.0%}: {strong_favorites}. "
+            "Сначала — самая высокая вероятность; при равенстве учитываются отрыв от второго исхода "
+            "и объём истории. Это не гарантия победы.</div></div>"
             "</div>",
             unsafe_allow_html=True,
         )
+        if low_history_favorites:
+            st.caption(
+                f"Не включено в список фаворитов из-за недостаточной истории команд: "
+                f"{low_history_favorites}. Такие матчи остаются доступными в общем сканере."
+            )
         if favorite_matches:
             favorite_columns = st.columns(2)
             for favorite_rank, favorite_item in enumerate(favorite_matches[:10], start=1):
@@ -1720,6 +1741,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 favorite_probability = float(favorite_item["probability"])
                 favorite_margin = float(favorite_item["probability_margin"])
                 favorite_sample = int(favorite_item["sample_games"])
+                favorite_strength_label = (
+                    f"СИЛЬНЫЙ ПРОГНОЗ ≥{STRONG_FORECAST_MIN_PROB:.0%}"
+                    if favorite_probability >= STRONG_FORECAST_MIN_PROB
+                    else f"НИЖЕ ПОРОГА СИЛЬНОГО ПРОГНОЗА {STRONG_FORECAST_MIN_PROB:.0%}"
+                )
                 with favorite_columns[(favorite_rank - 1) % 2]:
                     st.markdown(
                         "<div style='padding:13px 15px;margin:7px 0;border:1px solid rgba(118,159,180,.28);"
@@ -1731,6 +1757,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"{html.escape(favorite_match)}</div>"
                         f"<div style='color:#8fd8bd;font-weight:800;font-size:19px'>"
                         f"{html.escape(favorite_item['label'])} · {favorite_probability:.1%}</div>"
+                        f"<div style='color:#b7c2c9;font-size:11px;margin-top:2px'>"
+                        f"{html.escape(favorite_strength_label)}</div>"
                         f"<div style='color:#9aaab3;font-size:12px;margin-top:4px'>"
                         f"{html.escape(favorite_kickoff or 'Время начала уточняется')} · "
                         f"отрыв от второго исхода {favorite_margin:.1%} · история команд {favorite_sample} матчей"
@@ -1740,7 +1768,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         unsafe_allow_html=True,
                     )
         else:
-            st.info("Для найденных матчей нет корректного полного прогноза 1X2.")
+            st.info(
+                f"Нет матчей с достаточной историей команд (не менее {favorite_history_floor} "
+                "завершённых матчей у каждой команды). Прогнозы без этой базы не выдаются за фаворитов."
+            )
 
         st.markdown(
             "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:18px 0 4px'>"
@@ -2242,7 +2273,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     + "<br>".join(logs[-12:]) + "</div>",
                     unsafe_allow_html=True)
 
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        scan_timezone = app_timezone()
+        scan_now = datetime.now(scan_timezone)
+        today = scan_now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        today_date = scan_now.date()
         logs = []
 
         token = _runtime_secret("fdorg_token_input", "FDORG_TOKEN", "fdorg_token")
@@ -2388,7 +2422,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
 
         date_filter_counts = {
-            "invalid_date": 0, "outside_horizon": 0, "missing_teams": 0,
+            "invalid_date": 0, "outside_horizon": 0, "past_kickoff": 0,
+            "unknown_same_day_kickoff": 0, "missing_teams": 0,
             "inside_horizon": 0,
         }
         for match_idx, r in enumerate(rows, 1):
@@ -2398,11 +2433,34 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     min(0.88, 0.80 + 0.08 * match_idx / max(1, len(rows))),
                     logs,
                 )
-            d = parse_date(r.get("Date", ""))
-            if not d:
-                date_filter_counts["invalid_date"] += 1
-                continue
-            if not (today <= d < today + timedelta(days=days)):
+
+            # A calendar-date check is not enough: after kickoff, the same-day
+            # fixture is no longer a pre-match forecasting opportunity.
+            kickoff_local = fixture_kickoff_local(
+                r, timezone_name=os.environ.get("APP_TIMEZONE")
+            )
+            if kickoff_local is not None:
+                if kickoff_local <= scan_now:
+                    date_filter_counts["past_kickoff"] += 1
+                    continue
+                d = kickoff_local.replace(
+                    hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+                )
+                kickoff_time_text = kickoff_local.strftime("%H:%M")
+            else:
+                d = parse_date(r.get("Date", ""))
+                if not d:
+                    date_filter_counts["invalid_date"] += 1
+                    continue
+                # Do not invent a same-day kickoff time. Without either an
+                # absolute timestamp or a clock time, we cannot know whether
+                # the match has already started.
+                if d.date() == today_date:
+                    date_filter_counts["unknown_same_day_kickoff"] += 1
+                    continue
+                kickoff_time_text = str(r.get("Time") or "").strip()
+
+            if not (today_date <= d.date() < today_date + timedelta(days=days)):
                 date_filter_counts["outside_horizon"] += 1
                 continue
             h_en = (r.get("HomeTeam") or "").strip()
@@ -2833,7 +2891,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "match": f"{h_en} vs {a_en}",
                 "match_ru": f"{h_ru} — {a_ru}",
                 "date": d.strftime("%d.%m") +
-                        (f" {r.get('Time','')}" if r.get("Time") else ""),
+                        (f" {kickoff_time_text}" if kickoff_time_text else ""),
                 "verdict": verdict, "best": best,
                 "best_by_market": best_by_market,
                 "games": P["games"], "fh": fh, "fa": fa,
@@ -2851,7 +2909,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "best_odds_source": best_odds_source,
                 "market_odds_source_by_pick": dict(market_source_by_pick),
                 "date_iso": d.strftime("%Y-%m-%d"),
-                "time": r.get("Time") or "",
+                "time": kickoff_time_text,
                 "kickoff_utc": r.get("kickoff_utc") or "",
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 # LLM receives observed venue-specific goal averages, not the primary model's lambdas.
@@ -2907,6 +2965,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         logs.append(
             f"🗓️ Фильтр горизонта {days} дн.: в окне {date_filter_counts['inside_horizon']}, "
             f"вне окна {date_filter_counts['outside_horizon']}, "
+            f"уже начались/завершились {date_filter_counts['past_kickoff']}, "
+            f"сегодня без времени начала {date_filter_counts['unknown_same_day_kickoff']}, "
             f"дата не распознана {date_filter_counts['invalid_date']}, "
             f"без названий команд {date_filter_counts['missing_teams']}."
         )
