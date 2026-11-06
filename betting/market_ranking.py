@@ -13,6 +13,9 @@ from model.historical_match_stats import poisson_over_probability
 from model.market_forecasts import count_over_probability
 
 
+# Exclude values so close to 0/1 that rounded count distributions can look certain.
+PROBABILITY_EPSILON = 1e-6
+
 _STAT_SPECS = {
     "corners": {"key": "corners", "prefix": "Угл", "line": 8.5, "label": "Угловые"},
     "cards": {"key": "cards", "prefix": "Карты", "line": 3.5, "label": "Карточки"},
@@ -24,7 +27,12 @@ def _finite_probability(value: Any) -> float | None:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if math.isfinite(number) and 0.0 < number < 1.0 else None
+    return (
+        number
+        if math.isfinite(number)
+        and PROBABILITY_EPSILON < number < 1.0 - PROBABILITY_EPSILON
+        else None
+    )
 
 
 def _sample(value: Any) -> int:
