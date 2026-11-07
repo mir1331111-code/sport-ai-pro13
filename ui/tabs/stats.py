@@ -1,9 +1,12 @@
 """ui/tabs/stats.py — Статистика по СВОИМ ставкам."""
 from __future__ import annotations
 from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
 
 import streamlit as st
 
+from data.scores import completed_matches_for_day
+from data.fixture_time import app_timezone
 from storage import sqlite_store as db
 from config import DB_FILE
 from model.independent_forecasts import comparison_report, settle_due_forecasts
@@ -461,8 +464,8 @@ def _render_market_audit():
 def render():
     D = st.session_state.data
     st.header("📈 Статистика")
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["📊 Обзор", "🏆 По лигам", "📅 По дням", "🎯 По рынкам", "🤖 ИИ против модели"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["📊 Обзор", "🏆 По лигам", "📅 По дням", "🎯 По рынкам", "🤖 ИИ против модели", "⚽ Результаты"])
     with tab1:
         _render_overview(D)
     with tab2:
@@ -474,6 +477,8 @@ def render():
         _render_market_audit()
     with tab5:
         _render_independent_ai()
+    with tab6:
+        _render_results_archive()
 
     if db.SQLITE_BOOT_OK:
         st.divider()
@@ -504,3 +509,124 @@ def render():
             c4.metric("Sharpe", f"{sharpe:.2f}")
         except Exception:
             pass
+
+
+def _render_results_archive():
+    """Daily football results are separate from betting and forecast performance."""
+    st.subheader("⚽ Результаты завершённых матчей")
+    st.caption(
+        "Архив фактических счетов по выбранной дате. Эти результаты не означают, "
+        "что на каждый матч у модели был прогноз или что на него ставили."
+    )
+
+    today = datetime.now(app_timezone()).date()
+    default_day = today - timedelta(days=1)
+    selected_day = st.date_input(
+        "Дата матчей",
+        value=default_day,
+        min_value=today - timedelta(days=365),
+        max_value=today,
+        key="stats_results_selected_day",
+    )
+    date_key = selected_day.strftime("%Y-%m-%d")
+    result_state_key = f"_completed_results_{date_key}"
+
+    if st.button(
+        f"Загрузить результаты за {selected_day.strftime('%d.%m.%Y')}",
+        key="load_completed_results",
+        type="primary",
+    ):
+        try:
+            with st.spinner("Получаю завершённые матчи из источников…"):
+                result_data = completed_matches_for_day(
+                    date_key,
+                    token=str(st.session_state.get("data", {}).get("meta", {}).get("fdorg_token") or ""),
+                )
+            st.session_state[result_state_key] = result_data
+        except Exception as exc:
+            st.session_state[result_state_key] = {
+                "date": date_key,
+                "matches": [],
+                "source_counts": {},
+                "source_errors": {"archive": f"{type(exc).__name__}: {str(exc)[:180]}"},
+                "total": 0,
+                "goals": 0,
+                "home_wins": 0,
+                "draws": 0,
+                "away_wins": 0,
+                "score_conflicts": 0,
+            }
+
+    result_data = st.session_state.get(result_state_key)
+    if not isinstance(result_data, dict):
+        st.info("Выбери дату и нажми «Загрузить результаты». По умолчанию выбрано вчера.")
+        return
+
+    matches = result_data.get("matches") or []
+    metrics = st.columns(5)
+    metrics[0].metric("Матчей найдено", int(result_data.get("total") or len(matches)))
+    metrics[1].metric("Победы хозяев", int(result_data.get("home_wins") or 0))
+    metrics[2].metric("Ничьи", int(result_data.get("draws") or 0))
+    metrics[3].metric("Победы гостей", int(result_data.get("away_wins") or 0))
+    metrics[4].metric("Голов", int(result_data.get("goals") or 0))
+
+    if matches:
+        import pandas as pd
+
+        table = []
+        for item in matches:
+            conflict = bool(item.get("score_conflict"))
+            alternate = "; ".join(
+                f"{x.get('score')} ({x.get('source')})"
+                for x in item.get("alternate_scores") or []
+            )
+            table.append({
+                "Лига": item.get("league") or "—",
+                "Матч": f"{item.get('home')} — {item.get('away')}",
+                "Счёт": item.get("score") or "—",
+                "Статус": "Доп. время" if item.get("status") == "AET" else "Завершён",
+                "Источник": ", ".join(item.get("sources") or []),
+                "Проверка": (
+                    f"Расхождение: {alternate}" if conflict else "OK"
+                ),
+            })
+        st.dataframe(pd.DataFrame(table), width="stretch", hide_index=True)
+    else:
+        st.warning(
+            "Завершённые матчи за эту дату не найдены в подключённых источниках. "
+            "Это не доказывает, что матчей не было: покрытие лиг у источников ограничено."
+        )
+
+    source_counts = result_data.get("source_counts") or {}
+    st.caption(
+        "Получено до удаления дублей: "
+        + " · ".join(f"{name}: {int(count or 0)}" for name, count in source_counts.items())
+    )
+    if result_data.get("score_conflicts"):
+        st.warning(
+            f"У {int(result_data['score_conflicts'])} матчей источники вернули разные счета. "
+            "Расхождения помечены в таблице; для расчёта точности прогнозов они не используются."
+        )
+    source_errors = result_data.get("source_errors") or {}
+    if source_errors.get("archive"):
+        st.error(source_errors["archive"])
+    elif source_errors:
+        disabled = [
+            name for name, error in source_errors.items()
+            if error == "API token not configured"
+        ]
+        failures = [
+            f"{name}: {error}" for name, error in source_errors.items()
+            if error != "API token not configured"
+        ]
+        if disabled:
+            st.caption("football-data.org пропущен: API-токен не подключён.")
+        if failures:
+            st.warning("Ошибки источников: " + " · ".join(failures))
+
+    st.caption(
+        "Источники: ESPN (широкая футбольная лента), football-data.org "
+        "(настроенный список соревнований при наличии API-ключа), OpenLigaDB "
+        "(Bundesliga, 2. Bundesliga, 3. Liga). Это расширяемое, но не исчерпывающее "
+        "покрытие мирового футбола."
+    )
