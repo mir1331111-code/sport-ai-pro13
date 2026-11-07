@@ -284,20 +284,36 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
             h = (m.get("homeTeam") or {}).get("name") or ""
             a = (m.get("awayTeam") or {}).get("name") or ""
             score = m.get("score") or {}
+            duration = str(score.get("duration") or "REGULAR").upper()
+            official = score.get("fullTime") or {}
+            regular = official
             tag = "FT"
-            full = score.get("fullTime") or {}
-            if (score.get("duration") or "REGULAR") != "REGULAR":
-                reg = score.get("regularTime") or {}
-                if reg.get("home") is not None and reg.get("away") is not None:
-                    full = reg
-                else:
-                    tag = "AET"
-            if not h or not a or full.get("home") is None or full.get("away") is None:
+            if duration != "REGULAR":
+                # football-data.org fullTime is the final match score; regularTime
+                # is the 90-minute score. Preserve both so settlement can refuse
+                # AET while the results archive displays the actual final score.
+                tag = "AET"
+                regular_time = score.get("regularTime") or {}
+                if (
+                    regular_time.get("home") is not None
+                    and regular_time.get("away") is not None
+                ):
+                    regular = regular_time
+            if (
+                not h or not a
+                or regular.get("home") is None or regular.get("away") is None
+            ):
                 continue
+            official_score = (
+                official if official.get("home") is not None
+                and official.get("away") is not None else regular
+            )
             competition = m.get("competition") or {}
             out.append({
-                "home": h, "away": a, "hs": int(full["home"]),
-                "as": int(full["away"]), "status": tag,
+                "home": h, "away": a, "hs": int(regular["home"]),
+                "as": int(regular["away"]), "official_hs": int(official_score["home"]),
+                "official_as": int(official_score["away"]), "status": tag,
+                "duration": duration,
                 "date": _source_local_day(m.get("utcDate")) or "",
                 "league": str(competition.get("name") or "football-data.org"),
                 "fixture_id": str(m.get("id") or ""),
@@ -361,17 +377,41 @@ def _olb_league(league: str, season: int) -> list:
                 continue
             h = (m.get("team1") or {}).get("teamName") or ""
             a = (m.get("team2") or {}).get("teamName") or ""
-            hs = ags = None
-            for res in m.get("matchResults") or []:
-                if res.get("resultTypeID") == 2:
-                    hs, ags = res.get("pointsTeam1"), res.get("pointsTeam2")
-                    break
+            results = [
+                result for result in (m.get("matchResults") or [])
+                if isinstance(result, dict)
+                and result.get("pointsTeam1") is not None
+                and result.get("pointsTeam2") is not None
+            ]
+            if not results:
+                continue
+            # Use the latest result stage, not unconditionally the 90-minute
+            # score (resultTypeID=2). Cup ties can add extra-time/penalty stages.
+            final_result = max(
+                results,
+                key=lambda result: (
+                    int(result.get("resultOrderID") or result.get("resultTypeID") or 0),
+                    int(result.get("resultTypeID") or 0),
+                ),
+            )
+            result_type = int(final_result.get("resultTypeID") or 0)
+            result_kind = str(final_result.get("resultTypeKind") or "").lower()
+            duration = (
+                "PENALTY_SHOOTOUT"
+                if "penalt" in result_kind or result_type == 5 else
+                "EXTRA_TIME" if "extra" in result_kind or result_type in {3, 4} else
+                "REGULAR"
+            )
+            hs, ags = final_result.get("pointsTeam1"), final_result.get("pointsTeam2")
             if not h or not a or hs is None or ags is None:
                 continue
             out.append({
                 "home": h, "away": a, "hs": int(hs), "as": int(ags),
-                "status": "FT",
-                "date": _source_local_day(m.get("matchDateTime")) or "",
+                "status": "AET" if duration != "REGULAR" else "FT",
+                "duration": duration,
+                "date": _source_local_day(
+                    m.get("matchDateTimeUTC") or m.get("matchDateTime")
+                ) or "",
                 "league": {"bl1": "Bundesliga", "bl2": "2. Bundesliga",
                            "bl3": "3. Liga"}.get(league, league.upper()),
                 "fixture_id": str(m.get("matchID") or ""),
@@ -454,8 +494,8 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
             try:
                 home = str(original.get("home") or "").strip()
                 away = str(original.get("away") or "").strip()
-                home_score = int(original.get("hs"))
-                away_score = int(original.get("as"))
+                home_score = int(original.get("official_hs", original.get("hs")))
+                away_score = int(original.get("official_as", original.get("as")))
                 status = str(original.get("status") or "").upper()
                 if (
                     not home or not away or home.casefold() == away.casefold()
@@ -479,6 +519,7 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
                 "away_score": away_score,
                 "score": f"{home_score}:{away_score}",
                 "status": status,
+                "duration": str(original.get("duration") or ""),
                 "league": str(original.get("league") or source),
                 "fixture_id": str(original.get("fixture_id") or ""),
                 "sources": [source],
