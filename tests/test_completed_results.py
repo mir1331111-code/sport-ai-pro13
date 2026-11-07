@@ -108,7 +108,7 @@ class CompletedMatchArchiveTests(unittest.TestCase):
     def test_espn_adjacent_day_rows_are_included_by_local_event_date(self):
         previous_day = [
             {"home": "Midnight Home", "away": "Midnight Away",
-             "hs": 1, "as": 0, "status": "FT", "date": "2026-11-07T00:30:00+02:00"}
+             "hs": 1, "as": 0, "status": "FT", "date": "2026-11-07T00:30:00+01:00"}
         ]
         with (
             patch.dict("os.environ", {"APP_TIMEZONE": "Europe/Warsaw"}),
