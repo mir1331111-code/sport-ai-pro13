@@ -43,6 +43,20 @@ class WalkForwardTests(unittest.TestCase):
             "brier": 0.0, "log_loss": 0.0, "accuracy": 0.0
         })
 
+    def test_h2h_and_rest_day_ablation_arms_are_paired(self):
+        result = walk_forward_compare(
+            self._rows(with_xg=False), bootstrap_samples=20,
+        )
+        ablation = result["feature_ablation"]
+        self.assertEqual(ablation["full_h2h_and_rest_days"]["n"], 100)
+        self.assertEqual(ablation["without_h2h"]["n"], 100)
+        self.assertEqual(ablation["without_rest_days"]["n"], 100)
+        self.assertEqual(ablation["without_h2h_or_rest_days"]["n"], 100)
+        self.assertEqual(ablation["full_minus_without_h2h"]["n"], 100)
+        self.assertEqual(ablation["full_minus_without_rest_days"]["n"], 100)
+        self.assertEqual(ablation["full_minus_without_h2h_or_rest_days"]["n"], 100)
+        self.assertEqual(result["xg_usage_share"], 0.0)
+
     def test_skips_malformed_rows(self):
         result = walk_forward_compare([{"Date": "bad", "HomeTeam": "A"}])
         self.assertEqual(result["n"], 0)
