@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS forecasts (
  probabilities_json TEXT NOT NULL,
  entry_odds_json TEXT,
  odds_source TEXT,
+ xg_used INTEGER CHECK(xg_used IS NULL OR xg_used IN (0,1)),
  result TEXT CHECK(result IS NULL OR result IN ('H','D','A')),
  home_score INTEGER,
  away_score INTEGER,
@@ -93,6 +94,16 @@ class ForecastLedger:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            columns = {
+                str(row[1]) for row in conn.execute(
+                    "PRAGMA table_info(forecasts)"
+                ).fetchall()
+            }
+            if "xg_used" not in columns:
+                conn.execute(
+                    "ALTER TABLE forecasts ADD COLUMN xg_used INTEGER "
+                    "CHECK(xg_used IS NULL OR xg_used IN (0,1))"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=15)
@@ -104,7 +115,7 @@ class ForecastLedger:
         away_team: str, model_version: str, probabilities: Mapping[str, Any],
         forecast_at: datetime | str, kickoff_at: datetime | str | None = None,
         league: str | None = None, entry_odds: Mapping[str, Any] | None = None,
-        odds_source: str | None = None,
+        odds_source: str | None = None, xg_used: bool | None = None,
     ) -> int:
         """Insert one immutable forecast. Repeated keys return the original id."""
         required = {
@@ -116,6 +127,9 @@ class ForecastLedger:
             raise ValueError("forecast_key, fixture_id, teams and model_version are required")
         probs = _probabilities(probabilities)
         prices = _odds(entry_odds)
+        if xg_used is not None and not isinstance(xg_used, bool):
+            raise ValueError("xg_used must be bool or None")
+        stored_xg = None if xg_used is None else int(xg_used)
         stamp = _timestamp(forecast_at)
         kickoff = _timestamp(kickoff_at) if kickoff_at is not None else None
         with self._connect() as conn:
@@ -123,16 +137,16 @@ class ForecastLedger:
                 """INSERT OR IGNORE INTO forecasts
                 (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,
                  home_team,away_team,league,probabilities_json,entry_odds_json,
-                 odds_source,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 odds_source,xg_used,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (forecast_key, fixture_id, kickoff, stamp, model_version,
                  home_team, away_team, league, json.dumps(probs, sort_keys=True),
                  json.dumps(prices, sort_keys=True) if prices is not None else None,
-                 odds_source, _timestamp(None)),
+                 odds_source, stored_xg, _timestamp(None)),
             )
             row = conn.execute(
                 """SELECT id,fixture_id,forecast_at,model_version,home_team,away_team,
-                league,probabilities_json,entry_odds_json,odds_source
+                league,probabilities_json,entry_odds_json,odds_source,xg_used
                 FROM forecasts WHERE forecast_key=?""", (forecast_key,)
             ).fetchone()
             expected = (
@@ -146,7 +160,13 @@ class ForecastLedger:
                 row["home_team"], row["away_team"], row["league"],
                 row["probabilities_json"], row["entry_odds_json"], row["odds_source"],
             )
-            if actual != expected:
+            # Old immutable rows have xg_used=NULL because that feature was not
+            # recorded at forecast time. Never backfill or guess it on a rescan.
+            xg_conflict = (
+                stored_xg is not None and row["xg_used"] is not None
+                and int(row["xg_used"]) != stored_xg
+            )
+            if actual != expected or xg_conflict:
                 raise ValueError("forecast_key already exists with a different payload")
             return int(row["id"])
 
@@ -217,12 +237,81 @@ class ForecastLedger:
                 row[field.removesuffix("_json")] = json.loads(raw) if raw else None
         return rows
 
-    def metrics(self, *, model_version: str | None = None) -> dict[str, Any]:
-        """Return multiclass Brier score, log loss, accuracy and available CLV."""
+    def reliability_bins(
+        self, *, bins: int = 10, model_version: str | None = None,
+        model_version_prefix: str | None = None,
+    ) -> dict[str, Any]:
+        """Reliability table per 1X2 class using settled forecasts only."""
+        if isinstance(bins, bool) or not isinstance(bins, int) or not 2 <= bins <= 100:
+            raise ValueError("bins must be an integer between 2 and 100")
         rows = self.rows(settled_only=True, model_version=model_version)
+        if model_version_prefix is not None:
+            rows = [
+                row for row in rows
+                if str(row.get("model_version") or "").startswith(model_version_prefix)
+            ]
+        result_rows = []
+        ece = {}
+        for outcome in OUTCOMES:
+            buckets = [
+                {"n": 0, "probability_sum": 0.0, "observed_sum": 0}
+                for _ in range(bins)
+            ]
+            for row in rows:
+                probability = float(row["probabilities"][outcome])
+                index = min(bins - 1, int(probability * bins))
+                bucket = buckets[index]
+                bucket["n"] += 1
+                bucket["probability_sum"] += probability
+                bucket["observed_sum"] += int(row["result"] == outcome)
+            outcome_ece = 0.0
+            outcome_n = sum(bucket["n"] for bucket in buckets)
+            for index, bucket in enumerate(buckets):
+                n = bucket["n"]
+                if not n:
+                    continue
+                mean_probability = bucket["probability_sum"] / n
+                observed_frequency = bucket["observed_sum"] / n
+                gap = observed_frequency - mean_probability
+                outcome_ece += n * abs(gap)
+                result_rows.append({
+                    "outcome": outcome,
+                    "bin_index": index,
+                    "bin_from": index / bins,
+                    "bin_to": (index + 1) / bins,
+                    "n": n,
+                    "mean_probability": mean_probability,
+                    "observed_frequency": observed_frequency,
+                    "observed_minus_predicted": gap,
+                })
+            ece[outcome] = outcome_ece / outcome_n if outcome_n else None
+        return {
+            "n": len(rows), "bins": bins, "rows": result_rows,
+            "expected_calibration_error": ece,
+            "model_version": model_version,
+            "model_version_prefix": model_version_prefix,
+        }
+
+    def metrics(self, *, model_version: str | None = None) -> dict[str, Any]:
+        """Return proper scoring metrics, class reliability and xG-use coverage."""
+        all_rows = self.rows(model_version=model_version)
+        tracked_xg = [row for row in all_rows if row.get("xg_used") is not None]
+        xg_used_n = sum(int(bool(row.get("xg_used"))) for row in tracked_xg)
+        xg_usage = {
+            "forecasts": len(all_rows),
+            "tracked": len(tracked_xg),
+            "xg_used": xg_used_n,
+            "share": xg_used_n / len(tracked_xg) if tracked_xg else None,
+            "untracked": len(all_rows) - len(tracked_xg),
+        }
+        rows = [row for row in all_rows if row.get("result") in OUTCOMES]
+        calibration = self.reliability_bins(model_version=model_version)
         if not rows:
-            return {"n": 0, "brier": None, "log_loss": None, "accuracy": None,
-                    "mean_clv": None, "clv_n": 0}
+            return {
+                "n": 0, "brier": None, "log_loss": None, "accuracy": None,
+                "mean_clv": None, "clv_n": 0,
+                "xg_usage": xg_usage, "calibration_bins": calibration,
+            }
         briers, losses, correct, clvs = [], [], 0, []
         for row in rows:
             probs = row["probabilities"]
@@ -237,10 +326,13 @@ class ForecastLedger:
                     if selection in entry and selection in close:
                         clvs.append(entry[selection] / close[selection] - 1.0)
         n = len(rows)
-        return {"n": n, "brier": sum(briers) / n, "log_loss": sum(losses) / n,
-                "accuracy": correct / n,
-                "mean_clv": sum(clvs) / len(clvs) if clvs else None,
-                "clv_n": len(clvs)}
+        return {
+            "n": n, "brier": sum(briers) / n, "log_loss": sum(losses) / n,
+            "accuracy": correct / n,
+            "mean_clv": sum(clvs) / len(clvs) if clvs else None,
+            "clv_n": len(clvs), "xg_usage": xg_usage,
+            "calibration_bins": calibration,
+        }
 
 
 

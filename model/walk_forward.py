@@ -364,12 +364,25 @@ def walk_forward_compare(
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     temporal_goals = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
-    candidate.half_life_days = float(half_life_days)
-    temporal_goals.half_life_days = float(half_life_days)
-    records = {"baseline": [], "candidate": [], "temporal_goals_only": [],
-               "market": [], "candidate_on_market": [],
-               "goals_over25": [], "goals_over25_market": [],
-               "goals_over25_candidate_on_market": []}
+    # Feature ablations use the same temporal weights, league rho, xG input,
+    # fixture order and calibration process. Each arm has its own chronological
+    # state; only the named feature is disabled.
+    candidate_no_h2h = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    candidate_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    candidate_no_h2h_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    for model in (candidate, temporal_goals, candidate_no_h2h,
+                  candidate_no_rest, candidate_no_h2h_no_rest):
+        model.half_life_days = float(half_life_days)
+    candidate_no_rest.rest_days_adjustment = False
+    candidate_no_h2h_no_rest.rest_days_adjustment = False
+    records = {
+        "baseline": [], "candidate": [], "temporal_goals_only": [],
+        "candidate_without_h2h": [], "candidate_without_rest_days": [],
+        "candidate_without_h2h_or_rest_days": [],
+        "market": [], "candidate_on_market": [],
+        "goals_over25": [], "goals_over25_market": [],
+        "goals_over25_candidate_on_market": [],
+    }
     # Separate binary evaluation for each common goals line. This measures
     # forecast quality, not merely whether the 1X2 model predicts the winner.
     goals_line_records = {line: [] for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)}
@@ -401,6 +414,15 @@ def walk_forward_compare(
             pred_base = baseline.predict(home, away, league, match_date=stamp.isoformat())
             pred_candidate = candidate.predict(home, away, league, match_date=stamp.isoformat())
             pred_temporal_goals = temporal_goals.predict(home, away, league, match_date=stamp.isoformat())
+            pred_without_h2h = candidate_no_h2h.predict(
+                home, away, league, match_date=stamp.isoformat(), apply_h2h=False,
+            )
+            pred_without_rest = candidate_no_rest.predict(
+                home, away, league, match_date=stamp.isoformat(),
+            )
+            pred_without_h2h_rest = candidate_no_h2h_no_rest.predict(
+                home, away, league, match_date=stamp.isoformat(), apply_h2h=False,
+            )
             if pred_candidate.get("xg_used"):
                 xg_forecasts += 1
             total_outcome = "over" if hg + ag >= 3 else "under"
@@ -449,6 +471,9 @@ def walk_forward_compare(
             records["baseline"].append((_probs(pred_base), outcome))
             records["candidate"].append((_probs(pred_candidate), outcome))
             records["temporal_goals_only"].append((_probs(pred_temporal_goals), outcome))
+            records["candidate_without_h2h"].append((_probs(pred_without_h2h), outcome))
+            records["candidate_without_rest_days"].append((_probs(pred_without_rest), outcome))
+            records["candidate_without_h2h_or_rest_days"].append((_probs(pred_without_h2h_rest), outcome))
             market_p, market_source = _market_probs(row_copy, "proportional")
             if market_p:
                 records["market"].append((market_p, outcome))
@@ -459,16 +484,28 @@ def walk_forward_compare(
                 if method_probs:
                     records.setdefault("market_" + method, []).append((method_probs, outcome))
                     records.setdefault("candidate_on_market_" + method, []).append((_probs(pred_candidate), outcome))
-            pending.append((home, away, hg, ag, row_copy, no_xg_row, stamp,
-                            pred_base, pred_candidate, pred_temporal_goals, outcome))
+            pending.append((
+                home, away, hg, ag, row_copy, no_xg_row, stamp,
+                pred_base, pred_candidate, pred_temporal_goals,
+                pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
+                outcome,
+            ))
 
         # Ingest outcomes only after every forecast for this date has been made.
-        for home, away, hg, ag, row_copy, no_xg_row, match_stamp, pred_base, pred_candidate, pred_temporal_goals, outcome in pending:
+        for (home, away, hg, ag, row_copy, no_xg_row, match_stamp,
+             pred_base, pred_candidate, pred_temporal_goals,
+             pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
+             outcome) in pending:
             # Train the calibrator only after every forecast for this date exists.
             target = {"H": 0, "D": 1, "A": 2}[outcome]
             one_hot = [1.0 if target == cls else 0.0 for cls in range(3)]
-            for model, prediction in ((baseline, pred_base), (candidate, pred_candidate),
-                                      (temporal_goals, pred_temporal_goals)):
+            for model, prediction in (
+                (baseline, pred_base), (candidate, pred_candidate),
+                (temporal_goals, pred_temporal_goals),
+                (candidate_no_h2h, pred_without_h2h),
+                (candidate_no_rest, pred_without_rest),
+                (candidate_no_h2h_no_rest, pred_without_h2h_rest),
+            ):
                 raw = (prediction.get("p1_raw"), prediction.get("x_raw"), prediction.get("p2_raw"))
                 model.calib_logits.extend(model._logit(p) for p in raw)
                 model.calib_outcomes.extend(one_hot)
@@ -477,6 +514,9 @@ def walk_forward_compare(
             baseline.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            candidate_no_h2h.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            candidate_no_rest.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            candidate_no_h2h_no_rest.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             index += 1
             goals_history.setdefault(row_copy.get("Div") or "G", []).append(hg + ag)
             prior_btts = btts_history.setdefault(row_copy.get("Div") or "G", [0, 0])
@@ -536,11 +576,37 @@ def walk_forward_compare(
     delta = lambda left, right, key: (
         left[key] - right[key] if left[key] is not None and right[key] is not None else None
     )
+    feature_ablation = {
+        "full_h2h_and_rest_days": candidate_metrics,
+        "without_h2h": metrics["candidate_without_h2h"],
+        "without_rest_days": metrics["candidate_without_rest_days"],
+        "without_h2h_or_rest_days": metrics["candidate_without_h2h_or_rest_days"],
+        "full_minus_without_h2h": _paired_differences(
+            records["candidate"], records["candidate_without_h2h"],
+            bootstrap_samples=bootstrap_samples, seed=55201,
+        ),
+        "full_minus_without_rest_days": _paired_differences(
+            records["candidate"], records["candidate_without_rest_days"],
+            bootstrap_samples=bootstrap_samples, seed=55202,
+        ),
+        "full_minus_without_h2h_or_rest_days": _paired_differences(
+            records["candidate"], records["candidate_without_h2h_or_rest_days"],
+            bootstrap_samples=bootstrap_samples, seed=55203,
+        ),
+        "interpretation": (
+            "All arms use identical fixtures, dates, temporal weighting, league rho and xG data. "
+            "Negative full-minus-ablation Brier/log-loss means the enabled feature improves the "
+            "proper scoring rule; confidence intervals are paired fixture bootstrap intervals."
+        ),
+    }
+
     return {
         "n": len(prepared),
         "skipped": skipped,
         "xg_rows_available": xg_eligible_rows,
         "xg_forecasts_used": xg_forecasts,
+        "xg_usage_share": xg_forecasts / len(prepared) if prepared else None,
+        "feature_ablation": feature_ablation,
         "baseline": base_metrics,
         "candidate": candidate_metrics,
         "temporal_goals_only": temporal_metrics,

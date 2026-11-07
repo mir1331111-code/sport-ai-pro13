@@ -106,15 +106,53 @@ def _render_forecast_journal(D):
         if rows:
             settled_main = sum(row.get("result") in {"H", "D", "A"} for row in main_rows)
             settled_ai = sum(row.get("result") in {"H", "D", "A"} for row in ai_rows)
-            journal_columns = st.columns(4)
+            journal_columns = st.columns(5)
             journal_columns[0].metric("Журнал: прогнозы модели", len(main_rows))
             journal_columns[1].metric("Журнал: прогнозы ИИ", len(ai_rows))
             journal_columns[2].metric("Результат подтверждён · модель", settled_main)
             journal_columns[3].metric("Результат подтверждён · ИИ", settled_ai)
+            xg_tracked = [row for row in main_rows if row.get("xg_used") is not None]
+            xg_used_n = sum(bool(row.get("xg_used")) for row in xg_tracked)
+            if xg_tracked:
+                xg_share = xg_used_n / len(xg_tracked)
+                journal_columns[4].metric(
+                    "Прогнозы с xG", f"{xg_used_n}/{len(xg_tracked)}",
+                    delta=f"{xg_share:.1%} от учтённых",
+                )
+            else:
+                journal_columns[4].metric("Прогнозы с xG", "пока нет данных")
             st.caption(
                 "Журнал хранит прогнозы, сделанные до начала матча. "
-                "Точность, Brier и Log loss рассчитываются только после подтверждённого FT."
+                "Точность, Brier и Log loss рассчитываются только после подтверждённого FT. "
+                f"Старых записей без флага xG: {len(main_rows) - len(xg_tracked)}."
             )
+            calibration = ForecastLedger(DB_FILE).reliability_bins(
+                model_version_prefix="main-model-", bins=10,
+            )
+            if calibration.get("rows"):
+                import pandas as pd
+                labels = {"H": "П1", "D": "X", "A": "П2"}
+                table = [{
+                    "Исход": labels.get(item["outcome"], item["outcome"]),
+                    "Интервал P": f"{item['bin_from']:.0%}–{item['bin_to']:.0%}",
+                    "N": item["n"],
+                    "Средняя P": item["mean_probability"],
+                    "Фактическая частота": item["observed_frequency"],
+                    "Факт − прогноз": item["observed_minus_predicted"],
+                } for item in calibration["rows"]]
+                with st.expander("Калибровка основной модели по бинам (только FT)"):
+                    st.dataframe(pd.DataFrame(table), width="stretch", hide_index=True)
+                    ece = calibration.get("expected_calibration_error") or {}
+                    st.caption(
+                        "ECE по исходам: "
+                        + " · ".join(
+                            f"{labels.get(key, key)} {value:.3f}"
+                            for key, value in ece.items() if value is not None
+                        )
+                        + ". Ни один бин не оценивается без фактического результата."
+                    )
+            else:
+                st.caption("Калибровочные бины появятся после накопления подтверждённых результатов прогнозов основной модели.")
     except Exception as exc:
         st.warning(f"Журнал прогнозов пока недоступен: {type(exc).__name__}: {str(exc)[:120]}")
 
@@ -378,6 +416,21 @@ def _render_independent_ai():
         "Это качество вероятностного прогноза, а не доходность ставок и не гарантия будущего результата."
     )
     st.caption("Сравниваемый вариант ИИ: " + str(best.get("model_version") or "не определён"))
+    correlation = best.get("error_correlation") or {}
+    corr1, corr2, corr3 = st.columns(3)
+    corr1.metric("Парных ошибок для корреляции", correlation.get("n", 0))
+    corr2.metric(
+        "Корреляция Log loss ошибок",
+        "—" if correlation.get("log_loss") is None else f"{correlation['log_loss']:+.3f}",
+    )
+    corr3.metric(
+        "Корреляция Brier ошибок",
+        "—" if correlation.get("brier") is None else f"{correlation['brier']:+.3f}",
+    )
+    st.caption(
+        "Положительная корреляция означает, что системы чаще ошибаются на одних и тех же матчах. "
+        "Это проверка разнообразия ошибок, не готовый ансамбль: веса прогнозов не смешиваются."
+    )
 
     if report.get("models"):
         model_rows = []

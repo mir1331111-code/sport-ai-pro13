@@ -226,7 +226,8 @@ def record_scan_forecasts(
                 try:
                     ledger.record_prediction(
                         forecast_key=key, model_version=main_version,
-                        probabilities=main_probs, **common,
+                        probabilities=main_probs,
+                        xg_used=bool(card.get("xg_used")), **common,
                     )
                     existing.add(key)
                     stats["main_recorded"] += 1
@@ -544,6 +545,23 @@ def _metrics(rows: list[dict]) -> dict[str, Any]:
             "log_loss": sum(losses) / n}
 
 
+def _pearson_correlation(left: list[float], right: list[float]) -> float | None:
+    """Pearson correlation between paired per-fixture error contributions."""
+    if len(left) != len(right) or len(left) < 3:
+        return None
+    mean_left = sum(left) / len(left)
+    mean_right = sum(right) / len(right)
+    centered_left = [value - mean_left for value in left]
+    centered_right = [value - mean_right for value in right]
+    variance_left = sum(value * value for value in centered_left)
+    variance_right = sum(value * value for value in centered_right)
+    denominator = math.sqrt(variance_left * variance_right)
+    if denominator <= 1e-15:
+        return None
+    value = sum(a * b for a, b in zip(centered_left, centered_right)) / denominator
+    return max(-1.0, min(1.0, value))
+
+
 def compare_forecast_rows(rows: list[dict]) -> dict[str, Any]:
     """Compare LLM and main model only on identical fixtures settled by a verified score."""
     main = [r for r in rows if str(r.get("model_version") or "").startswith("main-model-")]
@@ -574,7 +592,21 @@ def compare_forecast_rows(rows: list[dict]) -> dict[str, Any]:
         main_metrics = _metrics([p[0] for p in pairs])
         ai_metrics = _metrics([p[1] for p in pairs])
         reports = []
+        main_log_losses, ai_log_losses = [], []
+        main_brier_losses, ai_brier_losses = [], []
         for main_row, ai_row in sorted(pairs, key=lambda p: str(p[1].get("kickoff_at") or ""), reverse=True):
+            main_probs = main_row["probabilities"]
+            ai_probs = ai_row["probabilities"]
+            actual = str(ai_row.get("result") or "")
+            if actual in OUTCOMES:
+                main_log_losses.append(-math.log(max(float(main_probs[actual]), 1e-15)))
+                ai_log_losses.append(-math.log(max(float(ai_probs[actual]), 1e-15)))
+                main_brier_losses.append(sum(
+                    (float(main_probs[key]) - float(key == actual)) ** 2 for key in OUTCOMES
+                ))
+                ai_brier_losses.append(sum(
+                    (float(ai_probs[key]) - float(key == actual)) ** 2 for key in OUTCOMES
+                ))
             mp, ap = main_row["probabilities"], ai_row["probabilities"]
             m_pick = max(OUTCOMES, key=lambda k: mp[k])
             a_pick = max(OUTCOMES, key=lambda k: ap[k])
@@ -601,6 +633,16 @@ def compare_forecast_rows(rows: list[dict]) -> dict[str, Any]:
             "log_loss_delta": (
                 ai_metrics["log_loss"] - main_metrics["log_loss"] if pairs else None
             ),
+            "error_correlation": {
+                "n": len(main_log_losses),
+                "log_loss": _pearson_correlation(main_log_losses, ai_log_losses),
+                "brier": _pearson_correlation(main_brier_losses, ai_brier_losses),
+                "interpretation": (
+                    "Correlation of per-fixture error contributions; high positive values "
+                    "mean the systems tend to make mistakes on the same fixtures. This is "
+                    "a diagnostic, not an ensemble or proof of independence."
+                ),
+            },
             "recent_pairs": reports[:30],
         })
     model_reports.sort(key=lambda x: (x["n"], x["model_version"]), reverse=True)
