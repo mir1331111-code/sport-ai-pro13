@@ -69,7 +69,7 @@ class ForecastLedgerTests(unittest.TestCase):
             if row["outcome"] == "H"
         ]
         self.assertEqual(sum(row["n"] for row in home_bins), 2)
-        bin_60 = next(row for row in home_bins if row["bin_index"] == 3)
+        bin_60 = next(row for row in home_bins if row["bin_index"] == 6)
         self.assertAlmostEqual(bin_60["mean_probability"], 0.6)
         self.assertEqual(bin_60["observed_frequency"], 1.0)
 
