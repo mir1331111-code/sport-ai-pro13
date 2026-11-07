@@ -32,11 +32,12 @@ CACHE_TTL = {
 }
 
 LLM_PROVIDERS = {
+    # API keys are sent directly to the selected provider; no author-controlled proxy.
     "Groq (бесплатно, быстро)": {
-    "base": "https://groq-proxy13.mir1331111.workers.dev/openai/v1",
-    "model": "openai/gpt-oss-20b",
-    "key_url": "https://console.groq.com/keys",
-},
+        "base": "https://api.groq.com/openai/v1",
+        "model": "openai/gpt-oss-20b",
+        "key_url": "https://console.groq.com/keys",
+    },
     "Groq 70B (бесплатно, мощнее)": {
         "base": "https://api.groq.com/openai/v1",
         "model": "llama-3.3-70b-versatile",
