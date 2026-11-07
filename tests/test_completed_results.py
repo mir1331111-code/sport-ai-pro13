@@ -117,8 +117,9 @@ class CompletedMatchArchiveTests(unittest.TestCase):
             patch("data.scores._olb_season", return_value=2026),
             patch("data.scores._olb_league", return_value=[]),
         ):
-            result = completed_matches_for_day("2026-11-06")
-        self.assertEqual(result["total"], 0)
+            result = completed_matches_for_day("2026-11-07")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["matches"][0]["date"], "2026-11-07")
 
     def test_rejects_invalid_calendar_dates(self):
         with self.assertRaises(ValueError):
