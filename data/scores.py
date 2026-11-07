@@ -168,9 +168,16 @@ def _espn_day(date_iso: str) -> list:
                 continue
             sname = str(stype.get("name") or "").upper()
             extra = any(x in sname for x in ("AET", "PEN", "EXTRA"))
-            out.append({"home": home[0], "away": away[0],
-                        "hs": int(home[1]), "as": int(away[1]),
-                        "status": "AET" if extra else "FT"})
+            league_meta = e.get("league") or {}
+            out.append({
+                "home": home[0], "away": away[0],
+                "hs": int(home[1]), "as": int(away[1]),
+                "status": "AET" if extra else "FT",
+                "date": date_iso,
+                "league": str(league_meta.get("name") or "ESPN Soccer"),
+                "fixture_id": str(e.get("id") or ""),
+                "source": "ESPN",
+            })
         except Exception:
             continue
     log.info("espn %s: %d events", date_iso, len(out))
@@ -218,8 +225,8 @@ def _fdorg_rate_limit() -> None:
     _LAST_FDORG_CALL[0] = _time.time()
 
 
-def _fdorg_range(date_iso: str) -> list:
-    token = _get_token()
+def _fdorg_range(date_iso: str, token: str | None = None) -> list:
+    token = str(token or _get_token()).strip()
     d = _parse_day(date_iso)
     if not token or d is None or _time.time() < _FDORG_COOLDOWN_UNTIL[0]:
         return []
@@ -263,9 +270,15 @@ def _fdorg_range(date_iso: str) -> list:
                     tag = "AET"
             if not h or not a or full.get("home") is None or full.get("away") is None:
                 continue
-            out.append({"home": h, "away": a, "hs": int(full["home"]),
-                        "as": int(full["away"]), "status": tag,
-                        "date": (m.get("utcDate") or "")[:10]})
+            competition = m.get("competition") or {}
+            out.append({
+                "home": h, "away": a, "hs": int(full["home"]),
+                "as": int(full["away"]), "status": tag,
+                "date": (m.get("utcDate") or "")[:10],
+                "league": str(competition.get("name") or "football-data.org"),
+                "fixture_id": str(m.get("id") or ""),
+                "source": "football-data.org",
+            })
         except Exception:
             continue
     log.info("fdorg %s: %d events", date_iso, len(out))
@@ -330,9 +343,15 @@ def _olb_league(league: str, season: int) -> list:
                     break
             if not h or not a or hs is None or ags is None:
                 continue
-            out.append({"home": h, "away": a, "hs": int(hs), "as": int(ags),
-                        "status": "FT",
-                        "date": (m.get("matchDateTime") or "")[:10]})
+            out.append({
+                "home": h, "away": a, "hs": int(hs), "as": int(ags),
+                "status": "FT",
+                "date": (m.get("matchDateTime") or "")[:10],
+                "league": {"bl1": "Bundesliga", "bl2": "2. Bundesliga",
+                           "bl3": "3. Liga"}.get(league, league.upper()),
+                "fixture_id": str(m.get("matchID") or ""),
+                "source": "OpenLigaDB",
+            })
         except Exception:
             continue
     log.info("olb %s/%s: %d finished", league, season, len(out))
@@ -375,3 +394,135 @@ def find_match_score(home: str, away: str, date_iso: str) -> Optional[dict]:
             return r
     log.info("NOT FOUND: %s vs %s @ %s", home, away, date_iso)
     return None
+
+
+def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dict:
+    """Return deduplicated completed football matches for one calendar day.
+
+    Coverage is intentionally explicit: ESPN broad soccer scoreboard,
+    football-data.org's configured competition set when a token is available,
+    and OpenLigaDB's German leagues (BL1/BL2/BL3). This is a match-results
+    archive, not a betting ledger or a claim of exhaustive worldwide coverage.
+    """
+    day = str(date_iso or "").strip()[:10]
+    parsed_day = _parse_day(day)
+    if parsed_day is None or parsed_day.strftime("%Y-%m-%d") != day:
+        raise ValueError("date_iso must be YYYY-MM-DD")
+
+    candidates: list[dict] = []
+    source_counts = {
+        "ESPN": 0,
+        "football-data.org": 0,
+        "OpenLigaDB": 0,
+    }
+    source_errors: dict[str, str] = {}
+
+    def _add(rows, source: str):
+        for original in rows or []:
+            if not isinstance(original, dict):
+                continue
+            if str(original.get("date") or "")[:10] != day:
+                continue
+            try:
+                home = str(original.get("home") or "").strip()
+                away = str(original.get("away") or "").strip()
+                home_score = int(original.get("hs"))
+                away_score = int(original.get("as"))
+                status = str(original.get("status") or "").upper()
+                if (
+                    not home or not away or home.casefold() == away.casefold()
+                    or home_score < 0 or away_score < 0
+                    or status not in {"FT", "AET"}
+                ):
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue
+            item = {
+                "date": day,
+                "home": home,
+                "away": away,
+                "home_score": home_score,
+                "away_score": away_score,
+                "score": f"{home_score}:{away_score}",
+                "status": status,
+                "league": str(original.get("league") or source),
+                "fixture_id": str(original.get("fixture_id") or ""),
+                "sources": [source],
+                "score_conflict": False,
+                "alternate_scores": [],
+            }
+            candidates.append(item)
+            source_counts[source] += 1
+
+    try:
+        _add(_espn_day(day), "ESPN")
+    except Exception as exc:
+        source_errors["ESPN"] = type(exc).__name__
+        log.warning("daily results ESPN %s: %s", day, type(exc).__name__)
+
+    if str(token or _get_token() or "").strip():
+        try:
+            _add(_fdorg_range(day, token=token), "football-data.org")
+        except Exception as exc:
+            source_errors["football-data.org"] = type(exc).__name__
+            log.warning("daily results football-data.org %s: %s", day, type(exc).__name__)
+    else:
+        source_errors["football-data.org"] = "API token not configured"
+
+    for league_code in ("bl1", "bl2", "bl3"):
+        try:
+            _add(_olb_league(league_code, _olb_season(day)), "OpenLigaDB")
+        except Exception as exc:
+            source_errors["OpenLigaDB"] = type(exc).__name__
+            log.warning("daily results OpenLigaDB %s/%s: %s", league_code, day, type(exc).__name__)
+
+    # Merge only exact-date, directionally matched fixtures. If two providers
+    # disagree on a score, retain the first result but expose the discrepancy.
+    merged: list[dict] = []
+    for item in candidates:
+        existing = next(
+            (
+                row for row in merged
+                if _same_team(row["home"], item["home"])
+                and _same_team(row["away"], item["away"])
+            ),
+            None,
+        )
+        if existing is None:
+            merged.append(item)
+            continue
+        for source in item["sources"]:
+            if source not in existing["sources"]:
+                existing["sources"].append(source)
+        if (
+            existing["home_score"] != item["home_score"]
+            or existing["away_score"] != item["away_score"]
+        ):
+            existing["score_conflict"] = True
+            alternative = {
+                "score": item["score"],
+                "source": item["sources"][0],
+            }
+            if alternative not in existing["alternate_scores"]:
+                existing["alternate_scores"].append(alternative)
+        if existing["league"] in {"ESPN Soccer", "football-data.org"} and item["league"]:
+            if item["league"] not in {"ESPN Soccer", "football-data.org"}:
+                existing["league"] = item["league"]
+
+    merged.sort(key=lambda row: (
+        str(row.get("league") or "").casefold(),
+        str(row.get("home") or "").casefold(),
+        str(row.get("away") or "").casefold(),
+    ))
+    return {
+        "date": day,
+        "matches": merged,
+        "source_counts": source_counts,
+        "source_errors": source_errors,
+        "total": len(merged),
+        "goals": sum(row["home_score"] + row["away_score"] for row in merged),
+        "home_wins": sum(row["home_score"] > row["away_score"] for row in merged),
+        "draws": sum(row["home_score"] == row["away_score"] for row in merged),
+        "away_wins": sum(row["home_score"] < row["away_score"] for row in merged),
+        "score_conflicts": sum(bool(row["score_conflict"]) for row in merged),
+    }
