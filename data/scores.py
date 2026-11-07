@@ -19,6 +19,7 @@ from typing import Iterator, Optional
 import requests
 
 from security import cache_get, cache_put
+from data.fixture_time import app_timezone
 
 log = logging.getLogger("scores")
 
@@ -119,6 +120,26 @@ def _parse_day(date_iso: str) -> Optional[datetime]:
         return None
 
 
+def _source_local_day(value: object) -> Optional[str]:
+    """Normalize provider date/timestamp to the app's calendar day.
+
+    UTC-offset-aware provider timestamps are converted before extracting the
+    day. Date-only and timezone-naive values retain their supplied date because
+    there is no reliable offset to apply.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+            parsed = parsed.astimezone(app_timezone())
+        return parsed.date().isoformat()
+    except (TypeError, ValueError, OverflowError):
+        parsed_day = _parse_day(raw)
+        return parsed_day.date().isoformat() if parsed_day else None
+
+
 def _day_offsets(date_iso: str) -> Iterator[str]:
     d = _parse_day(date_iso)
     if d is None:
@@ -136,7 +157,8 @@ def _ttl(date_iso: str) -> int:
 
 # ============ ESPN ============
 def _espn_day(date_iso: str) -> list:
-    ck = f"espn_day_v4_{date_iso}"
+    # v5 invalidates pre-archive cache rows that had no date/league metadata.
+    ck = f"espn_day_v5_{date_iso}"
     cached = cache_get(ck, _ttl(date_iso))
     if isinstance(cached, list):
         return cached
@@ -169,11 +191,12 @@ def _espn_day(date_iso: str) -> list:
             sname = str(stype.get("name") or "").upper()
             extra = any(x in sname for x in ("AET", "PEN", "EXTRA"))
             league_meta = e.get("league") or {}
+            event_day = _source_local_day(e.get("date")) or date_iso
             out.append({
                 "home": home[0], "away": away[0],
                 "hs": int(home[1]), "as": int(away[1]),
                 "status": "AET" if extra else "FT",
-                "date": date_iso,
+                "date": event_day,
                 "league": str(league_meta.get("name") or "ESPN Soccer"),
                 "fixture_id": str(e.get("id") or ""),
                 "source": "ESPN",
@@ -230,7 +253,8 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
     d = _parse_day(date_iso)
     if not token or d is None or _time.time() < _FDORG_COOLDOWN_UNTIL[0]:
         return []
-    ck = f"fdorg_rng_v5_{d:%Y-%m-%d}"
+    # v6 refreshes cached UTC calendar dates into app-local fixture dates.
+    ck = f"fdorg_rng_v6_{d:%Y-%m-%d}"
     cached = cache_get(ck, _ttl(date_iso))
     if isinstance(cached, list):
         return cached
@@ -274,7 +298,7 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
             out.append({
                 "home": h, "away": a, "hs": int(full["home"]),
                 "as": int(full["away"]), "status": tag,
-                "date": (m.get("utcDate") or "")[:10],
+                "date": _source_local_day(m.get("utcDate")) or "",
                 "league": str(competition.get("name") or "football-data.org"),
                 "fixture_id": str(m.get("id") or ""),
                 "source": "football-data.org",
@@ -316,7 +340,8 @@ def _olb_season(date_iso: str) -> Optional[int]:
 
 
 def _olb_league(league: str, season: int) -> list:
-    ck = f"olb_{league}_{season}_v5"
+    # v6 refreshes cached timestamps normalized to the app's timezone.
+    ck = f"olb_{league}_{season}_v6"
     cached = cache_get(ck, 1800)
     if isinstance(cached, list):
         return cached
@@ -346,7 +371,7 @@ def _olb_league(league: str, season: int) -> list:
             out.append({
                 "home": h, "away": a, "hs": int(hs), "as": int(ags),
                 "status": "FT",
-                "date": (m.get("matchDateTime") or "")[:10],
+                "date": _source_local_day(m.get("matchDateTime")) or "",
                 "league": {"bl1": "Bundesliga", "bl2": "2. Bundesliga",
                            "bl3": "3. Liga"}.get(league, league.upper()),
                 "fixture_id": str(m.get("matchID") or ""),
@@ -417,11 +442,14 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
     }
     source_errors: dict[str, str] = {}
 
-    def _add(rows, source: str):
+    source_seen: dict[str, set[str]] = {name: set() for name in source_counts}
+
+    def _add(rows, source: str, *, fallback_date: str | None = None):
         for original in rows or []:
             if not isinstance(original, dict):
                 continue
-            if str(original.get("date") or "")[:10] != day:
+            provider_day = _source_local_day(original.get("date")) or fallback_date
+            if provider_day != day:
                 continue
             try:
                 home = str(original.get("home") or "").strip()
@@ -437,6 +465,12 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
                     continue
             except (TypeError, ValueError, OverflowError):
                 continue
+            home_key = " ".join(sorted(_tokens(home)[0]))
+            away_key = " ".join(sorted(_tokens(away)[0]))
+            unique_key = str(original.get("fixture_id") or f"{home_key}>{away_key}")
+            if unique_key in source_seen[source]:
+                continue
+            source_seen[source].add(unique_key)
             item = {
                 "date": day,
                 "home": home,
@@ -454,11 +488,19 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
             candidates.append(item)
             source_counts[source] += 1
 
-    try:
-        _add(_espn_day(day), "ESPN")
-    except Exception as exc:
-        source_errors["ESPN"] = type(exc).__name__
-        log.warning("daily results ESPN %s: %s", day, type(exc).__name__)
+    # Query adjacent provider days as timestamps close to UTC midnight can
+    # belong to a different calendar day in the app's configured timezone.
+    # Only the exact requested-day query may use a legacy date-less row's day
+    # as a fallback; adjacent-day rows must carry a real event date.
+    for request_day in _day_offsets(day):
+        try:
+            _add(
+                _espn_day(request_day), "ESPN",
+                fallback_date=day if request_day == day else None,
+            )
+        except Exception as exc:
+            source_errors["ESPN"] = type(exc).__name__
+            log.warning("daily results ESPN %s: %s", request_day, type(exc).__name__)
 
     if str(token or _get_token() or "").strip():
         try:
