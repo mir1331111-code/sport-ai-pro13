@@ -12,6 +12,8 @@ from config import DB_FILE
 from model.independent_forecasts import comparison_report, settle_due_forecasts
 from model.forecast_ledger import ForecastLedger
 from model.forecast_ledger import MarketForecastLedger
+from model.audit_export import build_audit_export
+from model.independent_forecasts import compare_forecast_rows
 
 
 def _sharpe(returns: list, periods_per_year: int = 252) -> float:
@@ -153,6 +155,85 @@ def _render_forecast_journal(D):
                     )
             else:
                 st.caption("Калибровочные бины появятся после накопления подтверждённых результатов прогнозов основной модели.")
+
+            # Export only audit records and derived metrics. API credentials,
+            # Streamlit secrets and provider session state are never included.
+            try:
+                market_ledger = MarketForecastLedger(DB_FILE)
+                market_rows = market_ledger.rows()
+                market_report = market_ledger.metrics()
+                settled_main_rows = [
+                    row for row in main_rows
+                    if row.get("result") in {"H", "D", "A"}
+                ]
+                xg_usage = {
+                    "total_main_forecasts": len(main_rows),
+                    "tracked": len(xg_tracked),
+                    "xg_used": xg_used_n,
+                    "share_among_tracked": (
+                        xg_used_n / len(xg_tracked) if xg_tracked else None
+                    ),
+                    "untracked_legacy": len(main_rows) - len(xg_tracked),
+                }
+                audit_payload = {
+                    "schema_version": 1,
+                    "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "source_database": "application forecast ledger (sensitive credentials excluded)",
+                    "summary": {
+                        "main_forecasts": len(main_rows),
+                        "main_settled": len(settled_main_rows),
+                        "llm_forecasts": len(ai_rows),
+                        "llm_settled": sum(
+                            row.get("result") in {"H", "D", "A"} for row in ai_rows
+                        ),
+                        "market_forecasts": len(market_rows),
+                        "xg_usage": xg_usage,
+                    },
+                    "main_reliability_bins": calibration,
+                    "main_settled_metrics": ForecastLedger(DB_FILE).metrics(
+                        model_version=(
+                            sorted({str(row.get("model_version")) for row in main_rows})[-1]
+                            if main_rows else None
+                        )
+                    ) if main_rows else {},
+                    "main_vs_llm_paired_comparison": compare_forecast_rows(rows),
+                    "market_ledger_metrics": market_report,
+                    "forecasts": rows,
+                    "market_forecasts": market_rows,
+                    "paper_bets": db.fetch_bets(limit=100000),
+                    "bank_history": db.bank_history(limit=100000),
+                    "notes": {
+                        "h2h_rest_days_ablation": (
+                            "Not stored as live ledger variants. Historical walk-forward "
+                            "ablation exists separately in model.walk_forward."
+                        ),
+                        "ensemble": (
+                            "The LLM is evaluated as a separate forecaster; no weighted "
+                            "ensemble is served by the application."
+                        ),
+                        "xg_usage": (
+                            "xg_used is authoritative only for tracked rows. Legacy NULL "
+                            "values are not inferred or backfilled."
+                        ),
+                    },
+                }
+                st.download_button(
+                    "⬇️ Скачать архив ledger для аудита",
+                    data=build_audit_export(audit_payload),
+                    file_name="neuro_bet_forecast_audit.zip",
+                    mime="application/zip",
+                    key="download_forecast_audit_archive",
+                    help=(
+                        "Включает прогнозы, подтверждённые результаты, калибровку, "
+                        "xG-флаги, корреляцию ошибок LLM/модели, рыночный ledger "
+                        "и paper-портфель. API-ключи не включаются."
+                    ),
+                )
+            except Exception as export_exc:
+                st.warning(
+                    "Не удалось подготовить архив аудита: "
+                    f"{type(export_exc).__name__}: {str(export_exc)[:120]}"
+                )
     except Exception as exc:
         st.warning(f"Журнал прогнозов пока недоступен: {type(exc).__name__}: {str(exc)[:120]}")
 
