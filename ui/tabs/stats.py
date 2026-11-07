@@ -12,6 +12,7 @@ from config import DB_FILE
 from model.independent_forecasts import comparison_report, settle_due_forecasts
 from model.forecast_ledger import ForecastLedger
 from model.forecast_ledger import MarketForecastLedger
+from model.bankroll_simulation import simulate_bankroll
 
 
 def _sharpe(returns: list, periods_per_year: int = 252) -> float:
@@ -512,6 +513,8 @@ def _render_market_audit():
             f"Ожидают результата: {overall['pending']}. Угловые и карточки закрываются "
             "только после ввода фактической статистики в портфеле."
         )
+    st.divider()
+    _render_bankroll_monte_carlo()
 
 
 def render():
@@ -687,3 +690,135 @@ def _render_results_archive():
         "(Bundesliga, 2. Bundesliga, 3. Liga). Это расширяемое, но не исчерпывающее "
         "покрытие мирового футбола."
     )
+
+
+def _render_bankroll_monte_carlo():
+    st.subheader("🎲 Monte Carlo банкролла по закрытым рекомендациям")
+    st.caption(
+        "Моделируются виртуальные пути капитала на исторических закрытых рекомендациях. "
+        "Это не фактическая доходность вашего портфеля и не прогноз гарантированного заработка."
+    )
+    try:
+        ledger_rows = MarketForecastLedger(DB_FILE).rows()
+    except Exception as exc:
+        st.error(f"Ledger рекомендаций недоступен: {type(exc).__name__}: {str(exc)[:160]}")
+        return
+
+    market_labels = {
+        "1X2": "1X2", "OU": "Тоталы", "BTTS": "Обе забьют",
+        "AH": "Форы", "DC": "Двойной шанс", "STAT": "Угловые / карточки",
+        "ALL": "Все рынки · один выбор на матч",
+    }
+    market_choice = st.selectbox(
+        "Рынок для симуляции",
+        options=list(market_labels),
+        format_func=lambda key: market_labels[key],
+        index=0,
+        key="mc_bankroll_market",
+    )
+    settings = st.columns(3)
+    initial_bank = settings[0].number_input(
+        "Начальный банк", min_value=100.0, max_value=10_000_000.0,
+        value=10_000.0, step=500.0, key="mc_bankroll_initial",
+    )
+    simulations = settings[1].number_input(
+        "Количество сценариев", min_value=100, max_value=100_000,
+        value=5_000, step=500, key="mc_bankroll_iterations",
+    )
+    stake_mode_label = settings[2].selectbox(
+        "Размер ставки",
+        options=["Плоские 1% от банка", "¼ Kelly · cap 2%"],
+        key="mc_bankroll_stake_mode",
+    )
+    flat_fraction = 0.01
+    kelly_fraction = 0.25
+    kelly_cap = 0.02
+    if stake_mode_label == "Плоские 1% от банка":
+        flat_fraction = st.slider(
+            "Доля банка на одну рекомендацию",
+            min_value=0.1, max_value=5.0, value=1.0, step=0.1,
+            key="mc_bankroll_flat_pct",
+        ) / 100.0
+        stake_mode = "flat_fraction"
+    else:
+        st.caption(
+            "Ставка рассчитывается из архивных вероятности и коэффициента: "
+            "¼ Kelly, не более 2% текущего банка. Отрицательный edge означает нулевую ставку."
+        )
+        stake_mode = "fractional_kelly"
+
+    chosen_market = None if market_choice == "ALL" else market_choice
+    available_rows = [
+        row for row in ledger_rows
+        if str(row.get("model_version") or "").startswith("main-model-")
+        and row.get("result_status") in {"won", "lost", "push", "void"}
+        and (chosen_market is None or str(row.get("market") or "").upper() == chosen_market)
+    ]
+    unique_fixture_count = len({str(row.get("fixture_id") or "") for row in available_rows})
+    st.caption(
+        f"Закрытых записей в выбранной выборке: {len(available_rows)}; "
+        f"уникальных матчей до дедупликации: {unique_fixture_count}. "
+        "Для симуляции потребуется минимум 10 уникальных матчей."
+    )
+
+    if st.button("▶ Запустить Monte Carlo", type="primary", key="run_mc_bankroll"):
+        try:
+            with st.spinner("Пересэмплирую закрытые результаты и считаю пути банкролла…"):
+                result = simulate_bankroll(
+                    ledger_rows,
+                    initial_bank=float(initial_bank),
+                    simulations=int(simulations),
+                    market=chosen_market,
+                    stake_mode=stake_mode,
+                    flat_fraction=flat_fraction,
+                    kelly_fraction=kelly_fraction,
+                    kelly_cap=kelly_cap,
+                    seed=20261107,
+                )
+            st.session_state["_mc_bankroll_result"] = result
+            st.session_state["_mc_bankroll_market_label"] = market_labels[market_choice]
+        except Exception as exc:
+            st.session_state["_mc_bankroll_result"] = {
+                "available": False,
+                "reason": f"{type(exc).__name__}: {str(exc)[:180]}",
+            }
+
+    result = st.session_state.get("_mc_bankroll_result")
+    if not isinstance(result, dict):
+        st.info("Выбери рынок и параметры, затем запусти симуляцию.")
+        return
+    if not result.get("available"):
+        st.warning(str(result.get("reason") or "Недостаточно данных для симуляции."))
+        return
+
+    bank = result["final_bank"]
+    dd = result["max_drawdown"]
+    st.markdown(
+        f"**{st.session_state.get('_mc_bankroll_market_label', market_labels[market_choice])}** · "
+        f"{result['sample_n']} матчей в выборке · "
+        f"{result['bets_per_path']} рекомендаций на путь · "
+        f"{result['simulations']:,} сценариев"
+    )
+    metrics = st.columns(5)
+    metrics[0].metric("Банк P05", f"{bank['p05']:,.0f}")
+    metrics[1].metric("Медианный банк", f"{bank['median']:,.0f}")
+    metrics[2].metric("Банк P95", f"{bank['p95']:,.0f}")
+    metrics[3].metric("Вероятность убытка", f"{result['probability_below_start']:.1%}")
+    metrics[4].metric("Вероятность просадки ≥50%", f"{result['probability_50pct_drawdown']:.1%}")
+    st.caption(
+        f"Просадка от исторического пика: медиана {dd['p50']:.1%}, "
+        f"P90 {dd['p90']:.1%}, P95 {dd['p95']:.1%}. "
+        f"Средний конечный банк: {bank['mean']:,.0f}."
+    )
+    sample = result["empirical_sample"]
+    st.caption(
+        f"Эмпирическая выборка: {sample['wins']} выигрышей · {sample['losses']} проигрышей · "
+        f"{sample['pushes']} возвратов · {sample['voids']} отмен."
+    )
+    with st.expander("Допущения и ограничения симуляции"):
+        for item in result.get("assumptions") or []:
+            st.write("• " + item)
+        st.caption(
+            "Результаты зависят от состава ledger, выбранного рынка и заданного размера ставки. "
+            "Не используй модель как единственное основание для реальных ставок."
+        )
