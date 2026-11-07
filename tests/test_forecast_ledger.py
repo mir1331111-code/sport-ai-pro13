@@ -76,7 +76,7 @@ class ForecastLedgerTests(unittest.TestCase):
     def test_old_ledger_schema_is_migrated_without_guessing_xg(self):
         path = self.tmp.name + "/old-schema.sqlite"
         old_schema = SCHEMA.replace(
-            " xg_used INTEGER CHECK(xg_used IS NULL OR xg_used IN (0,1)),\\n", ""
+            " xg_used INTEGER CHECK(xg_used IS NULL OR xg_used IN (0,1)),\n", ""
         )
         with sqlite3.connect(path) as connection:
             connection.executescript(old_schema)
