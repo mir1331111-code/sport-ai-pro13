@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from data import sources
+from data import sstats
 
 
 class _Response:
@@ -15,13 +15,18 @@ class _Response:
 
 
 class SStatsTests(unittest.TestCase):
+    def test_public_sstats_functions_remain_reexported_from_sources(self):
+        from data import sources
+        self.assertIs(sources.sstats_upcoming_matches, sstats.sstats_upcoming_matches)
+        self.assertIs(sources.sstats_match_statistics, sstats.sstats_match_statistics)
+
     def test_unwrap_api_response(self):
         self.assertEqual(
-            sources._sstats_unwrap({"status": "success", "count": 1, "data": [{"id": 7}]}),
+            sstats._sstats_unwrap({"status": "success", "count": 1, "data": [{"id": 7}]}),
             [{"id": 7}],
         )
         with self.assertRaisesRegex(ValueError, "invalid api key"):
-            sources._sstats_unwrap({"status": "error", "message": "invalid api key"})
+            sstats._sstats_unwrap({"status": "error", "message": "invalid api key"})
 
     def test_parse_compact_and_bookmaker_market_structures(self):
         compact = [
@@ -75,8 +80,8 @@ class SStatsTests(unittest.TestCase):
             "odds": compact,
         }]
 
-        compact_result = sources._sstats_parse_markets(compact)
-        detailed_result = sources._sstats_parse_markets(detailed)
+        compact_result = sstats._sstats_parse_markets(compact)
+        detailed_result = sstats._sstats_parse_markets(detailed)
 
         for result in (compact_result, detailed_result):
             self.assertEqual(result["П1"], 1.82)
@@ -138,7 +143,7 @@ class SStatsTests(unittest.TestCase):
         })
 
         logs = []
-        rows = sources.sstats_upcoming_matches(3, "do-not-log-this-key", logs)
+        rows = sstats.sstats_upcoming_matches(3, "do-not-log-this-key", logs)
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["HomeTeam"], "Arsenal")
@@ -169,7 +174,7 @@ class SStatsTests(unittest.TestCase):
                 "awayTeam": {"name": "Chelsea"},
             }],
         })
-        result = sources.sstats_find_match_id(
+        result = sstats.sstats_find_match_id(
             "2026-11-02", "Arsenal", "Chelsea", "private-key"
         )
         self.assertEqual(result, 9876)
@@ -194,7 +199,7 @@ class SStatsTests(unittest.TestCase):
             "status": "success",
             "data": [dict(game, id=1), dict(game, id=2)],
         })
-        self.assertIsNone(sources.sstats_find_match_id(
+        self.assertIsNone(sstats.sstats_find_match_id(
             "2026-11-02", "Arsenal", "Chelsea", "private-key"
         ))
 
@@ -215,7 +220,7 @@ class SStatsTests(unittest.TestCase):
                 },
             },
         })
-        result = sources.sstats_match_statistics(5678, "private-key")
+        result = sstats.sstats_match_statistics(5678, "private-key")
         self.assertEqual(result["status"], 8)
         self.assertTrue(result["finished"])
         self.assertEqual(result["corners"], 11)
@@ -238,7 +243,7 @@ class SStatsTests(unittest.TestCase):
                 "statistics": {"cornerKicksHome": 5, "cornerKicksAway": 4},
             },
         })
-        result = sources.sstats_match_statistics(5678, "private-key")
+        result = sstats.sstats_match_statistics(5678, "private-key")
         self.assertFalse(result["finished"])
         self.assertIsNone(result["corners"])
         cache_write.assert_not_called()
@@ -260,7 +265,7 @@ class SStatsTests(unittest.TestCase):
                 },
             },
         })
-        result = sources.sstats_match_statistics(5678, "private-key")
+        result = sstats.sstats_match_statistics(5678, "private-key")
         self.assertIsNone(result["corners"])
         self.assertIsNone(result["cards"])
         cache_write.assert_called_once()
@@ -286,7 +291,7 @@ class SStatsTests(unittest.TestCase):
                 }],
             }],
         })
-        result = sources.sstats_odds_fixture(9876, "private-key", [])
+        result = sstats.sstats_odds_fixture(9876, "private-key", [])
         self.assertEqual(result["П1"], 1.87)
         self.assertEqual(result["bookmakers"], ["Bookmaker A"])
         self.assertEqual(request_mock.call_args.args[0], "Odds/9876")
@@ -327,7 +332,7 @@ class SStatsTests(unittest.TestCase):
             ]}),
         ]
 
-        result = sources.sstats_account_check("private-test-key")
+        result = sstats.sstats_account_check("private-test-key")
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["odds_checked"])
@@ -365,7 +370,7 @@ class SStatsTests(unittest.TestCase):
             }]}),
         ]
 
-        result = sources.sstats_account_check("private-test-key")
+        result = sstats.sstats_account_check("private-test-key")
 
         self.assertTrue(result["odds_checked"])
         self.assertEqual(result["total_quote_line_count"], 1)
@@ -380,7 +385,7 @@ class SStatsTests(unittest.TestCase):
             _Response(200, {"status": "success", "data": {"userName": "test-user"}}),
             _Response(200, {"status": "success", "count": 0, "data": []}),
         ]
-        result = sources.sstats_account_check("never-echo-this-key")
+        result = sstats.sstats_account_check("never-echo-this-key")
         self.assertTrue(result["ok"])
         self.assertTrue(result["games_ok"])
         self.assertEqual(result["games_count"], 0)
