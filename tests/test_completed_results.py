@@ -125,6 +125,83 @@ class CompletedMatchArchiveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             completed_matches_for_day("2026-02-30")
 
+    def test_fdorg_extra_time_keeps_regular_and_official_scores_separate(self):
+        payload = {
+            "matches": [{
+                "status": "FINISHED",
+                "id": 123,
+                "utcDate": "2026-11-06T19:00:00Z",
+                "homeTeam": {"name": "Cup Home"},
+                "awayTeam": {"name": "Cup Away"},
+                "competition": {"name": "Cup"},
+                "score": {
+                    "duration": "EXTRA_TIME",
+                    "fullTime": {"home": 2, "away": 1},
+                    "regularTime": {"home": 1, "away": 1},
+                    "extraTime": {"home": 1, "away": 0},
+                },
+            }]
+        }
+        response = type("Response", (), {
+            "status_code": 200, "json": lambda self: payload,
+        })()
+        with (
+            patch("data.scores.cache_get", return_value=None),
+            patch("data.scores.cache_put"),
+            patch("data.scores._fdorg_rate_limit"),
+            patch("data.scores._sess.get", return_value=response),
+        ):
+            rows = __import__("data.scores", fromlist=["_fdorg_range"])._fdorg_range(
+                "2026-11-06", token="test-token"
+            )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["hs"], rows[0]["as"]), (1, 1))
+        self.assertEqual((rows[0]["official_hs"], rows[0]["official_as"]), (2, 1))
+        self.assertEqual(rows[0]["status"], "AET")
+
+    def test_archive_uses_official_score_for_extra_time_matches(self):
+        with (
+            patch("data.scores._espn_day", return_value=[]),
+            patch("data.scores._fdorg_range", return_value=[
+                {"home": "Cup Home", "away": "Cup Away",
+                 "hs": 1, "as": 1, "official_hs": 2, "official_as": 1,
+                 "status": "AET", "duration": "EXTRA_TIME",
+                 "date": "2026-11-06"}
+            ]),
+            patch("data.scores._olb_season", return_value=2026),
+            patch("data.scores._olb_league", return_value=[]),
+        ):
+            result = completed_matches_for_day("2026-11-06", token="test-token")
+        self.assertEqual(result["matches"][0]["score"], "2:1")
+        self.assertEqual(result["matches"][0]["duration"], "EXTRA_TIME")
+
+    def test_openligadb_selects_final_result_stage_not_only_90_minutes(self):
+        payload = [{
+            "matchIsFinished": True,
+            "matchID": 456,
+            "matchDateTimeUTC": "2026-11-06T19:00:00Z",
+            "team1": {"teamName": "Cup Home"},
+            "team2": {"teamName": "Cup Away"},
+            "matchResults": [
+                {"resultTypeID": 1, "resultOrderID": 1, "pointsTeam1": 0, "pointsTeam2": 0},
+                {"resultTypeID": 2, "resultOrderID": 2, "pointsTeam1": 1, "pointsTeam2": 1},
+                {"resultTypeID": 3, "resultOrderID": 3, "pointsTeam1": 2, "pointsTeam2": 1},
+            ],
+        }]
+        response = type("Response", (), {
+            "status_code": 200, "json": lambda self: payload,
+        })()
+        with (
+            patch("data.scores.cache_get", return_value=None),
+            patch("data.scores.cache_put"),
+            patch("data.scores._sess.get", return_value=response),
+        ):
+            rows = __import__("data.scores", fromlist=["_olb_league"])._olb_league("bl1", 2026)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["hs"], rows[0]["as"]), (2, 1))
+        self.assertEqual(rows[0]["status"], "AET")
+        self.assertEqual(rows[0]["duration"], "EXTRA_TIME")
+
     def test_missing_fdorg_token_does_not_block_other_sources(self):
         with (
             patch("data.scores._get_token", return_value=""),
