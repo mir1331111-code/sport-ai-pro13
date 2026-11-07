@@ -19,6 +19,7 @@ from typing import Iterator, Optional
 import requests
 
 from security import cache_get, cache_put
+from data.fixture_time import app_timezone
 
 log = logging.getLogger("scores")
 
@@ -119,6 +120,26 @@ def _parse_day(date_iso: str) -> Optional[datetime]:
         return None
 
 
+def _source_local_day(value: object) -> Optional[str]:
+    """Normalize provider date/timestamp to the app's calendar day.
+
+    UTC-offset-aware provider timestamps are converted before extracting the
+    day. Date-only and timezone-naive values retain their supplied date because
+    there is no reliable offset to apply.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+            parsed = parsed.astimezone(app_timezone())
+        return parsed.date().isoformat()
+    except (TypeError, ValueError, OverflowError):
+        parsed_day = _parse_day(raw)
+        return parsed_day.date().isoformat() if parsed_day else None
+
+
 def _day_offsets(date_iso: str) -> Iterator[str]:
     d = _parse_day(date_iso)
     if d is None:
@@ -136,7 +157,8 @@ def _ttl(date_iso: str) -> int:
 
 # ============ ESPN ============
 def _espn_day(date_iso: str) -> list:
-    ck = f"espn_day_v4_{date_iso}"
+    # v5 invalidates pre-archive cache rows that had no date/league metadata.
+    ck = f"espn_day_v5_{date_iso}"
     cached = cache_get(ck, _ttl(date_iso))
     if isinstance(cached, list):
         return cached
@@ -169,11 +191,12 @@ def _espn_day(date_iso: str) -> list:
             sname = str(stype.get("name") or "").upper()
             extra = any(x in sname for x in ("AET", "PEN", "EXTRA"))
             league_meta = e.get("league") or {}
+            event_day = _source_local_day(e.get("date")) or date_iso
             out.append({
                 "home": home[0], "away": away[0],
                 "hs": int(home[1]), "as": int(away[1]),
                 "status": "AET" if extra else "FT",
-                "date": date_iso,
+                "date": event_day,
                 "league": str(league_meta.get("name") or "ESPN Soccer"),
                 "fixture_id": str(e.get("id") or ""),
                 "source": "ESPN",
@@ -230,7 +253,8 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
     d = _parse_day(date_iso)
     if not token or d is None or _time.time() < _FDORG_COOLDOWN_UNTIL[0]:
         return []
-    ck = f"fdorg_rng_v5_{d:%Y-%m-%d}"
+    # v6 refreshes cached UTC calendar dates into app-local fixture dates.
+    ck = f"fdorg_rng_v6_{d:%Y-%m-%d}"
     cached = cache_get(ck, _ttl(date_iso))
     if isinstance(cached, list):
         return cached
@@ -260,21 +284,37 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
             h = (m.get("homeTeam") or {}).get("name") or ""
             a = (m.get("awayTeam") or {}).get("name") or ""
             score = m.get("score") or {}
+            duration = str(score.get("duration") or "REGULAR").upper()
+            official = score.get("fullTime") or {}
+            regular = official
             tag = "FT"
-            full = score.get("fullTime") or {}
-            if (score.get("duration") or "REGULAR") != "REGULAR":
-                reg = score.get("regularTime") or {}
-                if reg.get("home") is not None and reg.get("away") is not None:
-                    full = reg
-                else:
-                    tag = "AET"
-            if not h or not a or full.get("home") is None or full.get("away") is None:
+            if duration != "REGULAR":
+                # football-data.org fullTime is the final match score; regularTime
+                # is the 90-minute score. Preserve both so settlement can refuse
+                # AET while the results archive displays the actual final score.
+                tag = "AET"
+                regular_time = score.get("regularTime") or {}
+                if (
+                    regular_time.get("home") is not None
+                    and regular_time.get("away") is not None
+                ):
+                    regular = regular_time
+            if (
+                not h or not a
+                or regular.get("home") is None or regular.get("away") is None
+            ):
                 continue
+            official_score = (
+                official if official.get("home") is not None
+                and official.get("away") is not None else regular
+            )
             competition = m.get("competition") or {}
             out.append({
-                "home": h, "away": a, "hs": int(full["home"]),
-                "as": int(full["away"]), "status": tag,
-                "date": (m.get("utcDate") or "")[:10],
+                "home": h, "away": a, "hs": int(regular["home"]),
+                "as": int(regular["away"]), "official_hs": int(official_score["home"]),
+                "official_as": int(official_score["away"]), "status": tag,
+                "duration": duration,
+                "date": _source_local_day(m.get("utcDate")) or "",
                 "league": str(competition.get("name") or "football-data.org"),
                 "fixture_id": str(m.get("id") or ""),
                 "source": "football-data.org",
@@ -316,7 +356,8 @@ def _olb_season(date_iso: str) -> Optional[int]:
 
 
 def _olb_league(league: str, season: int) -> list:
-    ck = f"olb_{league}_{season}_v5"
+    # v6 refreshes cached timestamps normalized to the app's timezone.
+    ck = f"olb_{league}_{season}_v6"
     cached = cache_get(ck, 1800)
     if isinstance(cached, list):
         return cached
@@ -336,17 +377,41 @@ def _olb_league(league: str, season: int) -> list:
                 continue
             h = (m.get("team1") or {}).get("teamName") or ""
             a = (m.get("team2") or {}).get("teamName") or ""
-            hs = ags = None
-            for res in m.get("matchResults") or []:
-                if res.get("resultTypeID") == 2:
-                    hs, ags = res.get("pointsTeam1"), res.get("pointsTeam2")
-                    break
+            results = [
+                result for result in (m.get("matchResults") or [])
+                if isinstance(result, dict)
+                and result.get("pointsTeam1") is not None
+                and result.get("pointsTeam2") is not None
+            ]
+            if not results:
+                continue
+            # Use the latest result stage, not unconditionally the 90-minute
+            # score (resultTypeID=2). Cup ties can add extra-time/penalty stages.
+            final_result = max(
+                results,
+                key=lambda result: (
+                    int(result.get("resultOrderID") or result.get("resultTypeID") or 0),
+                    int(result.get("resultTypeID") or 0),
+                ),
+            )
+            result_type = int(final_result.get("resultTypeID") or 0)
+            result_kind = str(final_result.get("resultTypeKind") or "").lower()
+            duration = (
+                "PENALTY_SHOOTOUT"
+                if "penalt" in result_kind or result_type == 5 else
+                "EXTRA_TIME" if "extra" in result_kind or result_type in {3, 4} else
+                "REGULAR"
+            )
+            hs, ags = final_result.get("pointsTeam1"), final_result.get("pointsTeam2")
             if not h or not a or hs is None or ags is None:
                 continue
             out.append({
                 "home": h, "away": a, "hs": int(hs), "as": int(ags),
-                "status": "FT",
-                "date": (m.get("matchDateTime") or "")[:10],
+                "status": "AET" if duration != "REGULAR" else "FT",
+                "duration": duration,
+                "date": _source_local_day(
+                    m.get("matchDateTimeUTC") or m.get("matchDateTime")
+                ) or "",
                 "league": {"bl1": "Bundesliga", "bl2": "2. Bundesliga",
                            "bl3": "3. Liga"}.get(league, league.upper()),
                 "fixture_id": str(m.get("matchID") or ""),
@@ -417,17 +482,20 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
     }
     source_errors: dict[str, str] = {}
 
-    def _add(rows, source: str):
+    source_seen: dict[str, set[str]] = {name: set() for name in source_counts}
+
+    def _add(rows, source: str, *, fallback_date: str | None = None):
         for original in rows or []:
             if not isinstance(original, dict):
                 continue
-            if str(original.get("date") or "")[:10] != day:
+            provider_day = _source_local_day(original.get("date")) or fallback_date
+            if provider_day != day:
                 continue
             try:
                 home = str(original.get("home") or "").strip()
                 away = str(original.get("away") or "").strip()
-                home_score = int(original.get("hs"))
-                away_score = int(original.get("as"))
+                home_score = int(original.get("official_hs", original.get("hs")))
+                away_score = int(original.get("official_as", original.get("as")))
                 status = str(original.get("status") or "").upper()
                 if (
                     not home or not away or home.casefold() == away.casefold()
@@ -437,6 +505,12 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
                     continue
             except (TypeError, ValueError, OverflowError):
                 continue
+            home_key = " ".join(sorted(_tokens(home)[0]))
+            away_key = " ".join(sorted(_tokens(away)[0]))
+            unique_key = str(original.get("fixture_id") or f"{home_key}>{away_key}")
+            if unique_key in source_seen[source]:
+                continue
+            source_seen[source].add(unique_key)
             item = {
                 "date": day,
                 "home": home,
@@ -445,6 +519,7 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
                 "away_score": away_score,
                 "score": f"{home_score}:{away_score}",
                 "status": status,
+                "duration": str(original.get("duration") or ""),
                 "league": str(original.get("league") or source),
                 "fixture_id": str(original.get("fixture_id") or ""),
                 "sources": [source],
@@ -454,11 +529,19 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
             candidates.append(item)
             source_counts[source] += 1
 
-    try:
-        _add(_espn_day(day), "ESPN")
-    except Exception as exc:
-        source_errors["ESPN"] = type(exc).__name__
-        log.warning("daily results ESPN %s: %s", day, type(exc).__name__)
+    # Query adjacent provider days as timestamps close to UTC midnight can
+    # belong to a different calendar day in the app's configured timezone.
+    # Only the exact requested-day query may use a legacy date-less row's day
+    # as a fallback; adjacent-day rows must carry a real event date.
+    for request_day in _day_offsets(day):
+        try:
+            _add(
+                _espn_day(request_day), "ESPN",
+                fallback_date=day if request_day == day else None,
+            )
+        except Exception as exc:
+            source_errors["ESPN"] = type(exc).__name__
+            log.warning("daily results ESPN %s: %s", request_day, type(exc).__name__)
 
     if str(token or _get_token() or "").strip():
         try:

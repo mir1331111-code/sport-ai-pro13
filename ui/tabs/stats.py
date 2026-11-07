@@ -584,7 +584,11 @@ def _render_results_archive():
                 "Лига": item.get("league") or "—",
                 "Матч": f"{item.get('home')} — {item.get('away')}",
                 "Счёт": item.get("score") or "—",
-                "Статус": "Доп. время" if item.get("status") == "AET" else "Завершён",
+                "Статус": (
+                    "Пенальти" if item.get("duration") == "PENALTY_SHOOTOUT"
+                    else "Доп. время" if item.get("status") == "AET"
+                    else "Завершён"
+                ),
                 "Источник": ", ".join(item.get("sources") or []),
                 "Проверка": (
                     f"Расхождение: {alternate}" if conflict else "OK"
