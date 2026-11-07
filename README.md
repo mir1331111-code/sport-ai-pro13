@@ -25,18 +25,24 @@ print(report)
 
 Required match fields are `Date`, `Div`, `HomeTeam`, `AwayTeam`, `FTHG`, and `FTAG` (common aliases are accepted). The evaluator sorts by date and forecasts all matches on a calendar date before adding any result from that date.
 
-The report has three arms:
+The core xG report has three arms:
 - `baseline`: goals-only, equal-weight history, fixed league rho.
 - `temporal_goals_only`: goals-only with temporal weighting and league-specific rho.
 - `candidate`: the same temporal model plus historical xG where enough data exists.
 
-**Use `xg_delta_vs_same_temporal_model` to isolate the xG contribution.** Lower Brier and log loss are better; higher top-class accuracy is better. `xg_rows_available` counts input rows with paired xG, while `xg_forecasts_used` counts forecasts where the engine actually enabled the xG blend after its league/team sample thresholds. If no xG data is present, candidate and temporal-goals-only arms must match.
+The `feature_ablation` section adds four matched arms using identical fixtures, temporal weighting, league rho and xG history: the full candidate, candidate without H2H, candidate without rest-day adjustments, and candidate without both features. The `full_minus_without_*` values are paired differences with fixture-bootstrap 95% confidence intervals. Negative Brier/log-loss differences favor keeping the feature; positive differences favor removing it. This gives a direct basis for deleting unhelpful complexity instead of assuming the feature helps.
+
+**Use `xg_delta_vs_same_temporal_model` to isolate the xG contribution.** Lower Brier and log loss are better; higher top-class accuracy is better. `xg_rows_available` counts input rows with paired xG, while `xg_forecasts_used` counts forecasts where the engine actually enabled the xG blend after its league/team sample thresholds. `xg_usage_share` is the enabled share in that walk-forward run. If no xG data is present, candidate and temporal-goals-only arms must match.
 
 The model accepts paired fields such as `HxG`/`AxG`, `home_xg`/`away_xg`, and `xG`/`xGA`. Values outside 0–8 or malformed values are ignored. The blend requires at least 30 paired league xG observations and at least four same-venue team observations; its weight grows conservatively with sample size. xG is ingested only after each match's forecast, never from the fixture being predicted.
 
 **Feed limitation:** the seasonal CSV loader preserves source columns, but it does not manufacture xG. Coverage therefore depends on the actual CSV fields; standard football-data.co.uk seasons often provide goals and odds but not a complete xG history. The live fixture providers in this app do not currently supply a verified, consistent pre-match xG history. The report should be run on a dataset with genuine historical xG values before xG is enabled as a claimed improvement. No model gain is claimed by the presence of this feature alone.
 
 For a model promotion decision, use an untouched later-period holdout and, where available, compare with pre-kickoff bookmaker probabilities. This diagnostic walk-forward is not a profit guarantee.
+
+## Runtime ledger diagnostics
+
+The main-model forecast ledger reports ten-bin reliability tables separately for P1, draw and P2, using only forecasts with a verified settled result. It also stores `xg_used` for new main-model forecasts and reports the share among rows where that flag was actually recorded. Legacy rows created before the flag existed remain untracked; their xG use is not inferred retrospectively. The independent LLM comparison reports paired per-fixture Brier/log-loss error correlations; this is a diversity diagnostic only, not an implemented weighted ensemble.
 
 ## Tests
 
