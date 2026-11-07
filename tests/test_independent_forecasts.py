@@ -15,6 +15,46 @@ from model.independent_forecasts import (
 
 
 class IndependentForecastTests(unittest.TestCase):
+    def test_paired_comparison_reports_error_correlation(self):
+        from model.independent_forecasts import compare_forecast_rows
+
+        rows = []
+        actuals = ("H", "D", "A", "H", "A", "D")
+        main_probs = (
+            {"H": .70, "D": .20, "A": .10},
+            {"H": .20, "D": .60, "A": .20},
+            {"H": .15, "D": .20, "A": .65},
+            {"H": .45, "D": .35, "A": .20},
+            {"H": .25, "D": .25, "A": .50},
+            {"H": .25, "D": .50, "A": .25},
+        )
+        ai_probs = (
+            {"H": .65, "D": .25, "A": .10},
+            {"H": .25, "D": .55, "A": .20},
+            {"H": .20, "D": .20, "A": .60},
+            {"H": .40, "D": .40, "A": .20},
+            {"H": .30, "D": .25, "A": .45},
+            {"H": .30, "D": .45, "A": .25},
+        )
+        for index, actual in enumerate(actuals):
+            shared = {
+                "fixture_id": f"fixture-{index}",
+                "result": actual,
+                "kickoff_at": f"2026-11-{index+1:02d}T18:00:00+00:00",
+            }
+            rows.extend([
+                {**shared, "model_version": "main-model-v1",
+                 "forecast_at": f"2026-11-{index+1:02d}T10:00:00+00:00",
+                 "probabilities": main_probs[index]},
+                {**shared, "model_version": "independent-llm-test",
+                 "forecast_at": f"2026-11-{index+1:02d}T10:01:00+00:00",
+                 "probabilities": ai_probs[index]},
+            ])
+        report = compare_forecast_rows(rows)["best_paired"]
+        self.assertEqual(report["error_correlation"]["n"], len(actuals))
+        self.assertIsNotNone(report["error_correlation"]["log_loss"])
+        self.assertIsNotNone(report["error_correlation"]["brier"])
+
     def test_llm_probabilities_are_extracted_and_normalized(self):
         text = (
             "САМОСТОЯТЕЛЬНЫЙ ПРОГНОЗ ИИ: ничья (X). "
@@ -53,6 +93,7 @@ class IndependentForecastTests(unittest.TestCase):
             "p1": 0.52, "px": 0.28, "p2": 0.20,
             "market_odds": {"П1": 2.1, "X": 3.4, "П2": 3.8},
             "odds_source": "test-book",
+            "xg_used": True,
             "llm_opinion": (
                 "САМОСТОЯТЕЛЬНЫЙ ПРОГНОЗ ИИ: победа гостей (П2). "
                 "Оценка ИИ: П1 30% · X 25% · П2 45%."
@@ -64,6 +105,11 @@ class IndependentForecastTests(unittest.TestCase):
         )
         self.assertEqual(first["main_recorded"], 1)
         self.assertEqual(first["ai_recorded"], 1)
+        saved = ForecastLedger(tmp.name + "/forecasts.sqlite").rows()
+        main_saved = next(row for row in saved if row["model_version"].startswith("main-model-"))
+        ai_saved = next(row for row in saved if row["model_version"].startswith("independent-llm-"))
+        self.assertEqual(main_saved["xg_used"], 1)
+        self.assertIsNone(ai_saved["xg_used"])
         second = record_scan_forecasts(
             [card], provider="test provider", model="test-model",
             db_path=tmp.name + "/forecasts.sqlite", now=now,
