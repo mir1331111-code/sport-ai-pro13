@@ -100,10 +100,10 @@ class SStatsTests(unittest.TestCase):
         self.assertFalse(detailed_result["total_market_confirmed"]["ТБ 2.5"])
         self.assertEqual(detailed_result["bookmaker_by_pick"]["П1"], "Example bookmaker")
 
-    @patch.object(sources, "_sstats_request")
-    @patch.object(sources, "_sstats_timezone")
-    @patch.object(sources, "cache_put")
-    @patch.object(sources, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "_sstats_timezone")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
     def test_upcoming_fixtures_normalized_from_official_game_shape(
         self, _cache_get, _cache_put, timezone_mock, request_mock
     ):
@@ -159,10 +159,10 @@ class SStatsTests(unittest.TestCase):
         self.assertNotIn("do-not-log-this-key", "\\n".join(logs))
         self.assertEqual(request_mock.call_args.args[0], "Games/list")
 
-    @patch.object(sources, "_sstats_request")
-    @patch.object(sources, "_sstats_timezone", return_value=(None, 2))
-    @patch.object(sources, "cache_put")
-    @patch.object(sources, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "_sstats_timezone", return_value=(None, 2))
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
     def test_legacy_match_id_resolution_requires_exact_unique_match(
         self, _cache_get, _cache_put, _timezone, request_mock
     ):
@@ -183,10 +183,10 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(params["Date"], "2026-11-02")
         self.assertTrue(params["Ended"])
 
-    @patch.object(sources, "_sstats_request")
-    @patch.object(sources, "_sstats_timezone", return_value=(None, 2))
-    @patch.object(sources, "cache_put")
-    @patch.object(sources, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "_sstats_timezone", return_value=(None, 2))
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
     def test_legacy_match_id_resolution_rejects_ambiguous_matches(
         self, _cache_get, _cache_put, _timezone, request_mock
     ):
@@ -203,9 +203,9 @@ class SStatsTests(unittest.TestCase):
             "2026-11-02", "Arsenal", "Chelsea", "private-key"
         ))
 
-    @patch.object(sources, "_sstats_request")
-    @patch.object(sources, "cache_put")
-    @patch.object(sources, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
     def test_final_match_statistics_returns_corners_and_all_cards(
         self, _cache_get, cache_write, request_mock
     ):
@@ -230,9 +230,9 @@ class SStatsTests(unittest.TestCase):
         self.assertNotIn("private-key", repr(result))
         cache_write.assert_called_once()
 
-    @patch.object(sources, "_sstats_request")
-    @patch.object(sources, "cache_put")
-    @patch.object(sources, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
     def test_live_or_extra_time_match_is_not_marked_final(
         self, _cache_get, cache_write, request_mock
     ):
@@ -248,9 +248,9 @@ class SStatsTests(unittest.TestCase):
         self.assertIsNone(result["corners"])
         cache_write.assert_not_called()
 
-    @patch.object(sources, "_sstats_request")
-    @patch.object(sources, "cache_put")
-    @patch.object(sources, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
     def test_missing_stat_fields_are_not_treated_as_zero(
         self, _cache_get, cache_write, request_mock
     ):
@@ -270,9 +270,9 @@ class SStatsTests(unittest.TestCase):
         self.assertIsNone(result["cards"])
         cache_write.assert_called_once()
 
-    @patch.object(sources, "_sstats_request")
-    @patch.object(sources, "cache_put")
-    @patch.object(sources, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
     def test_full_odds_uses_bookmaker_data_and_caches(self, _cache_get, _cache_put, request_mock):
         request_mock.return_value = _Response(200, {
             "status": "success",
@@ -297,10 +297,10 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(request_mock.call_args.args[0], "Odds/9876")
         self.assertEqual(request_mock.call_args.kwargs["params"]["opening"], "false")
 
-    @patch.object(sources, "cache_put")
-    @patch.object(sources, "cache_get", return_value=None)
-    @patch.object(sources, "_sstats_timezone")
-    @patch.object(sources, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_timezone")
+    @patch.object(sstats, "_sstats_request")
     def test_account_check_tests_multiple_markets_and_confirms_totals(
         self, request_mock, timezone_mock, _cache_get, _cache_put
     ):
@@ -342,10 +342,10 @@ class SStatsTests(unittest.TestCase):
         self.assertIn("подтверждённые тоталы: 1 линий", result["message"])
         self.assertNotIn("private-test-key", repr(result))
 
-    @patch.object(sources, "cache_put")
-    @patch.object(sources, "cache_get", return_value=None)
-    @patch.object(sources, "_sstats_timezone")
-    @patch.object(sources, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_timezone")
+    @patch.object(sstats, "_sstats_request")
     def test_account_check_reports_single_book_total_as_unconfirmed(
         self, request_mock, timezone_mock, _cache_get, _cache_put
     ):
@@ -379,7 +379,7 @@ class SStatsTests(unittest.TestCase):
         self.assertIn("только от одного букмекера", result["message"])
         self.assertNotIn("private-test-key", repr(result))
 
-    @patch.object(sources, "_sstats_request")
+    @patch.object(sstats, "_sstats_request")
     def test_account_check_confirms_key_without_exposing_it(self, request_mock):
         request_mock.side_effect = [
             _Response(200, {"status": "success", "data": {"userName": "test-user"}}),
