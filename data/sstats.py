@@ -5,6 +5,7 @@ are re-exported from :mod:`data.sources` for backwards compatibility.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
