@@ -1,6 +1,6 @@
 import unittest
 
-from data.sources import _sstats_parse_markets
+from data.sstats import _sstats_parse_markets
 
 
 def bookmaker(name, market_name, home, draw, away):
