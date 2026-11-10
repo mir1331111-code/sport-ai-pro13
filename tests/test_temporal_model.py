@@ -44,5 +44,45 @@ class TemporalModelTests(unittest.TestCase):
         self.assertIsNotNone(forecast["away_rest_days"])
 
 
+
+class WeightedFormAndExplicitAwayProbabilityTests(unittest.TestCase):
+    def test_form_uses_temporal_weights_and_excludes_future_results(self):
+        engine = Engine()
+        engine.st["Team"]["form"] = [0, 3, 3]
+        engine.st["Team"]["form_dates"] = [
+            "2020-01-01", "2025-01-01", "2025-02-01",
+        ]
+        engine.half_life_days = 30.0
+        result = engine._form("Team", "2025-01-02")
+        self.assertGreater(result, 0.9)
+        self.assertLess(result, 1.0)
+
+    def test_form_falls_back_to_simple_average_without_as_of_date(self):
+        engine = Engine()
+        engine.st["Team"]["form"] = [0, 3, 1]
+        engine.st["Team"]["form_dates"] = [
+            "2024-01-01", "2024-01-08", "2024-01-15",
+        ]
+        self.assertAlmostEqual(engine._form("Team"), 4 / 9)
+
+    def test_explicit_elo_and_dixon_coles_mixture_preserves_all_three_outcomes(self):
+        from model.engine import combine_1x2_probabilities
+        p1, px, p2 = combine_1x2_probabilities(
+            0.50, 0.28, 0.22, 0.60, 0.25, 0.72,
+        )
+        self.assertAlmostEqual(p1 + px + p2, 1.0, places=12)
+        self.assertGreater(p2, 0.0)
+
+    def test_explicit_away_component_is_not_derived_as_a_residual(self):
+        from model.engine import combine_1x2_probabilities
+        weight = 0.40
+        dc_away, elo_home, elo_draw = 0.17, 0.65, 0.22
+        _, _, p2 = combine_1x2_probabilities(
+            0.51, 0.32, dc_away, elo_home, elo_draw, weight,
+        )
+        expected = weight * dc_away + (1 - weight) * (1 - elo_home) * (1 - elo_draw)
+        self.assertAlmostEqual(p2, expected)
+
+
 if __name__ == "__main__":
     unittest.main()
