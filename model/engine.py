@@ -17,6 +17,7 @@ def _new_team():
         "as": [],
         "ac": [],
         "form": [],
+        "form_dates": [],
         "hs_dates": [],
         "hc_dates": [],
         "as_dates": [],
@@ -74,6 +75,33 @@ def _new_lp():
         "rho": -0.13,
         "w_dc": 0.72,
     }
+
+
+def combine_1x2_probabilities(
+    dc_home: float, dc_draw: float, dc_away: float,
+    elo_home: float, elo_draw: float, dc_weight: float,
+) -> tuple[float, float, float]:
+    """Blend two complete 1X2 distributions without making away win a residual."""
+    values = (dc_home, dc_draw, dc_away, elo_home, elo_draw, dc_weight)
+    if any(not math.isfinite(float(value)) for value in values):
+        raise ValueError("1X2 blend inputs must be finite")
+    if any(not 0.0 <= float(value) <= 1.0 for value in values):
+        raise ValueError("1X2 blend inputs must be probabilities/weights in [0, 1]")
+    dc_total = float(dc_home) + float(dc_draw) + float(dc_away)
+    if not math.isclose(dc_total, 1.0, rel_tol=0.0, abs_tol=1e-8):
+        raise ValueError("Dixon-Coles probabilities must sum to one")
+    elo_total = float(elo_draw) + (1.0 - float(elo_draw)) * (
+        float(elo_home) + (1.0 - float(elo_home))
+    )
+    if not math.isclose(elo_total, 1.0, rel_tol=0.0, abs_tol=1e-8):
+        raise ValueError("Elo probabilities must sum to one")
+    weight = float(dc_weight)
+    complement = 1.0 - weight
+    return (
+        weight * float(dc_home) + complement * float(elo_home) * (1.0 - float(elo_draw)),
+        weight * float(dc_draw) + complement * float(elo_draw),
+        weight * float(dc_away) + complement * (1.0 - float(elo_home)) * (1.0 - float(elo_draw)),
+    )
 
 
 def is_cup(div: str) -> bool:
@@ -187,13 +215,15 @@ class Engine:
         except Exception:
             return 0.0
 
-    def _form(self, team: str) -> float:
-        form = self.st[team]["form"][-5:]
-
+    def _form(self, team: str, as_of=None) -> float:
+        stats = self.st[team]
+        form = stats["form"][-5:]
+        dates = stats["form_dates"][-5:]
         if not form:
             return 0.5
-
-        return sum(form) / (len(form) * 3)
+        # Use the same dated exponential decay as goal rates; future results
+        # are excluded by weighted_mean when as_of is supplied.
+        return self._m(form, 1.5, dates, as_of) / 3.0
 
     def form_str(self, team: str) -> str:
         out = ""
@@ -360,11 +390,13 @@ class Engine:
             3 if hg > ag
             else (1 if hg == ag else 0)
         )
+        teams[h]["form_dates"].append(stamp)
 
         teams[a]["form"].append(
             3 if ag > hg
             else (1 if hg == ag else 0)
         )
+        teams[a]["form_dates"].append(stamp)
 
         self.hg.append(hg)
         self.ag.append(ag)
@@ -600,8 +632,8 @@ class Engine:
             defense_home = blend_strength(
                 defense_home, sh["hs_xga"], sh["hs_xga_dates"], league_away_xg)
 
-        fh = self._form(h)
-        fa = self._form(a)
+        fh = self._form(h, match_date)
+        fa = self._form(a, match_date)
 
         # ---------------------------------------------------------
         # Ожидаемые голы
@@ -741,22 +773,14 @@ class Engine:
         # Объединяем Poisson/DC и Elo
         # ---------------------------------------------------------
 
-        f1 = (
-            P0["w_dc"] * p1
-            + (1 - P0["w_dc"])
-            * elo_home
-            * (1 - pde)
+        p2_dc = sum(
+            matrix[i][j]
+            for i in range(N)
+            for j in range(N)
+            if i < j
         )
-
-        fd = (
-            P0["w_dc"] * px
-            + (1 - P0["w_dc"])
-            * pde
-        )
-
-        f2 = max(
-            0.0,
-            1 - f1 - fd,
+        f1, fd, f2 = combine_1x2_probabilities(
+            p1, px, p2_dc, elo_home, pde, P0["w_dc"],
         )
 
         # ---------------------------------------------------------
