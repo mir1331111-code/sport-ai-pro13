@@ -773,10 +773,11 @@ class Engine:
         # Объединяем Poisson/DC и Elo
         # ---------------------------------------------------------
 
+        matrix_size = len(matrix)
         p2_dc = sum(
             matrix[i][j]
-            for i in range(N)
-            for j in range(N)
+            for i in range(matrix_size)
+            for j in range(matrix_size)
             if i < j
         )
         f1, fd, f2 = combine_1x2_probabilities(
