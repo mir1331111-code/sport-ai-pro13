@@ -77,6 +77,10 @@ def _new_lp():
         "w_dc": 0.72,
     }
 
+def _new_namespace_calibration():
+    """Pickle-safe empty calibration history for one competition namespace."""
+    return {"logits": [], "outcomes": []}
+
 def _team_namespace(division: str) -> str:
     """Keep men's, women's and national-team records in separate identities."""
     value = str(division or "").upper()
@@ -161,7 +165,7 @@ class Engine:
 
         self.calib_logits: list = []
         self.calib_outcomes: list = []
-        self.namespace_calibration = defaultdict(lambda: {"logits": [], "outcomes": []})
+        self.namespace_calibration = defaultdict(_new_namespace_calibration)
         self.namespace_calibrators = {}
 
         self.calibrator = PlattCalibrator()
