@@ -139,6 +139,46 @@ def _render_context_comparison(card: dict) -> None:
             str(quality.get("reason") or "Контекст не подтверждён; Strong/Value запрещены."),
             icon="🔒",
         )
+
+    # Show the source records, not just the yes/no confirmation flags.
+    home_players = (lineup.get("home") or {}).get("starting_xi") or []
+    away_players = (lineup.get("away") or {}).get("starting_xi") or []
+    injuries = api_context.get("injuries") or []
+    if home_players or away_players or injuries:
+        with st.expander("Составы и сведения о травмах", expanded=False):
+            if home_players or away_players:
+                col_home, col_away = st.columns(2)
+                with col_home:
+                    st.markdown("**Стартовый состав хозяев**")
+                    if home_players:
+                        st.write(", ".join(
+                            str(player.get("name") or player.get("id") or "Игрок")
+                            for player in home_players
+                        ))
+                    else:
+                        st.caption("Стартовый состав не опубликован.")
+                with col_away:
+                    st.markdown("**Стартовый состав гостей**")
+                    if away_players:
+                        st.write(", ".join(
+                            str(player.get("name") or player.get("id") or "Игрок")
+                            for player in away_players
+                        ))
+                    else:
+                        st.caption("Стартовый состав не опубликован.")
+            st.markdown("**Травмы / дисквалификации по фиду API**")
+            if injuries:
+                for entry in injuries:
+                    player_name = str(entry.get("player_name") or "Игрок без имени")
+                    team_name = str(entry.get("team_name") or "Команда не указана")
+                    reason = str(entry.get("reason") or entry.get("type") or "Причина не указана")
+                    st.caption(f"{team_name}: {player_name} · {reason}")
+            else:
+                st.caption(
+                    "Ответ API получен без записей. Это не доказывает, что в турнире "
+                    "отсутствуют травмированные игроки."
+                )
+
     reliability = referee.get("source_reliability")
     lineup_reliability = lineup.get("source_reliability")
     st.caption(
@@ -2199,7 +2239,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 )
                 context_provider = ApiFootballContextProvider(
                     api_client,
-                    timezone_name=getattr(scan_timezone, "key", "Europe/London"),
+                    timezone_name=getattr(scan_timezone, "key", "UTC"),
                     max_lineup_calls=lineup_call_cap,
                     lineup_window_hours=6,
                 )
