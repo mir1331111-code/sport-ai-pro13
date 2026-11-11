@@ -152,13 +152,6 @@ def render():
     injury_count = sum(x["injuries"] for x in ctx)
 
     st.markdown(
-        "<div class='sp-brandbar'><div class='sp-brandmark'>N<span>●</span></div>"
-        "<div><div class='sp-brandname'>NEURO BET <em>PRO</em></div>"
-        "<div class='sp-brand-sub'>FOOTBALL INTELLIGENCE · DATA FIRST</div></div>"
-        "<div class='sp-brand-spacer'></div><div class='sp-system-pill'><i></i> PRE-MATCH WORKSPACE</div></div>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
         "<div class='sp-dashboard-hero'><div class='sp-hero-copy'>"
         "<div class='sp-eyebrow'>OVERVIEW / MATCH INTELLIGENCE</div>"
         "<h1>Футбол. Данные. Решения.</h1>"
