@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger, OUTCOMES
+from data.competition import competition_gender
 
 
 def _mean(values: list[Any]) -> float | None:
@@ -221,9 +222,9 @@ def record_scan_forecasts(
         away_lineup = lineup.get("away") if isinstance(lineup.get("away"), dict) else {}
         referee = context.get("referee") if isinstance(context.get("referee"), dict) else {}
         feature_snapshot = {
-            "competition_gender": (
-                "women" if bool(card.get("women")) or str(card.get("div") or "").startswith("W_")
-                else "unknown"
+            "competition_gender": competition_gender(
+                division=card.get("div"), league=card.get("league"),
+                women_flag=card.get("women"), home=home, away=away,
             ),
             "lineup_home_confirmed": bool(home_lineup.get("confirmed")),
             "lineup_away_confirmed": bool(away_lineup.get("confirmed")),
