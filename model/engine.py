@@ -155,10 +155,12 @@ class Engine:
         # кто в будущем будет хозяином.
         self.h2h = defaultdict(list)
 
-        self.calib_logits: list = []
-        self.calib_outcomes: list = []
-
-        self.calibrator = PlattCalibrator()
+        # Calibration observations and transforms are isolated by competition.
+        self.calib_logits = defaultdict(list)
+        self.calib_outcomes = defaultdict(list)
+        self.calibration_counts = defaultdict(int)
+        self.calibrators = defaultdict(PlattCalibrator)
+        self.calibrator = self.calibrators["G"]  # legacy default-division alias
 
         self.lp = defaultdict(_new_lp)
 
@@ -170,9 +172,9 @@ class Engine:
     def known_teams(self) -> set:
         out = set()
 
-        for team in self.st.keys():
+        for state_key in self.st.keys():
+            team = state_key[1] if isinstance(state_key, tuple) and len(state_key) == 2 else state_key
             n = _norm(team)
-
             if n:
                 out.add(n)
 
@@ -212,10 +214,11 @@ class Engine:
 
         return sum(form) / (len(form) * 3)
 
-    def form_str(self, team: str) -> str:
+    def form_str(self, team: str, lg: str = "G") -> str:
         out = ""
+        team_key = _team_state_key(lg, team)
 
-        for value in self.st[team]["form"][-5:]:
+        for value in self.st[team_key]["form"][-5:]:
             out += {
                 "3": "В",
                 "1": "Н",
@@ -224,25 +227,41 @@ class Engine:
 
         return out or "—"
 
-    def calibrate(self, p: float, ci: int = 0) -> float:
-        return self.calibrator.calibrate(p, ci)
+    def calibrate(self, p: float, ci: int = 0, lg: str = "G") -> float:
+        division = _division_key(lg)
+        return self.calibrators[division].calibrate(p, ci)
 
-    def refit_calibrator(self) -> None:
-        """
-        Переобучаем калибратор только на уже сыгранных матчах.
-
-        В walk-forward текущий матч сначала получает prediction,
-        затем его результат добавляется в calib_*.
-        Поэтому будущие результаты не используются для текущего
-        прогноза.
-        """
-        if len(self.calib_logits) < 240:
+    def refit_calibrator(self, lg: str = "G") -> None:
+        """Fit one competition-specific calibration transform on past fixtures."""
+        division = _division_key(lg)
+        logits = self.calib_logits[division]
+        outcomes = self.calib_outcomes[division]
+        if len(logits) < 240 or len(logits) != len(outcomes):
             return
+        self.calibrators[division].fit(logits[-6000:], outcomes[-6000:])
 
-        self.calibrator.fit(
-            self.calib_logits[-6000:],
-            self.calib_outcomes[-6000:],
+    def record_calibration(self, lg: str, prediction: dict, outcome: str | int) -> None:
+        """Append one settled training label to its own competition calibrator."""
+        division = _division_key(lg)
+        outcome_code = (
+            {"H": 0, "D": 1, "A": 2}.get(str(outcome).upper())
+            if isinstance(outcome, str) else int(outcome)
         )
+        if outcome_code not in (0, 1, 2):
+            raise ValueError("outcome must be H/D/A or 0/1/2")
+        raw = (prediction.get("p1_raw"), prediction.get("x_raw"), prediction.get("p2_raw"))
+        if any(value is None or not math.isfinite(float(value)) for value in raw):
+            raise ValueError("prediction must contain finite raw 1X2 probabilities")
+        self.calib_logits[division].extend(self._logit(float(value)) for value in raw)
+        self.calib_outcomes[division].extend(
+            1.0 if outcome_code == cls else 0.0 for cls in range(3)
+        )
+        if len(self.calib_logits[division]) > 12000:
+            del self.calib_logits[division][:-12000]
+            del self.calib_outcomes[division][:-12000]
+        self.calibration_counts[division] += 1
+        if self.calibration_counts[division] % 150 == 0:
+            self.refit_calibrator(division)
 
     def _p1px(
         self,
