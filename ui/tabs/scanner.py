@@ -48,7 +48,11 @@ from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
 from betting.ranking import model_favorite, rank_model_favorites, rank_score
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
-from betting.kelly import kelly, market_type
+from betting.kelly import market_type
+from betting.risk import (
+    KELLY_FRACTION, MIN_BET_ODDS, MAX_MARKET_STAKE_PCT,
+    MAX_MATCH_EXPOSURE_PCT, MAX_DAILY_EXPOSURE_PCT, size_bet,
+)
 from betting.market_math import blend_probability, proportional_devig
 from llm.analyst import LLMRateLimitError
 from llm.deep_analysis import (
@@ -61,7 +65,7 @@ from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label, render_fixture_header)
 from ui.scanner_engine import _train_engine, _shared_engine_cache, _load_engine
 
-MAX_STAKE_PCT = 0.05
+MAX_STAKE_PCT = MAX_DAILY_EXPOSURE_PCT  # Legacy name; enforced in betting.risk.
 AUTO_PORTFOLIO_MIN_PROB = STRONG_FORECAST_MIN_PROB  # Shared 65% gate; separate from Value proof.
 MARKET_FORECAST_DISPLAY_LIMIT = 20
 
@@ -257,7 +261,7 @@ def _render_context_comparison(card: dict) -> None:
             )
 
 
-def _portfolio_auto_recommendation(card: object) -> dict | None:
+def _portfolio_auto_recommendation(card: object, market_family: str | None = None) -> dict | None:
     """Return one conservative virtual-portfolio candidate for a fixture.
 
     1X2 requires a complete, named single-bookmaker 1X2 line. Goals O/U is
@@ -275,7 +279,8 @@ def _portfolio_auto_recommendation(card: object) -> dict | None:
     books = card.get("bookmaker_by_pick") or {}
     candidates = []
 
-    for family in ("winner", "goals"):
+    families = (market_family,) if market_family else ("winner", "goals")
+    for family in families:
         recommendation = recommendations.get(family)
         if not isinstance(recommendation, dict):
             continue
@@ -334,7 +339,7 @@ def _portfolio_auto_recommendation(card: object) -> dict | None:
         except (TypeError, ValueError):
             continue
         if (
-            odd <= 1.01
+            odd < MIN_BET_ODDS
             or not 0.0 < probability < 1.0
             or ev < 0.05
             or edge_value < 0.05
@@ -371,7 +376,7 @@ def _is_actionable_recommendation(card: object) -> bool:
         bool(verdict.get("real_odds"))
         and bool(verdict.get("value_passed"))
         and bool(verdict.get("is_bet"))
-        and odd > 1.01
+        and odd >= MIN_BET_ODDS
         and 0.0 < probability < 1.0
         and ev >= 0.05
         and edge_value >= 0.05
@@ -977,7 +982,8 @@ def _render_manual_odds_block(
             prob = model_prob
             ev = prob * manual_odd - 1
             edge = prob - market_implied
-            stake = kelly(prob, manual_odd, D["bank"], kelly_frac, cap=0.02)
+            # Unvalidated fallback prices are informational only; never size a bet.
+            stake = 0.0
             market_fair_probability = None
 
         with col_metrics.expander("Детали (по желанию)", expanded=False):
@@ -989,14 +995,25 @@ def _render_manual_odds_block(
             st.write(f"Ожидаемая доходность: {ev * 100:+.1f}%")
             if abs(model_prob - market_implied) >= 0.20:
                 st.warning("Модель сильно расходится с котировкой. Проверьте матч, исход и точную линию.")
-            if market_is_validated:
-                st.caption(f"Расчётный размер виртуальной ставки: {stake:.2f} у.е.")
+            if market_is_validated and stake > 0:
+                st.caption(f"Размер после Kelly и всех лимитов риска: {stake:.2f} у.е.")
+            elif manual_odd < MIN_BET_ODDS:
+                st.caption(f"Не проходит минимальный коэффициент {MIN_BET_ODDS:.2f}.")
 
         context_eligible = bool(
             (c.get("context_quality") or {}).get("strong_value_eligible")
         )
+        risk_info = {}
+        if rec_verdict is not None and market_is_validated and manual_odd >= MIN_BET_ODDS:
+            stake, risk_info = size_bet(
+                probability=prob, odds=manual_odd, bank=D.get("bank"),
+                bets=D.get("bets") or [], fixture_id=c.get("fixture_id"),
+                match=c.get("match"), date_iso=c.get("date_iso"),
+                market=market_type(pick), pick=pick,
+            )
         passed = (
-            context_eligible
+            manual_odd >= MIN_BET_ODDS
+            and context_eligible
             and rec_verdict is not None
             and market_is_validated
             and prob >= max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB)
@@ -1016,6 +1033,14 @@ def _render_manual_odds_block(
             )
         elif not market_is_validated:
             col_btn.info("Автодобавление отключено: для этого рынка не пройдена историческая проверка или не подтверждена полная линия одного букмекера.")
+        elif manual_odd < MIN_BET_ODDS:
+            col_btn.info(f"Минимальный коэффициент для ставки — {MIN_BET_ODDS:.2f}; эта цена остаётся только для просмотра.")
+        elif rec_verdict is not None and stake <= 0:
+            reason = str(risk_info.get("reason") or "risk_limit")
+            col_btn.warning(
+                "Ставка заблокирована лимитами риска (¼ Kelly; 1% на рынок; "
+                "2% на матч; 5% за день). Причина: " + reason
+            )
         elif passed:
             existing = any(
                 f"{b.get('match', '')}|{b.get('pick', '')}" == f"{c['match']}|{pick}"
@@ -1061,6 +1086,13 @@ def _render_manual_odds_block(
                         else "market_model_raw_price_informational"
                     ),
                     "score": None, "ev": ev,
+                    "kelly_fraction": KELLY_FRACTION,
+                    "risk_policy": {
+                        "max_market_pct": MAX_MARKET_STAKE_PCT,
+                        "max_match_pct": MAX_MATCH_EXPOSURE_PCT,
+                        "max_daily_pct": MAX_DAILY_EXPOSURE_PCT,
+                        "stake_reason": str(risk_info.get("reason") or "approved"),
+                    },
                 }
                 D2["bets"] = list(D.get("bets") or []) + [new_bet]
                 D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - stake)
@@ -3439,76 +3471,98 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         }
         if auto_add:
             for card in cards:
-                portfolio_choice = _portfolio_auto_recommendation(card)
-                if portfolio_choice is None:
-                    continue
-                verdict_card = portfolio_choice["verdict"]
-                best_card = portfolio_choice["best"]
-                pick = str(best_card[1])
-                market_code = str(best_card[0]).upper()
-                market_family = portfolio_choice["family"]
-                match_key = (str(card.get("match") or ""), pick)
-                if match_key in existing_keys:
-                    continue
-                try:
-                    odds_value = float(best_card[2])
-                    probability = float(verdict_card.get("prob") or 0.0)
-                    ev_value = float(verdict_card.get("ev") or 0.0)
-                    stake_value = kelly(
-                        probability, odds_value, available_bank,
-                        kelly_frac, cap=0.02,
+                # Add each independently validated family; size_bet applies the
+                # combined match and daily caps across the same scan batch.
+                for family_candidate in ("winner", "goals"):
+                    portfolio_choice = _portfolio_auto_recommendation(
+                        card, market_family=family_candidate
                     )
-                except (TypeError, ValueError, IndexError):
-                    continue
-                # High confidence is a hard portfolio gate, in addition to value/EV.
-                if probability < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB):
-                    continue
-                if stake_value <= 0 or stake_value > available_bank:
-                    continue
-                new_bet = {
-                    "match": card.get("match", ""),
-                    "match_ru": card.get("match_ru", card.get("match", "")),
-                    "div": card.get("div", ""),
-                    "league": card.get("league", ""),
-                    "market": market_code,
-                    "pick": pick,
-                    "odds": odds_value,
-                    "stake": stake_value,
-                    "prob": probability,
-                    "model_prob": verdict_card.get("model_prob"),
-                    "market_implied_raw": verdict_card.get("market_implied_raw"),
-                    "probability_method": verdict_card.get("probability_method", "market_blend_0.4_model_delta"),
-                    "status": "pending",
-                    "strat": "scanner_auto_" + market_code.casefold(),
-                    "odds_source": (
-                        (card.get("market_odds_source_by_pick") or {}).get(pick)
-                        or card.get("best_odds_source")
-                        or card.get("odds_source", "unknown")
-                    ),
-                    "mode": "real",
-                    "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
-                    "date_iso": card.get("date_iso"),
-                    "match_time": card.get("time", ""),
-                    "kickoff_utc": card.get("kickoff_utc") or None,
-                    "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "fixture_id": card.get("fixture_id"),
-                    "sstats_game_id": card.get("sstats_game_id"),
-                    "market_forecast_key": (
-                        (card.get("market_forecast_keys") or {}).get(market_family)
-                        or (
-                            card.get("market_forecast_key")
-                            if card.get("best") and str(card["best"][1]) == pick
-                            else None
-                        )
-                    ),
-                    "score": None,
-                    "ev": ev_value,
-                }
-                new_bets.append(new_bet)
-                existing_keys.add(match_key)
-                available_bank -= stake_value
-                total_stake += stake_value
-                logs.append(f"🤖 AUTO-PORTFOLIO: {card.get('match_ru', card.get('match', ''))} | {pick} @ {odds_value:.2f} | stake {stake_value:.2f}")
+                    if portfolio_choice is None:
+                        continue
+                    verdict_card = portfolio_choice["verdict"]
+                    best_card = portfolio_choice["best"]
+                    pick = str(best_card[1])
+                    market_code = str(best_card[0]).upper()
+                    market_family = portfolio_choice["family"]
+                    match_key = (str(card.get("match") or ""), pick)
+                    if match_key in existing_keys:
+                        continue
+                    try:
+                        odds_value = float(best_card[2])
+                        probability = float(verdict_card.get("prob") or 0.0)
+                        ev_value = float(verdict_card.get("ev") or 0.0)
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    if probability < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB):
+                        continue
+                    risk_bets = list(D.get("bets") or []) + new_bets
+                    stake_value, risk_info = size_bet(
+                        probability=probability,
+                        odds=odds_value,
+                        bank=available_bank,
+                        bets=risk_bets,
+                        fixture_id=card.get("fixture_id"),
+                        match=card.get("match"),
+                        date_iso=card.get("date_iso"),
+                        market=market_code,
+                        pick=pick,
+                    )
+                    if stake_value <= 0 or stake_value > available_bank:
+                        continue
+                    new_bet = {
+                        "match": card.get("match", ""),
+                        "match_ru": card.get("match_ru", card.get("match", "")),
+                        "div": card.get("div", ""),
+                        "league": card.get("league", ""),
+                        "market": market_code,
+                        "pick": pick,
+                        "odds": odds_value,
+                        "stake": stake_value,
+                        "prob": probability,
+                        "model_prob": verdict_card.get("model_prob"),
+                        "market_implied_raw": verdict_card.get("market_implied_raw"),
+                        "probability_method": verdict_card.get("probability_method", "market_blend_0.4_model_delta"),
+                        "status": "pending",
+                        "strat": "scanner_auto_" + market_code.casefold(),
+                        "odds_source": (
+                            (card.get("market_odds_source_by_pick") or {}).get(pick)
+                            or card.get("best_odds_source")
+                            or card.get("odds_source", "unknown")
+                        ),
+                        "mode": "real",
+                        "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
+                        "date_iso": card.get("date_iso"),
+                        "match_time": card.get("time", ""),
+                        "kickoff_utc": card.get("kickoff_utc") or None,
+                        "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "fixture_id": card.get("fixture_id"),
+                        "sstats_game_id": card.get("sstats_game_id"),
+                        "market_forecast_key": (
+                            (card.get("market_forecast_keys") or {}).get(market_family)
+                            or (
+                                card.get("market_forecast_key")
+                                if card.get("best") and str(card["best"][1]) == pick
+                                else None
+                            )
+                        ),
+                        "score": None,
+                        "ev": ev_value,
+                        "kelly_fraction": KELLY_FRACTION,
+                        "risk_policy": {
+                            "max_market_pct": MAX_MARKET_STAKE_PCT,
+                            "max_match_pct": MAX_MATCH_EXPOSURE_PCT,
+                            "max_daily_pct": MAX_DAILY_EXPOSURE_PCT,
+                            "stake_reason": str(risk_info.get("reason") or "approved"),
+                        },
+                    }
+                    new_bets.append(new_bet)
+                    existing_keys.add(match_key)
+                    available_bank -= stake_value
+                    total_stake += stake_value
+                    logs.append(
+                        f"🤖 AUTO-PORTFOLIO: {card.get('match_ru', card.get('match', ''))} "
+                        f"| {pick} @ {odds_value:.2f} | stake {stake_value:.2f}"
+                    )
 
         # Explain why the portfolio stayed empty instead of silently showing zero additions.
         if auto_add and not new_bets:
