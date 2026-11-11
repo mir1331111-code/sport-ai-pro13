@@ -604,8 +604,8 @@ class Engine:
             defense_home = blend_strength(
                 defense_home, sh["hs_xga"], sh["hs_xga_dates"], league_away_xg)
 
-        fh = self._form(h)
-        fa = self._form(a)
+        fh = self._form(h, lg)
+        fa = self._form(a, lg)
 
         # ---------------------------------------------------------
         # Ожидаемые голы
