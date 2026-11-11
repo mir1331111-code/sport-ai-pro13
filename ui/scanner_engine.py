@@ -22,7 +22,10 @@ from model.training import (
     prepare_completed_training_rows, train_engine_chronologically,
 )
 
-def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_xg_rows=None):
+def _train_engine(
+    matrix_n, logs, update_loader, footballapi_key="",
+    footballapi_xg_rows=None, custom_historical_rows=None,
+):
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     history_years = list(range(cur_year - 4, cur_year + 1))
@@ -53,6 +56,57 @@ def _train_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi
         # Per-division walk-forward was redundant: the unified market validation
         # below evaluates the selected multi-league sample once and is cached.
         logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(league_rows)} матчей за {len(history_years)} сезонов")
+
+    # Optional user-supplied histories extend base training to competitions
+    # not covered by football-data.co.uk (women's leagues, national teams, etc.).
+    # They are kept in their own Div namespace and excluded from the existing
+    # major-league bookmaker validation sample until separately benchmarked.
+    custom_by_division = {}
+    for row in custom_historical_rows or []:
+        if not isinstance(row, dict):
+            continue
+        division = str(row.get("Div") or "").strip()
+        if division:
+            custom_by_division.setdefault(division, []).append(dict(row))
+    custom_added = 0
+    for division, custom_rows in custom_by_division.items():
+        existing_keys = set()
+        for existing_season in history.get(division, []) or []:
+            for existing in existing_season or []:
+                stamp = parse_date(existing.get("Date") or existing.get("date"))
+                key = (
+                    stamp.date().isoformat() if stamp else "",
+                    _norm(existing.get("HomeTeam") or existing.get("home_team") or ""),
+                    _norm(existing.get("AwayTeam") or existing.get("away_team") or ""),
+                )
+                if all(key):
+                    existing_keys.add(key)
+        unique_rows = []
+        for custom in custom_rows:
+            stamp = parse_date(custom.get("Date") or custom.get("date"))
+            key = (
+                stamp.date().isoformat() if stamp else "",
+                _norm(custom.get("HomeTeam") or ""),
+                _norm(custom.get("AwayTeam") or ""),
+            )
+            if not all(key) or key in existing_keys:
+                continue
+            existing_keys.add(key)
+            custom["Div"] = division
+            unique_rows.append(custom)
+        if unique_rows:
+            unique_rows.sort(
+                key=lambda row: parse_date(row.get("Date") or "") or datetime.min
+            )
+            history.setdefault(division, []).append(unique_rows)
+            if division not in train_divs:
+                train_divs.append(division)
+            custom_added += len(unique_rows)
+    logs.append(
+        f"📥 Пользовательский исторический архив: добавлено {custom_added} матчей "
+        f"по {len(custom_by_division)} кодам соревнований; новые лиги не допущены "
+        "к Value без отдельной рыночной валидации."
+    )
 
     # Enrich only the current Premier League season with genuine match xG.
     # Football API's complimentary plan is limited to this season's EPL.
@@ -334,9 +388,12 @@ def _shared_engine_cache():
     return {"engines": {}, "locks": {}, "lock": threading.RLock()}
 
 
-def _load_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_xg_rows=None):
+def _load_engine(
+    matrix_n, logs, update_loader, footballapi_key="",
+    footballapi_xg_rows=None, custom_historical_rows=None,
+):
     """Reuse a fitted model; serialize training only for an identical cache key."""
-    import pickle, gzip, os
+    import pickle, gzip, os, json
     from config import DISK_CACHE_DIR
     from model.cache_locks import get_keyed_lock
 
@@ -349,8 +406,13 @@ def _load_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_
         if isinstance(row, dict)
     })
     xg_data_tag = hashlib.sha256("|".join(xg_ids).encode("utf-8")).hexdigest()[:12] if xg_ids else "empty"
-    cache_key = f"{APP_VERSION}:{int(matrix_n)}:{xg_cache_tag}:{xg_data_tag}"
-    session_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}_{xg_cache_tag}_{xg_data_tag}"
+    custom_payload = json.dumps(
+        list(custom_historical_rows or []),
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    )
+    custom_data_tag = hashlib.sha256(custom_payload.encode("utf-8")).hexdigest()[:12] if custom_historical_rows else "none"
+    cache_key = f"{APP_VERSION}:{int(matrix_n)}:{xg_cache_tag}:{xg_data_tag}:{custom_data_tag}"
+    session_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}_{xg_cache_tag}_{xg_data_tag}_{custom_data_tag}"
 
     update_loader("🔎 Проверяю кэш обученной модели...", 0.20, logs)
     try:
@@ -477,6 +539,7 @@ def _load_engine(matrix_n, logs, update_loader, footballapi_key="", footballapi_
             matrix_n, logs, update_loader,
             footballapi_key=footballapi_key,
             footballapi_xg_rows=footballapi_xg_rows,
+            custom_historical_rows=custom_historical_rows,
         )
         update_loader("💾 Сохраняю обученную модель...", 0.99, logs)
         try:
