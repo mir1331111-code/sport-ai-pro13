@@ -17,18 +17,18 @@ import streamlit as st
 
 from config import (
     APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE,
-    DISK_CACHE_DIR, STRONG_FORECAST_MIN_PROB,
+    STRONG_FORECAST_MIN_PROB,
 )
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture,
-                          sstats_upcoming_matches, sstats_odds_fixture,
+                          sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
                           footballapi_xg_history)
 from data.fixture_merge import merge_fixture_sources
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from data.context_data import (
-    ApiFootballClient, ApiFootballContextProvider, fixture_row_key,
+    fixture_row_key,
 )
 from data.context_history import parse_context_csv
 from data.history_import import parse_historical_matches_csv
@@ -36,7 +36,7 @@ from model.context_model import (
     assess_context_quality, context_probabilities, walk_forward_context_ablation,
 )
 from model.market_models import (
-    asian_handicap_probabilities, asian_handicap_expected_value,
+    asian_handicap_probabilities,
     adjust_corners_for_game_state,
 )
 from storage.context_store import ContextStore
@@ -1138,8 +1138,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             placeholder='[{"date":"2026-10-26","home":"Santa Clara","away":"Benfica","П1":9.0,"X":5.0,"П2":1.3,"ТБ 2.5":1.9,"ТМ 2.5":1.9,"BTTS Да":1.8,"BTTS Нет":2.0,"source":"manual"}]',
         )
 
-        st.markdown("**Контекст матча · API-Football + исторический CSV**")
-        st.caption("🔑 API-Football key берётся из боковой панели «API ключи»; отдельный повторный ввод здесь не требуется.")
+        st.markdown("**Контекст матча · SStats + исторический CSV**")
+        st.caption("Составы, травмы и судьи запрашиваются через SStats для тех матчей, где поставщик отдаёт подтверждённые данные.")
         context_csv_file = st.file_uploader(
             "Исторический архив составов/судей (.csv)",
             type=["csv"],
@@ -2053,8 +2053,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"полпобеды {probabilities['half_win']:.1%} · "
                         f"возврат {probabilities['push']:.1%} · "
                         f"полупоражение {probabilities['half_loss']:.1%} · "
-                        f"поражение {probabilities['loss']:.1%} · "
-                        f"расчётный EV {forecast['expected_value']:+.1%}"
+                        f"поражение {probabilities['loss']:.1%}"
                     )
                 st.caption(
                     "EV азиатской форы рассчитан по полной матрице счетов, включая push и split-ставки. "
@@ -2098,9 +2097,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         sstats_key = _runtime_secret("sstats_api_key_input", "SSTATS_API_KEY", "sstats_api_key")
         footballapi_key = _runtime_secret(
             "footballapi_key_input", "FOOTBALLAPI_KEY", "footballapi_key"
-        )
-        api_football_key = _runtime_secret(
-            "api_football_key_input", "API_FOOTBALL_KEY", "api_football_key"
         )
         fixture_sources = []
         tsdb_rows = []
@@ -2197,53 +2193,25 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         context_by_fixture = {}
         context_store = None
-        if api_football_key:
+        if sstats_key:
             try:
                 context_store = ContextStore(DB_FILE)
             except Exception as exc:
                 logs.append(f"⚠️ Context DB недоступна ({type(exc).__name__}); live-скан продолжается.")
-        if api_football_key:
             try:
-                lineup_call_cap = _runtime_int(
-                    "api_football_max_lineup_calls",
-                    "API_FOOTBALL_MAX_LINEUP_CALLS",
-                    default=12,
-                )
-                api_daily_limit = _runtime_int(
-                    "api_football_daily_limit",
-                    "API_FOOTBALL_DAILY_LIMIT",
-                    default=100,
-                    minimum=1,
-                )
-                api_daily_reserve = _runtime_int(
-                    "api_football_daily_reserve",
-                    "API_FOOTBALL_DAILY_RESERVE",
-                    default=10,
-                )
-                api_client = ApiFootballClient(
-                    api_football_key, cache_dir=DISK_CACHE_DIR,
-                    daily_limit=api_daily_limit,
-                    reserve=api_daily_reserve,
-                )
-                context_provider = ApiFootballContextProvider(
-                    api_client,
-                    timezone_name=getattr(scan_timezone, "key", "UTC"),
-                    max_lineup_calls=lineup_call_cap,
-                    lineup_window_hours=6,
-                )
-                context_by_fixture, context_logs = context_provider.enrich(
-                    rows,
+                context_by_fixture, context_logs = sstats_context_enrich(
+                    rows, sstats_key,
                     date_from=today_date.isoformat(),
                     date_to=(today_date + timedelta(days=days - 1)).isoformat(),
                     now=scan_now,
+                    timezone_offset=int(round(scan_now.utcoffset().total_seconds() / 3600)) if scan_now.utcoffset() else 0,
                 )
                 logs.extend(context_logs)
             except Exception as exc:
-                logs.append(f"⚠️ API-Football context: {type(exc).__name__}; Base-прогнозы сохраняются.")
+                logs.append(f"⚠️ SStats context: {type(exc).__name__}; Base-прогнозы сохраняются.")
         else:
             logs.append(
-                "🔒 API-Football не настроен: Base-прогнозы будут показаны, "
-                "но Strong/Value заблокированы до подтверждения стартового XI и судьи."
+                "🔒 SStats не настроен: контекст недоступен; Strong/Value остаются заблокированы."
             )
 
         update_loader("📈 Загрузка xG-истории...", 0.16, logs)
@@ -2364,7 +2332,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         ),
                         observed_at=str(api_context.get("timestamp") or ""),
                         context=api_context,
-                        data_source="api-football",
+                        data_source="sstats",
                     )
                 except (TypeError, ValueError, OSError) as exc:
                     logs.append(f"⚠️ Context snapshot не сохранён: {type(exc).__name__}")
@@ -2675,9 +2643,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "line": handicap_line,
                         "odds": handicap_price,
                         "probabilities": handicap_probs,
-                        "expected_value": asian_handicap_expected_value(
-                            handicap_probs, handicap_price
-                        ),
                     })
                 except (TypeError, ValueError, OverflowError):
                     continue
@@ -2867,7 +2832,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "stat_market_odds": dict(stat_market_odds),
                 "asian_handicap_market_odds": dict(asian_handicap_market_odds),
                 "asian_handicap_forecasts": asian_handicap_forecasts,
-                "api_football_fixture_id": api_context.get("api_fixture_id"),
+                "api_football_fixture_id": None,
+                "sstats_game_id": r.get("sstats_game_id"),
+                "sstats_event_id": api_context.get("sstats_event_id"),
                 "api_context": api_context,
                 "context_quality": context_quality,
                 "context_forecasts": context_forecasts,
