@@ -1050,10 +1050,9 @@ with tab_lab:
 with tab_stats_tools:
     stats.render()
     st.divider()
-    tool_calculator, tool_backtest = st.tabs(["🧮 Калькулятор", "🧪 Бэктест"])
-    with tool_calculator:
+    with st.expander("🧮 Калькулятор", expanded=False):
         calculator.render(matrix_n)
-    with tool_backtest:
+    with st.expander("🧪 Бэктест", expanded=False):
         backtest.render()
 with tab_api:
     api_center.render()
