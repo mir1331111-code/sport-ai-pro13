@@ -94,6 +94,15 @@ def _runtime_secret(session_key: str, *names: str) -> str:
     return ""
 
 
+def _runtime_int(session_key: str, *names: str, default: int, minimum: int = 0) -> int:
+    """Read an integer deployment setting from session, environment or Streamlit Secrets."""
+    raw = _runtime_secret(session_key, *names)
+    try:
+        return max(int(minimum), int(raw)) if raw else int(default)
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
+
+
 def _safe_filter(rows):
     if not isinstance(rows, list):
         return []
@@ -2229,13 +2238,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 logs.append(f"⚠️ Context DB недоступна ({type(exc).__name__}); live-скан продолжается.")
         if api_football_key:
             try:
-                try:
-                    lineup_call_cap = int(os.environ.get("API_FOOTBALL_MAX_LINEUP_CALLS", "12"))
-                except (TypeError, ValueError):
-                    lineup_call_cap = 12
+                lineup_call_cap = _runtime_int(
+                    "api_football_max_lineup_calls",
+                    "API_FOOTBALL_MAX_LINEUP_CALLS",
+                    default=12,
+                )
+                api_daily_limit = _runtime_int(
+                    "api_football_daily_limit",
+                    "API_FOOTBALL_DAILY_LIMIT",
+                    default=100,
+                    minimum=1,
+                )
+                api_daily_reserve = _runtime_int(
+                    "api_football_daily_reserve",
+                    "API_FOOTBALL_DAILY_RESERVE",
+                    default=10,
+                )
                 api_client = ApiFootballClient(
                     api_football_key, cache_dir=DISK_CACHE_DIR,
-                    daily_limit=100, reserve=10,
+                    daily_limit=api_daily_limit,
+                    reserve=api_daily_reserve,
                 )
                 context_provider = ApiFootballContextProvider(
                     api_client,

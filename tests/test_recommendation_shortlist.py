@@ -2,7 +2,7 @@ import unittest
 
 from ui.tabs.scanner import (
     _is_actionable_recommendation, _qualified_bet_cards,
-    _portfolio_auto_recommendation,
+    _portfolio_auto_recommendation, _runtime_int,
 )
 
 
@@ -26,6 +26,28 @@ def valid_card():
     }
 
 class RecommendationShortlistTests(unittest.TestCase):
+    def test_runtime_int_reads_environment_and_falls_back_safely(self):
+        from unittest.mock import patch
+
+        with patch.dict("os.environ", {"NEURO_TEST_QUOTA": "240"}, clear=False):
+            self.assertEqual(
+                _runtime_int("unused_session_key", "NEURO_TEST_QUOTA", default=100),
+                240,
+            )
+        with patch.dict("os.environ", {"NEURO_TEST_QUOTA": "invalid"}, clear=False):
+            self.assertEqual(
+                _runtime_int("unused_session_key", "NEURO_TEST_QUOTA", default=100),
+                100,
+            )
+        with patch.dict("os.environ", {"NEURO_TEST_QUOTA": "2"}, clear=False):
+            self.assertEqual(
+                _runtime_int(
+                    "unused_session_key", "NEURO_TEST_QUOTA",
+                    default=100, minimum=10,
+                ),
+                10,
+            )
+
     def test_shortlist_contains_only_markets_with_full_portfolio_validation(self):
         winner = {
             "best": ("1X2", "П1", 2.20, 0.12, 0.60, 10.0),
