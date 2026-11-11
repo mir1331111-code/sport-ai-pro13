@@ -534,54 +534,27 @@ class Engine:
         """
 
         P0 = self.lp[lg]
+        home_key = _team_state_key(lg, h)
+        away_key = _team_state_key(lg, a)
 
         # ---------------------------------------------------------
         # Лиговые средние
         # ---------------------------------------------------------
 
-        if len(self.lg_hg.get(lg, [])) >= 20:
-            lh_g = max(
-                0.05,
-                self._m(
-                    self.lg_hg[lg],
-                    1.5,
-                    self.lg_hg_dates[lg],
-                    match_date,
-                ),
-            )
+        # Never borrow fallback averages from other competitions. Sparse
+        # competitions shrink only toward neutral football priors, while their
+        # own historical scoring rates gain weight as that competition grows.
+        home_samples = self.lg_hg.get(lg, [])
+        away_samples = self.lg_ag.get(lg, [])
+        home_weight = min(1.0, len(home_samples) / 20.0)
+        away_weight = min(1.0, len(away_samples) / 20.0)
+        home_rate = self._m(home_samples, 1.5, self.lg_hg_dates.get(lg, []), match_date)
+        away_rate = self._m(away_samples, 1.2, self.lg_ag_dates.get(lg, []), match_date)
+        lh_g = max(0.05, 1.5 * (1.0 - home_weight) + home_rate * home_weight)
+        la_g = max(0.05, 1.2 * (1.0 - away_weight) + away_rate * away_weight)
 
-            la_g = max(
-                0.05,
-                self._m(
-                    self.lg_ag[lg],
-                    1.2,
-                    self.lg_ag_dates[lg],
-                    match_date,
-                ),
-            )
-        else:
-            lh_g = max(
-                0.05,
-                self._m(
-                    self.hg,
-                    1.5,
-                    self.hg_dates,
-                    match_date,
-                ),
-            )
-
-            la_g = max(
-                0.05,
-                self._m(
-                    self.ag,
-                    1.2,
-                    self.ag_dates,
-                    match_date,
-                ),
-            )
-
-        sh = self.st[h]
-        sa = self.st[a]
+        sh = self.st[home_key]
+        sa = self.st[away_key]
 
         # ---------------------------------------------------------
         # Силы атаки / защиты
@@ -638,8 +611,8 @@ class Engine:
             defense_home = blend_strength(
                 defense_home, sh["hs_xga"], sh["hs_xga_dates"], league_away_xg)
 
-        fh = self._form(h)
-        fa = self._form(a)
+        fh = self._form(home_key)
+        fa = self._form(away_key)
 
         # ---------------------------------------------------------
         # Ожидаемые голы
@@ -671,9 +644,9 @@ class Engine:
         # Коэффициенты — приор, не истина: гонять A/B через ledger
         # (self.rest_days_adjustment выключить/включить).
         home_rest = days_since_last_match(
-            self.last_match_date.get(h), match_date)
+            self.last_match_date.get(home_key), match_date)
         away_rest = days_since_last_match(
-            self.last_match_date.get(a), match_date)
+            self.last_match_date.get(away_key), match_date)
 
         def _rest_factor(rest):
             if rest is None:
@@ -696,12 +669,12 @@ class Engine:
 
         if apply_h2h:
             lam_h, lam_a, h2h_n = self.h2h_adjust(
-                h, a, lam_g_h, lam_g_a,
+                h, a, lam_g_h, lam_g_a, lg=lg,
             )
         else:
             # Counterfactual path for live A/B auditing; do not mutate state.
             lam_h, lam_a = lam_g_h, lam_g_a
-            h2h_n = len(self.h2h.get((h, a), []))
+            h2h_n = len(self.h2h.get(_h2h_state_key(lg, h, a), []))
 
         # ---------------------------------------------------------
         # Elo
@@ -712,13 +685,13 @@ class Engine:
 
         eh_eff = (
             1500
-            + (self.elo.get(h, 1500) - 1500)
+            + (self.elo.get(home_key, 1500) - 1500)
             * min(1.0, gh / 10.0)
         )
 
         ea_eff = (
             1500
-            + (self.elo.get(a, 1500) - 1500)
+            + (self.elo.get(away_key, 1500) - 1500)
             * min(1.0, ga / 10.0)
         )
 
@@ -801,9 +774,9 @@ class Engine:
         # Calibration
         # ---------------------------------------------------------
 
-        c1 = self.calibrate(f1, 0)
-        cx = self.calibrate(fd, 1)
-        c2 = self.calibrate(f2, 2)
+        c1 = self.calibrate(f1, 0, lg)
+        cx = self.calibrate(fd, 1, lg)
+        c2 = self.calibrate(f2, 2, lg)
 
         total_calibrated = c1 + cx + c2 or 1.0
 
