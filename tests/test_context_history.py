@@ -40,11 +40,13 @@ class ContextHistoryTests(unittest.TestCase):
         self.assertEqual(row["source_reliability"], 0.84)
 
     def test_requires_timezone_aware_timestamps(self):
-        with self.assertRaises(ValueError):
-            parse_context_csv(
-                "fixture_id,home_team,away_team,kickoff_at,observed_at\n"
-                "f3,H,A,2026-11-12T20:00:00,2026-11-12T19:00:00\n"
-            )
+        parsed = parse_context_csv(
+            "fixture_id,home_team,away_team,kickoff_at,observed_at\n"
+            "f3,H,A,2026-11-12T20:00:00,2026-11-12T19:00:00\n"
+        )
+        self.assertEqual(parsed["accepted"], 0)
+        self.assertEqual(len(parsed["rejected"]), 1)
+        self.assertIn("timezone", parsed["rejected"][0]["reason"])
 
 
 if __name__ == "__main__":
