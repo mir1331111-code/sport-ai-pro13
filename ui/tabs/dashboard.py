@@ -158,7 +158,12 @@ def render():
     ranked.sort(key=lambda x: x[0], reverse=True)
     groq_matches = [
         c for c in cards
-        if isinstance(c.get("deep_analysis"), dict) and c.get("deep_analysis_fixture_id")
+        if (
+            isinstance(c.get("deep_analysis"), dict)
+            and c.get("deep_analysis_fixture_id")
+            and c["deep_analysis"].get("independent_pick") in {"П1", "X", "П2"}
+            and isinstance(c["deep_analysis"].get("probabilities"), dict)
+        )
     ]
     groq_matches.sort(
         key=lambda c: (favorite(c) or {}).get("probability", 0.0),
@@ -185,7 +190,12 @@ def render():
              and (c.get("verdict") or {}).get("value_passed"))
         for c in cards
     )
-    groq_count = sum(bool(c.get("deep_analysis")) for c in cards)
+    groq_count = sum(
+        isinstance(c.get("deep_analysis"), dict)
+        and c["deep_analysis"].get("independent_pick") in {"П1", "X", "П2"}
+        and isinstance(c["deep_analysis"].get("probabilities"), dict)
+        for c in cards
+    )
     ctx = [context_summary(c) for c in cards]
     xi_count = sum(x["xi"] for x in ctx)
     referee_count = sum(x["referee"] for x in ctx)
