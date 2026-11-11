@@ -3207,7 +3207,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         or card.get("best_odds_source")
                         or card.get("odds_source", "unknown")
                     ),
-                    "mode": "real",
+                    "mode": "paper",
                     "date": (parse_date(card.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": card.get("date_iso"),
                     "match_time": card.get("time", ""),
