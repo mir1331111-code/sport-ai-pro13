@@ -628,8 +628,13 @@ def _render_manual_odds_block(
             and math.isfinite(selected_probability)
             and 0.0 < selected_probability < 1.0
         ):
+            context_eligible = bool(
+                (c.get("context_quality") or {}).get("strong_value_eligible")
+            )
             strength_label = (
                 f"СИЛЬНЫЙ ПРОГНОЗ ≥{STRONG_FORECAST_MIN_PROB:.0%}"
+                if selected_probability >= STRONG_FORECAST_MIN_PROB and context_eligible else
+                "Strong заблокирован: нет подтверждённого XI и/или судьи"
                 if selected_probability >= STRONG_FORECAST_MIN_PROB else
                 f"прогноз ниже порога сильного {STRONG_FORECAST_MIN_PROB:.0%}"
             )
@@ -868,15 +873,24 @@ def _render_manual_odds_block(
             if market_is_validated:
                 st.caption(f"Расчётный размер виртуальной ставки: {stake:.2f} у.е.")
 
+        context_eligible = bool(
+            (c.get("context_quality") or {}).get("strong_value_eligible")
+        )
         passed = (
-            rec_verdict is not None
+            context_eligible
+            and rec_verdict is not None
             and market_is_validated
             and prob >= max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB)
             and edge >= min_edge
             and ev >= min_ev
             and stake > 0
         )
-        if rec_verdict is None:
+        if not context_eligible:
+            col_btn.info(
+                "Добавление в портфель отключено: требуется подтверждённый стартовый XI "
+                "обеих команд и подтверждённый судья."
+            )
+        elif rec_verdict is None:
             col_btn.info(
                 "Справочная котировка: исход не прошёл независимый отбор этого рынка. "
                 "Добавление в портфель отключено."
