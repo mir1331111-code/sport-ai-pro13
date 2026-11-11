@@ -2317,7 +2317,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             r.get("fixture_id")
                             or f"api-football:{api_context.get('api_fixture_id')}"
                         ),
-                        kickoff_at=(kickoff_local.isoformat() if kickoff_local else ""),
+                        kickoff_at=(
+                            kickoff_local.isoformat()
+                            if kickoff_local else str(api_context.get("kickoff_at") or "")
+                        ),
                         observed_at=str(api_context.get("timestamp") or ""),
                         context=api_context,
                         data_source="api-football",
