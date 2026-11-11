@@ -49,6 +49,7 @@ from betting.best_picks import best_value_market, best_value_markets
 from betting.ranking import model_favorite, rank_model_favorites, rank_score
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
 from betting.kelly import kelly, market_type
+from betting.risk import portfolio_risk_report
 from betting.market_math import blend_probability, proportional_devig
 from llm.analyst import LLMRateLimitError, analyze_match, has_sufficient_history
 from model.independent_forecasts import historical_features, record_scan_forecasts
@@ -3107,6 +3108,20 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             for b in (D.get("bets") or [])
             if b.get("status") == "pending"
         }
+        existing_fixture_keys = {
+            (str(b.get("date_iso") or ""), str(b.get("match") or ""))
+            for b in (D.get("bets") or [])
+            if b.get("status") == "pending"
+        }
+        open_stakes = sum(
+            float(b.get("stake") or 0) for b in (D.get("bets") or [])
+            if isinstance(b, dict) and b.get("status") == "pending"
+        )
+        risk_capital = float(D.get("bank") or 0.0) + open_stakes
+        base_risk_alerts = set(portfolio_risk_report(
+            D.get("bets") or [], bank=risk_capital,
+            initial_bank=float((D.get("meta") or {}).get("initial_bank") or risk_capital),
+        )["alerts"])
         if auto_add:
             for card in cards:
                 portfolio_choice = _portfolio_auto_recommendation(card)
@@ -3118,7 +3133,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 market_code = str(best_card[0]).upper()
                 market_family = portfolio_choice["family"]
                 match_key = (str(card.get("match") or ""), pick)
-                if match_key in existing_keys:
+                fixture_key = (str(card.get("date_iso") or ""), str(card.get("match") or ""))
+                # One open position per fixture: totals, BTTS and 1X2 on the
+                # same event are not independent portfolio diversification.
+                if match_key in existing_keys or fixture_key in existing_fixture_keys:
                     continue
                 try:
                     odds_value = float(best_card[2])
@@ -3174,8 +3192,21 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "score": None,
                     "ev": ev_value,
                 }
+                proposed_bets = list(D.get("bets") or []) + new_bets + [new_bet]
+                proposed_risk = portfolio_risk_report(
+                    proposed_bets, bank=risk_capital,
+                    initial_bank=float((D.get("meta") or {}).get("initial_bank") or risk_capital),
+                )
+                added_risk_alerts = set(proposed_risk["alerts"]) - base_risk_alerts
+                if added_risk_alerts:
+                    logs.append(
+                        "🛡️ AUTO-PORTFOLIO: пропуск из-за лимита риска · "
+                        + " | ".join(sorted(added_risk_alerts)[:2])
+                    )
+                    continue
                 new_bets.append(new_bet)
                 existing_keys.add(match_key)
+                existing_fixture_keys.add(fixture_key)
                 available_bank -= stake_value
                 total_stake += stake_value
                 logs.append(f"🤖 AUTO-PORTFOLIO: {card.get('match_ru', card.get('match', ''))} | {pick} @ {odds_value:.2f} | stake {stake_value:.2f}")
