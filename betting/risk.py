@@ -75,10 +75,18 @@ def risk_snapshot(
         for b in rows
         if _placed_day(b, current.date()) == current.date()
     )
+    match_exposures: dict[str, float] = {}
+    for bet in rows:
+        key = _fixture_key(bet)
+        if key:
+            match_exposures[key] = match_exposures.get(key, 0.0) + _safe_float(bet.get("stake"))
+    max_match = max(match_exposures.values(), default=0.0)
     return {
         "bankroll_basis": bankroll,
         "pending_exposure": pending,
         "daily_exposure": daily,
+        "max_match_exposure": max_match,
+        "max_match_exposure_pct": max_match / bankroll if bankroll else 0.0,
         "pending_exposure_pct": pending / bankroll if bankroll else 0.0,
         "daily_exposure_pct": daily / bankroll if bankroll else 0.0,
         "daily_limit_amount": bankroll * MAX_DAILY_EXPOSURE_PCT,
