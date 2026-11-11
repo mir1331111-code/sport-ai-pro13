@@ -100,7 +100,7 @@ def team_badge(url, name):
     letter = esc((str(name or "?").strip()[:1] or "?").upper())
     fallback = f"<span class='sp-team-fallback'>{letter}</span>"
     if not url:
-        return fallback
+        return f"<span class='sp-team-emblem'>{fallback}</span>"
     return (
         f"<span class='sp-team-emblem'>{fallback}"
         f"<img src='{esc(url)}' alt='{label}' loading='lazy' "
