@@ -111,6 +111,8 @@ class ChronologicalTrainingTests(unittest.TestCase):
         self.assertEqual(model.ag, [])
         self.assertEqual(len(model.lg_hg["W_ALL"]), 1)
         self.assertEqual(len(model.lg_hg["MEN_ALL"]), 0)
+        self.assertEqual(len(model.calib_logits), 0)
+        self.assertEqual(len(model.calib_logits_by_group["women"]), 3)
 
         # A generic feed label is kept in its own unknown bucket and does not
         # become an accidental men's prior.
@@ -124,6 +126,8 @@ class ChronologicalTrainingTests(unittest.TestCase):
         self.assertNotIn("Mystery Club", model.st)
         self.assertEqual(len(model.lg_hg["UNK_ALL"]), 1)
         self.assertEqual(len(model.lg_hg["MEN_ALL"]), 0)
+        self.assertEqual(len(model.calib_logits_by_group["unknown"]), 3)
+        self.assertEqual(len(model.calib_logits_by_group["women"]), 3)
 
         model.learn_batch([{
             "home": "Shared Club", "away": "Men's Opponent",
@@ -135,6 +139,9 @@ class ChronologicalTrainingTests(unittest.TestCase):
         self.assertEqual(len(model.lg_hg["MEN_ALL"]), 1)
         self.assertEqual(len(model.lg_hg["W_ALL"]), 1)
         self.assertEqual(len(model.lg_hg["UNK_ALL"]), 1)
+        self.assertEqual(len(model.calib_logits), 3)
+        self.assertEqual(len(model.calib_logits_by_group["women"]), 3)
+        self.assertEqual(len(model.calib_logits_by_group["unknown"]), 3)
 
     def test_single_match_wrapper_keeps_legacy_leakage_safe_contract(self):
         model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
