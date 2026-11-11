@@ -2498,8 +2498,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
             # Build one cross-market candidate set. Secondary markets are
             # admitted only when their exact line passed a leakage-safe historical test.
+            referee_name_for_stats = str(
+                (api_context.get("referee") or {}).get("name") or ""
+            ).strip()
             historical_stats = (
-                engine.match_stats.predict(h_en, a_en, lg)
+                engine.match_stats.predict(
+                    h_en, a_en, lg, referee_id=referee_name_for_stats
+                )
                 if hasattr(engine, "match_stats") else {}
             )
             asian_handicap_forecasts = []
