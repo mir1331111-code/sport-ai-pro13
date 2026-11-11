@@ -2870,10 +2870,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"is_action={verdict.get('is_action')} | reason={no_best_reason}"
                 )
 
+            api_category = str(
+                api_context.get("match_category")
+                or ((api_context.get("competition") or {}).get("match_category") or "")
+            ).casefold()
+            division_known = str(lg).casefold() not in {"", "g", "general", "unknown", "other"}
+            category_verified = bool(
+                r.get("category_verified") or division_known
+                or api_context.get("category_verified")
+            )
             match_category = (
-                "women" if bool(r.get("women")) or str(lg).startswith("W_")
-                else "national" if bool(r.get("national")) or str(lg).startswith("NT")
-                else "men" if bool(r.get("category_verified")) else "unknown"
+                "women" if bool(r.get("women")) or str(lg).startswith("W_") or api_category == "women"
+                else "national" if bool(r.get("national")) or str(lg).startswith("NT") or api_category == "national"
+                else "men" if category_verified else "unknown"
             )
             api_context_status = str(
                 api_context.get("provider_status")
@@ -2905,7 +2914,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "women": match_category == "women",
                 "national": match_category == "national",
                 "match_category": match_category,
-                "category_verified": bool(r.get("category_verified") or str(lg).startswith(("W_", "NT"))),
+                "category_verified": category_verified,
                 "source_conflicts": list(r.get("source_conflicts") or []),
                 "api_context": api_context,
                 "api_context_status": api_context_status,
