@@ -21,8 +21,6 @@ STATE = {
 
 
 def render_data_quality():
-    st.header("🧭 DATA QUALITY")
-    st.caption("Проверяем наличие и состояние фактов. Полнота данных не равна вероятности выигрыша.")
     cards = [c for c in (st.session_state.get("data") or {}).get("cards", []) if isinstance(c, dict)]
     if not cards:
         st.info("Сначала выполни сканирование: здесь появится аудит источников по каждому матчу.")
@@ -63,8 +61,6 @@ def render_data_quality():
 
 
 def render_learning_center():
-    st.header("🧠 AI LEARNING CENTER")
-    st.caption("Журнал ошибок и качества прогнозов. Этот экран анализирует результаты, но не меняет веса модели автоматически.")
     try:
         ledger = ForecastLedger(DB_FILE)
         metrics = ledger.metrics()
@@ -112,8 +108,6 @@ def render_learning_center():
 
 
 def render_model_lab():
-    st.header("🧪 MODEL LAB")
-    st.caption("Калибровка, надёжность вероятностей и независимый статус каждого рынка.")
     try:
         ledger = ForecastLedger(DB_FILE)
         metrics = ledger.metrics()
@@ -176,8 +170,6 @@ def render_model_lab():
 
 
 def render_portfolio_risk():
-    st.header("🛡️ PORTFOLIO RISK")
-    st.caption("Концентрация, дневная нагрузка, риск одного матча и историческая просадка. Аналитика не размещает ставки.")
     data = st.session_state.get("data") or {}
     report = portfolio_risk(data.get("bets") or [], data.get("bank") or 0)
     a,b,c,d = st.columns(4)
@@ -205,8 +197,6 @@ def render_api_center():
     from pathlib import Path
     from config import DISK_CACHE_DIR, LLM_DAILY_LIMIT, ODDS_LIMIT_DAILY, FOOTBALL_DATA_ORG_DAILY_LIMIT
 
-    st.header("⚙️ API CENTER")
-    st.caption("Показывает наличие ключа и локальные счётчики. «Ключ задан» не означает, что внешний API сейчас доступен; проверка соединения выполняется отдельно.")
     providers = [
         ("API-Football", "api_football_key_input", "API_FOOTBALL_KEY", "Составы, травмы, судьи"),
         ("SStats.net", "sstats_api_key_input", "SSTATS_API_KEY", "Расписание и коэффициенты"),
