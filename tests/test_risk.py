@@ -105,6 +105,22 @@ class RiskSizingTests(unittest.TestCase):
         self.assertEqual(stake, 10.0)
         self.assertEqual(info["match_used"], 8.0)
 
+    def test_two_percent_match_cap_is_a_hard_combined_ceiling(self):
+        stake, info = size_bet(
+            probability=0.90,
+            odds=2.0,
+            bank=985,
+            bets=[_bet(stake=15.0, market="1X2", pick="П1")],
+            fixture_id="fixture-1",
+            match="Home FC vs Away FC",
+            date_iso="2026-11-11",
+            market="OU",
+            pick="ТБ 2.5",
+            now=NOW,
+        )
+        self.assertEqual(stake, 5.0)
+        self.assertEqual(info["match_used"], 15.0)
+
     def test_daily_exposure_blocks_stake_above_five_percent(self):
         stake, info = size_bet(
             probability=0.90,
