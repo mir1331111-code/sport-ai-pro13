@@ -26,6 +26,27 @@ def _rows():
 
 
 class BestValueMarketTests(unittest.TestCase):
+
+    def test_missing_context_blocks_all_value_shortlists(self):
+        chosen, best = best_value_market(
+            _verdict(), _rows(),
+            {"П1": 2.10, "X": 3.80, "П2": 5.00, "ТБ 2.5": 1.90},
+            bank=1000, kelly_frac=0.25, min_prob=0.50,
+            bookmaker_by_pick={"П1": "Book A", "X": "Book A", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
+            context_qualified=False,
+        )
+        self.assertEqual((chosen, best), (None, None))
+        shortlist = best_value_markets(
+            _verdict(), _rows(),
+            {"П1": 2.10, "X": 3.80, "П2": 5.00, "ТБ 2.5": 1.90},
+            bank=1000, kelly_frac=0.25, min_prob=0.50,
+            bookmaker_by_pick={"П1": "Book A", "X": "Book A", "П2": "Book A"},
+            market_validation_by_pick={"П1": True},
+            context_qualified=False,
+        )
+        self.assertEqual(shortlist, {})
+
     def test_selects_1x2_market_with_value_after_market_blend(self):
         chosen, best = best_value_market(
             _verdict(), _rows(),
