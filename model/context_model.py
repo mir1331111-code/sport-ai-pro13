@@ -98,14 +98,16 @@ def context_probabilities(
     quality = assess_context_quality(context)
     adjusted = dict(base)
     applied = False
-    if isinstance(model, dict) and model.get("trained") is True:
+    if (isinstance(model, dict) and model.get("trained") is True
+            and model.get("walk_forward_validated") is True):
         try:
             vector = _feature_vector(context or {})
             means = list(model["feature_means"])
             scales = list(model["feature_scales"])
             weights = model["weights"]
             bias = model["bias"]
-            if not (len(vector) == len(means) == len(scales) == len(vector)):
+            if not (len(vector) == len(means) == len(scales)
+                    and all(len(weights[outcome]) == len(vector) for outcome in OUTCOMES)):
                 raise ValueError("context model feature shape mismatch")
             logits = []
             for outcome in OUTCOMES:
@@ -239,6 +241,119 @@ def fit_context_blender(
         "validation_required": True,
     }
 
+
+
+def walk_forward_context_ablation(
+    rows: list[dict],
+    *,
+    min_train: int = 200,
+    min_validation: int = 500,
+    epochs: int = 600,
+) -> dict:
+    """Run chronological, same-day-batched Base vs Context ablation.
+
+    A day's results are never used to predict other fixtures on that same day.
+    Production model is promoted only when the out-of-time paired sample reaches
+    min_validation and Context improves both Brier and Log Loss.
+    """
+    prepared = []
+    seen = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        fixture_id = str(row.get("fixture_id") or "")
+        if not fixture_id or fixture_id in seen:
+            continue
+        try:
+            kickoff = datetime.fromisoformat(str(row["kickoff_at"]).replace("Z", "+00:00"))
+            observed = datetime.fromisoformat(str(row["observed_at"]).replace("Z", "+00:00"))
+            if kickoff.tzinfo is None or observed.tzinfo is None or observed >= kickoff:
+                continue
+            _feature_vector(row)
+            base = _valid_probability_map({
+                "H": row.get("base_p_home"),
+                "D": row.get("base_p_draw"),
+                "A": row.get("base_p_away"),
+            })
+            outcome = str(row.get("result") or "").upper()
+            if not bool(row.get("is_confirmed")) or outcome not in OUTCOMES:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        seen.add(fixture_id)
+        prepared.append((kickoff, row, base, outcome))
+    prepared.sort(key=lambda item: (item[0], str(item[1].get("fixture_id") or "")))
+
+    train_rows = []
+    base_rows, context_rows = [], []
+    cursor = 0
+    while cursor < len(prepared):
+        day = prepared[cursor][0].date()
+        group = []
+        while cursor < len(prepared) and prepared[cursor][0].date() == day:
+            group.append(prepared[cursor])
+            cursor += 1
+
+        model = fit_context_blender(
+            train_rows, min_samples=min_train, epochs=epochs
+        )
+        # In-sample promotion is not allowed. This temporary flag is used only
+        # to score the next unseen date block during the walk-forward run.
+        if model.get("trained"):
+            model = dict(model, walk_forward_validated=True)
+        for _, row, base, outcome in group:
+            predicted = context_probabilities(base, row, model)
+            fixture_id = str(row["fixture_id"])
+            base_rows.append({
+                "fixture_id": fixture_id,
+                "result": outcome,
+                "probabilities": dict(base),
+            })
+            context_rows.append({
+                "fixture_id": fixture_id,
+                "result": outcome,
+                "probabilities": dict(predicted["Context"]),
+            })
+        # Append labels only after every fixture in the date block is forecast.
+        train_rows.extend(row for _, row, _, _ in group)
+
+    report = evaluate_ablation(base_rows, context_rows)
+    report.update({
+        "walk_forward": True,
+        "training_floor": int(min_train),
+        "validation_floor": int(min_validation),
+        "training_rows": len(train_rows),
+    })
+    deltas = report.get("delta_context_minus_base") or {}
+    improved = (
+        report["n"] >= int(min_validation)
+        and deltas.get("brier") is not None
+        and deltas.get("log_loss") is not None
+        and deltas["brier"] < 0
+        and deltas["log_loss"] < 0
+    )
+    final_model = fit_context_blender(
+        train_rows, min_samples=min_train, epochs=epochs
+    )
+    if improved and final_model.get("trained"):
+        final_model["walk_forward_validated"] = True
+        final_model["validation"] = {
+            "n": report["n"],
+            "brier_delta": deltas["brier"],
+            "log_loss_delta": deltas["log_loss"],
+        }
+    else:
+        final_model = {
+            "trained": False,
+            "walk_forward_validated": False,
+            "reason": (
+                "context not promoted: require at least "
+                f"{int(min_validation)} paired fixtures and improvement in both "
+                "Brier and Log Loss"
+            ),
+        }
+    report["promoted_model"] = final_model
+    return report
 
 def _metrics(rows: list[tuple[dict, str]]) -> dict:
     if not rows:
