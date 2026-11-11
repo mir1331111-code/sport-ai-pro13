@@ -10,7 +10,7 @@ The provider:
 - makes one fixtures request for the requested date range and matches fixtures by local date plus normalized home/away teams;
 - sends only API-Football fixture IDs to API-Football endpoints;
 - batches injuries requests in groups of at most 20 fixtures;
-- requests lineups only within six hours of kickoff and caps uncached lineup calls at 12 per scan by default;
+- requests lineups only within six hours of kickoff and caps uncached lineup calls at 12 per scan by default; cache hits do not consume those call slots, so later fixtures are not starved by earlier cached matches;
 - caches fixture, injury and lineup responses on disk and enforces a local UTC-day budget of 100 requests with a 10-request reserve;
 - records a provider response timestamp, confirmation flag and source-reliability field for each data family.
 
