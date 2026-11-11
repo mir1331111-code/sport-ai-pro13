@@ -140,6 +140,48 @@ class ForecastLedgerTests(unittest.TestCase):
         )
         self.assertIsNone(migrated.rows()[0]["xg_used"])
 
+    def test_forecast_metadata_is_persisted_and_old_schema_migrates(self):
+        self.ledger.record_prediction(
+            forecast_key="metadata", fixture_id="metadata-fixture",
+            home_team="Home", away_team="Away", model_version="test-v14",
+            probabilities={"H": 0.6, "D": 0.25, "A": 0.15},
+            forecast_at=self.t0, kickoff_at=self.t0 + timedelta(hours=4),
+            context_quality={"level": "High", "strong_value_eligible": False},
+            evidence={"home_history_n": 24, "home_form": "ВВНПВ"},
+            match_category="women", data_quality_score=82,
+        )
+        row = next(item for item in self.ledger.rows() if item["forecast_key"] == "metadata")
+        self.assertEqual(row["context_quality"]["level"], "High")
+        self.assertEqual(row["evidence"]["home_history_n"], 24)
+        self.assertEqual(row["match_category"], "women")
+        self.assertEqual(row["data_quality_score"], 82)
+
+        path = self.tmp.name + "/legacy-metadata.sqlite"
+        old_schema = SCHEMA
+        old_schema = old_schema.replace(
+            " xg_used INTEGER CHECK(xg_used IS NULL OR xg_used IN (0,1)),\n", ""
+        )
+        for declaration in (
+            " context_quality_json TEXT,\n",
+            " evidence_json TEXT,\n",
+            " match_category TEXT,\n",
+            " data_quality_score INTEGER CHECK(data_quality_score IS NULL OR data_quality_score BETWEEN 0 AND 100),\n",
+        ):
+            old_schema = old_schema.replace(declaration, "")
+        with sqlite3.connect(path) as connection:
+            connection.executescript(old_schema)
+        migrated = ForecastLedger(path)
+        columns = {
+            row[1] for row in sqlite3.connect(path).execute(
+                "PRAGMA table_info(forecasts)"
+            ).fetchall()
+        }
+        self.assertTrue({
+            "xg_used", "context_quality_json", "evidence_json",
+            "match_category", "data_quality_score",
+        }.issubset(columns))
+        self.assertEqual(migrated.rows(), [])
+
     def test_unknown_forecast_and_conflicting_result_fail(self):
         with self.assertRaises(KeyError):
             self.ledger.settle("missing", "H")
