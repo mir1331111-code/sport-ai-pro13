@@ -67,12 +67,14 @@ def risk_snapshot(
 ) -> dict[str, float]:
     """Summarise pending exposure using current free balance plus open stakes."""
     current = now or datetime.now()
-    rows = [b for b in bets if _pending(b)] if isinstance(bets, list) else []
+    all_rows = [b for b in bets if isinstance(b, dict)] if isinstance(bets, list) else []
+    rows = [b for b in all_rows if _pending(b)]
     pending = sum(_safe_float(b.get("stake")) for b in rows)
     bankroll = max(0.0, _safe_float(bank) + pending)
+    # Daily risk is cumulative turnover at risk, not just still-open exposure.
     daily = sum(
         _safe_float(b.get("stake"))
-        for b in rows
+        for b in all_rows
         if _placed_day(b, current.date()) == current.date()
     )
     match_exposures: dict[str, float] = {}
@@ -120,7 +122,8 @@ def size_bet(
         "pick": str(pick or ""),
     }
     family = _market_family(market, pick)
-    rows = [b for b in bets if _pending(b)] if isinstance(bets, list) else []
+    all_rows = [b for b in bets if isinstance(b, dict)] if isinstance(bets, list) else []
+    rows = [b for b in all_rows if _pending(b)]
     pending = sum(_safe_float(b.get("stake")) for b in rows)
     bankroll = free_bank + pending
 
@@ -155,8 +158,11 @@ def size_bet(
             match_used += stake
             if _market_family(bet.get("market"), bet.get("pick")) == family:
                 market_used += stake
-        if _placed_day(bet, current.date()) == current.date():
-            daily_used += stake
+    daily_used = sum(
+        _safe_float(bet.get("stake"))
+        for bet in all_rows
+        if _placed_day(bet, current.date()) == current.date()
+    )
 
     diagnostics.update({
         "market_used": market_used,
