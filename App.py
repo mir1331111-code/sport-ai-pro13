@@ -1053,6 +1053,6 @@ with tab_stats_tools:
     with st.expander("🧮 Калькулятор", expanded=False):
         calculator.render(matrix_n)
     with st.expander("🧪 Бэктест", expanded=False):
-        backtest.render()
+        backtest.render(matrix_n)
 with tab_api:
     api_center.render()
