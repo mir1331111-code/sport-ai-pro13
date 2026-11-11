@@ -504,7 +504,17 @@ def _tsdb_league_meta(league_name: str):
         return ("G", "club", False, False)
     ln = league_name.lower()
 
-    # --- 1. СБОРНЫЕ / U-ВОЗРАСТЫ (приоритет над всем)
+    # Gender classification must precede generic "euro"/"world cup" markers:
+    # UEFA Women's Europa Cup is a women's club competition, not a men's/national feed.
+    women = any(w in ln for w in (
+        "women", "women's", "womens", "ladies", "female", "féminine",
+        "feminine", "женск", "damen", "frauen",
+    ))
+    if women:
+        div = "W_EUROPA" if "europa" in ln else "W_"
+        return (div, "women", True, False)
+
+    # --- 1. СБОРНЫЕ / U-ВОЗРАСТЫ
     national = any(n in ln for n in (
         "u21", "u19", "u23", "u20", "u18", "u17",
         "national", "international", "world cup", "euro",
@@ -529,13 +539,6 @@ def _tsdb_league_meta(league_name: str):
         else:
             div = "NT"
         return (div, "national", False, True)
-
-    # --- 2. ЖЕНСКИЕ
-    women = any(w in ln for w in (
-        "women", "womens", "ladies", "female", "женск"
-    ))
-    if women:
-        return ("W_", "women", True, False)
 
     # --- 3. НЕ-АНГЛИЙСКИЕ "ЧЕМПИОНШИПЫ" И ДРУГИЕ ЛИГИ (важно: ДО mapping!)
     # США
@@ -720,7 +723,9 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "college basketball", "march madness",
                 )):
                     continue
-                div, kind, women, national = _tsdb_league_meta(league)
+                div, kind, women, national = _tsdb_league_meta(
+                    " ".join((league, str(h), str(a)))
+                )
                 rows.append({
                     "Div": div,
                     "League": league,
@@ -736,6 +741,10 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "away_badge": e.get("strAwayTeamBadge"),
                     "league_badge": e.get("strLeagueBadge"),
                     "women": women,
+                    "gender_known": bool(
+                        women or league.lower() not in {"soccer", "football", "матч", "unknown"}
+                    ),
+                    "gender_evidence": league if women else "",
                     "national": national,
                     "kind": kind,
                 })
@@ -811,10 +820,42 @@ def espn_matches(days: int, logs=None) -> list:
                 league_obj = event.get("league") or {}
                 league = league_obj.get("name") or league_obj.get("abbreviation") or "Soccer"
                 slug = str(league_obj.get("slug") or "")
+                # Retain competition metadata/notes where ESPN uses a generic
+                # "Soccer" league label; do not infer gender from club name alone.
+                competition = comp.get("competition") or {}
+                note_text = " ".join(
+                    str(item.get("text") or item.get("headline") or "")
+                    for item in (comp.get("notes") or []) if isinstance(item, dict)
+                )
+                team_text = " ".join((
+                    hn, an,
+                    str((home.get("team") or {}).get("displayName") or ""),
+                    str((away.get("team") or {}).get("displayName") or ""),
+                ))
+                event_text = " ".join((
+                    str(event.get("name") or ""),
+                    str(event.get("shortName") or ""),
+                    str(competition.get("name") or ""),
+                    note_text,
+                ))
+                league_text = f"{league} {slug} {event_text} {team_text}".casefold()
+                women = any(marker in league_text for marker in (
+                    "women", "women's", "womens", "ladies", "female",
+                    "féminine", "feminine", "damen", "frauen", "женск",
+                ))
+                div = (
+                    "W_EUROPA" if women and "europa" in league_text
+                    else "W_" if women
+                    else _ESPN_DIVS.get(slug, "G")
+                )
+                if women and league.casefold() in {"soccer", "football"}:
+                    league = (
+                        "UEFA Women's Europa Cup" if "europa" in league_text
+                        else "Women's competition"
+                    )
                 # Fail closed on contaminated/stale non-soccer ESPN payloads.
                 sport_obj = event.get("sport") or {}
                 sport_name = str(sport_obj.get("name") or sport_obj.get("slug") or "").lower()
-                league_text = f"{league} {slug} {event.get('name') or ''}".lower()
                 non_soccer_markers = (
                     "basketball", "ncaa", "ncaab", "nba", "wnba",
                     "college basketball", "march madness", "euroleague",
@@ -826,7 +867,7 @@ def espn_matches(days: int, logs=None) -> list:
                     continue
                 logos = league_obj.get("logos") or []
                 rows.append({
-                    "Div": _ESPN_DIVS.get(slug, "G"),
+                    "Div": div,
                     "League": league, "competition": slug,
                     "Date": _msk_date(event.get("date") or ""),
                     "Time": _msk_time(event.get("date") or ""),
@@ -837,7 +878,10 @@ def espn_matches(days: int, logs=None) -> list:
                     "away_badge": (away.get("team") or {}).get("logo") or "",
                     "league_badge": logos[0].get("href", "") if logos else "",
                     "status": ((event.get("status") or {}).get("type") or {}).get("name", ""),
-                    "women": False, "national": False, "kind": "club",
+                    "women": women,
+                    "gender_known": bool(women or league.casefold() not in {"soccer", "football"}),
+                    "gender_evidence": event_text if women else "",
+                    "national": False, "kind": "women" if women else "club",
                 })
             out += rows
             cache_put(ck, rows)
