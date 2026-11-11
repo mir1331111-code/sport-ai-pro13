@@ -82,8 +82,10 @@ def _new_namespace_calibration():
     return {"logits": [], "outcomes": []}
 
 def _team_namespace(division: str) -> str:
-    """Keep men's, women's and national-team records in separate identities."""
+    """Keep men's clubs, women's clubs, and national teams in separate identities."""
     value = str(division or "").upper()
+    if value.startswith("W_NT"):
+        return "women_national"
     if value.startswith("W_"):
         return "women"
     if value.startswith("NT"):
