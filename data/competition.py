@@ -53,4 +53,5 @@ def competition_gender(
 def model_team_identity(team: object, *, gender: str = "unknown") -> str:
     """Namespace women's team identities so men's club history cannot leak into them."""
     name = str(team or "").strip()
-    return f"women::{name}" if str(gender).casefold() == "women" else name
+    group = str(gender or "unknown").casefold()
+    return f"{group}::{name}" if group in {"women", "unknown"} else name
