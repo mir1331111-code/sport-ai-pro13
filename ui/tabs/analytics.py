@@ -81,11 +81,11 @@ def render_learning_center():
     else:
         st.info("Пока нет подтверждённых завершённых прогнозов в ledger. Данные не подменяются статистикой портфеля.")
     st.subheader("Результаты по рынкам")
-    market_rows = market.get("markets") or []
+    market_rows = market.get("by_market") or []
     if market_rows:
         st.dataframe([{"Рынок": x.get("market"), "Прогнозов": x.get("n"),
                        "Brier": x.get("brier"), "Log loss": x.get("log_loss"),
-                       "ROI %": x.get("roi_pct")} for x in market_rows],
+                       "ROI": x.get("roi")} for x in market_rows],
                      use_container_width=True, hide_index=True)
     else:
         st.info("Рыночный ledger пока не содержит закрытых прогнозов.")
