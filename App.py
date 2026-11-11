@@ -1008,9 +1008,9 @@ with st.sidebar:
             st.rerun()
 
 # ==================== ANALYTICS TERMINAL ====================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
     ["🏟 LIVE SCANNER", "📊 AI FORECASTS", "💎 VALUE / PORTFOLIO", "🧭 DATA QUALITY",
-     "🧠 AI LEARNING", "🛡️ RISK CONTROL", "🧪 MODEL LAB", "⚙️ API / TOOLS"])
+     "🧠 AI LEARNING", "🛡️ RISK CONTROL", "🧪 MODEL LAB", "⚙️ API CENTER", "🧰 TOOLS"])
 
 with tab1:
     scanner.render(min_prob, kelly_frac, matrix_n, min_edge)
@@ -1027,6 +1027,8 @@ with tab6:
 with tab7:
     analytics.render_model_lab()
 with tab8:
+    analytics.render_api_center()
+with tab9:
     calculator.render(matrix_n)
     st.divider()
     backtest.render(matrix_n)
