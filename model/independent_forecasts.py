@@ -215,10 +215,31 @@ def record_scan_forecasts(
         prices = _odds_from_card(card)
         league = str(card.get("league") or card.get("div") or "")
         main_probs = _main_probabilities(card)
+        context = card.get("api_context") if isinstance(card.get("api_context"), dict) else {}
+        lineup = context.get("lineup") if isinstance(context.get("lineup"), dict) else {}
+        home_lineup = lineup.get("home") if isinstance(lineup.get("home"), dict) else {}
+        away_lineup = lineup.get("away") if isinstance(lineup.get("away"), dict) else {}
+        referee = context.get("referee") if isinstance(context.get("referee"), dict) else {}
+        feature_snapshot = {
+            "competition_gender": (
+                "women" if bool(card.get("women")) or str(card.get("div") or "").startswith("W_")
+                else "unknown"
+            ),
+            "lineup_home_confirmed": bool(home_lineup.get("confirmed")),
+            "lineup_away_confirmed": bool(away_lineup.get("confirmed")),
+            "referee_present": bool(str(referee.get("name") or "").strip()),
+            "injuries_feed_responded": bool(context.get("injuries_is_confirmed")),
+            "injury_records": len(context.get("injuries") or []),
+            "api_fixture_matched": bool(context.get("api_fixture_id")),
+            "context_level": str((card.get("context_quality") or {}).get("level") or "Unknown"),
+            "xg_used": bool(card.get("xg_used")),
+            "has_entry_odds": bool(prices),
+        }
         common = dict(
             fixture_id=fixture_id, home_team=home, away_team=away,
             forecast_at=now, kickoff_at=kickoff, league=league,
             entry_odds=prices, odds_source=str(card.get("odds_source") or "") or None,
+            feature_snapshot=feature_snapshot,
         )
         if main_probs is not None:
             key = f"{fixture_id}|{main_version}"
