@@ -35,6 +35,7 @@ from data.history_import import parse_historical_matches_csv
 from model.context_model import (
     assess_context_quality, context_probabilities, walk_forward_context_ablation,
 )
+from model.data_quality import competition_category_known
 from model.market_models import (
     asian_handicap_probabilities, asian_handicap_expected_value,
     adjust_corners_for_game_state,
@@ -257,6 +258,10 @@ def _portfolio_auto_recommendation(card: object) -> dict | None:
     validated against an untouched market benchmark.
     """
     if not isinstance(card, dict):
+        return None
+    # Unknown/generic competition labels are not eligible for portfolio exposure.
+    # Legacy cards without provenance are checked from their visible category fields.
+    if not competition_category_known(card):
         return None
     # Legacy cached cards without a confirmed XI and referee are never
     # grandfathered into the portfolio after the context gate is introduced.
@@ -2359,16 +2364,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             h_ru = translate_team(h_en)
             a_ru = translate_team(a_en)
             lg = r.get("Div") or "G"
-            league_label = str(r.get("League") or "").strip().casefold()
-            category_known = bool(
-                r.get("gender_known")
-                or r.get("women")
-                or r.get("national")
-                or (
-                    lg not in {"", "G"}
-                    and league_label not in {"", "soccer", "football", "матч", "unknown", "other"}
-                )
-            )
+            category_known = competition_category_known(r)
             if not category_known:
                 date_filter_counts.setdefault("unknown_competition_category", 0)
                 date_filter_counts["unknown_competition_category"] += 1
