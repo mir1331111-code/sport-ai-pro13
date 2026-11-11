@@ -102,6 +102,15 @@ def parse_context_csv(source: str | bytes) -> dict:
                 reliability_key = f"{source_name}_source_reliability"
                 if parsed.get(reliability_key) is None and source_name in {"lineup", "referee"}:
                     parsed[reliability_key] = reliability
+            reliability_values = [
+                parsed.get("lineup_source_reliability"),
+                parsed.get("referee_source_reliability"),
+            ]
+            known_reliability = [
+                float(value) for value in reliability_values if value is not None
+            ]
+            if parsed["source_reliability"] is None and known_reliability:
+                parsed["source_reliability"] = min(known_reliability)
             parsed["data_source"] = row.get("data_source") or "user_csv"
             parsed["referee_id"] = row.get("referee_id") or None
             parsed["result"] = (row.get("result") or "").upper() or None
