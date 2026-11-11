@@ -2359,6 +2359,24 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             h_ru = translate_team(h_en)
             a_ru = translate_team(a_en)
             lg = r.get("Div") or "G"
+            league_label = str(r.get("League") or "").strip().casefold()
+            category_known = bool(
+                r.get("gender_known")
+                or r.get("women")
+                or r.get("national")
+                or (
+                    lg not in {"", "G"}
+                    and league_label not in {"", "soccer", "football", "матч", "unknown", "other"}
+                )
+            )
+            if not category_known:
+                date_filter_counts.setdefault("unknown_competition_category", 0)
+                date_filter_counts["unknown_competition_category"] += 1
+                logs.append(
+                    f"⏭️ Пропуск {h_ru} — {a_ru}: источник не подтвердил категорию "
+                    "соревнования (общая метка Soccer). Прогноз и Value не формируются."
+                )
+                continue
 
             funnel_counts["model"] += 1
 
@@ -2955,7 +2973,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"уже начались/завершились {date_filter_counts['past_kickoff']}, "
             f"сегодня без времени начала {date_filter_counts['unknown_same_day_kickoff']}, "
             f"дата не распознана {date_filter_counts['invalid_date']}, "
-            f"без названий команд {date_filter_counts['missing_teams']}."
+            f"без названий команд {date_filter_counts['missing_teams']}, "
+            f"неизвестная категория соревнования {date_filter_counts.get('unknown_competition_category', 0)}."
         )
         logs.append(
             f"🧮 Итог скана: источники {len(fixture_sources)} строк → "
