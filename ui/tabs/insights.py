@@ -11,7 +11,6 @@ import streamlit as st
 from config import APP_VERSION, DB_FILE
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger
 from model.quality_control import assess_fixture_quality, portfolio_risk_report
-from data.competition import competition_gender
 from storage import sqlite_store as db
 
 
@@ -234,17 +233,17 @@ def render_data_quality(D: dict) -> None:
             "Конфликт": _STATUS_LABELS.get(statuses["Противоречия"], statuses["Противоречия"]),
         })
     st.dataframe(display, width="stretch", hide_index=True)
-    with st.expander("Подробности по каждому матчу", expanded=False):
-        for index, item in enumerate(rows):
-            card, quality = item["card"], item["quality"]
-            title = f"{quality['score']}/100 · {card.get('match_ru') or card.get('match') or 'Матч'}"
-            with st.expander(title, expanded=False):
-                for name, status in quality["statuses"].items():
-                    st.write(f"**{name}:** {_STATUS_LABELS.get(status, status)}")
-                for note in quality["notes"]:
-                    st.caption(note)
-                if quality["conflicts"]:
-                    st.error("Обнаружены несоответствия: " + "; ".join(quality["conflicts"]))
+    st.subheader("Подробности по каждому матчу")
+    for index, item in enumerate(rows):
+        card, quality = item["card"], item["quality"]
+        title = f"{quality['score']}/100 · {card.get('match_ru') or card.get('match') or 'Матч'}"
+        with st.expander(title, expanded=False):
+            for name, status in quality["statuses"].items():
+                st.write(f"**{name}:** {_STATUS_LABELS.get(status, status)}")
+            for note in quality["notes"]:
+                st.caption(note)
+            if quality["conflicts"]:
+                st.error("Обнаружены несоответствия: " + "; ".join(quality["conflicts"]))
 
 
 def _market_validation_flags(cards: list[dict]) -> dict[str, bool]:
