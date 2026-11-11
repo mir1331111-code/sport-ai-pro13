@@ -1008,27 +1008,78 @@ with st.sidebar:
             st.rerun()
 
 # ==================== ANALYTICS TERMINAL ====================
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
-    ["🏟 LIVE SCANNER", "📊 AI FORECASTS", "💎 VALUE / PORTFOLIO", "🧭 DATA QUALITY",
-     "🧠 AI LEARNING", "🛡️ RISK CONTROL", "🧪 MODEL LAB", "⚙️ API CENTER", "🧰 TOOLS"])
+# One active workspace at a time: compact terminal navigation, no stacked pages.
+TERMINAL_SECTIONS = {
+    "🏟 LIVE SCANNER": (
+        "MATCH INTELLIGENCE", "LIVE SCANNER",
+        "Поиск матчей, проверка источников и предматчевая аналитика.", "LIVE WORKSPACE",
+    ),
+    "📊 AI FORECASTS": (
+        "MODEL OUTPUT", "AI FORECASTS",
+        "Вероятности основной модели, статистика прогнозов и подтверждённые результаты.", "FORECAST DESK",
+    ),
+    "💎 VALUE / PORTFOLIO": (
+        "MARKET EDGE", "VALUE / PORTFOLIO",
+        "Только реальные котировки, проверка Edge и управление виртуальным портфелем.", "VALUE CONTROL",
+    ),
+    "🧭 DATA QUALITY": (
+        "SOURCE MONITOR", "DATA QUALITY",
+        "Составы, травмы, судьи, линии и свежесть данных по каждому матчу.", "DATA AUDIT",
+    ),
+    "🧠 AI LEARNING": (
+        "PERFORMANCE REVIEW", "AI LEARNING CENTER",
+        "Разбор ошибок по закрытым прогнозам без автоматического изменения модели.", "LEARNING AUDIT",
+    ),
+    "🛡️ RISK CONTROL": (
+        "EXPOSURE MONITOR", "RISK CONTROL",
+        "Экспозиция, концентрация по матчам и лигам, дневной риск и просадка.", "RISK DESK",
+    ),
+    "🧪 MODEL LAB": (
+        "VALIDATION WORKBENCH", "MODEL LAB",
+        "Калибровка, Brier, Log Loss и независимая проверка каждого рынка.", "RESEARCH ONLY",
+    ),
+    "⚙️ API CENTER": (
+        "INTEGRATION HEALTH", "API CENTER",
+        "Статус ключей, дневные квоты и подключённые источники данных.", "API MONITOR",
+    ),
+    "🧰 TOOLS": (
+        "ANALYST TOOLKIT", "TOOLS",
+        "Калькулятор вероятностей, банкролла и исторический бэктест.", "TOOLBOX",
+    ),
+}
+active_section = st.radio(
+    "Рабочая область", list(TERMINAL_SECTIONS.keys()),
+    horizontal=True, label_visibility="collapsed", key="terminal_navigation",
+)
+section_kicker, section_title, section_subtitle, section_status = TERMINAL_SECTIONS[active_section]
+st.markdown(f"""
+<div class="terminal-section-head">
+  <div>
+    <div class="terminal-section-kicker">{section_kicker} / NEURO BET PRO v{APP_VERSION}</div>
+    <div class="terminal-section-title">{section_title}</div>
+    <div class="terminal-section-subtitle">{section_subtitle}</div>
+  </div>
+  <div class="terminal-section-status">● {section_status}</div>
+</div>
+""", unsafe_allow_html=True)
 
-with tab1:
+if active_section == "🏟 LIVE SCANNER":
     scanner.render(min_prob, kelly_frac, matrix_n, min_edge)
-with tab2:
+elif active_section == "📊 AI FORECASTS":
     stats.render()
-with tab3:
+elif active_section == "💎 VALUE / PORTFOLIO":
     portfolio.render()
-with tab4:
+elif active_section == "🧭 DATA QUALITY":
     analytics.render_data_quality()
-with tab5:
+elif active_section == "🧠 AI LEARNING":
     analytics.render_learning_center()
-with tab6:
+elif active_section == "🛡️ RISK CONTROL":
     analytics.render_portfolio_risk()
-with tab7:
+elif active_section == "🧪 MODEL LAB":
     analytics.render_model_lab()
-with tab8:
+elif active_section == "⚙️ API CENTER":
     analytics.render_api_center()
-with tab9:
+else:
     calculator.render(matrix_n)
     st.divider()
     backtest.render(matrix_n)

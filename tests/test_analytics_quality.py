@@ -11,6 +11,21 @@ class AnalyticsQualityTests(unittest.TestCase):
         self.assertEqual(source_state(configured=False), "not_configured")
         self.assertEqual(source_state(configured=True, responded=True, has_data=True, conflict=True), "conflict")
 
+    def test_api_key_presence_is_separate_from_fixture_context(self):
+        card = {"match": "A vs B", "api_football_fixture_id": None}
+        configured = card_quality(card, api_football_configured=True)
+        unconfigured = card_quality(card, api_football_configured=False)
+        configured_state = next(
+            item["state"] for item in configured["checks"]
+            if item["name"] == "API-Football"
+        )
+        unconfigured_state = next(
+            item["state"] for item in unconfigured["checks"]
+            if item["name"] == "API-Football"
+        )
+        self.assertEqual(configured_state, "unavailable")
+        self.assertEqual(unconfigured_state, "not_configured")
+
     def test_card_quality_never_invents_missing_context(self):
         report = card_quality({"match": "A vs B", "market_odds": {}})
         states = {x["name"]: x["state"] for x in report["checks"]}

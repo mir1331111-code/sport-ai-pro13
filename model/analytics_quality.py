@@ -27,7 +27,7 @@ def source_state(*, configured=False, responded=False, has_data=False, observed_
     return "confirmed" if has_data else "empty"
 
 
-def card_quality(card: dict) -> dict:
+def card_quality(card: dict, *, api_football_configured: bool = False) -> dict:
     """Evaluate only evidence present on a scanner card; unknown is never treated as OK."""
     card = card if isinstance(card, dict) else {}
     context = card.get("api_context") if isinstance(card.get("api_context"), dict) else {}
@@ -47,7 +47,7 @@ def card_quality(card: dict) -> dict:
     kickoff = card.get("kickoff_utc") or card.get("date_iso")
     context_received = bool(context)
     conflicts = set(card.get("data_conflicts") or [])
-    context_state = "confirmed" if context_received else ("empty" if card.get("api_football_fixture_id") else "not_configured")
+    context_state = "confirmed" if context_received else ("unavailable" if api_football_configured else "not_configured")
     observed = context.get("timestamp")
     if context_received and observed:
         try:
@@ -60,14 +60,14 @@ def card_quality(card: dict) -> dict:
             context_state = "unavailable"
     checks = [
         {"name": "API-Football", "state": "conflict" if "api_football" in conflicts else context_state,
-         "detail": "Контекст получен" if context_received else "Нет подтверждённого контекста API-Football"},
-        {"name": "Состав хозяев", "state": "confirmed" if home_lineup.get("confirmed") and len(home_xi) >= 11 else ("empty" if context_received else "unavailable"),
+         "detail": ("Контекст получен" if context_received else ("Ключ задан, но контекст для этой встречи не получен" if api_football_configured else "Ключ API-Football не настроен"))},
+        {"name": "Состав хозяев", "state": ("stale" if context_state == "stale" else "confirmed" if home_lineup.get("confirmed") and len(home_xi) >= 11 else "empty" if context_received else "unavailable"),
          "detail": f"{len(home_xi)} игроков" if home_xi else "Стартовый XI не подтверждён"},
-        {"name": "Состав гостей", "state": "confirmed" if away_lineup.get("confirmed") and len(away_xi) >= 11 else ("empty" if context_received else "unavailable"),
+        {"name": "Состав гостей", "state": ("stale" if context_state == "stale" else "confirmed" if away_lineup.get("confirmed") and len(away_xi) >= 11 else "empty" if context_received else "unavailable"),
          "detail": f"{len(away_xi)} игроков" if away_xi else "Стартовый XI не подтверждён"},
-        {"name": "Судья", "state": "confirmed" if _present(referee_name) else ("empty" if context_received else "unavailable"),
+        {"name": "Судья", "state": ("stale" if context_state == "stale" else "confirmed" if _present(referee_name) else "empty" if context_received else "unavailable"),
          "detail": str(referee_name) if _present(referee_name) else "Нет подтверждения"},
-        {"name": "Травмы", "state": ("confirmed" if injuries else "empty") if injuries_confirmed else "unavailable",
+        {"name": "Травмы", "state": "stale" if context_state == "stale" else (("confirmed" if injuries else "empty") if injuries_confirmed else "unavailable"),
          "detail": "Есть записи источника" if injuries else ("Источник проверен: записей нет" if injuries_confirmed else "Источник не подтвердил покрытие; отсутствие записей не доказывает отсутствие травм")},
         {"name": "Коэффициенты 1X2", "state": "conflict" if "1x2_odds" in conflicts else ("confirmed" if odds else "empty"),
          "detail": f"{len(odds)} исходов" if odds else "Нет реальной линии"},

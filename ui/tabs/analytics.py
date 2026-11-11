@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 import streamlit as st
 
 from config import DB_FILE
@@ -11,7 +12,7 @@ from model.forecast_ledger import ForecastLedger, MarketForecastLedger
 
 STATE = {
     "confirmed": ("Подтверждено", "🟢"),
-    "empty": ("Источник ответил / данных нет", "🟡"),
+    "empty": ("Нет данных / подтверждение отсутствует", "🟡"),
     "unavailable": ("Источник недоступен", "🔴"),
     "stale": ("Данные устарели", "🟠"),
     "conflict": ("Источники противоречат", "🔴"),
@@ -20,13 +21,23 @@ STATE = {
 
 
 def render_data_quality():
-    st.header("🧭 DATA QUALITY")
-    st.caption("Проверяем наличие и состояние фактов. Полнота данных не равна вероятности выигрыша.")
     cards = [c for c in (st.session_state.get("data") or {}).get("cards", []) if isinstance(c, dict)]
     if not cards:
         st.info("Сначала выполни сканирование: здесь появится аудит источников по каждому матчу.")
         return
-    reports = [(c, card_quality(c)) for c in cards]
+    api_football_configured = bool(
+        st.session_state.get("api_football_key_input")
+        or os.environ.get("API_FOOTBALL_KEY")
+    )
+    if not api_football_configured:
+        try:
+            api_football_configured = bool(st.secrets.get("API_FOOTBALL_KEY", ""))
+        except Exception:
+            api_football_configured = False
+    reports = [
+        (c, card_quality(c, api_football_configured=api_football_configured))
+        for c in cards
+    ]
     good = sum(sum(x["state"] == "confirmed" for x in q["checks"]) for _, q in reports)
     total = sum(len(q["checks"]) for _, q in reports)
     c1, c2, c3, c4 = st.columns(4)
@@ -34,8 +45,8 @@ def render_data_quality():
     c2.metric("Подтверждённые поля", f"{good}/{total}")
     scores = [q["completeness"] for _, q in reports if q["completeness"] is not None]
     c3.metric("Средняя полнота", f"{sum(scores)/len(scores):.0f}/100" if scores else "—")
-    c4.metric("Неизвестный контекст", sum(q["context_level"] == "Unknown" for _, q in reports))
-    st.warning("«Источник ответил, данных нет» не означает, что событие отсутствует. Неизвестные поля не считаются подтверждёнными.")
+    c4.metric("Матчей с Low-контекстом", sum(q["context_level"] == "Low" for _, q in reports))
+    st.warning("Жёлтый статус означает, что подтверждённых данных нет. Он не доказывает отсутствие события; неизвестные поля не считаются подтверждёнными.")
     search = st.text_input("Фильтр по матчу или турниру", key="dq_filter")
     for card, report in reports:
         if search and search.casefold() not in (report["match"] + " " + report["league"]).casefold():
@@ -50,8 +61,6 @@ def render_data_quality():
 
 
 def render_learning_center():
-    st.header("🧠 AI LEARNING CENTER")
-    st.caption("Журнал ошибок и качества прогнозов. Этот экран анализирует результаты, но не меняет веса модели автоматически.")
     try:
         ledger = ForecastLedger(DB_FILE)
         metrics = ledger.metrics()
@@ -60,11 +69,17 @@ def render_learning_center():
     except Exception as exc:
         st.error(f"Не удалось прочитать журнал: {type(exc).__name__}")
         return
+    total_forecasts = len(ledger.rows())
+    settled_forecasts = int(metrics.get("n", 0) or 0)
+    pending_forecasts = max(0, total_forecasts - settled_forecasts)
     a, b, c, d = st.columns(4)
-    a.metric("Закрытых прогнозов 1X2", metrics.get("n", 0))
-    b.metric("Brier score", f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—")
-    c.metric("Log loss", f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—")
+    a.metric("Всего записано прогнозов", total_forecasts)
+    b.metric("Ожидают подтверждённого FT", pending_forecasts)
+    c.metric("Закрыто", settled_forecasts)
     d.metric("Средний CLV", f"{metrics['mean_clv']:+.2%}" if metrics.get("mean_clv") is not None else "—")
+    e, f = st.columns(2)
+    e.metric("Brier score · только FT", f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—")
+    f.metric("Log loss · только FT", f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—")
     st.subheader("Разбор последних завершённых прогнозов")
     if rows:
         display = []
@@ -93,8 +108,6 @@ def render_learning_center():
 
 
 def render_model_lab():
-    st.header("🧪 MODEL LAB")
-    st.caption("Калибровка, надёжность вероятностей и независимый статус каждого рынка.")
     try:
         ledger = ForecastLedger(DB_FILE)
         metrics = ledger.metrics()
@@ -103,13 +116,20 @@ def render_model_lab():
     except Exception as exc:
         st.error(f"Ошибка чтения модельного аудита: {type(exc).__name__}")
         return
-    n = metrics.get("n", 0)
+    all_forecasts = ledger.rows()
+    n = int(metrics.get("n", 0) or 0)
+    total_forecasts = len(all_forecasts)
+    pending_forecasts = max(0, total_forecasts - n)
     xg = metrics.get("xg_usage") or {}
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("OOS/settled sample", n)
-    c2.metric("Brier", f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—")
-    c3.metric("Log loss", f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—")
+    c1.metric("Всего pre-match прогнозов", total_forecasts)
+    c2.metric("Ожидают результата", pending_forecasts)
+    c3.metric("Закрыто · FT", n)
     c4.metric("xG coverage", f"{xg.get('share'):.1%}" if xg.get("share") is not None else "—")
+    c5,c6 = st.columns(2)
+    c5.metric("Brier · только FT", f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—")
+    c6.metric("Log loss · только FT", f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—")
+    st.caption("Исторические обучающие матчи — не прогнозы. В журнале учитываются только записанные до начала матча прогнозы; метрики качества рассчитываются после подтверждённого FT.")
     st.subheader("Reliability / калибровка")
     if reliability.get("rows"):
         st.dataframe([{"Исход": x["outcome"], "Диапазон P": f"{x['bin_from']:.0%}–{x['bin_to']:.0%}",
@@ -121,26 +141,35 @@ def render_model_lab():
         st.info("Недостаточно закрытых прогнозов для оценки калибровки.")
     st.subheader("Независимая проверка рынков")
     statuses = {
-        "1X2": ("Основной ledger", "Проверяй Brier, log loss, ECE и CLV на закрытых прогнозах."),
-        "Тоталы голов": ("Отдельный ledger", "Только подтверждённые линии и OOS результаты."),
-        "BTTS": ("Отдельный ledger", "Не наследует статус Value от 1X2."),
-        "Угловые": ("Отдельный ledger", "Нужны завершённые матчи и подтверждённая статистика."),
-        "Карточки": ("Отдельный ledger", "Нужны подтверждённый судья и фактические карточки."),
-        "Asian Handicap": ("Отдельный ledger", "Нужны quarter-line settlement и OOS тест."),
+        "1X2": ("Основная модель", "Действуют существующие проверки модели, Edge, EV, цены и ограничения сканера. MODEL LAB не меняет этот допуск."),
+        "Тоталы голов": ("Отдельная проверка", "Нужны подтверждённые линии и самостоятельные out-of-sample результаты."),
+        "BTTS": ("Forecast-only", "Не наследует статус Value от 1X2; нужен отдельный OOS benchmark."),
+        "Угловые": ("Forecast-only", "Нужны завершённые матчи и подтверждённая статистика угловых."),
+        "Карточки": ("Forecast-only", "Нужны подтверждённый судья и фактические карточки."),
+        "Asian Handicap": ("Forecast-only", "Нужны четвертные линии, корректный settlement и OOS benchmark."),
     }
     for name,(ledger_name,rule) in statuses.items():
         with st.container(border=True):
             st.markdown(f"**{name}** · {ledger_name}")
             st.caption(rule)
-            st.warning("Не допущен к Value/автопортфелю без независимого подтверждения.")
-    if market_metrics.get("markets"):
-        st.caption("Данные закрытых рыночных прогнозов:")
-        st.dataframe(market_metrics["markets"], use_container_width=True, hide_index=True)
+            if name == "1X2":
+                st.info("Используется действующий gate основного рынка. Этот экран не выдаёт новый допуск и не блокирует существующий.")
+            else:
+                st.warning("Не допущен к Value/автопортфелю без независимого подтверждения.")
+    market_rows = market_metrics.get("by_market") or []
+    if market_rows:
+        st.caption("Фактические записи рыночного ledger (включая ожидающие расчёта):")
+        st.dataframe([{
+            "Рынок": item.get("market"), "Записано": item.get("n"),
+            "Закрыто": item.get("settled"), "Ожидает": item.get("pending"),
+            "Brier": item.get("brier"), "Log loss": item.get("log_loss"),
+            "ROI": item.get("roi"),
+        } for item in market_rows], use_container_width=True, hide_index=True)
+    else:
+        st.info("В рыночном ledger пока нет записанных рекомендаций. Это не отменяет отдельный основной gate 1X2.")
 
 
 def render_portfolio_risk():
-    st.header("🛡️ PORTFOLIO RISK")
-    st.caption("Концентрация, дневная нагрузка, риск одного матча и историческая просадка. Аналитика не размещает ставки.")
     data = st.session_state.get("data") or {}
     report = portfolio_risk(data.get("bets") or [], data.get("bank") or 0)
     a,b,c,d = st.columns(4)
@@ -168,8 +197,6 @@ def render_api_center():
     from pathlib import Path
     from config import DISK_CACHE_DIR, LLM_DAILY_LIMIT, ODDS_LIMIT_DAILY, FOOTBALL_DATA_ORG_DAILY_LIMIT
 
-    st.header("⚙️ API CENTER")
-    st.caption("Показывает наличие ключа и локальные счётчики. «Ключ задан» не означает, что внешний API сейчас доступен; проверка соединения выполняется отдельно.")
     providers = [
         ("API-Football", "api_football_key_input", "API_FOOTBALL_KEY", "Составы, травмы, судьи"),
         ("SStats.net", "sstats_api_key_input", "SSTATS_API_KEY", "Расписание и коэффициенты"),
