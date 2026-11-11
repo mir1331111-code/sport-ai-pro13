@@ -93,6 +93,49 @@ class ChronologicalTrainingTests(unittest.TestCase):
         self.assertEqual(progress[-1], (3, 3))
         self.assertEqual(skipped["missing_or_invalid_score"], 0)
 
+    def test_women_and_unknown_teams_never_enter_mens_history(self):
+        model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        day = datetime(2024, 1, 1)
+        model.learn_batch([{
+            "home": "Shared Club", "away": "Women's Opponent",
+            "home_goals": 2, "away_goals": 0,
+            "league": "W_", "match_date": day,
+            "row": {
+                "Div": "W_", "League": "Women's League",
+                "women": True,
+            },
+        }])
+        self.assertIn("women::Shared Club", model.st)
+        self.assertNotIn("Shared Club", model.st)
+        self.assertEqual(model.hg, [])
+        self.assertEqual(model.ag, [])
+        self.assertEqual(len(model.lg_hg["W_ALL"]), 1)
+        self.assertEqual(len(model.lg_hg["MEN_ALL"]), 0)
+
+        # A generic feed label is kept in its own unknown bucket and does not
+        # become an accidental men's prior.
+        model.learn_batch([{
+            "home": "Mystery Club", "away": "Mystery Opponent",
+            "home_goals": 1, "away_goals": 1,
+            "league": "G", "match_date": day + __import__("datetime").timedelta(days=1),
+            "row": {"Div": "G", "League": "Soccer"},
+        }])
+        self.assertIn("unknown::Mystery Club", model.st)
+        self.assertNotIn("Mystery Club", model.st)
+        self.assertEqual(len(model.lg_hg["UNK_ALL"]), 1)
+        self.assertEqual(len(model.lg_hg["MEN_ALL"]), 0)
+
+        model.learn_batch([{
+            "home": "Shared Club", "away": "Men's Opponent",
+            "home_goals": 0, "away_goals": 1,
+            "league": "E0", "match_date": day + __import__("datetime").timedelta(days=2),
+            "row": {"Div": "E0", "League": "English Premier League"},
+        }])
+        self.assertIn("Shared Club", model.st)
+        self.assertEqual(len(model.lg_hg["MEN_ALL"]), 1)
+        self.assertEqual(len(model.lg_hg["W_ALL"]), 1)
+        self.assertEqual(len(model.lg_hg["UNK_ALL"]), 1)
+
     def test_single_match_wrapper_keeps_legacy_leakage_safe_contract(self):
         model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
         prediction = model.learn_step(
