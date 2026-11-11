@@ -996,6 +996,7 @@ def _render_manual_odds_block(
                 bets=D.get("bets") or [], fixture_id=c.get("fixture_id"),
                 match=c.get("match"), date_iso=c.get("date_iso"),
                 market=market_type(pick), pick=pick,
+                division=c.get("div"),
                 now=datetime.now(app_timezone()),
             )
 
