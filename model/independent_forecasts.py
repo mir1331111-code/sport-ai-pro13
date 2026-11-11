@@ -262,9 +262,11 @@ def record_scan_forecasts(
                 try:
                     market, selection = str(best[0]).upper().strip(), str(best[1]).strip()
                     price, probability = float(best[2]), float(best[4])
+                    # One immutable recommendation per fixture, model version and market family.
+                    # Including scan time here would create duplicate settled rows on every rerun.
                     key = (
                         f"{fixture_id}|{main_version}|market|"
-                        f"{str(family).casefold()}|{now.isoformat()}"
+                        f"{str(family).casefold()}"
                     )
                     keys_by_market[str(family)] = key
                     if key not in existing_market:
@@ -297,7 +299,8 @@ def record_scan_forecasts(
                 try:
                     market, selection = str(best[0]).upper().strip(), str(best[1]).strip()
                     price, probability = float(best[2]), float(best[4])
-                    key = f"{fixture_id}|{main_version}|market|{now.isoformat()}"
+                    # Backward-compatible single-pick path also needs a stable idempotency key.
+                    key = f"{fixture_id}|{main_version}|market|legacy_best"
                     card["market_forecast_key"] = key
                     if key not in existing_market:
                         market_ledger.record_recommendation(

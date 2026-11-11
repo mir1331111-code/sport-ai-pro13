@@ -494,10 +494,57 @@ class MarketForecastLedger:
             "mean_clv":sum(clvs)/len(clvs) if clvs else None,"clv_n":len(clvs),
         }
 
+    @staticmethod
+    def _scan_identity(row: dict) -> tuple[str, str, str] | None:
+        """Identify scanner rows by fixture, model version and market family.
+
+        Older keys included a scan timestamp after the family; the oldest
+        single-best path used the timestamp in place of a family name.
+        Normalize both formats so historical reruns are not treated as
+        independent forecasts. Unknown/manual keys remain untouched.
+        """
+        parts = str(row.get("forecast_key") or "").split("|")
+        if len(parts) < 4 or parts[2] != "market":
+            return None
+        family = parts[3]
+        try:
+            datetime.fromisoformat(family.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        else:
+            family = "legacy_best"
+        fixture_id = str(row.get("fixture_id") or "")
+        model_version = str(row.get("model_version") or "")
+        if not fixture_id or not model_version or not family:
+            return None
+        return fixture_id, model_version, family
+
     def metrics(self) -> dict[str, Any]:
-        rows = self.rows()
+        raw_rows = self.rows()
+        # Rows are ordered by forecast time and ID. Keep the first immutable
+        # forecast for each scan family; later reruns of the same fixture are
+        # not independent observations and must not inflate ROI or accuracy.
+        rows = []
+        seen = set()
+        duplicate_rows_excluded = 0
+        for row in raw_rows:
+            identity = self._scan_identity(row)
+            if identity is not None:
+                if identity in seen:
+                    duplicate_rows_excluded += 1
+                    continue
+                seen.add(identity)
+            rows.append(row)
         groups: dict[str,list[dict]] = {}
         for row in rows:
             groups.setdefault(str(row.get("market") or "OTHER"), []).append(row)
-        return {"overall":self._summary(rows),
-                "by_market":[{"market":m,**self._summary(group)} for m,group in sorted(groups.items())]}
+        return {
+            "overall": self._summary(rows),
+            "by_market": [
+                {"market": market, **self._summary(group)}
+                for market, group in sorted(groups.items())
+            ],
+            "raw_rows": len(raw_rows),
+            "duplicate_rows_excluded": duplicate_rows_excluded,
+            "deduplication": "first forecast per fixture, model version and market family",
+        }
