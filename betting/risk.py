@@ -27,14 +27,26 @@ def _pending(bet: object) -> bool:
     return isinstance(bet, dict) and str(bet.get("status") or "pending").casefold() == "pending"
 
 
-def _fixture_key(item: dict[str, Any]) -> str:
-    fixture_id = str(item.get("fixture_id") or "").strip()
-    if fixture_id:
-        return "id:" + fixture_id
+def _normal_match_name(item: dict[str, Any]) -> str:
     match = str(item.get("match") or item.get("match_ru") or "").casefold()
-    normalized = " ".join(match.split())
-    kickoff_date = str(item.get("date_iso") or "")[:10]
-    return f"match:{kickoff_date}:{normalized}" if normalized else ""
+    return " ".join(match.split())
+
+
+def _same_fixture(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Match provider-ID records and older records that have only match metadata."""
+    left_id = str(left.get("fixture_id") or "").strip()
+    right_id = str(right.get("fixture_id") or "").strip()
+    if left_id and right_id and left_id == right_id:
+        return True
+    left_match, right_match = _normal_match_name(left), _normal_match_name(right)
+    if not left_match or not right_match or left_match != right_match:
+        return False
+    left_date, right_date = str(left.get("date_iso") or "")[:10], str(right.get("date_iso") or "")[:10]
+    if left_date and right_date and left_date != right_date:
+        return False
+    left_div = str(left.get("div") or left.get("league") or "").strip().casefold()
+    right_div = str(right.get("div") or right.get("league") or "").strip().casefold()
+    return not (left_div and right_div and left_div != right_div)
 
 
 def _market_family(market: object, pick: object) -> str:
@@ -78,12 +90,15 @@ def risk_snapshot(
         for b in all_rows
         if _placed_day(b, current.date() if _pending(b) else date.min) == current.date()
     )
-    match_exposures: dict[str, float] = {}
+    match_groups: list[tuple[dict[str, Any], float]] = []
     for bet in rows:
-        key = _fixture_key(bet)
-        if key:
-            match_exposures[key] = match_exposures.get(key, 0.0) + _safe_float(bet.get("stake"))
-    max_match = max(match_exposures.values(), default=0.0)
+        for index, (representative, exposure) in enumerate(match_groups):
+            if _same_fixture(representative, bet):
+                match_groups[index] = (representative, exposure + _safe_float(bet.get("stake")))
+                break
+        else:
+            match_groups.append((bet, _safe_float(bet.get("stake"))))
+    max_match = max((exposure for _, exposure in match_groups), default=0.0)
     return {
         "bankroll_basis": bankroll,
         "pending_exposure": pending,
@@ -119,6 +134,7 @@ def size_bet(
         "fixture_id": str(fixture_id or ""),
         "match": str(match or ""),
         "date_iso": str(date_iso or "")[:10],
+        "div": str(division or ""),
         "market": str(market or ""),
         "pick": str(pick or ""),
     }
@@ -151,13 +167,12 @@ def size_bet(
         diagnostics["reason"] = "empty_bankroll"
         return 0.0, diagnostics
 
-    candidate_key = _fixture_key(candidate)
     market_used = 0.0
     match_used = 0.0
     daily_used = 0.0
     for bet in rows:
         stake = _safe_float(bet.get("stake"))
-        same_fixture = bool(candidate_key) and _fixture_key(bet) == candidate_key
+        same_fixture = _same_fixture(candidate, bet)
         if same_fixture:
             match_used += stake
             if _market_family(bet.get("market"), bet.get("pick")) == family:
