@@ -110,10 +110,9 @@ def select_top_matches(
     if max_items <= 0 or not isinstance(cards, list):
         return []
 
-    ranked = rank_model_favorites(
-        cards,
-        min_sample_games=max(0, int(min_team_history)),
-    )
+    # Venue-specific samples are checked below. Do not let the generic
+    # aggregate card.games value reject a match whose home/away samples are valid.
+    ranked = rank_model_favorites(cards, min_sample_games=0)
     selected = []
     for item in ranked:
         card = item.get("card")
