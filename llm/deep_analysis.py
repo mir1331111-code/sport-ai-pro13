@@ -305,6 +305,10 @@ def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
             "sstats_game_id": str(card.get("sstats_game_id") or context.get("sstats_game_id") or ""),
             "event_id_resolved": bool(context.get("sstats_event_id")),
             "kickoff_at": str(context.get("kickoff_at") or card.get("kickoff_utc") or "")[:40],
+            "observed_at": str(context.get("timestamp") or "")[:40],
+            "lineup_observed_at": str(lineup.get("timestamp") or "")[:40],
+            "injuries_observed_at": str(context.get("injuries_timestamp") or "")[:40],
+            "referee_observed_at": str(referee.get("timestamp") or "")[:40],
             "lineup": {
                 "home_confirmed": home_confirmed,
                 "home_players": home_names,
