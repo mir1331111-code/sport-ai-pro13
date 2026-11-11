@@ -273,6 +273,97 @@ class SStatsTests(unittest.TestCase):
     @patch.object(sstats, "_sstats_request")
     @patch.object(sstats, "cache_put")
     @patch.object(sstats, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
+    def test_context_enrichment_uses_sstats_ids_for_injuries_lineups_and_referee(
+        self, _cache_get, _cache_put, request_mock
+    ):
+        from datetime import datetime, timezone
+        from data.sstats import sstats_context_enrich
+
+        players_home = [{"playerName": f"Home Player {i}", "isStarting": True} for i in range(11)]
+        players_away = [{"playerName": f"Away Player {i}", "isStarting": True} for i in range(11)]
+        def response(data):
+            return _Response(200, {"status": "success", "data": data})
+        request_mock.side_effect = [
+            response([{
+                "id": "flash-home-away",
+                "date": "2026-11-11T14:00:00Z",
+                "homeTeam": {"name": "Home FC"},
+                "awayTeam": {"name": "Away FC"},
+            }]),
+            response([{
+                "player": {"id": 9, "name": "Injured Player", "type": "Missing Fixture"},
+                "team": {"id": 1, "name": "Home FC"},
+                "reason": "Injury",
+            }]),
+            response({"referee": {"name": "Referee SStats"}}),
+            response({
+                "homeTeam": {"name": "Home FC", "players": players_home},
+                "awayTeam": {"name": "Away FC", "players": players_away},
+            }),
+        ]
+        rows = [{
+            "Date": "2026-11-11T14:00:00",
+            "kickoff_utc": "2026-11-11T14:00:00Z",
+            "HomeTeam": "Home FC",
+            "AwayTeam": "Away FC",
+            "sstats_game_id": 777,
+        }]
+        mapping, logs = sstats_context_enrich(
+            rows, "private-key",
+            date_from="2026-11-11", date_to="2026-11-11",
+            now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
+        )
+        context = mapping[("2026-11-11", "home_fc", "away_fc")]
+        self.assertEqual(context["provider"], "sstats")
+        self.assertTrue(context["injuries_is_confirmed"])
+        self.assertEqual(context["injuries"][0]["player_name"], "Injured Player")
+        self.assertTrue(context["referee"]["is_confirmed"])
+        self.assertEqual(context["referee"]["name"], "Referee SStats")
+        self.assertTrue(context["lineup"]["is_confirmed"])
+        self.assertEqual(len(context["lineup"]["home"]["starting_xi"]), 11)
+        self.assertEqual(len(context["lineup"]["away"]["starting_xi"]), 11)
+        self.assertEqual(
+            [call.args[0] for call in request_mock.call_args_list],
+            ["Ls/List", "Games/injuries", "Ls/GameInfo", "Ls/GameLineups"],
+        )
+        self.assertNotIn("private-key", repr(mapping))
+        self.assertTrue(any("confirmed XI=1" in line for line in logs))
+
+    def test_context_lineup_parser_does_not_confirm_incomplete_or_substitute_lists(self):
+        from data.sstats import _sstats_context_side_lineup
+        partial = {"homeTeam": {"name": "Home FC", "players": [
+            {"playerName": f"Player {i}", "isStarting": True} for i in range(10)
+        ]}}
+        names = _sstats_context_side_lineup(
+            {"status": "success", "data": partial}, "home", "Home FC"
+        )
+        self.assertEqual(len(names), 10)
+
+        # A generic squad with 11 names is not a starting XI unless the feed
+        # explicitly marks those records as starters.
+        unmarked = {"homeTeam": {"name": "Home FC", "players": [
+            {"playerName": f"Squad Player {i}"} for i in range(11)
+        ]}}
+        self.assertEqual(
+            _sstats_context_side_lineup(
+                {"status": "success", "data": unmarked}, "home", "Home FC"
+            ),
+            [],
+        )
+
+        substitutes = {"homeTeam": {"name": "Home FC", "players": [
+            {"playerName": f"Substitute {i}", "isStarting": False} for i in range(11)
+        ]}}
+        self.assertEqual(
+            _sstats_context_side_lineup(
+                {"status": "success", "data": substitutes}, "home", "Home FC"
+            ),
+            [],
+        )
+
     def test_full_odds_uses_bookmaker_data_and_caches(self, _cache_get, _cache_put, request_mock):
         request_mock.return_value = _Response(200, {
             "status": "success",
