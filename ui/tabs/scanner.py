@@ -2198,19 +2198,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
                 with st.expander("Проверенные исходные данные SStats", expanded=False):
                     lineups = sstats_data.get("lineup") or {}
-                    home_lineup = lineups.get("home") or {}
-                    away_lineup = lineups.get("away") or {}
                     source_cols = st.columns(2)
                     with source_cols[0]:
                         st.markdown("**Стартовый XI хозяев**")
-                        home_players = home_lineup.get("home_players") or []
-                        if home_lineup.get("home_confirmed"):
+                        home_players = lineups.get("home_players") or []
+                        if lineups.get("home_confirmed"):
                             st.write(", ".join(home_players) if home_players else "Подтверждённый XI без имён в ответе.")
                         else:
                             st.warning("Стартовый XI хозяев не подтверждён.")
                         st.markdown("**Стартовый XI гостей**")
-                        away_players = away_lineup.get("away_players") or []
-                        if away_lineup.get("away_confirmed"):
+                        away_players = lineups.get("away_players") or []
+                        if lineups.get("away_confirmed"):
                             st.write(", ".join(away_players) if away_players else "Подтверждённый XI без имён в ответе.")
                         else:
                             st.warning("Стартовый XI гостей не подтверждён.")
