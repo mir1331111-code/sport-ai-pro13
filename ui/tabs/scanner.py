@@ -31,6 +31,7 @@ from data.context_data import (
     ApiFootballClient, ApiFootballContextProvider, fixture_row_key,
 )
 from data.context_history import parse_context_csv
+from data.history_import import parse_historical_matches_csv
 from model.context_model import (
     assess_context_quality, context_probabilities, walk_forward_context_ablation,
 )
@@ -1072,6 +1073,46 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     ))
             except (UnicodeDecodeError, ValueError) as exc:
                 st.error(f"Не удалось прочитать контекстный CSV: {exc}")
+        historical_match_file = st.file_uploader(
+            "Архив исторических матчей для женских лиг / сборных (.csv)",
+            type=["csv"],
+            key="scanner_historical_match_csv",
+            help=(
+                "Обязательные колонки: Date, HomeTeam, AwayTeam, FTHG, FTAG, Div. "
+                "Для женщин/сборных используйте отдельные коды, например W_E0, W_SP1, "
+                "NT_EURO, NT_WC. Не загружайте odds/будущие результаты."
+            ),
+        )
+        st.download_button(
+            "⬇️ Скачать шаблон архива исторических матчей",
+            data=(
+                "Date,HomeTeam,AwayTeam,FTHG,FTAG,Div,League,HTHG,HTAG,HTHC,HTAC,"
+                "HC,AC,HY,AY,HR,AR,Referee,HxG,AxG\\n"
+                "2025-04-01,Home, Away,2,1,W_E0,Women's league,1,0,3,2,7,4,2,1,0,0,Referee Name,1.4,0.8\\n"
+            ),
+            file_name="neuro_bet_historical_matches_template.csv",
+            mime="text/csv",
+        )
+        if historical_match_file is not None:
+            try:
+                history_payload = parse_historical_matches_csv(
+                    historical_match_file.getvalue()
+                )
+                st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
+                st.success(
+                    f"Исторический архив: принято {history_payload['accepted']} матчей "
+                    f"из {len(history_payload['divisions'])} соревнований; "
+                    f"отклонено {len(history_payload['rejected'])}."
+                )
+                st.caption(
+                    "Коды: " + ", ".join(history_payload["divisions"])
+                    + ". Эти соревнования обучают Base-модель отдельно и пока не проходят "
+                    "Value-валидацию крупных лиг."
+                )
+            except (UnicodeDecodeError, ValueError) as exc:
+                st.error(f"Не удалось прочитать исторический CSV: {exc}")
+        custom_historical_rows = st.session_state.get("_custom_historical_match_rows") or []
+
         historical_context_rows = st.session_state.get("_historical_context_rows") or []
         if st.button(
             "🧪 Проверить Base vs Context (walk-forward ablation)",
@@ -2112,6 +2153,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             matrix_n, logs, update_loader,
             footballapi_key=footballapi_key,
             footballapi_xg_rows=footballapi_xg_rows,
+            custom_historical_rows=custom_historical_rows,
         )
 
         update_loader("🧠 Анализ матчей...", 0.80, logs)
