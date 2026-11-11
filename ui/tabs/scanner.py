@@ -2166,8 +2166,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         # Normalize fixture dates before the API provider performs exact matching.
         for fixture_row in rows:
-            parsed_fixture_date = parse_date(
-                fixture_row.get("Date") or fixture_row.get("date")
+            # Match the provider's local kickoff date, not a source feed's
+            # original UTC/calendar date (which can differ around midnight).
+            local_kickoff = fixture_kickoff_local(
+                fixture_row,
+                timezone_name=getattr(scan_timezone, "key", "UTC"),
+            )
+            parsed_fixture_date = (
+                local_kickoff
+                if local_kickoff is not None
+                else parse_date(fixture_row.get("Date") or fixture_row.get("date"))
             )
             if parsed_fixture_date is not None:
                 fixture_row["date_iso"] = parsed_fixture_date.strftime("%Y-%m-%d")
