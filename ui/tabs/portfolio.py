@@ -11,6 +11,7 @@ from ui.cards import translate_match, day_label
 from config import DB_FILE
 from betting.settlement import determine_stat_outcome
 from model.forecast_ledger import MarketForecastLedger
+from betting.risk import portfolio_risk_report, DEFAULT_LIMITS
 
 
 def _bet_date(b: dict):
@@ -439,26 +440,65 @@ def render():
     k4.metric("Profit", f"{profit:+.2f}")
 
     bank_now = float(D.get("bank") or 0.0)
-    pending_exposure = sum(float(b.get("stake") or 0) for b, _ in indexed
-                            if b.get("status") == "pending")
-    exposure_pct = (pending_exposure / bank_now * 100) if bank_now > 0 else 0.0
+    pending_bets = [
+        b for b, _ in indexed
+        if b.get("status") == "pending"
+    ]
+    pending_exposure = sum(float(b.get("stake") or 0) for b in pending_bets)
+    # Available cash excludes the stake already reserved in open positions.
+    # Use total capital (cash + open exposure) as the concentration denominator.
+    total_capital = bank_now + pending_exposure
+    exposure_pct = (pending_exposure / total_capital * 100) if total_capital > 0 else 0.0
     league_pending = {}
-    for b, _ in indexed:
-        if b.get("status") != "pending":
-            continue
+    for b in pending_bets:
         league = str(b.get("league") or b.get("div") or "OTHER")
         league_pending[league] = league_pending.get(league, 0.0) + float(b.get("stake") or 0)
     largest_league = max(league_pending.items(), key=lambda x: x[1], default=("—", 0.0))
-    largest_league_pct = (largest_league[1] / bank_now * 100) if bank_now > 0 else 0.0
+    largest_league_pct = (largest_league[1] / total_capital * 100) if total_capital > 0 else 0.0
+    risk = portfolio_risk_report(
+        [b for b, _ in indexed],
+        bank=total_capital,
+        initial_bank=float((D.get("meta") or {}).get("initial_bank") or total_capital),
+    )
 
     st.markdown("#### 🛡️ Risk Monitor")
     r1, r2, r3, r4 = st.columns(4)
-    r1.metric("Экспозиция", f"{pending_exposure:.0f}", f"{exposure_pct:.1f}% банка")
+    r1.metric("Экспозиция", f"{pending_exposure:.0f}", f"{exposure_pct:.1f}% капитала")
     r2.metric("Открытых ставок", pending_cnt)
     r3.metric("Макс. лига", f"{largest_league[1]:.0f}", largest_league[0])
-    r4.metric("Доля макс. лиги", f"{largest_league_pct:.1f}%")
-    if exposure_pct >= 20:
-        st.warning("⚠️ Экспозиция достигла 20% банка.")
+    r4.metric("Просадка", f"{risk['max_drawdown'] * 100:.1f}%", f"по {risk['settled_positions']} закрытым ставкам")
+    limit_caption = (
+        f"Лимиты мониторинга: матч {risk['limits']['match_pct']:.0f}% · "
+        f"день {risk['limits']['day_pct']:.0f}% · лига {risk['limits']['league_pct']:.0f}% · "
+        f"общая экспозиция {risk['limits']['portfolio_pct']:.0f}%."
+    )
+    st.caption(limit_caption)
+    if risk["alerts"]:
+        for alert in risk["alerts"][:8]:
+            st.warning("⚠️ " + alert)
+    else:
+        st.success("Экспозиция открытых позиций находится внутри контрольных лимитов.")
+
+    if risk["overlap"]:
+        st.markdown("**Потенциально зависимые позиции одного матча**")
+        st.dataframe(pd.DataFrame(risk["overlap"]), use_container_width=True, hide_index=True)
+        st.caption("Это предупреждение о концентрации на одном событии, а не статистически измеренная корреляция исходов.")
+    concentration_rows = []
+    for label, rows in (
+        ("Матч", risk["by_match"][:5]),
+        ("Лига", risk["by_league"][:5]),
+        ("Дата", risk["by_day"][:5]),
+    ):
+        for row in rows:
+            concentration_rows.append({
+                "Группировка": label,
+                "Значение": row["group"],
+                "Экспозиция": row["exposure"],
+                "% капитала": row["bank_pct"],
+            })
+    if concentration_rows:
+        st.markdown("**Крупнейшие концентрации риска**")
+        st.dataframe(pd.DataFrame(concentration_rows), use_container_width=True, hide_index=True)
 
     if st.button("📥 Экспорт CSV"):
         buf = io.StringIO()
