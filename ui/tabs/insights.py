@@ -219,7 +219,11 @@ def render_data_quality(D: dict) -> None:
         display.append({
             "Матч": card.get("match_ru") or card.get("match") or "—",
             "Турнир": card.get("league") or card.get("div") or "—",
-            "Категория": "Женский" if quality["gender"] == "women" else "Не определена",
+            "Категория": (
+                "Женский" if quality["gender"] == "women"
+                else "Мужской" if quality["gender"] == "men"
+                else "Не определена"
+            ),
             "Полнота": quality["score"],
             "API": _STATUS_LABELS.get(statuses["API-Football"], statuses["API-Football"]),
             "Составы": (
