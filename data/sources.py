@@ -509,7 +509,8 @@ def _tsdb_league_meta(league_name: str):
             "world cup", "national team", "nations league", "international",
             "european championship",
         )) or has_women_euro
-        return ("W_", "women_national" if national_women else "women",
+        return ("W_NT" if national_women else "W_",
+                "women_national" if national_women else "women",
                 True, national_women)
 
     national = any(n in ln for n in (
