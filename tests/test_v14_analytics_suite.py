@@ -143,11 +143,11 @@ class V14AnalyticsSuiteTests(unittest.TestCase):
 
     def test_portfolio_risk_detects_match_league_day_and_losing_streak(self):
         bets = [
-            {"status": "pending", "stake": 200, "fixture_id": "f1",
+            {"status": "pending", "stake": 450, "fixture_id": "f1",
              "match": "A vs B", "league": "League 1", "date_iso": "2026-11-11", "market": "OU"},
-            {"status": "pending", "stake": 150, "fixture_id": "f1",
+            {"status": "pending", "stake": 350, "fixture_id": "f1",
              "match": "A vs B", "league": "League 1", "date_iso": "2026-11-11", "market": "BTTS"},
-            {"status": "pending", "stake": 250, "fixture_id": "f2",
+            {"status": "pending", "stake": 450, "fixture_id": "f2",
              "match": "C vs D", "league": "League 1", "date_iso": "2026-11-11", "market": "1X2"},
             {"status": "lost", "stake": 100, "settled_at": "2026-11-09T10:00:00Z"},
             {"status": "lost", "stake": 100, "settled_at": "2026-11-10T10:00:00Z"},
@@ -157,7 +157,7 @@ class V14AnalyticsSuiteTests(unittest.TestCase):
             bank_history=[{"bank": 9_000}, {"bank": 8_000}],
         )
         self.assertEqual(report["pending_count"], 3)
-        self.assertAlmostEqual(report["total_exposure"], 600)
+        self.assertAlmostEqual(report["total_exposure"], 1250)
         self.assertEqual(report["loss_streak"], 2)
         self.assertTrue(report["same_match_overlaps"])
         self.assertTrue(any(row["limit_exceeded"] for row in report["match_rows"]))
