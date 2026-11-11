@@ -32,6 +32,7 @@ except Exception:
 
 from config import (CACHE_TTL, FOOTBALL_DATA_ORG_HOST,
                     DIV_TO_FDORG, FDORG_TO_DIV)
+from data.competition import is_women_competition
 from security import cache_get, cache_put
 from storage import usage
 
@@ -504,7 +505,12 @@ def _tsdb_league_meta(league_name: str):
         return ("G", "club", False, False)
     ln = league_name.lower()
 
-    # --- 1. СБОРНЫЕ / U-ВОЗРАСТЫ (приоритет над всем)
+    # Women's competitions must be classified before generic "euro"/"world cup"
+    # markers; "Women's Europa Cup" is a women's club competition, not a men's NT.
+    if is_women_competition(league_name):
+        return ("W_", "women", True, False)
+
+    # --- 1. СБОРНЫЕ / U-ВОЗРАСТЫ
     national = any(n in ln for n in (
         "u21", "u19", "u23", "u20", "u18", "u17",
         "national", "international", "world cup", "euro",
@@ -529,13 +535,6 @@ def _tsdb_league_meta(league_name: str):
         else:
             div = "NT"
         return (div, "national", False, True)
-
-    # --- 2. ЖЕНСКИЕ
-    women = any(w in ln for w in (
-        "women", "womens", "ladies", "female", "женск"
-    ))
-    if women:
-        return ("W_", "women", True, False)
 
     # --- 3. НЕ-АНГЛИЙСКИЕ "ЧЕМПИОНШИПЫ" И ДРУГИЕ ЛИГИ (важно: ДО mapping!)
     # США
@@ -682,7 +681,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     for off in range(total_days):
         d = today + timedelta(days=off)
         dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_day_v10_{dstr}"
+        ck = f"tsdb_day_v11_{dstr}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -778,7 +777,7 @@ def espn_matches(days: int, logs=None) -> list:
     for i in range(max(1, min(int(days), 14))):
         d = start + timedelta(days=i)
         dstr = d.strftime("%Y%m%d")
-        ck = f"espn_soccer_v3_{dstr}"
+        ck = f"espn_soccer_v4_{dstr}"
         cached = cache_get(ck, 900)
         if cached is not None:
             if isinstance(cached, list):
@@ -825,8 +824,11 @@ def espn_matches(days: int, logs=None) -> list:
                 if sport_name and sport_name not in ("soccer", "football"):
                     continue
                 logos = league_obj.get("logos") or []
+                women = is_women_competition(
+                    league, slug, event.get("name"), hn, an,
+                )
                 rows.append({
-                    "Div": _ESPN_DIVS.get(slug, "G"),
+                    "Div": "W_" if women else _ESPN_DIVS.get(slug, "G"),
                     "League": league, "competition": slug,
                     "Date": _msk_date(event.get("date") or ""),
                     "Time": _msk_time(event.get("date") or ""),
@@ -837,7 +839,8 @@ def espn_matches(days: int, logs=None) -> list:
                     "away_badge": (away.get("team") or {}).get("logo") or "",
                     "league_badge": logos[0].get("href", "") if logos else "",
                     "status": ((event.get("status") or {}).get("type") or {}).get("name", ""),
-                    "women": False, "national": False, "kind": "club",
+                    "women": women, "national": False,
+                    "kind": "women" if women else "club",
                 })
             out += rows
             cache_put(ck, rows)
