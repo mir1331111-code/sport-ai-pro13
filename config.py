@@ -1,8 +1,8 @@
-"""config.py — все константы приложения v13.3."""
+"""config.py — application constants and competition mappings."""
 from __future__ import annotations
 import os
 
-APP_VERSION = "14.1.0"
+APP_VERSION = "14.2.0"
 DATA_VERSION = 17
 
 # A model forecast is labelled strong at or above this event probability.
