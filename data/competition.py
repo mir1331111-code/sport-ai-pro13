@@ -35,10 +35,18 @@ def competition_gender(
 ) -> str:
     """Classify as women or unknown; never infer men's football from missing labels."""
     div = str(division or "").strip().upper()
+    league_text = str(league or "").strip().casefold()
     if women_flag is True or div.startswith("W_") or is_women_competition(
         league, home, away
     ):
         return "women"
+    known_division = div not in {"", "G", "GENERAL", "UNKNOWN", "OTHER"}
+    known_league = league_text not in {
+        "", "soccer", "football", "матч", "лига", "unknown", "other",
+        "неизвестно", "—", "-",
+    }
+    if known_division or known_league:
+        return "men"
     return "unknown"
 
 
