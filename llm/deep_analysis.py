@@ -392,6 +392,74 @@ _DEEP_ANALYSIS_RESPONSE_FORMAT = {
 }
 
 
+def merge_context_snapshots(existing: object, refreshed: object) -> dict:
+    """Prefer newly confirmed SStats facts without erasing older confirmed facts."""
+    old = existing if isinstance(existing, dict) else {}
+    new = refreshed if isinstance(refreshed, dict) else {}
+    merged = dict(old)
+    merged.update({
+        key: value for key, value in new.items()
+        if key not in {"lineup", "referee", "injuries", "injuries_is_confirmed"}
+        and value not in (None, "")
+    })
+
+    old_referee = old.get("referee") if isinstance(old.get("referee"), dict) else {}
+    new_referee = new.get("referee") if isinstance(new.get("referee"), dict) else {}
+    merged["referee"] = (
+        dict(new_referee) if new_referee.get("is_confirmed") and new_referee.get("name")
+        else dict(old_referee) if old_referee.get("is_confirmed") and old_referee.get("name")
+        else dict(new_referee or old_referee)
+    )
+
+    old_lineup = old.get("lineup") if isinstance(old.get("lineup"), dict) else {}
+    new_lineup = new.get("lineup") if isinstance(new.get("lineup"), dict) else {}
+    merged_lineup = {}
+    for side in ("home", "away"):
+        previous = old_lineup.get(side) if isinstance(old_lineup.get(side), dict) else {}
+        current = new_lineup.get(side) if isinstance(new_lineup.get(side), dict) else {}
+        if current.get("confirmed") and current.get("starting_xi"):
+            merged_lineup[side] = dict(current)
+        elif previous.get("confirmed") and previous.get("starting_xi"):
+            merged_lineup[side] = dict(previous)
+        else:
+            merged_lineup[side] = dict(current or previous)
+    merged_lineup["is_confirmed"] = bool(
+        merged_lineup["home"].get("confirmed")
+        and merged_lineup["away"].get("confirmed")
+    )
+    merged_lineup["timestamp"] = (
+        new_lineup.get("timestamp") or old_lineup.get("timestamp")
+    )
+    merged_lineup["source_reliability"] = (
+        new_lineup.get("source_reliability") or old_lineup.get("source_reliability")
+    )
+    merged["lineup"] = merged_lineup
+
+    if new.get("injuries_is_confirmed"):
+        merged["injuries_is_confirmed"] = True
+        merged["injuries"] = list(new.get("injuries") or [])
+        merged["injuries_timestamp"] = new.get("injuries_timestamp")
+    elif old.get("injuries_is_confirmed"):
+        merged["injuries_is_confirmed"] = True
+        merged["injuries"] = list(old.get("injuries") or [])
+        merged["injuries_timestamp"] = old.get("injuries_timestamp")
+    else:
+        merged["injuries_is_confirmed"] = False
+        merged["injuries"] = list(new.get("injuries") or old.get("injuries") or [])
+        merged["injuries_timestamp"] = (
+            new.get("injuries_timestamp") or old.get("injuries_timestamp")
+        )
+    merged["injuries_source_reliability"] = (
+        new.get("injuries_source_reliability")
+        or old.get("injuries_source_reliability")
+    )
+    merged["sstats_event_id"] = (
+        new.get("sstats_event_id") or old.get("sstats_event_id")
+    )
+    merged["provider"] = new.get("provider") or old.get("provider") or "sstats"
+    return merged
+
+
 def _short_text(value: object, max_length: int = 360) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip())
     return text[:max_length]
