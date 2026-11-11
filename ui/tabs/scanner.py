@@ -2321,7 +2321,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         date_filter_counts = {
             "invalid_date": 0, "outside_horizon": 0, "past_kickoff": 0,
             "unknown_same_day_kickoff": 0, "missing_teams": 0,
-            "inside_horizon": 0,
+            "category_conflict": 0, "inside_horizon": 0,
         }
         for match_idx, r in enumerate(rows, 1):
             if match_idx == 1 or match_idx % 5 == 0:
@@ -2370,6 +2370,54 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             a_ru = translate_team(a_en)
             lg = r.get("Div") or "G"
 
+            # Reconcile known competition category with API-Football BEFORE
+            # creating a prediction. A context-only women's match must not be
+            # scored against men's team histories.
+            pre_api_context = context_by_fixture.get(
+                fixture_row_key(h_en, a_en, d.strftime("%Y-%m-%d")), {}
+            )
+            api_category = str(pre_api_context.get("match_category") or "").casefold()
+            div_upper = str(lg).upper()
+            schedule_category = (
+                "women_national" if div_upper.startswith("W_NT")
+                else "women" if bool(r.get("women")) or div_upper.startswith("W_")
+                else "national" if bool(r.get("national")) or div_upper.startswith("NT")
+                else "men" if bool(r.get("category_verified")) or div_upper not in {"", "G", "GENERAL", "UNKNOWN", "OTHER"}
+                else "unknown"
+            )
+            category_conflict = bool(
+                schedule_category != "unknown" and api_category in
+                {"men", "women", "national", "women_national"}
+                and schedule_category != api_category
+            )
+            if category_conflict:
+                date_filter_counts["category_conflict"] += 1
+                logs.append(
+                    f"⛔ КОНФЛИКТ КАТЕГОРИИ: {h_ru} — {a_ru}; "
+                    f"расписание={schedule_category}, API-Football={api_category}. "
+                    "Матч пропущен, чтобы не смешивать историю команд."
+                )
+                continue
+            if schedule_category == "unknown" and api_category in {
+                "men", "women", "national", "women_national"
+            }:
+                lg = {
+                    "men": "G",
+                    "women": "W_",
+                    "national": "NT",
+                    "women_national": "W_NT",
+                }[api_category]
+                r["Div"] = lg
+                r["women"] = api_category in {"women", "women_national"}
+                r["national"] = api_category in {"national", "women_national"}
+                r["category_verified"] = True
+                if (pre_api_context.get("competition") or {}).get("name"):
+                    r["League"] = (pre_api_context.get("competition") or {}).get("name")
+            elif schedule_category in {"women", "women_national", "national"}:
+                r["women"] = schedule_category in {"women", "women_national"}
+                r["national"] = schedule_category in {"national", "women_national"}
+                r["category_verified"] = True
+
             funnel_counts["model"] += 1
 
             try:
@@ -2381,16 +2429,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if P.get("xg_used"):
                 xg_used_count += 1
 
-            _team_ns = "women::" if str(lg).startswith("W_") else "national::" if str(lg).startswith("NT") else ""
+            _team_ns = (
+                "women_national::" if str(lg).startswith("W_NT")
+                else "women::" if str(lg).startswith("W_")
+                else "national::" if str(lg).startswith("NT")
+                else ""
+            )
             fh = engine.form_str(_team_ns + h_en)
             fa = engine.form_str(_team_ns + a_en)
             verdict, rows_, _ = build_verdict(
                 P, min_prob, D["bank"], kelly_frac,
                 h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
 
-            api_context = context_by_fixture.get(
-                fixture_row_key(h_en, a_en, d.strftime("%Y-%m-%d")), {}
-            )
+            api_context = pre_api_context
             if context_store is not None and api_context:
                 try:
                     stable_context_key = fixture_row_key(
@@ -2881,7 +2932,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 or api_context.get("category_verified")
             )
             match_category = (
-                "women" if bool(r.get("women")) or str(lg).startswith("W_") or api_category == "women"
+                "women_national" if str(lg).startswith("W_NT") or api_category == "women_national"
+                else "women" if bool(r.get("women")) or str(lg).startswith("W_") or api_category == "women"
                 else "national" if bool(r.get("national")) or str(lg).startswith("NT") or api_category == "national"
                 else "men" if category_verified else "unknown"
             )
@@ -3027,6 +3079,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"вне окна {date_filter_counts['outside_horizon']}, "
             f"уже начались/завершились {date_filter_counts['past_kickoff']}, "
             f"сегодня без времени начала {date_filter_counts['unknown_same_day_kickoff']}, "
+            f"конфликт категории {date_filter_counts['category_conflict']}, "
             f"дата не распознана {date_filter_counts['invalid_date']}, "
             f"без названий команд {date_filter_counts['missing_teams']}."
         )
