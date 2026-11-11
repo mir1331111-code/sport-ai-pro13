@@ -160,3 +160,57 @@ def render_portfolio_risk():
     st.dataframe([{"Дата": k, "Открытый риск": round(v,2)} for k,v in report["day_top"]],
                  use_container_width=True, hide_index=True) if report["day_top"] else st.info("Нет открытых позиций.")
     st.caption("Корреляция исходов одного матча пока не оценивается численно: без исторической совместной матрицы она не должна изображаться точной.")
+
+def render_api_center():
+    """Show configured integrations and persisted daily counters without exposing credentials."""
+    import json
+    import os
+    from pathlib import Path
+    from config import DISK_CACHE_DIR, LLM_DAILY_LIMIT, ODDS_LIMIT_DAILY, FOOTBALL_DATA_ORG_DAILY_LIMIT
+
+    st.header("⚙️ API CENTER")
+    st.caption("Показывает наличие ключа и локальные счётчики. «Ключ задан» не означает, что внешний API сейчас доступен; проверка соединения выполняется отдельно.")
+    providers = [
+        ("API-Football", "api_football_key_input", "API_FOOTBALL_KEY", "Составы, травмы, судьи"),
+        ("SStats.net", "sstats_api_key_input", "SSTATS_API_KEY", "Расписание и коэффициенты"),
+        ("Highlightly", "highlightly_api_key_input", "HIGHLIGHTLY_API_KEY", "Коэффициенты при доступном тарифе"),
+        ("football-data.org", "fdorg_token_input", "FDORG_TOKEN", "Результаты и архив"),
+        ("Football API xG", "footballapi_key_input", "FOOTBALLAPI_KEY", "xG в пределах покрытия провайдера"),
+        ("LLM", "llm_api_key_input", "LLM_API_KEY", "Независимый текстовый анализ"),
+    ]
+    for start in range(0, len(providers), 2):
+        cols = st.columns(2)
+        for col, item in zip(cols, providers[start:start+2]):
+            name, session_key, env_key, purpose = item
+            configured = bool(st.session_state.get(session_key) or os.environ.get(env_key))
+            with col.container(border=True):
+                st.markdown(f"**{name}**")
+                st.markdown(("🟢 Ключ задан" if configured else "⚪ Ключ не задан"))
+                st.caption(purpose)
+    st.subheader("Дневные лимиты и использование")
+    try:
+        from storage import usage
+        rows = [
+            {"Сервис": "LLM", "Остаток": usage.llm_remaining(), "Лимит": LLM_DAILY_LIMIT},
+            {"Сервис": "Odds API", "Остаток": usage.odds_remaining(), "Лимит": ODDS_LIMIT_DAILY},
+            {"Сервис": "football-data.org", "Остаток": usage.fdorg_remaining(), "Лимит": FOOTBALL_DATA_ORG_DAILY_LIMIT},
+            {"Сервис": "Автопроверка результатов", "Остаток": usage.settle_remaining(), "Лимит": 999},
+        ]
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    except Exception as exc:
+        st.warning(f"Счётчики локального хранилища недоступны: {type(exc).__name__}")
+    budget_path = Path(DISK_CACHE_DIR) / "api_football" / "daily_budget.json"
+    budget = {}
+    try:
+        budget = json.loads(budget_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        pass
+    api_limit = int(os.environ.get("API_FOOTBALL_DAILY_LIMIT", "100") or 100)
+    api_reserve = int(os.environ.get("API_FOOTBALL_DAILY_RESERVE", "10") or 10)
+    used = int(budget.get("used", 0) or 0) if budget.get("date") == datetime.now(timezone.utc).date().isoformat() else 0
+    st.markdown("**API-Football quota**")
+    q1, q2, q3 = st.columns(3)
+    q1.metric("Использовано сегодня", used)
+    q2.metric("Лимит", api_limit)
+    q3.metric("Доступно с учётом резерва", max(0, api_limit - api_reserve - used))
+    st.caption("API-ключи не отображаются и не передаются в этот экран. Для реальной проверки доступности используй кнопки проверки в боковой панели.")
