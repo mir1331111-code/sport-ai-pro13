@@ -501,8 +501,8 @@ def _tsdb_league_meta(league_name: str):
         # Europa Cup is a club competition; Euro is a national-team competition.
         national_women = any(marker in ln for marker in (
             "world cup", "national team", "nations league", "international",
-            "women's euro", "women euro", "european championship",
-        ))
+            "european championship",
+        )) or bool(re.search(r"\\bwomen(?:'s)?\\s+euro\\b", ln))
         return ("W_", "women_national" if national_women else "women",
                 True, national_women)
 
