@@ -90,3 +90,38 @@ class FixtureMergeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_explicit_womens_metadata_wins_over_generic_soccer_row(self):
+        generic = [{
+            "Date": "2026-11-11", "HomeTeam": "Eintracht Frankfurt",
+            "AwayTeam": "PSV", "Div": "G", "League": "Soccer",
+            "women": False, "gender_known": False,
+        }]
+        womens = [{
+            "Date": "2026-11-11", "HomeTeam": "Eintracht Frankfurt",
+            "AwayTeam": "PSV", "Div": "W_EUROPA",
+            "League": "UEFA Women's Europa Cup", "women": True,
+            "gender_known": True, "gender_evidence": "Women's Europa Cup",
+        }]
+        rows = merge_fixture_sources(generic, womens)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["women"])
+        self.assertTrue(rows[0]["gender_known"])
+        self.assertEqual(rows[0]["Div"], "W_EUROPA")
+        self.assertEqual(rows[0]["League"], "UEFA Women's Europa Cup")
+
+    def test_later_generic_metadata_cannot_erase_womens_classification(self):
+        womens = [{
+            "Date": "2026-11-11", "HomeTeam": "Eintracht Frankfurt",
+            "AwayTeam": "PSV", "Div": "W_EUROPA",
+            "League": "UEFA Women's Europa Cup", "women": True,
+            "gender_known": True,
+        }]
+        generic = [{
+            "Date": "2026-11-11", "HomeTeam": "Eintracht Frankfurt",
+            "AwayTeam": "PSV", "Div": "G", "League": "Soccer",
+            "women": False, "gender_known": False,
+        }]
+        rows = merge_fixture_sources(womens, generic)
+        self.assertTrue(rows[0]["women"])
+        self.assertEqual(rows[0]["Div"], "W_EUROPA")
