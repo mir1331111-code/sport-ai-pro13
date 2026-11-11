@@ -53,8 +53,28 @@ def render_data_quality(data: dict, *, api_keys: dict[str, bool] | None = None) 
         card for card in (data.get("cards") or [])
         if isinstance(card, dict)
     ]
-    if not cards:
+    skipped = [
+        row for row in (data.get("quality_skipped_fixtures") or [])
+        if isinstance(row, dict)
+    ]
+    if not cards and not skipped:
         st.info("Пока нет карточек последнего сканирования. Выполните скан, чтобы увидеть диагностику матчей.")
+        return
+    if skipped:
+        st.warning(
+            f"До построения прогнозов исключено матчей с неподтверждённой категорией: {len(skipped)}. "
+            "Они не попали в мужскую/женскую модель и Value."
+        )
+        st.subheader("События, исключённые до прогнозирования")
+        skipped_rows = [{
+            "Матч": row.get("match_ru") or row.get("match") or "—",
+            "Дата": " ".join(str(value) for value in (row.get("date_iso"), row.get("time")) if value),
+            "Источник": ", ".join(row.get("fixture_sources") or []) or "Не записан",
+            "Турнир от источника": row.get("league") or "Неизвестен",
+            "Причина": row.get("reason") or "Категория не подтверждена",
+        } for row in skipped]
+        st.dataframe(pd.DataFrame(skipped_rows), use_container_width=True, hide_index=True)
+    if not cards:
         return
     # The per-card API state reflects what was known at scan time. A key entered
     # after an old scan is not retroactive evidence that that fixture was queried.
@@ -86,6 +106,7 @@ def render_data_quality(data: dict, *, api_keys: dict[str, bool] | None = None) 
             "Составы": _status_label(quality["lineup_status"]),
             "Коэффициенты": _status_label(quality["odds_status"]),
             "История": _status_label(quality["history_status"]),
+            "Источники": ", ".join(card.get("fixture_sources") or []) or "Неизвестно",
             "API": _status_label(quality["api_status"]),
         })
     st.subheader("Проверка матчей последнего сканирования")
