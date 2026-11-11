@@ -2370,8 +2370,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if P.get("xg_used"):
                 xg_used_count += 1
 
-            fh = engine.form_str(h_en)
-            fa = engine.form_str(a_en)
+            fh = engine.form_str(h_en, lg)
+            fa = engine.form_str(a_en, lg)
             verdict, rows_, _ = build_verdict(
                 P, min_prob, D["bank"], kelly_frac,
                 h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
@@ -2846,9 +2846,21 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"is_action={verdict.get('is_action')} | reason={no_best_reason}"
                 )
 
+            home_history = engine.st.get(engine.team_key(h_en, lg), {})
+            away_history = engine.st.get(engine.team_key(a_en, lg), {})
+            is_women_fixture = bool(r.get("women") or str(lg).upper().startswith("W_"))
+            is_national_fixture = bool(r.get("national") or str(lg).upper().startswith("NT"))
             cards.append({
                 "div": lg,
                 "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                "women": is_women_fixture,
+                "national": is_national_fixture,
+                "gender_known": bool(r.get("gender_known") or is_women_fixture),
+                "gender_evidence": str(r.get("gender_evidence") or ""),
+                "competition_kind": (
+                    "women" if is_women_fixture else
+                    "national" if is_national_fixture else "club"
+                ),
                 "match": f"{h_en} vs {a_en}",
                 "match_ru": f"{h_ru} — {a_ru}",
                 "date": d.strftime("%d.%m") +
@@ -2875,7 +2887,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 # LLM receives observed venue-specific goal averages, not the primary model's lambdas.
                 "independent_features": {
-                    **historical_features(engine, h_en, a_en),
+                    **historical_features(engine, h_en, a_en, division=lg),
                     "markets": historical_stats,
                 },
                 "xg_used": bool(P.get("xg_used")),
@@ -2896,7 +2908,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "asian_handicap_market_odds": dict(asian_handicap_market_odds),
                 "asian_handicap_forecasts": asian_handicap_forecasts,
                 "api_football_fixture_id": api_context.get("api_fixture_id"),
+                "api_football_configured": bool(api_football_key),
                 "api_context": api_context,
+                "model_sample": {
+                    "home_home": len(home_history.get("hs") or []),
+                    "away_away": len(away_history.get("as") or []),
+                    "home_total": len(home_history.get("hs") or []) + len(home_history.get("as") or []),
+                    "away_total": len(away_history.get("hs") or []) + len(away_history.get("as") or []),
+                },
+                "fixture_sources": list(r.get("_source_providers") or []),
                 "context_quality": context_quality,
                 "context_forecasts": context_forecasts,
                 "home_badge": r.get("home_badge") or "",
