@@ -7,7 +7,7 @@ def kelly(
     odds: float,
     bank: float,
     frac: float = 0.25,
-    cap: float = 0.02,
+    cap: float = 0.01,
 ) -> float:
     """
     Fractional Kelly.
@@ -36,6 +36,10 @@ def kelly(
 
     if odds <= 1.0:
         return 0.0
+
+    # The product risk policy is fixed at quarter Kelly; callers cannot raise it.
+    frac = min(frac, 0.25)
+    cap = min(cap, 0.01)
 
     if frac <= 0:
         return 0.0
