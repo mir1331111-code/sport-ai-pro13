@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import math
 from typing import Any
 
 from betting.kelly import kelly, market_type
@@ -17,7 +18,7 @@ MAX_DAILY_EXPOSURE_PCT = 0.05
 def _safe_float(value: object, default: float = 0.0) -> float:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return number if number == number and abs(number) != float("inf") else default
 
@@ -143,6 +144,9 @@ def size_bet(
     if odds_value < MIN_BET_ODDS:
         diagnostics["reason"] = "odds_below_minimum_1_70"
         return 0.0, diagnostics
+    if odds_value > 100.0:
+        diagnostics["reason"] = "odds_above_maximum_100"
+        return 0.0, diagnostics
     if bankroll <= 0.0:
         diagnostics["reason"] = "empty_bankroll"
         return 0.0, diagnostics
@@ -180,7 +184,7 @@ def size_bet(
         cap=MAX_MARKET_STAKE_PCT,
     )
     stake = min(raw, market_room, match_room, daily_room, free_bank)
-    stake = round(max(0.0, stake), 2)
+    stake = math.floor(max(0.0, stake) * 100.0 + 1e-9) / 100.0
     if stake <= 0.0:
         diagnostics["reason"] = (
             "market_limit_reached" if market_room <= 0.0
