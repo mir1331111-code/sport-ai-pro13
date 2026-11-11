@@ -55,6 +55,87 @@ class ContextDataTests(unittest.TestCase):
             self.assertNotIn("secret-test-key", stored)
 
 
+    def test_budget_is_shared_across_independent_client_instances(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "daily_budget.json"
+            clock = lambda: datetime(2026, 11, 11, tzinfo=timezone.utc)
+
+            def consume_one(_):
+                return ApiFootballBudget(
+                    path, daily_limit=10, reserve=2, clock=clock,
+                ).consume()
+
+            with ThreadPoolExecutor(max_workers=20) as pool:
+                results = list(pool.map(consume_one, range(20)))
+            self.assertEqual(sum(results), 8)
+            self.assertEqual(ApiFootballBudget(
+                path, daily_limit=10, reserve=2, clock=clock,
+            ).used_today(), 8)
+
+    def test_row_date_uses_localized_absolute_kickoff_over_source_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = ApiFootballClient("key", cache_dir=directory, session=FakeSession({}))
+            provider = ApiFootballContextProvider(
+                client, timezone_name="Europe/Warsaw", max_lineup_calls=0,
+            )
+            row = {
+                "Date": "11/11/2026",
+                "date_iso": "2026-11-11",
+                "kickoff_utc": "2026-11-11T23:30:00Z",
+            }
+            self.assertEqual(provider._row_date(row), "2026-11-12")
+
+    def test_cached_lineups_do_not_consume_network_request_slots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixtures = []
+            rows = []
+            for index in range(14):
+                fixture_id = index + 100
+                home = f"Home Team {index}"
+                away = f"Away Team {index}"
+                fixtures.append({
+                    "fixture": {
+                        "id": fixture_id,
+                        "date": "2026-11-11T11:30:00+00:00",
+                        "referee": "Referee A",
+                    },
+                    "teams": {
+                        "home": {"id": index * 2 + 1, "name": home},
+                        "away": {"id": index * 2 + 2, "name": away},
+                    },
+                })
+                rows.append({
+                    "HomeTeam": home,
+                    "AwayTeam": away,
+                    "date_iso": "2026-11-11",
+                })
+            session = FakeSession({
+                "fixtures": {"response": fixtures, "errors": []},
+                "injuries": {"response": [], "errors": []},
+                "lineups": {"response": [], "errors": []},
+            })
+            client = ApiFootballClient("key", cache_dir=directory, session=session)
+            cached_payload = {"response": [], "errors": []}
+            for fixture_id in range(100, 112):
+                client._cache_put(
+                    client._cache_path("fixtures/lineups", {"fixture": fixture_id}),
+                    cached_payload,
+                )
+            provider = ApiFootballContextProvider(
+                client, max_lineup_calls=2, lineup_window_hours=6,
+            )
+            mapping, _ = provider.enrich(
+                rows, date_from="2026-11-11", date_to="2026-11-11",
+                now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
+            )
+            lineup_calls = [
+                call for call in session.calls if call[0].endswith("/lineups")
+            ]
+            self.assertEqual([call[1]["fixture"] for call in lineup_calls], [112, 113])
+            self.assertEqual(len(mapping), 14)
+
     def test_injuries_are_batched_in_groups_of_twenty(self):
         with tempfile.TemporaryDirectory() as directory:
             fixtures = []
@@ -94,6 +175,36 @@ class ContextDataTests(unittest.TestCase):
             self.assertEqual(len(injury_calls), 2)
             self.assertEqual(len(mapping), 22)
             self.assertTrue(all(value["injuries_is_confirmed"] for value in mapping.values()))
+
+    def test_api_fixture_match_uses_local_date_across_utc_midnight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = FakeSession({
+                "fixtures": {"response": [{
+                    "fixture": {
+                        "id": 765, "date": "2026-11-12T00:30:00+01:00",
+                        "referee": "Ref A",
+                    },
+                    "teams": {
+                        "home": {"id": 1, "name": "Home FC"},
+                        "away": {"id": 2, "name": "Away FC"},
+                    },
+                }], "errors": []},
+                "injuries": {"response": [], "errors": []},
+            })
+            client = ApiFootballClient("key", cache_dir=directory, session=session)
+            provider = ApiFootballContextProvider(
+                client, timezone_name="Europe/Warsaw", max_lineup_calls=0,
+            )
+            mapping, _ = provider.enrich(
+                [{
+                    "HomeTeam": "Home FC", "AwayTeam": "Away FC",
+                    "Date": "11/11/2026", "date_iso": "2026-11-11",
+                    "kickoff_utc": "2026-11-11T23:30:00Z",
+                }],
+                date_from="2026-11-12", date_to="2026-11-12",
+                now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
+            )
+            self.assertIn(("2026-11-12", "home_fc", "away_fc"), mapping)
 
     def test_fixture_match_requires_exact_canonical_home_away_and_date(self):
         with tempfile.TemporaryDirectory() as directory:
