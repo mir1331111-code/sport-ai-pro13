@@ -57,6 +57,14 @@ def merge_fixture_sources(*sources) -> list:
                 continue
             current = merged[key]
 
+            # Preserve provenance from every provider contributing to this
+            # de-duplicated fixture.
+            current_sources = list(current.get("_source_providers") or [])
+            incoming_sources = list(row.get("_source_providers") or [])
+            current["_source_providers"] = list(dict.fromkeys(
+                current_sources + incoming_sources
+            ))
+
             # Women's metadata is safety-critical: a later, explicit women feed
             # upgrades an earlier generic provider row, never the reverse.
             if bool(row.get("women")) or str(row.get("Div") or "").upper().startswith("W_"):
