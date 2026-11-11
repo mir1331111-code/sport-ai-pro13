@@ -8,7 +8,7 @@ import unicodedata
 _WOMEN_MARKERS = (
     "women", "woman", "womens", "ladies", "female", "feminine",
     "feminin", "femmes", "femenina", "femenino", "frauen", "damen",
-    "kvinner", "женск", "девуш", "女子",
+    "kvinner", "liga f", "женск", "девуш", "女子",
 )
 
 
@@ -51,7 +51,7 @@ def competition_gender(
 
 
 def model_team_identity(team: object, *, gender: str = "unknown") -> str:
-    """Namespace women's team identities so men's club history cannot leak into them."""
+    """Keep women's and unknown team identities out of men's team histories."""
     name = str(team or "").strip()
     group = str(gender or "unknown").casefold()
     return f"{group}::{name}" if group in {"women", "unknown"} else name
