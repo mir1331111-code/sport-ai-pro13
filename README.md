@@ -10,6 +10,10 @@ LLM requests are sent directly from the app host to the endpoint shown for the s
 
 Keys entered in the sidebar are saved separately in `.neuro_secrets.json` with owner-only file permissions on the app host. They are not written into `neuro_local.json`, synced through the portfolio Gist, or included in downloaded backups; `.gitignore` excludes the local secret file. If the host uses an ephemeral filesystem or the app is redeployed/restarted, use the host's environment variables or Streamlit Secrets for durable configuration. Re-enter UI-only keys once after upgrading if the earlier version already removed them from portfolio state.
 
+### Deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the Streamlit Community Cloud setup, `App.py` entrypoint, API-Football secret, and configurable request budget.
+
 ### Context pipeline and additional markets
 
 See [`CONTEXT_AND_MARKETS.md`](CONTEXT_AND_MARKETS.md) for API-Football setup, context confidence and Value gates, historical CSV schemas for women/national teams, referee/card handling, halftime corner splits, and Asian handicap settlement calculations.
