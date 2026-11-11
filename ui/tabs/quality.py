@@ -213,7 +213,8 @@ def render_model_lab(db_path: str) -> None:
             st.info("Рыночный журнал пока пуст. Сканер начнёт записывать отдельные сигналы по семействам рынков.")
         table = []
         for item in rows:
-            n = int(item.get("settled") or 0)
+            # Brier/Log Loss and the displayed decisive sample exclude pushes/voids.
+            n = int(item.get("wins") or 0) + int(item.get("losses") or 0)
             if n < 30:
                 readiness = "Недостаточно данных"
             elif n < 100:
@@ -223,13 +224,14 @@ def render_model_lab(db_path: str) -> None:
             table.append({
                 "Рынок": item.get("market"),
                 "Прогнозов": item.get("n"),
-                "Результат подтверждён": n,
+                "Результат подтверждён": int(item.get("settled") or 0),
+                "Решающих исходов": n,
                 "Победы": item.get("wins"),
                 "Поражения": item.get("losses"),
                 "Brier": item.get("brier"),
                 "Log Loss": item.get("log_loss"),
                 "ROI (1 unit)": item.get("roi"),
-                "CLV": None,
+                "Средний CLV": item.get("mean_clv"),
                 "Статус": readiness,
             })
         if table:
