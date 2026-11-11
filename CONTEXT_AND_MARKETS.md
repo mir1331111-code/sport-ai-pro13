@@ -2,19 +2,19 @@
 
 This branch adds a pre-match context pipeline while keeping the existing Base model and bookmaker Value rules separate.
 
-## API-Football live provider
+## SStats context provider
 
-Enter the API-Football key in the main app sidebar under **🔑 API ключи**. The existing UI credential manager persists it in the private, git-ignored `.neuro_secrets.json` file; no Streamlit Secrets or environment editing is required. Do not commit API keys.
+SStats is the scanner's primary fixture, odds and context provider. Games/list supplies the scheduled matches and SStats numeric game IDs. The scanner does not use API-Football or another provider to obtain a duplicate fixture list.
 
-The provider:
-- makes one fixtures request for the requested date range and matches fixtures by local date plus normalized home/away teams;
-- sends only API-Football fixture IDs to API-Football endpoints;
-- batches injuries requests in groups of at most 20 fixtures;
-- requests lineups only within six hours of kickoff and caps uncached lineup calls at 12 per scan by default; cache hits do not consume those call slots, so later fixtures are not starved by earlier cached matches;
-- caches fixture, injury and lineup responses on disk and enforces a cross-process locked UTC-day budget of 100 requests with a 10-request reserve;
-- records a provider response timestamp, confirmation flag and source-reliability field for each data family.
+For context enrichment, the scanner uses SStats endpoints documented in the official API:
+- Games/injuries?gameId={sstats_game_id} for the match injury report;
+- Ls/List to resolve the SStats/Flashscore string event ID for an already-selected fixture (this lookup never adds or replaces fixtures);
+- Ls/GameInfo?id={event_id} for match details, including a referee when supplied;
+- Ls/GameLineups?id={event_id} for starting lineups when supplied.
 
-Lineups are commonly published close to kickoff and competition coverage differs. A successful injuries response means the provider answered; it does not prove every competition has exhaustive injury coverage. Unknown source reliability stays NULL and is shown as uncalibrated rather than being fabricated. An explicitly measured reliability below 0.60 makes the corresponding data unusable for the Strong/Value gate.
+Injuries are checked for up to 20 fixtures within 24 hours of kickoff. Lineup/detail calls are limited to 12 fixtures within six hours of kickoff. Responses are cached. A match is marked as having a confirmed starting XI only when both teams have exactly 11 mapped starters. A missing event ID, partial lineup or unknown referee stays unknown; no data is invented or borrowed from another match. SStats coverage may differ by competition.
+
+The numeric Games/list ID and string Ls/List event ID belong to different SStats endpoint families. They are never interchanged. Both are from the same SStats provider and use the same SStats API key.
 
 ## Context quality and Strong/Value gate
 
