@@ -17,7 +17,7 @@ import streamlit as st
 
 from config import (
     APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE,
-    STRONG_FORECAST_MIN_PROB,
+    DISK_CACHE_DIR, STRONG_FORECAST_MIN_PROB,
 )
 from storage import usage
 from storage import sqlite_store as db
@@ -27,6 +27,16 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
                           footballapi_xg_history)
 from data.fixture_merge import merge_fixture_sources, fixture_key
 from data.fixture_time import app_timezone, fixture_kickoff_local
+from data.context_data import (
+    ApiFootballClient, ApiFootballContextProvider, fixture_row_key,
+)
+from data.context_history import parse_context_csv
+from model.context_model import (
+    assess_context_quality, context_probabilities, walk_forward_context_ablation,
+)
+from model.market_models import (
+    asian_handicap_probabilities, asian_handicap_expected_value,
+)
 from model.engine import Engine, _norm
 from model.validation_cache import select_validation_rows, validation_cache_key
 from model.training import prepare_completed_training_rows, train_engine_chronologically
@@ -94,6 +104,40 @@ def _safe_filter(rows):
     return out
 
 
+def _render_context_comparison(card: dict) -> None:
+    """Show Base/Context side-by-side and make missing mandatory data explicit."""
+    quality = card.get("context_quality") or {}
+    pair = card.get("context_forecasts") or {}
+    base = pair.get("Base") or {}
+    contextual = pair.get("Context") or {}
+    api_context = card.get("api_context") or {}
+    lineup = api_context.get("lineup") or {}
+    referee = api_context.get("referee") or {}
+    home_xi = (lineup.get("home") or {}).get("confirmed", False)
+    away_xi = (lineup.get("away") or {}).get("confirmed", False)
+    referee_name = str(referee.get("name") or "не подтверждён")
+    q_label = str(quality.get("level") or "Low")
+    gate = "разрешён" if quality.get("strong_value_eligible") else "ЗАБЛОКИРОВАН"
+    st.caption(
+        f"Контекст {q_label} · стартовый XI: хозяева {'✓' if home_xi else 'нет'}, "
+        f"гости {'✓' if away_xi else 'нет'} · судья: {referee_name} · "
+        f"Strong/Value: {gate}"
+    )
+    if base and contextual:
+        st.caption(
+            "Base → Context · "
+            f"П1 {base.get('H', 0):.1%} → {contextual.get('H', 0):.1%} "
+            f"(Δ {(contextual.get('H', 0) - base.get('H', 0)) * 100:+.2f} п.п.) · "
+            f"X {base.get('D', 0):.1%} → {contextual.get('D', 0):.1%} · "
+            f"П2 {base.get('A', 0):.1%} → {contextual.get('A', 0):.1%}"
+        )
+    if not quality.get("strong_value_eligible"):
+        st.warning(
+            str(quality.get("reason") or "Контекст не подтверждён; Strong/Value запрещены."),
+            icon="🔒",
+        )
+
+
 def _portfolio_auto_recommendation(card: object) -> dict | None:
     """Return one conservative virtual-portfolio candidate for a fixture.
 
@@ -103,6 +147,10 @@ def _portfolio_auto_recommendation(card: object) -> dict | None:
     validated against an untouched market benchmark.
     """
     if not isinstance(card, dict):
+        return None
+    # Legacy cached cards without a confirmed XI and referee are never
+    # grandfathered into the portfolio after the context gate is introduced.
+    if not bool((card.get("context_quality") or {}).get("strong_value_eligible")):
         return None
     recommendations = card.get("best_by_market") or {}
     books = card.get("bookmaker_by_pick") or {}
@@ -966,6 +1014,71 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             height=100,
             placeholder='[{"date":"2026-10-26","home":"Santa Clara","away":"Benfica","П1":9.0,"X":5.0,"П2":1.3,"ТБ 2.5":1.9,"ТМ 2.5":1.9,"BTTS Да":1.8,"BTTS Нет":2.0,"source":"manual"}]',
         )
+
+        st.markdown("**Контекст матча · API-Football + исторический CSV**")
+        st.text_input(
+            "API-Football API key (можно также задать через API_FOOTBALL_KEY)",
+            value=_runtime_secret("api_football_key_input", "API_FOOTBALL_KEY", "api_football_key"),
+            type="password",
+            key="api_football_key_input",
+            help="Ключ хранится только в настройках среды/текущей Streamlit-сессии; код и журнал его не сохраняют.",
+        )
+        context_csv_file = st.file_uploader(
+            "Исторический архив составов/судей (.csv)",
+            type=["csv"],
+            key="scanner_context_history_csv",
+            help="Нужны fixture_id, home_team, away_team, kickoff_at, observed_at. observed_at должен быть строго раньше kickoff_at.",
+        )
+        st.download_button(
+            "⬇️ Скачать шаблон контекстного CSV",
+            data=(
+                "fixture_id,home_team,away_team,kickoff_at,observed_at,is_confirmed,"
+                "source_reliability,data_source,lineup_strength_home,lineup_strength_away,"
+                "key_players_missing_home,key_players_missing_away,referee_id,"
+                "referee_yellow_mean,referee_yellow_variance,corners_home_trailing_mean,"
+                "corners_away_trailing_mean,corners_home_level_mean,corners_away_level_mean,"
+                "opponent_corner_style_home,opponent_corner_style_away,"
+                "base_p_home,base_p_draw,base_p_away,result\\n"
+            ),
+            file_name="neuro_bet_context_history_template.csv",
+            mime="text/csv",
+        )
+        if context_csv_file is not None:
+            try:
+                context_payload = parse_context_csv(context_csv_file.getvalue())
+                st.session_state["_historical_context_rows"] = context_payload["rows"]
+                st.success(
+                    f"Контекстный архив: принято {context_payload['accepted']} строк, "
+                    f"отклонено {len(context_payload['rejected'])} (post-kickoff данные исключены)."
+                )
+                if context_payload["rejected"]:
+                    st.caption("Причины отклонения: " + "; ".join(
+                        str(item.get("reason")) for item in context_payload["rejected"][:5]
+                    ))
+            except (UnicodeDecodeError, ValueError) as exc:
+                st.error(f"Не удалось прочитать контекстный CSV: {exc}")
+        historical_context_rows = st.session_state.get("_historical_context_rows") or []
+        if st.button(
+            "🧪 Проверить Base vs Context (walk-forward ablation)",
+            key="scanner_context_ablation",
+            disabled=not historical_context_rows,
+        ):
+            report = walk_forward_context_ablation(
+                historical_context_rows, min_train=200, min_validation=500
+            )
+            st.session_state["_context_ablation_report"] = report
+            st.session_state["_context_blender"] = report.get("promoted_model") or {}
+        context_report = st.session_state.get("_context_ablation_report") or {}
+        if context_report:
+            delta = context_report.get("delta_context_minus_base") or {}
+            st.caption(
+                f"Ablation на одинаковых матчах: n={context_report.get('n', 0)} · "
+                f"Δ Brier={delta.get('brier')} · Δ Log Loss={delta.get('log_loss')}."
+            )
+            if (context_report.get("promoted_model") or {}).get("walk_forward_validated"):
+                st.success("Контекстная модель прошла порог абляции и может использоваться при наличии всех live-признаков.")
+            else:
+                st.warning("Context не активирован: не хватает 500 парных матчей или нет улучшения одновременно по Brier и Log Loss.")
         try:
             parsed_quotes = []
             import_source_label = "JSON"
@@ -1555,6 +1668,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         def _render_ranked_market_card(card, family):
             st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+            _render_context_comparison(card)
             summary = market_forecast_summary(card, family)
             summary_text = _market_summary_caption(card, family)
             if summary is not None and summary_text:
@@ -1661,6 +1775,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     st.markdown(f"### {label} · {len(items)} матч.")
                     for card in items:
                         st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+                        _render_context_comparison(card)
                         _render_manual_odds_block(
                             card, D, kelly_frac, min_prob, min_edge,
                             market_filter=None,
@@ -1669,6 +1784,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             else:
                 for card in cards_view:
                     st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+                    _render_context_comparison(card)
                     _render_manual_odds_block(
                             card, D, kelly_frac, min_prob, min_edge,
                             market_filter=None,
@@ -1760,10 +1876,27 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 st.info("SStats не вернул подтверждённых котировок на форы для показанных матчей.")
             for card in handicap_cards:
                 st.markdown(render_fixture_header(card), unsafe_allow_html=True)
+                _render_context_comparison(card)
                 quotes = card.get("asian_handicap_market_odds") or {}
                 st.caption("Котировки SStats: " + " · ".join(
                     f"{pick}: **{float(odd):.2f}**" for pick, odd in sorted(quotes.items())
                 ))
+                for forecast in card.get("asian_handicap_forecasts") or []:
+                    probabilities = forecast["probabilities"]
+                    st.write(
+                        f"**{forecast['pick']} @ {forecast['odds']:.2f}** · "
+                        f"победа {probabilities['win']:.1%} · "
+                        f"полпобеды {probabilities['half_win']:.1%} · "
+                        f"возврат {probabilities['push']:.1%} · "
+                        f"полупоражение {probabilities['half_loss']:.1%} · "
+                        f"поражение {probabilities['loss']:.1%} · "
+                        f"расчётный EV {forecast['expected_value']:+.1%}"
+                    )
+                st.caption(
+                    "EV азиатской форы рассчитан по полной матрице счетов, включая push и split-ставки. "
+                    "Пока нет отдельного out-of-sample benchmark на одинаковой выборке, рынок остаётся "
+                    "информационным и не может попасть в Value-портфель."
+                )
 
         st.caption(
             "✅ Общий shortlist: " + str(len(cards_view))
@@ -1801,6 +1934,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         sstats_key = _runtime_secret("sstats_api_key_input", "SSTATS_API_KEY", "sstats_api_key")
         footballapi_key = _runtime_secret(
             "footballapi_key_input", "FOOTBALLAPI_KEY", "footballapi_key"
+        )
+        api_football_key = _runtime_secret(
+            "api_football_key_input", "API_FOOTBALL_KEY", "api_football_key"
         )
         fixture_sources = []
         tsdb_rows = []
@@ -1907,6 +2043,46 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         if not rows:
             logs.append("⚠️ Матчи не найдены. Проверьте доступность источников расписания.")
 
+        # Normalize fixture dates before the API provider performs exact matching.
+        for fixture_row in rows:
+            parsed_fixture_date = parse_date(
+                fixture_row.get("Date") or fixture_row.get("date")
+            )
+            if parsed_fixture_date is not None:
+                fixture_row["date_iso"] = parsed_fixture_date.strftime("%Y-%m-%d")
+
+        context_by_fixture = {}
+        if api_football_key:
+            try:
+                try:
+                    lineup_call_cap = int(os.environ.get("API_FOOTBALL_MAX_LINEUP_CALLS", "12"))
+                except (TypeError, ValueError):
+                    lineup_call_cap = 12
+                api_client = ApiFootballClient(
+                    api_football_key, cache_dir=DISK_CACHE_DIR,
+                    daily_limit=100, reserve=10,
+                )
+                context_provider = ApiFootballContextProvider(
+                    api_client,
+                    timezone_name=getattr(scan_timezone, "key", "Europe/London"),
+                    max_lineup_calls=lineup_call_cap,
+                    lineup_window_hours=6,
+                )
+                context_by_fixture, context_logs = context_provider.enrich(
+                    rows,
+                    date_from=today_date.isoformat(),
+                    date_to=(today_date + timedelta(days=days - 1)).isoformat(),
+                    now=scan_now,
+                )
+                logs.extend(context_logs)
+            except Exception as exc:
+                logs.append(f"⚠️ API-Football context: {type(exc).__name__}; Base-прогнозы сохраняются.")
+        else:
+            logs.append(
+                "🔒 API-Football не настроен: Base-прогнозы будут показаны, "
+                "но Strong/Value заблокированы до подтверждения стартового XI и судьи."
+            )
+
         update_loader("📈 Загрузка xG-истории...", 0.16, logs)
         footballapi_xg_rows = footballapi_xg_history(footballapi_key, logs)
 
@@ -2007,6 +2183,29 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             verdict, rows_, _ = build_verdict(
                 P, min_prob, D["bank"], kelly_frac,
                 h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
+
+            api_context = context_by_fixture.get(
+                fixture_row_key(h_en, a_en, d.strftime("%Y-%m-%d")), {}
+            )
+            context_quality = assess_context_quality(api_context)
+            context_forecasts = context_probabilities(
+                {"H": P["p1"], "D": P["x"], "A": P["p2"]},
+                api_context,
+                model=st.session_state.get("_context_blender"),
+            )
+            verdict["context_quality"] = context_quality
+            if not context_quality["strong_value_eligible"] and verdict.get("is_action"):
+                verdict["is_action"] = False
+                verdict["strong_blocked"] = True
+                verdict["confidence"] = (
+                    "низкая" if context_quality["level"] == "Low" else "средняя"
+                )
+                verdict["conf_color"] = (
+                    "#f87171" if context_quality["level"] == "Low" else "#fbbf24"
+                )
+                verdict.setdefault("reasons", []).append(
+                    "Strong/Value заблокированы: " + context_quality["reason"]
+                )
 
             best = None
             market_odds = dict(r.get("market_odds") or {})
@@ -2268,6 +2467,34 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 engine.match_stats.predict(h_en, a_en, lg)
                 if hasattr(engine, "match_stats") else {}
             )
+            asian_handicap_forecasts = []
+            for handicap_pick, raw_price in asian_handicap_market_odds.items():
+                match_handicap = re.fullmatch(
+                    r"Ф([12])\\s+([+-]?\\d+(?:[.,]\\d+)?)",
+                    str(handicap_pick).strip(), re.I,
+                )
+                if not match_handicap:
+                    continue
+                try:
+                    handicap_price = float(raw_price)
+                    handicap_line = float(match_handicap.group(2).replace(",", "."))
+                    if not 1.01 < handicap_price <= 100:
+                        continue
+                    handicap_probs = asian_handicap_probabilities(
+                        P["M"], handicap_line,
+                        side="home" if match_handicap.group(1) == "1" else "away",
+                    )
+                    asian_handicap_forecasts.append({
+                        "pick": handicap_pick,
+                        "line": handicap_line,
+                        "odds": handicap_price,
+                        "probabilities": handicap_probs,
+                        "expected_value": asian_handicap_expected_value(
+                            handicap_probs, handicap_price
+                        ),
+                    })
+                except (TypeError, ValueError, OverflowError):
+                    continue
             selection_odds = {}
             selection_odds.update(market_odds)
             selection_odds.update(total_market_odds)
@@ -2347,6 +2574,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 min_prob, min_edge=max(min_edge, 0.05), min_ev=0.05,
                 bookmaker_by_pick=bookmaker_by_pick,
                 market_validation_by_pick=market_validation_by_pick,
+                context_qualified=context_quality["strong_value_eligible"],
             )
             best_odds_source = "no_market"
             if selection_odds and candidate_rows:
@@ -2361,6 +2589,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     min_ev=0.05,
                     bookmaker_by_pick=bookmaker_by_pick,
                     market_validation_by_pick=market_validation_by_pick,
+                    context_qualified=context_quality["strong_value_eligible"],
                 )
                 if best is not None:
                     verdict = chosen_verdict
@@ -2451,6 +2680,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "btts_market_odds": dict(btts_market_odds),
                 "stat_market_odds": dict(stat_market_odds),
                 "asian_handicap_market_odds": dict(asian_handicap_market_odds),
+                "asian_handicap_forecasts": asian_handicap_forecasts,
+                "api_football_fixture_id": api_context.get("api_fixture_id"),
+                "api_context": api_context,
+                "context_quality": context_quality,
+                "context_forecasts": context_forecasts,
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
                 "league_badge": r.get("league_badge") or "",
