@@ -342,6 +342,28 @@ class SStatsTests(unittest.TestCase):
         )
         self.assertEqual(len(names), 10)
 
+        # A generic squad with 11 names is not a starting XI unless the feed
+        # explicitly marks those records as starters.
+        unmarked = {"homeTeam": {"name": "Home FC", "players": [
+            {"playerName": f"Squad Player {i}"} for i in range(11)
+        ]}}
+        self.assertEqual(
+            _sstats_context_side_lineup(
+                {"status": "success", "data": unmarked}, "home", "Home FC"
+            ),
+            [],
+        )
+
+        substitutes = {"homeTeam": {"name": "Home FC", "players": [
+            {"playerName": f"Substitute {i}", "isStarting": False} for i in range(11)
+        ]}}
+        self.assertEqual(
+            _sstats_context_side_lineup(
+                {"status": "success", "data": substitutes}, "home", "Home FC"
+            ),
+            [],
+        )
+
     def test_full_odds_uses_bookmaker_data_and_caches(self, _cache_get, _cache_put, request_mock):
         request_mock.return_value = _Response(200, {
             "status": "success",
