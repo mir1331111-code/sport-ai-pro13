@@ -28,6 +28,72 @@ from storage.context_store import referee_entity_id
 BASE_URL = "https://v3.football.api-sports.io"
 
 
+def api_football_connection_check(api_key: str, session=None) -> dict[str, Any]:
+    """Verify an API-Football key through /status without spending the daily match quota.
+
+    The provider documents /status as quota-exempt. Returned messages are
+    deliberately generic: provider response bodies can contain account details.
+    """
+    key = str(api_key or "").strip()
+    if not key:
+        return {"ok": False, "message": "Введите API-Football key в левой панели."}
+
+    client = session or requests.Session()
+    try:
+        response = client.get(
+            f"{BASE_URL}/status",
+            headers={"x-apisports-key": key},
+            timeout=(5, 15),
+        )
+    except requests.Timeout:
+        return {"ok": False, "message": "API-Football не ответил вовремя. Проверьте сеть и повторите попытку."}
+    except requests.RequestException as exc:
+        return {"ok": False, "message": f"Не удалось подключиться к API-Football ({type(exc).__name__})."}
+    except Exception as exc:
+        return {"ok": False, "message": f"Проверка API-Football завершилась ошибкой ({type(exc).__name__})."}
+
+    status_code = getattr(response, "status_code", None)
+    if status_code in (401, 403):
+        return {"ok": False, "message": "API-Football отклонил ключ. Проверьте его в личном кабинете провайдера."}
+    if status_code == 429:
+        return {"ok": False, "message": "API-Football временно ограничил частоту запросов. Повторите проверку позже."}
+    try:
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return {"ok": False, "message": "API-Football вернул некорректный HTTP-ответ."}
+
+    if not isinstance(payload, dict):
+        return {"ok": False, "message": "API-Football вернул ответ неизвестного формата."}
+    if payload.get("errors"):
+        return {"ok": False, "message": "API-Football не подтвердил ключ. Проверьте доступ и подписку."}
+
+    data = payload.get("response")
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict) or not data:
+        return {"ok": False, "message": "API-Football ответил, но не вернул сведения о статусе аккаунта."}
+
+    request_info = data.get("requests") if isinstance(data.get("requests"), dict) else {}
+    current = request_info.get("current")
+    limit = request_info.get("limit_day")
+    try:
+        current = int(current) if current is not None else None
+    except (TypeError, ValueError):
+        current = None
+    try:
+        limit = int(limit) if limit is not None else None
+    except (TypeError, ValueError):
+        limit = None
+
+    return {
+        "ok": True,
+        "message": "API-Football принял ключ. Подключение подтверждено.",
+        "requests_current": current,
+        "requests_limit": limit,
+    }
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
