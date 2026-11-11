@@ -332,6 +332,15 @@ class SStatsTests(unittest.TestCase):
         self.assertNotIn("private-key", repr(mapping))
         self.assertTrue(any("confirmed XI=1" in line for line in logs))
 
+    def test_injury_feed_requires_a_structured_list_response(self):
+        from data.sstats import _sstats_context_injuries_confirmed
+        self.assertTrue(_sstats_context_injuries_confirmed([]))
+        self.assertTrue(_sstats_context_injuries_confirmed({"injuries": []}))
+        self.assertTrue(_sstats_context_injuries_confirmed({"home": [], "away": []}))
+        self.assertFalse(_sstats_context_injuries_confirmed({}))
+        self.assertFalse(_sstats_context_injuries_confirmed({"status": "success"}))
+        self.assertFalse(_sstats_context_injuries_confirmed(None))
+
     def test_context_lineup_parser_does_not_confirm_incomplete_or_substitute_lists(self):
         from data.sstats import _sstats_context_side_lineup
         partial = {"homeTeam": {"name": "Home FC", "players": [
