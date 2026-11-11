@@ -281,6 +281,9 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         self.assertEqual(sum(analysis["probabilities"].values()), 100.0)
         self.assertEqual(analysis["data_quality"], "high")
         request = post.call_args.kwargs["json"]
+        self.assertEqual(request["reasoning_effort"], "low")
+        self.assertEqual(request["reasoning_format"], "hidden")
+        self.assertEqual(request["response_format"]["type"], "json_schema")
         prompt = request["messages"][0]["content"]
         self.assertIn("Referee Example", prompt)
         self.assertIn("Injured Example", prompt)
