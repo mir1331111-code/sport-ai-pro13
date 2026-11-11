@@ -143,6 +143,18 @@ class TopMatchSelectionTests(unittest.TestCase):
         }), 7)
         self.assertIs(result[0]["card"], duplicate)
 
+    def test_generic_overall_games_count_does_not_override_venue_samples(self):
+        card = make_card(home_sample=6, away_sample=7)
+        card["games"] = 2
+        selected = select_top_matches([card])
+        self.assertEqual(len(selected), 1)
+        self.assertIs(selected[0]["card"], card)
+
+    def test_non_sstats_fixture_cannot_enter_sstats_top_shortlist(self):
+        card = make_card()
+        card.pop("sstats_game_id")
+        self.assertEqual(select_top_matches([card]), [])
+
     def test_diagnostics_show_why_candidates_are_excluded(self):
         cards = [
             make_card(),
