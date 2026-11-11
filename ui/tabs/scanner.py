@@ -2053,8 +2053,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"полпобеды {probabilities['half_win']:.1%} · "
                         f"возврат {probabilities['push']:.1%} · "
                         f"полупоражение {probabilities['half_loss']:.1%} · "
-                        f"поражение {probabilities['loss']:.1%} · "
-                        f"расчётный EV {forecast['expected_value']:+.1%}"
+                        f"поражение {probabilities['loss']:.1%}"
                     )
                 st.caption(
                     "EV азиатской форы рассчитан по полной матрице счетов, включая push и split-ставки. "
@@ -2644,9 +2643,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "line": handicap_line,
                         "odds": handicap_price,
                         "probabilities": handicap_probs,
-                        "expected_value": asian_handicap_expected_value(
-                            handicap_probs, handicap_price
-                        ),
                     })
                 except (TypeError, ValueError, OverflowError):
                     continue
