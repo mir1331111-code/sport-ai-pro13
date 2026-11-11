@@ -36,10 +36,13 @@ class OnlineErrorLearner:
         self.min_bin_samples = min_bin_samples
         self.max_adjustment = float(max_adjustment)
 
-    def _history(self, as_of: datetime | str, league: str | None = None) -> list[dict]:
+    def _history(
+        self, as_of: datetime | str, league: str | None = None,
+        model_version: str | None = None,
+    ) -> list[dict]:
         cutoff = _utc(as_of)
         history = []
-        for row in self.ledger.rows(settled_only=True):
+        for row in self.ledger.rows(settled_only=True, model_version=model_version):
             try:
                 forecast_time = _utc(row["forecast_at"])
                 settled_time = _utc(row["settled_at"]) if row.get("settled_at") else None
@@ -52,11 +55,13 @@ class OnlineErrorLearner:
             history.append(row)
         return history
 
-    def calibrate(self, probabilities: Mapping[str, Any], *, as_of: datetime | str,
-                  league: str | None = None) -> dict[str, Any]:
-        """Return corrected probabilities and a transparent learning report."""
+    def calibrate(
+        self, probabilities: Mapping[str, Any], *, as_of: datetime | str,
+        league: str | None = None, model_version: str | None = None,
+    ) -> dict[str, Any]:
+        """Return corrected probabilities from earlier results of the same model version."""
         base = _probabilities(probabilities)
-        history = self._history(as_of, league)
+        history = self._history(as_of, league, model_version)
         counts = {key: [0] * self.bins for key in OUTCOMES}
         hits = {key: [0] * self.bins for key in OUTCOMES}
         for row in history:
@@ -87,15 +92,24 @@ class OnlineErrorLearner:
                 "correction_applied": applied, "as_of": _timestamp(as_of),
                 "league": league, "method": "prior-settled-binned-calibration"}
 
-    def evaluate(self, *, as_of: datetime | str, league: str | None = None) -> dict[str, Any]:
-        """Expanding-window comparison; each row is calibrated from earlier settled rows only."""
-        rows = sorted(self._history(as_of, league), key=lambda r: (r["forecast_at"], r["id"]))
+    def evaluate(
+        self, *, as_of: datetime | str, league: str | None = None,
+        model_version: str | None = None,
+    ) -> dict[str, Any]:
+        """Expanding-window comparison on one model version, without result leakage."""
+        rows = sorted(
+            self._history(as_of, league, model_version),
+            key=lambda r: (r["forecast_at"], r["id"]),
+        )
         raw_scores, calibrated_scores = [], []
         for row in rows:
             when = _utc(row["forecast_at"])
             # Train only on outcomes already settled before this forecast was made.
-            report = self.calibrate(row["probabilities"], as_of=when,
-                                    league=league if league is not None else row.get("league"))
+            report = self.calibrate(
+                row["probabilities"], as_of=when,
+                league=league if league is not None else row.get("league"),
+                model_version=model_version,
+            )
             raw, calibrated, actual = row["probabilities"], report["probabilities"], row["result"]
             raw_scores.append((sum((raw[k] - float(k == actual)) ** 2 for k in OUTCOMES),
                                -math.log(max(raw[actual], 1e-15))))
@@ -107,5 +121,5 @@ class OnlineErrorLearner:
                 "calibrated_brier": mean(calibrated_scores, 0),
                 "raw_log_loss": mean(raw_scores, 1),
                 "calibrated_log_loss": mean(calibrated_scores, 1),
-                "as_of": _timestamp(as_of),
+                "as_of": _timestamp(as_of), "model_version": model_version,
                 "note": "Chronological diagnostic; compare on an untouched holdout before deployment."}
