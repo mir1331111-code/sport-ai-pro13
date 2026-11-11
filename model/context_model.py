@@ -102,6 +102,24 @@ def assess_context_quality(context: dict | None) -> dict:
     }
 
 
+def _historical_context_eligible(row: dict) -> bool:
+    if not bool(row.get("is_confirmed")):
+        return False
+    if not bool(row.get("lineup_is_confirmed", row.get("is_confirmed"))):
+        return False
+    if not bool(row.get("referee_is_confirmed", row.get("is_confirmed"))):
+        return False
+    reliability_values = [
+        row.get("lineup_source_reliability"),
+        row.get("referee_source_reliability"),
+        row.get("source_reliability"),
+    ]
+    known = [float(value) for value in reliability_values if value is not None]
+    if any(not math.isfinite(value) or value < 0.60 or value > 1.0 for value in known):
+        return False
+    return bool(known)
+
+
 def _feature_vector(context: dict) -> list[float]:
     values = []
     for name in CONTEXT_FEATURES:
@@ -196,7 +214,7 @@ def fit_context_blender(
             observed = datetime.fromisoformat(str(row["observed_at"]).replace("Z", "+00:00"))
             if kickoff.tzinfo is None or observed.tzinfo is None or observed >= kickoff:
                 continue
-            if not bool(row.get("is_confirmed")):
+            if not _historical_context_eligible(row):
                 continue
             x = _feature_vector(row)
             base = _valid_probability_map({
@@ -325,7 +343,7 @@ def walk_forward_context_ablation(
                 "A": row.get("base_p_away"),
             })
             outcome = str(row.get("result") or "").upper()
-            if not bool(row.get("is_confirmed")) or outcome not in OUTCOMES:
+            if not _historical_context_eligible(row) or outcome not in OUTCOMES:
                 continue
         except (KeyError, TypeError, ValueError):
             continue
