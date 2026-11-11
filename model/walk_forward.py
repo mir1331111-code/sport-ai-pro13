@@ -506,11 +506,11 @@ def walk_forward_compare(
                 (candidate_no_rest, pred_without_rest),
                 (candidate_no_h2h_no_rest, pred_without_h2h_rest),
             ):
-                raw = (prediction.get("p1_raw"), prediction.get("x_raw"), prediction.get("p2_raw"))
-                model.calib_logits.extend(model._logit(p) for p in raw)
-                model.calib_outcomes.extend(one_hot)
-                if model.match_count % 150 == 149:
-                    model.refit_calibrator()
+                model.record_calibration(
+                    row_copy.get("Div") or "G",
+                    prediction,
+                    outcome,
+                )
             baseline.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
