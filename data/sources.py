@@ -499,10 +499,16 @@ def _tsdb_league_meta(league_name: str):
     women = any(w in ln for w in ("women", "womens", "ladies", "female", "женск"))
     if women:
         # Europa Cup is a club competition; Euro is a national-team competition.
+        normalized_words = re.sub(r"[^a-z]+", " ", ln.replace("’", "'")).split()
+        has_women_euro = any(
+            normalized_words[index:index + 2] == ["women", "euro"]
+            or normalized_words[index:index + 3] == ["women", "s", "euro"]
+            for index in range(len(normalized_words))
+        )
         national_women = any(marker in ln for marker in (
             "world cup", "national team", "nations league", "international",
             "european championship",
-        )) or bool(re.search(r"\\bwomen(?:'s)?\\s+euro\\b", ln))
+        )) or has_women_euro
         return ("W_", "women_national" if national_women else "women",
                 True, national_women)
 
