@@ -59,6 +59,25 @@ class FixtureMergeTests(unittest.TestCase):
         )
         self.assertEqual(len(rows), 2)
 
+    def test_sstats_is_a_complete_primary_fixture_and_odds_source(self):
+        sstats = [{
+            "Date": "2026-11-11T20:00:00",
+            "HomeTeam": "Birmingham City",
+            "AwayTeam": "Sunderland",
+            "Div": "E1",
+            "League": "Championship",
+            "fixture_id": "sstats:12345",
+            "sstats_game_id": 12345,
+            "market_odds": {"П1": 2.10, "X": 3.20, "П2": 3.40},
+        }]
+        # Passing only the primary provider must preserve its own fixture ID,
+        # its own odds and its own game ID without needing another schedule feed.
+        rows = merge_fixture_sources(sstats)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["fixture_id"], "sstats:12345")
+        self.assertEqual(rows[0]["sstats_game_id"], 12345)
+        self.assertEqual(rows[0]["market_odds"], sstats[0]["market_odds"])
+
     def test_fixture_key_normalizes_accents_and_club_suffixes(self):
         self.assertEqual(
             fixture_key({"Date": "2026-10-20", "HomeTeam": "Atlético FC", "AwayTeam": "Club"}),
