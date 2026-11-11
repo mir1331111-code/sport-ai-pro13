@@ -11,7 +11,8 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         self.assertTrue(model.learn_step({
             "HomeTeam": "Alpha", "AwayTeam": "Beta",
             "HC": "6", "AC": "4", "HY": "2", "AY": "1",
-            "HR": "1", "AR": "0",
+            "HR": "1", "AR": "0", "Referee": "Referee A",
+            "HTHG": "1", "HTAG": "0", "HTHC": "2", "HTAC": "1",
         }, "E0"))
         pred = model.predict("Alpha", "Beta", "E0")
         self.assertAlmostEqual(pred["corners"]["total"], 10.0)
