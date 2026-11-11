@@ -1010,6 +1010,7 @@ def _render_manual_odds_block(
                 bets=D.get("bets") or [], fixture_id=c.get("fixture_id"),
                 match=c.get("match"), date_iso=c.get("date_iso"),
                 market=market_type(pick), pick=pick,
+                now=datetime.now(app_timezone()),
             )
         passed = (
             manual_odd >= MIN_BET_ODDS
@@ -1073,7 +1074,7 @@ def _render_manual_odds_block(
                     "date": (parse_date(c.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": c.get("date_iso"),
                     "match_time": c.get("time", ""),
-                    "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "date_time": datetime.now(app_timezone()).strftime("%Y-%m-%d %H:%M"),
                     "fixture_id": c.get("fixture_id"),
                     "sstats_game_id": c.get("sstats_game_id"),
                     "market_forecast_key": (
@@ -3506,6 +3507,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         date_iso=card.get("date_iso"),
                         market=market_code,
                         pick=pick,
+                        now=datetime.now(app_timezone()),
                     )
                     if stake_value <= 0 or stake_value > available_bank:
                         continue
