@@ -1070,6 +1070,453 @@ def sstats_match_statistics(game_id, api_key: str, logs=None) -> Optional[dict]:
     return result
 
 
+
+def _sstats_context_cache_get(endpoint: str, api_key: str, params=None, *, ttl: int = 900):
+    """Cached SStats GET for context endpoints; credentials never enter cache values."""
+    query = dict(params or {})
+    key_tag = hashlib.sha256(str(api_key or "").encode("utf-8")).hexdigest()[:12]
+    params_tag = hashlib.sha256(
+        repr(sorted((str(k), str(v)) for k, v in query.items())).encode("utf-8")
+    ).hexdigest()[:12]
+    cache_key = f"sstats_context_v1_{str(endpoint).strip('/').replace('/', '_')}_{key_tag}_{params_tag}"
+    cached = cache_get(cache_key, ttl)
+    if isinstance(cached, dict):
+        return cached
+    response = _sstats_request(endpoint, api_key, params=query, timeout=(4, 12))
+    if response.status_code != 200:
+        raise RuntimeError(f"SStats context HTTP {response.status_code}")
+    payload = response.json() or {}
+    if not isinstance(payload, dict) or str(payload.get("status") or "").casefold() == "error":
+        raise ValueError("SStats context returned an API error")
+    cache_put(cache_key, payload)
+    return payload
+
+
+def _sstats_context_data(payload):
+    try:
+        return _sstats_unwrap(payload)
+    except Exception:
+        return None
+
+
+def _sstats_context_name(value):
+    if isinstance(value, dict):
+        for field in ("name", "playerName", "fullName", "shortName", "displayName", "title"):
+            candidate = value.get(field)
+            if candidate not in (None, "") and not isinstance(candidate, (dict, list)):
+                return str(candidate).strip()
+        return ""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _sstats_context_find_value(value, wanted_keys):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = re.sub(r"[^a-z]", "", str(key).casefold())
+            if normalized in wanted_keys:
+                if isinstance(item, dict):
+                    found = _sstats_context_name(item)
+                    if found:
+                        return found
+                elif isinstance(item, (str, int, float)) and str(item).strip():
+                    return str(item).strip()
+        for item in value.values():
+            found = _sstats_context_find_value(item, wanted_keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _sstats_context_find_value(item, wanted_keys)
+            if found:
+                return found
+    return ""
+
+
+def _sstats_context_player_rows(value):
+    """Extract starters from common Ls/GameLineups response shapes.
+
+    Generic squad/player collections are accepted only when each record marks
+    the player as a starter. Dedicated starting-XI arrays need no extra flag.
+    """
+    player_fields = {
+        "player", "playername", "fullname", "shortname", "displayname",
+    }
+    starter_arrays = {
+        "lineup", "startingxi", "startxi", "startingplayers",
+        "startinglineup", "starters",
+    }
+    generic_arrays = {"players", "squad"}
+
+    def _walk(node, require_starter_marker=False):
+        if isinstance(node, list):
+            result = []
+            for item in node:
+                if isinstance(item, dict):
+                    player_obj = item.get("player") if isinstance(item.get("player"), dict) else item
+                    name = _sstats_context_name(player_obj)
+                    if name:
+                        is_starter = None
+                        for flag in ("isStarting", "isStarter", "starting", "starter"):
+                            if flag in item:
+                                raw = item.get(flag)
+                                is_starter = (
+                                    raw is True
+                                    or str(raw).strip().casefold() in {"1", "true", "yes", "starter", "starting"}
+                                )
+                                break
+                        if is_starter is False:
+                            continue
+                        if require_starter_marker and is_starter is not True:
+                            continue
+                        result.append(name)
+                    else:
+                        result.extend(_walk(item, require_starter_marker))
+                elif isinstance(item, str) and item.strip() and not require_starter_marker:
+                    result.append(item.strip())
+            return result
+        if isinstance(node, dict):
+            for key, item in node.items():
+                normalized = re.sub(r"[^a-z]", "", str(key).casefold())
+                if normalized in starter_arrays and isinstance(item, (dict, list)):
+                    found = _walk(item, False)
+                    if found:
+                        return found
+            for key, item in node.items():
+                normalized = re.sub(r"[^a-z]", "", str(key).casefold())
+                if normalized in generic_arrays and isinstance(item, (dict, list)):
+                    found = _walk(item, True)
+                    if found:
+                        return found
+            result = []
+            for key, item in node.items():
+                normalized = re.sub(r"[^a-z]", "", str(key).casefold())
+                if normalized in player_fields:
+                    name = _sstats_context_name(item)
+                    if name:
+                        result.append(name)
+            if result:
+                return result
+            for item in node.values():
+                found = _walk(item, require_starter_marker)
+                if found:
+                    return found
+        return []
+
+    names = _walk(value)
+    unique = []
+    seen = set()
+    for name in names:
+        key = re.sub(r"[^a-zа-я0-9]", "", str(name).casefold())
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(str(name))
+    return unique
+
+
+def _sstats_context_side_lineup(payload, side: str, team_name: str):
+    data = _sstats_context_data(payload)
+    if isinstance(data, dict):
+        side_keys = (
+            {"home", "hometeam", "homelineup", "homeplayers", "local"}
+            if side == "home" else
+            {"away", "awayteam", "awaylineup", "awayplayers", "visitor"}
+        )
+        for key, value in data.items():
+            normalized = re.sub(r"[^a-z]", "", str(key).casefold())
+            if normalized in side_keys:
+                players = _sstats_context_player_rows(value)
+                if players:
+                    return players
+    # Some feeds return a teams[] array; identify each team by its name.
+    target = _norm_name(team_name)
+    def _find_team(node):
+        if isinstance(node, dict):
+            team = node.get("team") if isinstance(node.get("team"), dict) else node
+            label = _sstats_context_name(team)
+            if label and _norm_name(label) == target:
+                players = _sstats_context_player_rows(node)
+                if players:
+                    return players
+            for child in node.values():
+                found = _find_team(child)
+                if found:
+                    return found
+        elif isinstance(node, list):
+            for child in node:
+                found = _find_team(child)
+                if found:
+                    return found
+        return []
+    return _find_team(data)
+
+
+def _sstats_context_injuries(payload):
+    data = _sstats_context_data(payload)
+    if data is None:
+        return []
+    if isinstance(data, dict):
+        collected = []
+        for field in ("injuries", "players", "home", "away", "items", "results"):
+            value = data.get(field)
+            if isinstance(value, list):
+                collected.extend(value)
+        data = collected
+    if not isinstance(data, list):
+        return []
+    result = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        player = item.get("player") if isinstance(item.get("player"), dict) else item
+        team = item.get("team") if isinstance(item.get("team"), dict) else {}
+        name = _sstats_context_name(player)
+        if not name:
+            continue
+        result.append({
+            "player_id": player.get("id"),
+            "player_name": name,
+            "team_id": team.get("id"),
+            "team_name": _sstats_context_name(team),
+            "type": str(item.get("type") or player.get("type") or ""),
+            "reason": str(item.get("reason") or player.get("reason") or ""),
+        })
+    return result
+
+
+def _sstats_ls_event_key(event: dict):
+    if not isinstance(event, dict):
+        return None, ""
+    info = event.get("matchInfo") if isinstance(event.get("matchInfo"), dict) else {}
+    game = event.get("game") if isinstance(event.get("game"), dict) else {}
+    merged = {**game, **info, **event}
+    home = merged.get("homeTeam") or merged.get("home") or merged.get("home_team") or ""
+    away = merged.get("awayTeam") or merged.get("away") or merged.get("away_team") or ""
+    home_name = _sstats_context_name(home)
+    away_name = _sstats_context_name(away)
+    raw_date = str(
+        merged.get("date") or merged.get("startTime") or merged.get("kickoff")
+        or merged.get("dateTime") or merged.get("matchDate") or ""
+    )
+    date_key = raw_date[:10]
+    external_id = ""
+    for field in ("id", "eventId", "event_id", "matchId", "flashscoreId", "flashScoreId"):
+        candidate = merged.get(field)
+        if candidate not in (None, ""):
+            external_id = str(candidate).strip()
+            break
+    referee = _sstats_context_find_value(
+        merged, {"referee", "refereename", "mainreferee", "refereefullname"}
+    )
+    if not (date_key and home_name and away_name):
+        return None, external_id
+    return (
+        date_key, _norm_name(home_name), _norm_name(away_name)
+    ), external_id
+
+
+def sstats_context_enrich(
+    rows: list[dict],
+    api_key: str,
+    *,
+    date_from: str,
+    date_to: str,
+    now: datetime | None = None,
+    max_injury_checks: int = 20,
+    max_lineup_checks: int = 12,
+    timezone_offset: int | None = None,
+) -> tuple[dict[tuple[str, str, str], dict], list[str]]:
+    """Enrich SStats Games/list fixtures using SStats injuries and Flashscore Ls endpoints.
+
+    Games/list remains the only fixture/odds source. Ls/List is queried only to
+    resolve the provider's own string event IDs for GameInfo/GameLineups; it is
+    never used to add or replace matches. Missing provider fields remain unknown.
+    """
+    key = str(api_key or "").strip()
+    logs = []
+    if not key:
+        return {}, ["SStats context: API key отсутствует; контекст недоступен."]
+    now = now or datetime.now()
+    if timezone_offset is None:
+        _clock, timezone_offset = _sstats_timezone()
+
+    valid_rows = [
+        row for row in (rows or [])
+        if isinstance(row, dict)
+        and row.get("sstats_game_id") not in (None, "")
+        and row.get("HomeTeam") and row.get("AwayTeam")
+    ]
+    if not valid_rows:
+        return {}, ["SStats context: нет матчей с SStats game ID."]
+
+    ls_by_key = {}
+    try:
+        ls_payload = _sstats_context_cache_get(
+            "Ls/List", key,
+            {
+                "From": date_from, "To": date_to, "Upcoming": "true",
+                "Limit": 1000, "Offset": 0, "TimeZone": timezone_offset,
+            },
+            ttl=1800,
+        )
+        ls_records = _sstats_context_data(ls_payload)
+        if isinstance(ls_records, dict):
+            ls_records = next(
+                (ls_records.get(field) for field in ("games", "matches", "events", "items", "results")
+                 if isinstance(ls_records.get(field), list)),
+                [],
+            )
+        if isinstance(ls_records, list):
+            for event in ls_records:
+                match_key, external_id = _sstats_ls_event_key(event)
+                if match_key and external_id:
+                    ls_by_key[match_key] = (external_id, _sstats_context_find_value(
+                        event, {"referee", "refereename", "mainreferee", "refereefullname"}
+                    ))
+    except Exception as exc:
+        logs.append(f"⚠️ SStats Ls/List: {type(exc).__name__}; XI/судьи могут быть недоступны.")
+
+    from datetime import timezone as dt_timezone
+    local_tz = dt_timezone(timedelta(hours=int(timezone_offset)))
+
+    def _kickoff(row):
+        raw = str(row.get("kickoff_utc") or row.get("Date") or "")
+        parsed = _parse_provider_date(raw)
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=local_tz).astimezone(dt_timezone.utc)
+        return parsed.astimezone(dt_timezone.utc)
+
+    current_utc = now.astimezone(dt_timezone.utc) if now.tzinfo else now.replace(tzinfo=dt_timezone.utc)
+    injury_candidates = sorted(
+        [
+            row for row in valid_rows
+            if _kickoff(row) is not None
+            and timedelta(0) <= _kickoff(row) - current_utc <= timedelta(hours=24)
+        ],
+        key=lambda row: _kickoff(row),
+    )[:max(0, int(max_injury_checks))]
+    lineup_candidates = sorted(
+        [
+            row for row in valid_rows
+            if _kickoff(row) is not None
+            and timedelta(0) <= _kickoff(row) - current_utc <= timedelta(hours=6)
+        ],
+        key=lambda row: _kickoff(row),
+    )[:max(0, int(max_lineup_checks))]
+
+    context_by_fixture = {}
+    injury_checked = injury_found = info_checked = lineup_checked = lineup_confirmed = referee_confirmed = 0
+
+    for row in valid_rows:
+        home = str(row.get("HomeTeam") or "")
+        away = str(row.get("AwayTeam") or "")
+        date_key = str(row.get("date_iso") or row.get("Date") or row.get("date") or "")[:10]
+        fixture_key_value = (date_key, _norm_name(home), _norm_name(away))
+        ls_match = ls_by_key.get(fixture_key_value)
+        ls_id = ls_match[0] if ls_match else ""
+        referee = ls_match[1] if ls_match else ""
+        context = {
+            "provider": "sstats",
+            "sstats_game_id": str(row.get("sstats_game_id")),
+            "sstats_event_id": ls_id or None,
+            "kickoff_at": str(row.get("kickoff_utc") or row.get("Date") or "") or None,
+            "timestamp": current_utc.isoformat(),
+            "referee": {
+                "id": None, "name": referee or None, "is_confirmed": bool(referee),
+                "timestamp": current_utc.isoformat() if referee else None,
+                "source_reliability": None,
+            },
+            "lineup": {
+                "home": {"starting_xi": [], "confirmed": False},
+                "away": {"starting_xi": [], "confirmed": False},
+                "is_confirmed": False, "timestamp": None, "source_reliability": None,
+            },
+            "injuries": [], "injuries_is_confirmed": False,
+            "injuries_timestamp": None, "injuries_source_reliability": None,
+        }
+
+        if row in injury_candidates:
+            try:
+                injury_payload = _sstats_context_cache_get(
+                    "Games/injuries", key,
+                    {"gameId": row.get("sstats_game_id")}, ttl=4 * 60 * 60,
+                )
+                injury_data = _sstats_context_data(injury_payload)
+                context["injuries"] = _sstats_context_injuries(injury_payload)
+                context["injuries_is_confirmed"] = injury_data is not None
+                context["injuries_timestamp"] = current_utc.isoformat() if injury_data is not None else None
+                injury_checked += int(injury_data is not None)
+                injury_found += len(context["injuries"])
+            except Exception as exc:
+                logs.append(
+                    f"⚠️ SStats injuries game={row.get('sstats_game_id')}: {type(exc).__name__}"
+                )
+
+        if row in lineup_candidates and ls_id:
+            try:
+                info_payload = _sstats_context_cache_get(
+                    "Ls/GameInfo", key, {"id": ls_id}, ttl=60 * 60,
+                )
+                info_data = _sstats_context_data(info_payload)
+                if info_data is not None:
+                    info_checked += 1
+                    if not context["referee"]["is_confirmed"]:
+                        referee = _sstats_context_find_value(
+                            info_data,
+                            {"referee", "refereename", "mainreferee", "refereefullname"},
+                        )
+                        if referee:
+                            context["referee"].update({
+                                "name": referee, "is_confirmed": True,
+                                "timestamp": current_utc.isoformat(),
+                            })
+                lineup_payload = _sstats_context_cache_get(
+                    "Ls/GameLineups", key, {"id": ls_id}, ttl=10 * 60,
+                )
+                home_players = _sstats_context_side_lineup(
+                    lineup_payload, "home", home
+                )
+                away_players = _sstats_context_side_lineup(
+                    lineup_payload, "away", away
+                )
+                # Never promote a partial squad or a substitutes list to a confirmed XI.
+                home_confirmed = len(home_players) == 11
+                away_confirmed = len(away_players) == 11
+                context["lineup"] = {
+                    "home": {"starting_xi": home_players, "confirmed": home_confirmed},
+                    "away": {"starting_xi": away_players, "confirmed": away_confirmed},
+                    "is_confirmed": home_confirmed and away_confirmed,
+                    "timestamp": current_utc.isoformat(),
+                    "source_reliability": None,
+                }
+                lineup_checked += 1
+                lineup_confirmed += int(home_confirmed and away_confirmed)
+                referee_confirmed += int(bool(context["referee"]["is_confirmed"]))
+            except Exception as exc:
+                logs.append(
+                    f"⚠️ SStats Ls details event={ls_id}: {type(exc).__name__}"
+                )
+
+        context_by_fixture[fixture_key_value] = context
+
+    logs.append(
+        "SStats context: "
+        f"Ls/List matched={len(ls_by_key)}/{len(valid_rows)}; "
+        f"injuries checked={injury_checked}, entries={injury_found}; "
+        f"GameInfo={info_checked}; lineups checked={lineup_checked}, "
+        f"confirmed XI={lineup_confirmed}; confirmed referees={referee_confirmed}."
+    )
+    if not ls_by_key:
+        logs.append(
+            "ℹ️ SStats Ls/List не сопоставил string ID; составы и судьи оставлены неизвестными, "
+            "без подстановки данных из другого матча."
+        )
+    return context_by_fixture, logs
+
+
 def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
     """Fetch full prematch bookmaker markets for one SStats fixture."""
     key = str(api_key or "").strip()
