@@ -225,7 +225,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
     def test_one_batch_request_returns_validated_analysis_and_caps_quality(self):
         from llm import deep_analysis
 
-        card = make_card()
+        card = make_card(home_sample=9, away_sample=10)
         dossier = build_match_dossier(card)
         response_content = json.dumps({
             "analyses": [{
