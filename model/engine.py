@@ -560,6 +560,7 @@ class Engine:
         с остальной системой.
         """
 
+        namespace = _team_namespace(lg)
         h = _team_identity(str(h), lg)
         a = _team_identity(str(a), lg)
         P0 = self.lp[lg]
@@ -589,7 +590,6 @@ class Engine:
                 ),
             )
         else:
-            namespace = _team_namespace(lg)
             global_home = self.namespace_hg[namespace]
             global_away = self.namespace_ag[namespace]
             global_home_dates = self.namespace_hg_dates[namespace]
