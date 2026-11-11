@@ -13,7 +13,7 @@ class AnalyticsQualityTests(unittest.TestCase):
     def test_card_quality_never_invents_missing_context(self):
         report = card_quality({"match": "A vs B", "market_odds": {}})
         states = {x["name"]: x["state"] for x in report["checks"]}
-        self.assertEqual(states["Состав хозяев"], "empty")
+        self.assertEqual(states["Состав хозяев"], "unavailable")
         self.assertEqual(states["Судья"], "empty")
         self.assertEqual(states["Коэффициенты 1X2"], "empty")
         self.assertEqual(report["completeness"], 0)
