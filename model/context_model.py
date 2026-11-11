@@ -12,6 +12,7 @@ CONTEXT_FEATURES = (
     "lineup_strength_away",
     "key_players_missing_home",
     "key_players_missing_away",
+    "source_reliability",
 )
 
 
@@ -31,19 +32,39 @@ def assess_context_quality(context: dict | None) -> dict:
     context = context if isinstance(context, dict) else {}
     lineup = context.get("lineup") or {}
     referee = context.get("referee") or {}
+    def _reliability_ok(source):
+        raw = (source or {}).get("source_reliability")
+        if raw is None:
+            return True, False
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return False, True
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            return False, True
+        return value >= 0.60, True
+
+    lineup_reliability_ok, lineup_reliability_known = _reliability_ok(lineup)
+    referee_reliability_ok, referee_reliability_known = _reliability_ok(referee)
     lineup_confirmed = bool(
         lineup.get("is_confirmed")
         or (
             (lineup.get("home") or {}).get("confirmed")
             and (lineup.get("away") or {}).get("confirmed")
         )
-    )
+    ) and lineup_reliability_ok
     referee_confirmed = bool(
         referee.get("is_confirmed") and str(referee.get("name") or "").strip()
-    )
+    ) and referee_reliability_ok
     injuries_confirmed = bool(context.get("injuries_is_confirmed"))
+    injuries_reliability_ok, injuries_reliability_known = _reliability_ok(context)
+    injuries_confirmed = injuries_confirmed and injuries_reliability_ok
     core_complete = lineup_confirmed and referee_confirmed
-    if core_complete and injuries_confirmed:
+    reliability_calibrated = (
+        lineup_reliability_known and referee_reliability_known
+        and (not context.get("injuries_is_confirmed") or injuries_reliability_known)
+    )
+    if core_complete and injuries_confirmed and reliability_calibrated:
         level = "High"
     elif core_complete or lineup_confirmed or referee_confirmed or injuries_confirmed:
         level = "Medium"
@@ -56,12 +77,20 @@ def assess_context_quality(context: dict | None) -> dict:
         missing.append("referee")
     if not injuries_confirmed:
         missing.append("injuries_feed")
+    if (
+        (lineup_reliability_known and not lineup_reliability_ok)
+        or (referee_reliability_known and not referee_reliability_ok)
+        or (context.get("injuries_is_confirmed") and injuries_reliability_known
+            and not injuries_reliability_ok)
+    ):
+        missing.append("low_source_reliability")
     return {
         "level": level,
         "lineup_confirmed": lineup_confirmed,
         "referee_confirmed": referee_confirmed,
         "injuries_confirmed": injuries_confirmed,
         "strong_value_eligible": core_complete,
+        "source_reliability_calibrated": reliability_calibrated,
         "missing": missing,
         "reason": (
             "контекст XI и судья подтверждён"
