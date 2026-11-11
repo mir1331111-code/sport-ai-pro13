@@ -596,7 +596,7 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
     if is_gpt_oss:
         body.update({
             "reasoning_effort": "low",
-            "include_reasoning": False,
+            "reasoning_format": "hidden",
             "response_format": _DEEP_ANALYSIS_RESPONSE_FORMAT,
         })
     else:
