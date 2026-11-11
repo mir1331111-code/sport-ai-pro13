@@ -37,6 +37,7 @@ from model.context_model import (
 )
 from model.market_models import (
     asian_handicap_probabilities, asian_handicap_expected_value,
+    adjust_corners_for_game_state,
 )
 from storage.context_store import ContextStore
 from model.engine import Engine, _norm
@@ -138,6 +139,60 @@ def _render_context_comparison(card: dict) -> None:
             str(quality.get("reason") or "Контекст не подтверждён; Strong/Value запрещены."),
             icon="🔒",
         )
+    reliability = referee.get("source_reliability")
+    st.caption(
+        "Надёжность API-источника: "
+        + (f"{float(reliability):.0%}" if reliability is not None else "ещё не откалибрована")
+        + " · травматический фид: "
+        + ("ответ получен" if api_context.get("injuries_is_confirmed") else "нет подтверждения")
+    )
+
+    historical = card.get("historical_stats") or {}
+    card_stats = historical.get("cards") or {}
+    ref_stats = card_stats.get("referee") or {}
+    if ref_stats.get("available"):
+        st.caption(
+            f"Судья в исторической выборке карточек: n={ref_stats['n']} · "
+            f"среднее {ref_stats['mean']:.2f} · "
+            f"дисперсия {ref_stats['variance']:.2f} · "
+            f"вес shrinkage {ref_stats['blend_weight']:.0%}. "
+            "Это информационная поправка, не проверенный букмекерский edge."
+        )
+
+    corner_stats = historical.get("corners") or {}
+    state_splits = corner_stats.get("game_state_splits") or {}
+    level_stats = state_splits.get("level") or {}
+    if level_stats.get("n", 0) > 0:
+        means = {
+            state: value.get("mean")
+            for state, value in state_splits.items()
+            if isinstance(value, dict) and value.get("mean") is not None
+        }
+        state_labels = {
+            "home_trailing": "хозяева проигрывают к перерыву",
+            "level": "ничья к перерыву",
+            "away_trailing": "гости проигрывают к перерыву",
+        }
+        scenario_text = []
+        for state in ("home_trailing", "level", "away_trailing"):
+            sample = state_splits.get(state) or {}
+            if sample.get("n", 0) <= 0:
+                continue
+            adjusted = adjust_corners_for_game_state(
+                float(level_stats["mean"]),
+                state=state,
+                historical_state_means=means,
+            )
+            scenario_text.append(
+                f"{state_labels[state]}: {adjusted['mean']:.1f} угловых во 2-м тайме "
+                f"(n={sample['n']})"
+            )
+        if scenario_text:
+            st.caption(
+                "Исторические угловые по состоянию счёта на перерыв · "
+                + " · ".join(scenario_text)
+                + ". Требуются HTHG/HTAG и HTHC/HTAC; сценарии не подменяют предматчевую базу."
+            )
 
 
 def _portfolio_auto_recommendation(card: object) -> dict | None:
@@ -1733,8 +1788,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 )
                 if not summary.get("history_sufficient", True):
                     strength_label = "НЕДОСТАТОЧНО ИСТОРИИ КОМАНД (нужно не менее 5 матчей)"
-                elif summary.get("strong_forecast"):
+                elif (
+                    summary.get("strong_forecast")
+                    and bool((card.get("context_quality") or {}).get("strong_value_eligible"))
+                ):
                     strength_label = f"СИЛЬНЫЙ ПРОГНОЗ ≥{strength_threshold:.0%}"
+                elif summary.get("strong_forecast"):
+                    strength_label = "Strong заблокирован: нет подтверждённого XI и/или судьи"
                 else:
                     strength_label = f"ниже порога сильного прогноза {strength_threshold:.0%}"
                 st.caption(
