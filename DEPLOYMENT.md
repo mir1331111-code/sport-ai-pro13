@@ -3,6 +3,12 @@
 The app entry point is `App.py`. It is a Streamlit application and the repository includes its runtime dependencies in `requirements.txt`.
 
 ## Streamlit Community Cloud
+## Match and odds source priority
+
+When the SStats key is configured and `Games/list` returns fixtures, SStats is the single primary source for the scanner's match list and bookmaker odds. ESPN, TheSportsDB and football-data.org are not queried for the same schedule window in that scan; they are used only as fallback when SStats is not configured or returns no fixtures. SStats fixture IDs are retained for `Odds/{gameId}` and other SStats match endpoints.
+
+API-Football is a separate, optional context provider. Its fixture IDs are provider-specific and must not be replaced with SStats game IDs. It is not used as the scanner's match-list or odds source.
+
 
 1. Open [share.streamlit.io](https://share.streamlit.io/) and switch to the GitHub workspace for `mir1331111-code`.
 2. Select **Create app** (or manage the existing app connected to this repository).
