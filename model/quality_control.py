@@ -200,14 +200,18 @@ def assess_fixture_quality(
     if explicit_women and gender != "women":
         conflicts.append("женская категория соревнования не перенесена в карточку")
 
-    freshness_state = "fresh"
+    freshness_state = "unknown"
     time_stamps = [
         context.get("timestamp"), lineup_stamp, referee.get("timestamp"),
         injury_stamp,
     ]
     present_stamps = [stamp for stamp in time_stamps if stamp]
-    if present_stamps and any(_age_status(stamp, current, stale_after_hours) == "stale" for stamp in present_stamps):
-        freshness_state = "stale"
+    if present_stamps:
+        freshness_state = (
+            "stale"
+            if any(_age_status(stamp, current, stale_after_hours) == "stale" for stamp in present_stamps)
+            else "fresh"
+        )
     if conflicts:
         conflict_state = "conflict"
     else:
@@ -276,9 +280,11 @@ def check_proposed_position(
     max_match_pct: float = 0.05,
     max_league_pct: float = 0.12,
     max_day_pct: float = 0.20,
+    max_loss_streak: int = 3,
 ) -> dict[str, Any]:
-    """Check proposed virtual position against match/league/day concentration caps."""
-    pending = [dict(row) for row in (bets or []) if isinstance(row, Mapping) and row.get("status", "pending") == "pending"]
+    """Check exposure caps and prohibit raising stake after a losing streak."""
+    all_rows = [dict(row) for row in (bets or []) if isinstance(row, Mapping)]
+    pending = [row for row in all_rows if row.get("status", "pending") == "pending"]
     stake = _finite_float(candidate.get("stake"))
     if stake <= 0:
         return {"allowed": False, "reasons": ["Размер позиции должен быть положительным."], "exposures": {}}
@@ -317,13 +323,33 @@ def check_proposed_position(
         "day": day_amount / equity,
     }
     reasons = []
+    closed = [row for row in all_rows if row.get("status") in {"won", "lost"}]
+    closed.sort(key=lambda row: str(row.get("settled_at") or row.get("date_time") or ""))
+    loss_streak = 0
+    for row in reversed(closed):
+        if row.get("status") != "lost":
+            break
+        loss_streak += 1
+    reference_stake = _finite_float(closed[-1].get("stake")) if closed else 0.0
+    if (
+        max_loss_streak > 0 and loss_streak >= max_loss_streak
+        and reference_stake > 0 and stake > reference_stake + 1e-9
+    ):
+        reasons.append(
+            f"После серии из {loss_streak} поражений размер позиции не может "
+            f"превышать последнюю ставку ({reference_stake:.2f})."
+        )
     if exposures["match"] > max_match_pct + 1e-12:
         reasons.append(f"Матч: {exposures['match']:.1%} > лимита {max_match_pct:.1%}.")
     if exposures["league"] > max_league_pct + 1e-12:
         reasons.append(f"Лига: {exposures['league']:.1%} > лимита {max_league_pct:.1%}.")
     if exposures["day"] > max_day_pct + 1e-12:
         reasons.append(f"День: {exposures['day']:.1%} > лимита {max_day_pct:.1%}.")
-    return {"allowed": not reasons, "reasons": reasons, "exposures": exposures, "equity": equity}
+    return {
+        "allowed": not reasons, "reasons": reasons, "exposures": exposures,
+        "equity": equity, "loss_streak": loss_streak,
+        "reference_stake": reference_stake,
+    }
 
 
 def portfolio_risk_report(
@@ -375,6 +401,13 @@ def portfolio_risk_report(
     history_rows = [row for row in (bank_history or []) if isinstance(row, Mapping)]
     history_rows.sort(key=lambda row: str(row.get("ts") or ""))
     values = [_finite_float(row.get("bank")) for row in history_rows if row.get("bank") is not None]
+    closed = [row for row in all_bets if row.get("status") in {"won", "lost"}]
+    closed.sort(key=lambda row: str(row.get("settled_at") or row.get("date_time") or ""))
+    loss_streak = 0
+    for row in reversed(closed):
+        if row.get("status") != "lost":
+            break
+        loss_streak += 1
     peak = max(values, default=_finite_float(bank))
     drawdown = 0.0
     running_peak = values[0] if values else _finite_float(bank)
@@ -397,6 +430,8 @@ def portfolio_risk_report(
         "equity": equity, "open_risk_share": open_risk,
         "by_match": by_match, "by_league": by_league, "by_day": by_day,
         "correlated_clusters": correlated_clusters, "max_drawdown": drawdown,
+        "loss_streak": loss_streak,
+        "last_settled_stake": _finite_float(closed[-1].get("stake")) if closed else None,
         "breaches": breaches,
         "limits": {
             "match": max_match_pct, "league": max_league_pct, "day": max_day_pct,
