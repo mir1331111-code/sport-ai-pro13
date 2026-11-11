@@ -7,6 +7,7 @@ from collections import Counter
 
 import streamlit as st
 from betting.ranking import model_favorite
+from betting.risk import risk_snapshot, MAX_MARKET_STAKE_PCT, MAX_MATCH_EXPOSURE_PCT, MAX_DAILY_EXPOSURE_PCT
 
 
 def esc(value):
@@ -105,6 +106,17 @@ def team_badge(url, name):
     )
 
 
+def league_badge(url, name):
+    label = esc(name)
+    if url:
+        return (
+            f"<span class='sp-league-emblem'><img src='{esc(url)}' alt='{label}' "
+            "loading='lazy' referrerpolicy='no-referrer' "
+            "onerror=\"this.style.display='none'\"></span>"
+        )
+    return "<span class='sp-league-emblem fallback'>⚽</span>"
+
+
 def match_tile(card, rank):
     pred = favorite(card) or {}
     deep = card.get("deep_analysis") if isinstance(card.get("deep_analysis"), dict) else {}
@@ -116,7 +128,7 @@ def match_tile(card, rank):
     return (
         "<div class='sp-match-tile'>"
         "<div class='sp-match-meta'>"
-        f"<span>#{rank:02d} · {esc(card.get('league') or card.get('div') or 'ФУТБОЛ')}</span>"
+        f"<span class='sp-league-meta'>{league_badge(card.get('league_badge'), card.get('league') or card.get('div') or 'ФУТБОЛ')}{esc(card.get('league') or card.get('div') or 'ФУТБОЛ')}</span>"
         f"<span>{esc(card.get('date') or card.get('date_iso') or '')} {esc(card.get('time') or '')}</span>"
         "</div>"
         "<div class='sp-team-line'>"
@@ -126,7 +138,8 @@ def match_tile(card, rank):
         f"<div class='sp-team-side away'><b>{esc(card.get('away_team') or 'Гости')}</b>"
         f"{team_badge(card.get('away_badge'), card.get('away_team') or 'Гости')}</div></div>"
         f"<div class='sp-match-bottom'><span class='sp-pick'>{esc(pred.get('pick') or '—')} · {float(pred.get('probability') or 0):.1%}</span>{groq_tag}</div>"
-        "</div>"
+        + odds_html(card)
+        + "</div>"
     )
 
 
@@ -141,6 +154,14 @@ def render():
         if pred:
             ranked.append((pred["probability"], card, pred))
     ranked.sort(key=lambda x: x[0], reverse=True)
+    groq_matches = [
+        c for c in cards
+        if isinstance(c.get("deep_analysis"), dict) and c.get("deep_analysis_fixture_id")
+    ]
+    groq_matches.sort(
+        key=lambda c: (favorite(c) or {}).get("probability", 0.0),
+        reverse=True,
+    )
 
     bets = [b for b in (data.get("bets") or []) if isinstance(b, dict)]
     pending = sum(b.get("status") == "pending" for b in bets)
@@ -154,6 +175,7 @@ def render():
         for b in closed
     )
     roi = profit / turnover * 100 if turnover else 0.0
+    risk = risk_snapshot(data.get("bank"), bets)
     priced = sum(has_prices(c) for c in cards)
     value = sum(
         bool(c.get("best") is not None
@@ -197,7 +219,7 @@ def render():
         )
         return
 
-    top = ranked[0][1] if ranked else cards[0]
+    top = groq_matches[0] if groq_matches else (ranked[0][1] if ranked else cards[0])
     pred = favorite(top) or {}
     deep = top.get("deep_analysis") if isinstance(top.get("deep_analysis"), dict) else {}
     ai_probs = deep.get("probabilities") or {}
@@ -205,12 +227,13 @@ def render():
     ai_prob = num(ai_probs.get(ai_pick)) if ai_pick else None
     ai_text = str(deep.get("match_assessment") or top.get("llm_opinion") or "")[:340]
     next_matches = cards[:6]
-    focus_matches = [item[1] for item in ranked[:5]] or cards[:5]
+    focus_matches = groq_matches[:7] if groq_matches else ([item[1] for item in ranked[:5]] or cards[:5])
+    focus_title = "TOP MATCHES · Groq + основная модель" if groq_matches else "Матчи в фокусе · основная модель"
 
     left, mid, right = st.columns([1.08, 0.96, 0.88], gap="medium")
     with left:
         st.markdown(
-            panel("UPCOMING MATCHES", "Матчи в фокусе", "Топ по вероятности основной модели")
+            panel("UPCOMING MATCHES", focus_title, "До 7 матчей; слабые кандидаты не добавляются ради заполнения списка")
             + "".join(match_tile(card, i + 1) for i, card in enumerate(focus_matches))
             + "</section>",
             unsafe_allow_html=True,
@@ -300,6 +323,23 @@ def render():
             "<div class='sp-context-note'>λ — ожидаемые голы модели, не подтверждённый итог матча.</div></section>",
             unsafe_allow_html=True,
         )
+
+    daily_risk_pct = float(risk.get("daily_exposure_pct") or 0.0)
+    daily_risk_amount = float(risk.get("daily_exposure") or 0.0)
+    daily_remaining = float(risk.get("daily_remaining") or 0.0)
+    max_match_amount = float(risk.get("max_match_exposure") or 0.0)
+    risk_state = "Дневной лимит достигнут — новые ставки заблокированы" if daily_risk_pct >= MAX_DAILY_EXPOSURE_PCT else "Лимит в норме"
+    risk_state_class = "blocked" if daily_risk_pct >= MAX_DAILY_EXPOSURE_PCT else "ok"
+    st.markdown(
+        panel("RISK CONTROL", "Контроль совокупного риска", "Лимиты применяются до каждой ставки, включая ставки из разных рынков одного матча")
+        + "<div class='sp-risk-strip'>"
+        + f"<div><small>РИСК СЕГОДНЯ</small><b>{daily_risk_amount:,.2f}</b><span>{daily_risk_pct:.1%} от банка · предел {MAX_DAILY_EXPOSURE_PCT:.0%}</span></div>"
+        + f"<div><small>ОСТАТОК ДНЕВНОГО ЛИМИТА</small><b>{daily_remaining:,.2f}</b><span>с учётом рассчитанных сегодня ставок</span></div>"
+        + f"<div><small>ОТКРЫТАЯ ЭКСПОЗИЦИЯ</small><b>{float(risk.get('pending_exposure') or 0):,.2f}</b><span>по всем незакрытым рынкам</span></div>"
+        + f"<div><small>МАКСИМУМ НА МАТЧ</small><b>{max_match_amount:,.2f}</b><span>предел {MAX_MATCH_EXPOSURE_PCT:.0%} банка · рынок {MAX_MARKET_STAKE_PCT:.0%}</span></div>"
+        + f"<div class='sp-risk-state {risk_state_class}'>{esc(risk_state)}</div></div></section>",
+        unsafe_allow_html=True,
+    )
 
     st.markdown(
         "<div class='sp-footer-note'><span>NEURO BET PRO</span> · данные последнего сканирования · "
