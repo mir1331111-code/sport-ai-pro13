@@ -1769,6 +1769,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             family: rank_market_forecasts(market_pool, family)
             for family in ("winner", "goals", "btts", "corners", "cards")
         }
+        top_match_min_probability = max(
+            float(STRONG_FORECAST_MIN_PROB), float(min_prob)
+        )
+        top_match_diagnostics = top_match_shortlist_diagnostics(
+            market_pool, min_probability=top_match_min_probability,
+            min_team_history=5,
+        )
+        top_match_candidates = select_top_matches(
+            market_pool,
+            limit=MAX_TOP_MATCHES,
+            min_probability=top_match_min_probability,
+            min_team_history=5,
+        )
         forecast_counts = {
             family: len(items) for family, items in ranked_forecast_pool.items()
         }
@@ -1784,6 +1797,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"Угловые · прогнозы {forecast_counts['corners']} (сильных {strong_forecast_counts['corners']}) / Value {signal_counts['corners']} / цены {quote_counts['corners']}",
             f"Карточки · прогнозы {forecast_counts['cards']} (сильных {strong_forecast_counts['cards']}) / Value {signal_counts['cards']} / цены {quote_counts['cards']}",
             f"Форы · котировки {quote_counts['handicap']}",
+            f"🏆 TOP MATCHES · GROQ {len(top_match_candidates)}/{MAX_TOP_MATCHES}",
         ])
 
         def _market_recommendation(card, family):
@@ -2070,6 +2084,168 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "Пока нет отдельного out-of-sample benchmark на одинаковой выборке, рынок остаётся "
                     "информационным и не может попасть в Value-портфель."
                 )
+
+        with market_tabs[7]:
+            st.caption(
+                "Отдельный аналитический список: фаворит 1X2 от "
+                f"{top_match_min_probability:.0%}, не менее 5 домашних матчей хозяев "
+                "и 5 выездных матчей гостей, полная линия 1X2 от SStats. "
+                "Это кандидаты для подробного разбора, а не подтверждённые Value-ставки. "
+                "Groq не получает вероятности и коэффициенты основной модели."
+            )
+            st.caption(
+                "Фильтр: "
+                f"матчей {top_match_diagnostics['fixtures']} → "
+                f"сильная вероятность {top_match_diagnostics['strong_probability']} → "
+                f"достаточная история {top_match_diagnostics['enough_venue_history']} → "
+                f"полная линия SStats {top_match_diagnostics['complete_1x2_prices']} → "
+                f"кандидатов {top_match_diagnostics['eligible']}."
+            )
+            if not top_match_candidates:
+                st.info(
+                    "В этом сканировании нет матчей, прошедших все условия TOP MATCHES. "
+                    "Список не заполняется слабыми событиями искусственно."
+                )
+            for rank, favorite_item in enumerate(top_match_candidates, start=1):
+                card = favorite_item["card"]
+                analysis = card.get("deep_analysis") or {}
+                dossier = build_match_dossier(card)
+                sstats_data = dossier.get("sstats_context") or {}
+                match_title = str(card.get("match_ru") or card.get("match") or "Матч")
+                st.markdown(f"### #{rank} · {html.escape(match_title)}")
+                st.caption(
+                    f"{html.escape(str(card.get('league') or 'Футбол'))} · "
+                    f"{html.escape(str(card.get('date') or card.get('date_iso') or ''))} "
+                    f"{html.escape(str(card.get('time') or ''))} · "
+                    f"история команд {favorite_item['sample_games']} матчей"
+                )
+                top_cols = st.columns(3)
+                top_cols[0].metric(
+                    "Сильный прогноз основной модели",
+                    f"{favorite_item['probability']:.1%}",
+                    str(favorite_item["label"]),
+                )
+                top_cols[1].metric(
+                    "Независимый вердикт Groq",
+                    (
+                        f"{analysis.get('independent_pick')} · "
+                        f"{float((analysis.get('probabilities') or {}).get(analysis.get('independent_pick')) or 0):.1f}%"
+                        if analysis else "Не получен"
+                    ),
+                    str(analysis.get("data_quality") or "ожидается") if analysis else "проверь LLM key/лимит",
+                )
+                top_cols[2].metric(
+                    "Контекст SStats",
+                    (
+                        "Подтверждён"
+                        if (
+                            sstats_data.get("lineup", {}).get("home_confirmed")
+                            and sstats_data.get("lineup", {}).get("away_confirmed")
+                            and sstats_data.get("referee", {}).get("confirmed")
+                        )
+                        else "Частичный / неизвестен"
+                    ),
+                    "составы · травмы · судья",
+                )
+
+                if analysis:
+                    st.markdown("**Вердикт Groq**")
+                    st.write(analysis.get("match_assessment") or "Общий разбор не вернулся.")
+                    p = analysis.get("probabilities") or {}
+                    st.caption(
+                        "Независимая оценка 1X2 · "
+                        f"П1 {float(p.get('П1') or 0):.1f}% · "
+                        f"X {float(p.get('X') or 0):.1f}% · "
+                        f"П2 {float(p.get('П2') or 0):.1f}%"
+                    )
+                    assessment_cols = st.columns(2)
+                    with assessment_cols[0]:
+                        st.markdown("**Составы и влияние**")
+                        st.write(analysis.get("lineup_assessment") or "Нет отдельной оценки.")
+                        st.markdown("**Травмы и дисквалификации**")
+                        st.write(analysis.get("injury_assessment") or "Нет отдельной оценки.")
+                        st.markdown("**Форма и история**")
+                        st.write(analysis.get("form_assessment") or "Нет отдельной оценки.")
+                    with assessment_cols[1]:
+                        st.markdown("**Судья**")
+                        st.write(analysis.get("referee_assessment") or "Нет отдельной оценки.")
+                        st.markdown("**Риски**")
+                        st.write(analysis.get("risks") or "Дополнительные риски не указаны.")
+                    model_pick_code = max(
+                        (("П1", float(card.get("p1") or 0.0)),
+                         ("X", float(card.get("px") or 0.0)),
+                         ("П2", float(card.get("p2") or 0.0))),
+                        key=lambda pair: pair[1],
+                    )[0]
+                    if analysis.get("independent_pick") != model_pick_code:
+                        st.warning(
+                            f"Расхождение моделей: основная модель — {model_pick_code}, "
+                            f"Groq — {analysis.get('independent_pick')}."
+                        )
+                    else:
+                        st.success(
+                            f"Независимый выбор Groq совпал с основной моделью: {model_pick_code}."
+                        )
+                    st.caption(
+                        "Качество данных Groq ограничено фактическим покрытием SStats: "
+                        f"{analysis.get('data_quality', 'low')}."
+                    )
+                else:
+                    st.warning(
+                        "Подбор прошёл, но подробный разбор Groq не сохранён. "
+                        "Проверь наличие LLM key, дневной лимит и журнал диагностики."
+                    )
+
+                with st.expander("Проверенные исходные данные SStats", expanded=False):
+                    lineups = sstats_data.get("lineup") or {}
+                    home_lineup = lineups.get("home") or {}
+                    away_lineup = lineups.get("away") or {}
+                    source_cols = st.columns(2)
+                    with source_cols[0]:
+                        st.markdown("**Стартовый XI хозяев**")
+                        home_players = home_lineup.get("home_players") or []
+                        if home_lineup.get("home_confirmed"):
+                            st.write(", ".join(home_players) if home_players else "Подтверждённый XI без имён в ответе.")
+                        else:
+                            st.warning("Стартовый XI хозяев не подтверждён.")
+                        st.markdown("**Стартовый XI гостей**")
+                        away_players = away_lineup.get("away_players") or []
+                        if away_lineup.get("away_confirmed"):
+                            st.write(", ".join(away_players) if away_players else "Подтверждённый XI без имён в ответе.")
+                        else:
+                            st.warning("Стартовый XI гостей не подтверждён.")
+                    with source_cols[1]:
+                        st.markdown("**Судья**")
+                        referee = sstats_data.get("referee") or {}
+                        if referee.get("confirmed") and referee.get("name"):
+                            st.write(referee.get("name"))
+                            ref_stats = referee.get("historical_cards") or {}
+                            if ref_stats.get("available"):
+                                st.caption(
+                                    f"История карточек: n={ref_stats.get('n', 0)} · "
+                                    f"среднее {ref_stats.get('mean', 0):.2f} · "
+                                    f"дисперсия {ref_stats.get('variance', 0):.2f}"
+                                )
+                        else:
+                            st.warning("Назначение судьи не подтверждено.")
+                        st.markdown("**Травмы / дисквалификации**")
+                        if sstats_data.get("injury_feed_confirmed"):
+                            injuries = sstats_data.get("injuries_listed") or []
+                            if injuries:
+                                for injury in injuries:
+                                    st.caption(
+                                        f"{injury.get('team', 'Команда не указана')}: "
+                                        f"{injury.get('player', 'Игрок не указан')} · "
+                                        f"{injury.get('reason') or injury.get('status') or 'причина не указана'}"
+                                    )
+                            else:
+                                st.info(
+                                    "SStats вернул подтверждённый пустой список. "
+                                    "Это не доказывает отсутствие всех травм."
+                                )
+                        else:
+                            st.warning("Фид травм не подтверждён.")
+                st.divider()
 
         st.caption(
             "✅ Общий shortlist: " + str(len(cards_view))
