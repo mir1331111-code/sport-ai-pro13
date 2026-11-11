@@ -1107,7 +1107,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "⬇️ Скачать шаблон контекстного CSV",
             data=(
                 "fixture_id,home_team,away_team,kickoff_at,observed_at,is_confirmed,"
-                "source_reliability,data_source,lineup_strength_home,lineup_strength_away,"
+                "lineup_is_confirmed,referee_is_confirmed,injuries_is_confirmed,"
+                "source_reliability,lineup_source_reliability,referee_source_reliability,"
+                "injuries_source_reliability,data_source,lineup_strength_home,lineup_strength_away,"
                 "key_players_missing_home,key_players_missing_away,referee_id,"
                 "referee_yellow_mean,referee_yellow_variance,corners_home_trailing_mean,"
                 "corners_away_trailing_mean,corners_home_level_mean,corners_away_level_mean,"
