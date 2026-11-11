@@ -149,6 +149,28 @@ class RiskSizingTests(unittest.TestCase):
         self.assertEqual(snapshot["daily_remaining"], 0.0)
         self.assertAlmostEqual(snapshot["daily_exposure_pct"], 0.05)
 
+    def test_settled_bets_still_count_towards_cumulative_daily_risk(self):
+        settled = _bet(stake=48.0, fixture_id="settled-fixture")
+        settled["status"] = "lost"
+        stake, info = size_bet(
+            probability=0.90,
+            odds=2.0,
+            bank=952,
+            bets=[settled],
+            fixture_id="new-fixture",
+            match="New FC vs Other FC",
+            date_iso="2026-11-11",
+            market="1X2",
+            pick="П1",
+            now=NOW,
+        )
+        self.assertEqual(stake, 2.0)
+        self.assertEqual(info["daily_used"], 48.0)
+
+    def test_non_finite_prices_and_probabilities_are_rejected(self):
+        self.assertEqual(kelly(float("nan"), 2.0, 1000), 0.0)
+        self.assertEqual(kelly(0.75, float("inf"), 1000), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
