@@ -170,6 +170,30 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         )
         self.assertGreaterEqual(prediction["cards"]["total_variance"], 0.1)
 
+    def test_referee_history_is_not_borrowed_across_competitions(self):
+        model = HistoricalMatchStats(min_team_games=1)
+        for index in range(6):
+            model.learn_step({
+                "HomeTeam": f"EH{index}", "AwayTeam": f"EA{index}",
+                "HC": 5, "AC": 4, "HY": 4, "AY": 2, "HR": 0, "AR": 0,
+                "Referee": "Shared Referee",
+            }, "E0")
+            model.learn_step({
+                "HomeTeam": f"WH{index}", "AwayTeam": f"WA{index}",
+                "HC": 5, "AC": 4, "HY": 1, "AY": 1, "HR": 0, "AR": 0,
+                "Referee": "Shared Referee",
+            }, "W_E0")
+
+        men = model.predict("New Men Home", "New Men Away", "E0", referee_id="Shared Referee")
+        women = model.predict("New Women Home", "New Women Away", "W_E0", referee_id="Shared Referee")
+        men_ref = men["cards"]["referee"]
+        women_ref = women["cards"]["referee"]
+        self.assertEqual(men_ref["n"], 6)
+        self.assertEqual(women_ref["n"], 6)
+        self.assertEqual(men_ref["mean"], 6.0)
+        self.assertEqual(women_ref["mean"], 2.0)
+        self.assertNotEqual(men["cards"]["total"], women["cards"]["total"])
+
     def test_corners_expose_halftime_score_state_splits_without_leaking_them_into_base(self):
         model = HistoricalMatchStats(min_team_games=1)
         rows = [
