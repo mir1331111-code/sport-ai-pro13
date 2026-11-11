@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "14.0.1"
+APP_VERSION = "14.0.2"
 DATA_VERSION = 17
 
 # A model forecast is labelled strong at or above this event probability.
