@@ -308,6 +308,82 @@ button[aria-label="View fullscreen"] { color:var(--muted) !important; }
   .team-name { font-size:.93rem !important; }
   .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
+
+/* v14 analytics-terminal navigation and section shell */
+.terminal-section-head {
+  position:relative; display:flex; align-items:flex-end; justify-content:space-between;
+  gap:18px; padding:20px 23px; margin:10px 0 18px;
+  border:1px solid #2b4944; border-radius:16px;
+  background:linear-gradient(110deg,#12251f 0%,#101b22 58%,#131d27 100%);
+  box-shadow:0 10px 30px rgba(0,0,0,.14); overflow:hidden;
+}
+.terminal-section-head:after {
+  content:""; position:absolute; width:210px; height:210px; right:-80px; top:-135px;
+  border-radius:50%; background:rgba(114,224,189,.10); filter:blur(13px);
+}
+.terminal-section-kicker {
+  position:relative; z-index:1; color:#72e0bd; font-size:.66rem;
+  font-weight:850; letter-spacing:.17em; text-transform:uppercase; margin-bottom:6px;
+}
+.terminal-section-title {
+  position:relative; z-index:1; color:#f2f8f6; font-size:1.55rem;
+  letter-spacing:-.045em; line-height:1.15; font-weight:850;
+}
+.terminal-section-subtitle {
+  position:relative; z-index:1; color:#9db0b7; font-size:.84rem;
+  line-height:1.5; margin-top:7px; max-width:760px;
+}
+.terminal-section-status {
+  position:relative; z-index:1; flex-shrink:0; color:#a9e9d1;
+  background:#142a22; border:1px solid #31594b; border-radius:999px;
+  padding:7px 11px; font-size:.66rem; font-weight:850; letter-spacing:.08em;
+}
+div[data-testid="stRadio"] > label { display:none !important; }
+div[data-testid="stRadio"] div[role="radiogroup"] {
+  display:flex !important; flex-wrap:wrap !important; gap:7px !important;
+  align-items:center !important; padding:7px !important; margin:0 0 17px !important;
+  background:#0c151c !important; border:1px solid #273943 !important;
+  border-radius:14px !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] > label {
+  position:relative !important; display:inline-flex !important; align-items:center !important;
+  gap:0 !important; padding:9px 13px !important; margin:0 !important;
+  border:1px solid transparent !important; border-radius:10px !important;
+  background:transparent !important; cursor:pointer !important;
+  transition:background .16s ease,border-color .16s ease,transform .16s ease !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] > label:hover {
+  background:#14241f !important; border-color:#2c4a40 !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] > label:has(input:checked) {
+  background:linear-gradient(135deg,#1b3a30,#18302c) !important;
+  border-color:#3c6e5d !important; box-shadow:inset 0 0 0 1px rgba(114,224,189,.07) !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] > label > div:first-child {
+  display:none !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] > label p {
+  color:#9eb0b6 !important; font-size:.76rem !important; font-weight:800 !important;
+  letter-spacing:.035em !important; white-space:nowrap !important; margin:0 !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] > label:has(input:checked) p {
+  color:#b6f1dc !important;
+}
+div[data-testid="stRadio"] div[role="radiogroup"] input { position:absolute !important; opacity:0 !important; pointer-events:none !important; }
+.analytics-grid-gap { margin-top:10px; }
+div[data-testid="stMetric"] { min-height:91px; }
+[data-testid="stDataFrame"] { box-shadow:0 8px 24px rgba(0,0,0,.10); }
+@media (max-width: 900px) {
+  div[data-testid="stRadio"] div[role="radiogroup"] { gap:5px !important; }
+  div[data-testid="stRadio"] div[role="radiogroup"] > label { padding:8px 10px !important; }
+  .terminal-section-head { padding:17px 18px; }
+}
+@media (max-width: 600px) {
+  div[data-testid="stRadio"] div[role="radiogroup"] { overflow-x:auto !important; flex-wrap:nowrap !important; }
+  div[data-testid="stRadio"] div[role="radiogroup"] > label { flex:0 0 auto !important; }
+  .terminal-section-title { font-size:1.28rem; }
+  .terminal-section-status { display:none; }
+}
 </style>
 """
 
