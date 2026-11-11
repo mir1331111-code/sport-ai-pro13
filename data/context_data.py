@@ -10,6 +10,10 @@ import json
 import os
 import threading
 import time
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows development fallback
+    fcntl = None
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -72,6 +76,7 @@ class ApiFootballBudget:
         self.reserve = max(0, min(int(reserve), self.daily_limit - 1))
         self.clock = clock
         self._lock = threading.Lock()
+        self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
 
     def _read(self) -> dict:
         try:
@@ -93,17 +98,26 @@ class ApiFootballBudget:
     def consume(self, count: int = 1) -> bool:
         count = max(0, int(count))
         day = self.clock().date().isoformat()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock:
-            value = self._read()
-            used = int(value.get("used", 0)) if value.get("date") == day else 0
-            if used + count > self.daily_limit - self.reserve:
-                return False
-            value = {"date": day, "used": used + count, "limit": self.daily_limit}
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-            temporary.write_text(json.dumps(value), encoding="utf-8")
-            os.replace(temporary, self.path)
-            return True
+            # Streamlit can run several sessions/processes against this shared
+            # budget file. Serialize the read-modify-write across processes too.
+            with open(self.lock_path, "a+", encoding="utf-8") as lock_file:
+                if fcntl is not None:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    value = self._read()
+                    used = int(value.get("used", 0)) if value.get("date") == day else 0
+                    if used + count > self.daily_limit - self.reserve:
+                        return False
+                    value = {"date": day, "used": used + count, "limit": self.daily_limit}
+                    temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+                    temporary.write_text(json.dumps(value), encoding="utf-8")
+                    os.replace(temporary, self.path)
+                    return True
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 class ApiFootballClient:
@@ -148,6 +162,10 @@ class ApiFootballClient:
             return payload if isinstance(payload, dict) else None
         except (OSError, ValueError, TypeError):
             return None
+
+    def has_fresh_cache(self, endpoint: str, params: dict, *, ttl: int = 900) -> bool:
+        """Return whether the exact GET request can be served without quota."""
+        return self._cache_get(self._cache_path(endpoint, params), ttl) is not None
 
     def _cache_put(self, path: Path, payload: dict) -> None:
         temporary = path.with_suffix(".tmp")
@@ -218,6 +236,16 @@ class ApiFootballContextProvider:
             return value.date().isoformat()
 
     def _row_date(self, row: dict) -> str:
+        # An absolute kickoff is authoritative. Convert it into the exact same
+        # app timezone used by the API /fixtures request before comparing dates.
+        raw_utc = row.get("kickoff_utc")
+        if raw_utc:
+            kickoff = _parse_datetime(raw_utc)
+            if kickoff is not None:
+                try:
+                    return kickoff.astimezone(ZoneInfo(self.timezone_name)).date().isoformat()
+                except Exception:
+                    return kickoff.date().isoformat()
         raw = str(row.get("date_iso") or row.get("Date") or row.get("date") or "")[:10]
         if len(raw) == 10 and raw[4:5] == "-":
             return raw
@@ -396,10 +424,19 @@ class ApiFootballContextProvider:
         ]
         lineup_candidates.sort(key=lambda item: item[3])
         lineup_calls = 0
-        for fixture_id, _, context, _ in lineup_candidates[:self.max_lineup_calls]:
+        for fixture_id, _, context, _ in lineup_candidates:
+            lineup_params = {"fixture": fixture_id}
+            cache_hit = self.client.has_fresh_cache(
+                "fixtures/lineups", lineup_params, ttl=10 * 60
+            )
+            if not cache_hit and lineup_calls >= self.max_lineup_calls:
+                continue
             try:
+                if not cache_hit:
+                    # Count attempts that consume quota, including provider errors.
+                    lineup_calls += 1
                 payload = self.client.get(
-                    "fixtures/lineups", {"fixture": fixture_id}, ttl=10 * 60
+                    "fixtures/lineups", lineup_params, ttl=10 * 60
                 )
                 lineup_map = self._lineups_map(payload)
                 teams = (payload.get("response") or [])
@@ -425,7 +462,6 @@ class ApiFootballContextProvider:
                 }
                 context["lineup"]["expected_team_ids"] = [home_id, away_id]
                 context["lineup"]["returned_team_ids"] = sorted(expected_team_ids)
-                lineup_calls += 1
             except ApiFootballError as exc:
                 logs.append(f"API-Football: стартовый состав fixture={fixture_id} недоступен ({exc}).")
 
