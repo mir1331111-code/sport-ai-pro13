@@ -39,6 +39,19 @@ class GenderIsolationTests(unittest.TestCase):
         self.assertEqual(len(model.h2h[("eintrachtfrankfurt", "psv")]), 1)
         self.assertEqual(len(model.h2h[("women::eintrachtfrankfurt", "women::psv")]), 1)
 
+    def test_same_venue_form_is_competition_scoped(self):
+        mixed = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        mixed.add(
+            "Same FC", "Other FC", 5, 0, {"Div": "D1"},
+            match_date=datetime(2026, 1, 1),
+        )
+        mixed.add(
+            "Same FC", "Other FC", 0, 2, {"Div": "W_EUROPA"},
+            match_date=datetime(2026, 1, 2),
+        )
+        self.assertEqual(mixed.form_str("Same FC", "D1"), "В")
+        self.assertEqual(mixed.form_str("Same FC", "W_EUROPA"), "П")
+
     def test_womens_prediction_does_not_borrow_mens_global_rates_or_calibration(self):
         mixed = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
         women_only = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
