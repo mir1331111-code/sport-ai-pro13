@@ -337,14 +337,11 @@ class Engine:
         home_key = _team_state_key(div, h)
         away_key = _team_state_key(div, a)
 
-        k = (
-            48
-            - 32
-            * min(
-                1.0,
-                (match_num or 0) / max(1, total or 1),
-            )
-        )
+        # Elo's learning-rate schedule advances only with this competition's
+        # own history. A large men's league must not reduce the learning rate
+        # for a smaller women's league, cup or national-team dataset.
+        competition_samples = len(self.lg_hg.get(div, []))
+        k = 48.0 - 32.0 * min(1.0, competition_samples / 1000.0)
 
         rh = self.elo.get(home_key, 1500)
         ra = self.elo.get(away_key, 1500)
