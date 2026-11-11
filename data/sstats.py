@@ -1352,14 +1352,17 @@ def sstats_context_enrich(
     except Exception as exc:
         logs.append(f"⚠️ SStats Ls/List: {type(exc).__name__}; XI/судьи могут быть недоступны.")
 
+    from datetime import timezone as dt_timezone
+    local_tz = dt_timezone(timedelta(hours=int(timezone_offset)))
+
     def _kickoff(row):
         raw = str(row.get("kickoff_utc") or row.get("Date") or "")
         parsed = _parse_provider_date(raw)
         if parsed is None:
             return None
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+            return parsed.replace(tzinfo=local_tz).astimezone(dt_timezone.utc)
+        return parsed.astimezone(dt_timezone.utc)
 
     current_utc = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
     injury_candidates = sorted(
@@ -1385,7 +1388,7 @@ def sstats_context_enrich(
     for row in valid_rows:
         home = str(row.get("HomeTeam") or "")
         away = str(row.get("AwayTeam") or "")
-        date_key = str(row.get("Date") or row.get("date") or "")[:10]
+        date_key = str(row.get("date_iso") or row.get("Date") or row.get("date") or "")[:10]
         fixture_key_value = (date_key, _norm_name(home), _norm_name(away))
         ls_match = ls_by_key.get(fixture_key_value)
         ls_id = ls_match[0] if ls_match else ""
