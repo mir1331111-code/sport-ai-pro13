@@ -9,6 +9,7 @@ from storage import sqlite_store as db
 from storage import usage
 from ui.cards import translate_match, day_label
 from config import DB_FILE
+from data.fixture_time import app_timezone
 from betting.settlement import determine_stat_outcome
 from model.forecast_ledger import MarketForecastLedger
 from betting.risk import risk_snapshot, MAX_MARKET_STAKE_PCT, MAX_MATCH_EXPOSURE_PCT, MAX_DAILY_EXPOSURE_PCT
@@ -439,7 +440,7 @@ def render():
     k3.metric("Won / Lost", f"{won_cnt} / {lost_cnt}")
     k4.metric("Profit", f"{profit:+.2f}")
 
-    snapshot = risk_snapshot(D.get("bank"), D.get("bets") or [])
+    snapshot = risk_snapshot(D.get("bank"), D.get("bets") or [], now=datetime.now(app_timezone()))
     bankroll_basis = float(snapshot.get("bankroll_basis") or 0.0)
     pending_exposure = float(snapshot.get("pending_exposure") or 0.0)
     daily_exposure = float(snapshot.get("daily_exposure") or 0.0)
