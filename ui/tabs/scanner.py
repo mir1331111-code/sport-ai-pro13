@@ -2484,7 +2484,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             asian_handicap_forecasts = []
             for handicap_pick, raw_price in asian_handicap_market_odds.items():
                 match_handicap = re.fullmatch(
-                    r"Ф([12])\\s+([+-]?\\d+(?:[.,]\\d+)?)",
+                    r"Ф([12])\s+([+-]?\d+(?:[.,]\d+)?)",
                     str(handicap_pick).strip(), re.I,
                 )
                 if not match_handicap:
