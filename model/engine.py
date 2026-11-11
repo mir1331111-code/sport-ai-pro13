@@ -93,6 +93,23 @@ def _norm(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s)
 
 
+def _division_key(value) -> str:
+    """Normalize a competition code used to isolate learned model state."""
+    return str(value or "G").strip().upper() or "G"
+
+
+def _team_state_key(division, team):
+    """Keep team form/Elo/H2H/rest history inside one competition."""
+    code = _division_key(division)
+    name = str(team or "").strip()
+    return name if code == "G" else (code, name)
+
+
+def _h2h_state_key(division, home, away):
+    code = _division_key(division)
+    return (home, away) if code == "G" else (code, home, away)
+
+
 class Engine:
     def __init__(self, matrix_n: int = 12, *, temporal_weighting: bool = True, league_rho_fitting: bool = True):
         self.matrix_n = int(matrix_n)
