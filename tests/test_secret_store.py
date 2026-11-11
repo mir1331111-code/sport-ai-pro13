@@ -12,6 +12,7 @@ class LocalSecretStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / ".neuro_secrets.json"
             self.assertTrue(save_local_secrets({
+                "api_football_key": "api-football-secret",
                 "odds_api_key": "  odds-secret  ",
                 "llm_api_key": "llm-secret",
                 "sstats_api_key": "sstats-secret",
@@ -19,6 +20,7 @@ class LocalSecretStoreTests(unittest.TestCase):
                 "unknown": "also-not-save",
             }, path))
             self.assertEqual(load_local_secrets(path), {
+                "api_football_key": "api-football-secret",
                 "odds_api_key": "odds-secret",
                 "llm_api_key": "llm-secret",
                 "sstats_api_key": "sstats-secret",
