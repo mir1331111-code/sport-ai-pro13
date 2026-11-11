@@ -2900,5 +2900,6 @@ from data.sstats import (
     sstats_upcoming_matches,
     sstats_find_match_id,
     sstats_match_statistics,
+    sstats_context_enrich,
     sstats_odds_fixture,
 )
