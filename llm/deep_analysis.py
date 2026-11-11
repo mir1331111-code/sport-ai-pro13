@@ -14,6 +14,7 @@ from llm.analyst import (
     LLMRateLimitError,
     _extract_chat_completion,
     _retry_after_seconds,
+    _log,
     _sess,
     has_sufficient_history,
 )
@@ -618,16 +619,26 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         if response.status_code == 429:
             raise LLMRateLimitError(_retry_after_seconds(response))
         if response.status_code != 200:
+            _log(
+                f"TOP MATCHES ERROR: provider={provider}, HTTP {response.status_code}, "
+                f"response={str(getattr(response, 'text', '') or '')[:180]}"
+            )
             return {}
-        content, _diagnostics = _extract_chat_completion(response.json())
+        content, diagnostics = _extract_chat_completion(response.json())
         if not content:
+            _log(
+                "TOP MATCHES ERROR: empty completion content; "
+                + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+            )
             return {}
         try:
             payload = json.loads(content.strip())
         except (TypeError, ValueError):
+            _log("TOP MATCHES ERROR: provider returned non-JSON content.")
             return {}
         rows = payload.get("analyses") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
+            _log("TOP MATCHES ERROR: response does not contain analyses array.")
             return {}
 
         normalized: dict[str, dict] = {}
@@ -644,9 +655,11 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         return normalized
     except LLMRateLimitError:
         raise
-    except requests.RequestException:
+    except requests.RequestException as exc:
+        _log(f"TOP MATCHES ERROR: {type(exc).__name__}: {str(exc)[:180]}")
         return {}
-    except Exception:
+    except Exception as exc:
+        _log(f"TOP MATCHES ERROR: {type(exc).__name__}: {str(exc)[:180]}")
         return {}
 
 
