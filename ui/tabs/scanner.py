@@ -35,6 +35,7 @@ from data.history_import import parse_historical_matches_csv
 from model.context_model import (
     assess_context_quality, context_probabilities, walk_forward_context_ablation,
 )
+from model.data_quality import assess_fixture_quality
 from model.market_models import (
     asian_handicap_probabilities, asian_handicap_expected_value,
     adjust_corners_for_game_state,
@@ -2136,6 +2137,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Merge from highest-quality competition metadata to broad schedule feeds.
         # SStats remains last for odds enrichment, while fixture_merge can now
         # upgrade generic Div/League placeholders when it sees a specific league.
+        for provider_name, provider_rows in (
+            ("football-data.org", fdorg_rows),
+            ("TheSportsDB", tsdb_rows),
+            ("ESPN", espn_rows),
+            ("SStats", sstats_rows),
+        ):
+            for source_row in provider_rows:
+                if isinstance(source_row, dict):
+                    source_row.setdefault("source_provider", provider_name)
         fixture_sources.extend(fdorg_rows)
         fixture_sources.extend(tsdb_rows)
         fixture_sources.extend(espn_rows)
@@ -2370,8 +2380,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if P.get("xg_used"):
                 xg_used_count += 1
 
-            fh = engine.form_str(h_en)
-            fa = engine.form_str(a_en)
+            _team_ns = "women::" if str(lg).startswith("W_") else "national::" if str(lg).startswith("NT") else ""
+            fh = engine.form_str(_team_ns + h_en)
+            fa = engine.form_str(_team_ns + a_en)
             verdict, rows_, _ = build_verdict(
                 P, min_prob, D["bank"], kelly_frac,
                 h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
@@ -2397,6 +2408,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 except (TypeError, ValueError, OSError) as exc:
                     logs.append(f"⚠️ Context snapshot не сохранён: {type(exc).__name__}")
             context_quality = assess_context_quality(api_context)
+            critical_conflicts = [
+                str(item) for item in (r.get("source_conflicts") or [])
+                if any(token in str(item).casefold() for token in ("category", "gender", "kickoff", "time"))
+            ]
+            if critical_conflicts:
+                context_quality = dict(context_quality)
+                context_quality["strong_value_eligible"] = False
+                context_quality["level"] = "Low"
+                context_quality["missing"] = list(context_quality.get("missing") or []) + ["source_conflict"]
+                context_quality["reason"] = (
+                    str(context_quality.get("reason") or "")
+                    + "; конфликт расписания: " + "; ".join(critical_conflicts)
+                )
             context_forecasts = context_probabilities(
                 {"H": P["p1"], "D": P["x"], "A": P["p2"]},
                 api_context,
@@ -2846,9 +2870,69 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"is_action={verdict.get('is_action')} | reason={no_best_reason}"
                 )
 
+            match_category = (
+                "women" if bool(r.get("women")) or str(lg).startswith("W_")
+                else "national" if bool(r.get("national")) or str(lg).startswith("NT")
+                else "men" if bool(r.get("category_verified")) else "unknown"
+            )
+            api_context_status = str(
+                api_context.get("provider_status")
+                or ("UNAVAILABLE" if api_football_key else "NOT_CONFIGURED")
+            )
+            forecast_evidence = {
+                "home_history_n": P.get("home_history_n"),
+                "away_history_n": P.get("away_history_n"),
+                "home_venue_history_n": P.get("home_venue_history_n"),
+                "away_venue_history_n": P.get("away_venue_history_n"),
+                "home_form": fh,
+                "away_form": fa,
+                "home_rest_days": P.get("home_rest_days"),
+                "away_rest_days": P.get("away_rest_days"),
+                "xg_home_samples": P.get("xg_home_samples"),
+                "xg_away_samples": P.get("xg_away_samples"),
+                "home_opponent_elo_avg": P.get("home_opponent_elo_avg"),
+                "away_opponent_elo_avg": P.get("away_opponent_elo_avg"),
+            }
+            quality_card = {
+                "div": lg,
+                "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                "match": f"{h_en} vs {a_en}",
+                "match_ru": f"{h_ru} — {a_ru}",
+                "date_iso": d.strftime("%Y-%m-%d"),
+                "date": d.strftime("%d.%m") + (f" {kickoff_time_text}" if kickoff_time_text else ""),
+                "time": kickoff_time_text,
+                "kickoff_utc": r.get("kickoff_utc") or "",
+                "women": match_category == "women",
+                "national": match_category == "national",
+                "match_category": match_category,
+                "category_verified": bool(r.get("category_verified") or str(lg).startswith(("W_", "NT"))),
+                "source_conflicts": list(r.get("source_conflicts") or []),
+                "api_context": api_context,
+                "api_context_status": api_context_status,
+                "odds_source": odds_source,
+                "market_odds": dict(market_odds),
+                "total_market_odds": dict(total_market_odds),
+                "btts_market_odds": dict(btts_market_odds),
+                "stat_market_odds": dict(stat_market_odds),
+                "asian_handicap_market_odds": dict(asian_handicap_market_odds),
+                "games": P["games"],
+            }
+            quality_card["data_quality"] = assess_fixture_quality(
+                quality_card, now=scan_now
+            )
             cards.append({
                 "div": lg,
                 "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                "women": match_category == "women",
+                "national": match_category == "national",
+                "match_category": match_category,
+                "category_verified": bool(r.get("category_verified") or str(lg).startswith(("W_", "NT"))),
+                "source_provider": str(r.get("source_provider") or "unknown"),
+                "source_evidence": list(r.get("_source_evidence") or []),
+                "source_conflicts": list(r.get("source_conflicts") or []),
+                "api_context_status": api_context_status,
+                "data_quality": quality_card["data_quality"],
+                "forecast_evidence": forecast_evidence,
                 "match": f"{h_en} vs {a_en}",
                 "match_ru": f"{h_ru} — {a_ru}",
                 "date": d.strftime("%d.%m") +
