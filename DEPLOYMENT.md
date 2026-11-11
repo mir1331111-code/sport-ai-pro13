@@ -52,9 +52,21 @@ streamlit run App.py
 ## First-run checklist
 
 1. Confirm the app opens and the scanner can load fixtures.
-2. Configure `API_FOOTBALL_KEY` in Streamlit Secrets or the scanner password field.
+2. Enter the API-Football key once in the left sidebar under **🔑 API ключи**. The scanner reads it automatically; no second key field or Streamlit Secrets edit is needed for the API credential.
 3. Run a scan. The log reports fixtures matched, injury batches, lineup calls and quota usage.
 4. In the scanner, optionally upload the historical match CSV for women's competitions/national teams and the separate pre-kickoff context CSV. Their required columns and leakage rules are documented in [CONTEXT_AND_MARKETS.md](CONTEXT_AND_MARKETS.md).
-5. Run the walk-forward Base vs Context ablation. Context is promoted only when at least 500 paired out-of-time matches show improvement in both Brier score and Log Loss.
+5. Review **DATA QUALITY**, **AI LEARNING**, and **MODEL LAB**. Treat the completeness score as data coverage, not model accuracy. Run the walk-forward Base vs Context ablation. Context is promoted only when at least 500 paired out-of-time matches show improvement in both Brier score and Log Loss.
 
 A successful deployment does not mean the new context model has already demonstrated a higher hit rate or positive return. Until real historical context data passes the stated tests, Context probabilities remain equal to Base; corners, cards and Asian handicaps remain informational and are not automatically staked.
+
+
+## v14 analytics terminal
+
+The left sidebar remains the single place to enter API keys. The main navigation now contains:
+- **LIVE SCANNER** and **PORTFOLIO** for forecasts and virtual risk tracking;
+- **DATA QUALITY** for per-fixture source provenance and freshness, including fixtures excluded due to unknown competition category;
+- **AI LEARNING** for chronological forecast error and calibration diagnostics;
+- **MODEL LAB** for market-specific evaluation;
+- **STATISTICS**, **CALCULATOR**, and **API CENTER** for existing analysis and service configuration.
+
+The default portfolio monitoring thresholds are 20% overall, 5% per match, 15% per league, and 10% per date. These are guardrails, not estimates of profitability. Auto-portfolio additions are limited to one position per fixture to avoid stacking dependent markets.
