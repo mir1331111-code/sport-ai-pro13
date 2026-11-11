@@ -73,6 +73,9 @@ def api_football_connection_check(api_key: str, session=None) -> dict[str, Any]:
         data = data[0] if data else None
     if not isinstance(data, dict) or not data:
         return {"ok": False, "message": "API-Football ответил, но не вернул сведения о статусе аккаунта."}
+    subscription = data.get("subscription")
+    if isinstance(subscription, dict) and subscription.get("active") is False:
+        return {"ok": False, "message": "Ключ распознан, но подписка API-Football не активна."}
 
     request_info = data.get("requests") if isinstance(data.get("requests"), dict) else {}
     current = request_info.get("current")
