@@ -7,6 +7,7 @@ from betting.kelly import (
     kelly,
     market_type,
 )
+from betting.risk import MAX_MARKET_STAKE_PCT, MIN_BET_ODDS
 
 
 def build_alternatives(rows: list, main_pick: str) -> list:
@@ -334,6 +335,17 @@ def refine_with_real_odds(
 
         return verdict, None
 
+    if real_odd < MIN_BET_ODDS:
+        verdict["real_odds"] = True
+        verdict["odd"] = real_odd
+        verdict["ev"] = None
+        verdict["edge"] = None
+        verdict["stake"] = 0.0
+        verdict["is_bet"] = False
+        verdict["value_passed"] = False
+        verdict["bet_block_reason"] = "odds_below_minimum_1_70"
+        return verdict, None
+
     if real_odd <= 1.01:
         verdict["real_odds"] = False
         verdict["odd"] = None
@@ -401,7 +413,7 @@ def refine_with_real_odds(
         odds=real_odd,
         bank=bank,
         frac=kelly_frac,
-        cap=0.02,
+        cap=MAX_MARKET_STAKE_PCT,
     )
 
     if stake <= 0:
