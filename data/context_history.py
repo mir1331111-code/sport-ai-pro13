@@ -19,6 +19,7 @@ NUMERIC_COLUMNS = {
     "corners_home_trailing_mean", "corners_away_trailing_mean",
     "corners_home_level_mean", "corners_away_level_mean",
     "opponent_corner_style_home", "opponent_corner_style_away",
+    "base_p_home", "base_p_draw", "base_p_away",
 }
 
 
