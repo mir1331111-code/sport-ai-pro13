@@ -81,12 +81,12 @@ def merge_fixture_sources(*sources) -> list:
             current_category = (
                 "women" if current.get("women") or str(current.get("Div") or "").startswith("W_")
                 else "national" if current.get("national") or str(current.get("Div") or "").startswith("NT")
-                else "men" if current.get("category_verified") else "unknown"
+                else "men" if current.get("category_verified") or not _generic_div(current.get("Div") or current.get("div")) else "unknown"
             )
             incoming_category = (
                 "women" if row.get("women") or str(row.get("Div") or "").startswith("W_")
                 else "national" if row.get("national") or str(row.get("Div") or "").startswith("NT")
-                else "men" if row.get("category_verified") else "unknown"
+                else "men" if row.get("category_verified") or not _generic_div(row.get("Div") or row.get("div")) else "unknown"
             )
             if current_category != "unknown" and incoming_category != "unknown" and current_category != incoming_category:
                 conflict = f"category conflict: {current_category} vs {incoming_category}"
