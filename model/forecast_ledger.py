@@ -121,6 +121,7 @@ class ForecastLedger:
         forecast_at: datetime | str, kickoff_at: datetime | str | None = None,
         league: str | None = None, entry_odds: Mapping[str, Any] | None = None,
         odds_source: str | None = None, xg_used: bool | None = None,
+        feature_snapshot: Mapping[str, Any] | None = None,
     ) -> int:
         """Insert one immutable forecast. Repeated keys return the original id."""
         required = {
@@ -135,6 +136,16 @@ class ForecastLedger:
         if xg_used is not None and not isinstance(xg_used, bool):
             raise ValueError("xg_used must be bool or None")
         stored_xg = None if xg_used is None else int(xg_used)
+        if feature_snapshot is not None and not isinstance(feature_snapshot, Mapping):
+            raise ValueError("feature_snapshot must be a mapping or None")
+        try:
+            stored_features = (
+                json.dumps(dict(feature_snapshot), ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"), allow_nan=False)
+                if feature_snapshot is not None else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("feature_snapshot must contain JSON-safe values") from exc
         stamp = _timestamp(forecast_at)
         kickoff = _timestamp(kickoff_at) if kickoff_at is not None else None
         with self._connect() as conn:
@@ -142,16 +153,17 @@ class ForecastLedger:
                 """INSERT OR IGNORE INTO forecasts
                 (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,
                  home_team,away_team,league,probabilities_json,entry_odds_json,
-                 odds_source,xg_used,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 odds_source,xg_used,feature_snapshot_json,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (forecast_key, fixture_id, kickoff, stamp, model_version,
                  home_team, away_team, league, json.dumps(probs, sort_keys=True),
                  json.dumps(prices, sort_keys=True) if prices is not None else None,
-                 odds_source, stored_xg, _timestamp(None)),
+                 odds_source, stored_xg, stored_features, _timestamp(None)),
             )
             row = conn.execute(
                 """SELECT id,fixture_id,forecast_at,model_version,home_team,away_team,
-                league,probabilities_json,entry_odds_json,odds_source,xg_used
+                league,probabilities_json,entry_odds_json,odds_source,xg_used,
+                feature_snapshot_json
                 FROM forecasts WHERE forecast_key=?""", (forecast_key,)
             ).fetchone()
             expected = (
@@ -171,7 +183,13 @@ class ForecastLedger:
                 stored_xg is not None and row["xg_used"] is not None
                 and int(row["xg_used"]) != stored_xg
             )
-            if actual != expected or xg_conflict:
+            feature_conflict = (
+                stored_features is not None
+                and row["feature_snapshot_json"] is not None
+                and row["feature_snapshot_json"] != stored_features
+            )
+            # Legacy rows without a snapshot remain immutable; never backfill them.
+            if actual != expected or xg_conflict or feature_conflict:
                 raise ValueError("forecast_key already exists with a different payload")
             return int(row["id"])
 
@@ -240,6 +258,8 @@ class ForecastLedger:
             for field in ("probabilities_json", "entry_odds_json", "closing_odds_json"):
                 raw = row.pop(field)
                 row[field.removesuffix("_json")] = json.loads(raw) if raw else None
+            feature_raw = row.pop("feature_snapshot_json", None)
+            row["feature_snapshot"] = json.loads(feature_raw) if feature_raw else None
         return rows
 
     def reliability_bins(
