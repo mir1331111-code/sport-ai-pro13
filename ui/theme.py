@@ -462,6 +462,10 @@ div[data-testid="stMetric"] { min-height:91px; }
 .sp-panel-detail { color:#80969f;font-size:.72rem;line-height:1.45;margin:5px 0 13px; }
 .sp-match-tile { padding:11px 0 10px;border-top:1px solid #26363d; }
 .sp-match-meta { display:flex;justify-content:space-between;gap:8px;color:#8298a0;font-size:.59rem;font-weight:800;letter-spacing:.035em; }
+.sp-league-meta { display:inline-flex;align-items:center;gap:6px;min-width:0; }
+.sp-league-emblem { display:inline-grid;place-items:center;flex:0 0 17px;width:17px;height:17px;border:1px solid #354a48;border-radius:50%;overflow:hidden;background:#142720; }
+.sp-league-emblem img { width:100%;height:100%;object-fit:contain;background:#edf4f1;padding:2px; }
+.sp-league-emblem.fallback { color:#87d9b7;font-size:.58rem; }
 .sp-team-line { display:flex;align-items:center;justify-content:space-between;gap:9px;margin:10px 0 9px; }
 .sp-team-line b { color:#edf5f2;font-size:.8rem;font-weight:800;line-height:1.3;overflow-wrap:anywhere; }
 .sp-team-side { display:flex;align-items:center;gap:7px;min-width:0;flex:1; }
@@ -530,6 +534,14 @@ div[data-testid="stMetric"] { min-height:91px; }
 .sp-xg-row { display:grid;grid-template-columns:1fr 36px 1fr;align-items:center;gap:8px;text-align:center; }
 .sp-xg-row b { display:block;color:#94e9c8;font:800 1.45rem 'IBM Plex Mono',monospace;margin-top:5px; }
 .sp-xg-sep { color:#6c8587;font-size:.6rem;font-weight:900; }
+.sp-risk-strip { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:14px; }
+.sp-risk-strip>div:not(.sp-risk-state) { min-width:0;padding:11px 12px;border:1px solid #2c4148;border-radius:10px;background:#0d171e; }
+.sp-risk-strip small { display:block;color:#82989e;font-size:.54rem;font-weight:900;letter-spacing:.08em; }
+.sp-risk-strip b { display:block;color:#a8edcf;font:800 1.08rem 'IBM Plex Mono',monospace;margin:5px 0; }
+.sp-risk-strip span { display:block;color:#81969c;font-size:.59rem;line-height:1.35; }
+.sp-risk-state { grid-column:1/-1;padding:8px 10px;border-radius:8px;font-size:.63rem;font-weight:800; }
+.sp-risk-state.ok { color:#9fe9cb;background:#142820;border:1px solid #315747; }
+.sp-risk-state.blocked { color:#ffc1ad;background:#321f1c;border:1px solid #684139; }
 .sp-empty-inline { color:#92a3a8;font-size:.72rem;line-height:1.5;padding:12px;border:1px dashed #34474d;border-radius:10px;margin-top:12px; }
 .sp-empty-state { display:flex;flex-direction:column;align-items:center;gap:8px;padding:30px 16px 25px;text-align:center; }
 .sp-empty-icon { display:grid;place-items:center;width:54px;height:54px;border:1px solid #38594d;border-radius:16px;background:#142b23;font-size:1.45rem; }
@@ -547,6 +559,7 @@ div[data-testid="stMetric"] { min-height:91px; }
   .sp-dashboard-hero { padding:21px 18px;min-height:unset; }
   .sp-hero-mark { display:none; }
   .sp-analysis-kpis { grid-template-columns:1fr 1fr; }
+  .sp-risk-strip { grid-template-columns:1fr 1fr; }
   .sp-panel { padding:14px; }
   .sp-brand-sub { font-size:.52rem; }
 }
