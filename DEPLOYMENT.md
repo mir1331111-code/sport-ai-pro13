@@ -7,7 +7,9 @@ The app entry point is `App.py`. It is a Streamlit application and the repositor
 1. Open [share.streamlit.io](https://share.streamlit.io/) and switch to the GitHub workspace for `mir1331111-code`.
 2. Select **Create app** (or manage the existing app connected to this repository).
 3. Choose repository `mir1331111-code/sport-ai-pro13`, branch `main`, and main file path `App.py`.
-4. Open the app. In the left sidebar, expand **🔑 API ключи** and paste your API-Football key into **API-Football key (составы · травмы · дисквалификации · судьи)**. The app saves UI-entered credentials in the private, git-ignored `.neuro_secrets.json` file with owner-only permissions. You do **not** need to edit Streamlit Secrets or repository files to enter the key.
+4. Open the app. In the left sidebar, expand **🔑 API ключи** and paste your API-Football key into **API-Football key (составы · травмы · дисквалификации · судьи)**. Use **🔎 Проверить API-Football** to verify the key through the provider status endpoint. You do **not** need to edit Streamlit Secrets or repository files to enter the key.
+
+   UI-entered credentials are saved in the private, git-ignored `.neuro_secrets.json` file with owner-only permissions and are kept outside portfolio data and downloadable backups. This is local app-host storage, not durable cloud secret storage: Streamlit Community Cloud does not guarantee local-file persistence across reboot/redeploy. If that host clears its filesystem, re-enter the key in the same sidebar field. A durable guarantee requires an external persistent secret store; the app does not copy API keys to GitHub, Gist, or backups.
 
 5. Run the scanner. It automatically reads the key from the sidebar; there is no second API-Football key field inside the scanner.
 
@@ -52,7 +54,7 @@ streamlit run App.py
 ## First-run checklist
 
 1. Confirm the app opens and the scanner can load fixtures.
-2. Configure `API_FOOTBALL_KEY` in Streamlit Secrets or the scanner password field.
+2. Paste the API-Football key into the left sidebar field and run **🔎 Проверить API-Football**. The status check uses the provider `/status` endpoint and does not consume its daily request quota.
 3. Run a scan. The log reports fixtures matched, injury batches, lineup calls and quota usage.
 4. In the scanner, optionally upload the historical match CSV for women's competitions/national teams and the separate pre-kickoff context CSV. Their required columns and leakage rules are documented in [CONTEXT_AND_MARKETS.md](CONTEXT_AND_MARKETS.md).
 5. Run the walk-forward Base vs Context ablation. Context is promoted only when at least 500 paired out-of-time matches show improvement in both Brier score and Log Loss.

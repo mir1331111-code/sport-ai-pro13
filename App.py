@@ -38,6 +38,7 @@ from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
+from data.context_data import api_football_connection_check  # noqa: E402
 from data.sources import (
     parse_date, fdorg_match_result, highlightly_connection_check,
     sstats_account_check, sstats_match_statistics, sstats_find_match_id,
@@ -820,6 +821,23 @@ with st.sidebar:
         type="password", key="api_football_key_input",
         help="Вводится здесь, в панели API-ключей. Сохраняется в приватном локальном хранилище вместе с остальными ключами и автоматически используется сканером."
     )
+    st.caption(
+        "Ключ вводится только здесь. Локальная копия хранится отдельно от портфеля и бэкапов; "
+        "Streamlit Community Cloud не гарантирует сохранность файлов после reboot/redeploy."
+    )
+    if st.button("🔎 Проверить API-Football", key="check_api_football",
+                 use_container_width=True):
+        with st.spinner("Проверяю ключ через API-Football /status…"):
+            _api_football_check = api_football_connection_check(api_football_key)
+        if _api_football_check.get("ok"):
+            st.success(_api_football_check.get("message", "API-Football подключён."))
+            _current = _api_football_check.get("requests_current")
+            _limit = _api_football_check.get("requests_limit")
+            if _current is not None and _limit is not None:
+                st.caption(f"По данным API-Football: использовано {_current} из {_limit} запросов за день.")
+            st.caption("Проверка /status не расходует дневную квоту API-Football.")
+        else:
+            st.error(_api_football_check.get("message", "Не удалось проверить API-Football."))
     if st.button("🔎 Проверить подключение xG Football API", key="check_footballapi_xg",
                  use_container_width=True):
         with st.spinner("Проверяю ключ и дневную квоту Football API…"):
@@ -885,8 +903,11 @@ with st.sidebar:
         _configured = _configured_key_value(_env_names, _secret_names)
         if _current and _current != _configured:
             _user_entered_keys[_storage_key] = _current
-    if not save_local_secrets(_user_entered_keys):
-        st.caption("⚠️ Не удалось сохранить ключи на диске. Для постоянного хранения настройте Secrets/Environment на хостинге.")
+    _keys_saved = save_local_secrets(_user_entered_keys)
+    if not _keys_saved:
+        st.caption("⚠️ Не удалось сохранить ключи на диске. Проверьте права записи хостинга.")
+    elif "api_football_key" in _user_entered_keys:
+        st.caption("✅ API-Football key сохранён в локальном хранилище этого сервера. На Community Cloud сохранность после перезапуска не гарантируется.")
     if llm_prov != D["meta"].get("llm_provider"):
         D["meta"]["llm_provider"] = llm_prov
         usage.set_local_data(D)
