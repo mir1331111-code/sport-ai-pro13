@@ -104,6 +104,15 @@ class ForecastLedger:
                     "ALTER TABLE forecasts ADD COLUMN xg_used INTEGER "
                     "CHECK(xg_used IS NULL OR xg_used IN (0,1))"
                 )
+            migrations = {
+                "context_quality_json": "TEXT",
+                "evidence_json": "TEXT",
+                "match_category": "TEXT",
+                "data_quality_score": "INTEGER",
+            }
+            for column, kind in migrations.items():
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE forecasts ADD COLUMN {column} {kind}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=15)
@@ -116,6 +125,10 @@ class ForecastLedger:
         forecast_at: datetime | str, kickoff_at: datetime | str | None = None,
         league: str | None = None, entry_odds: Mapping[str, Any] | None = None,
         odds_source: str | None = None, xg_used: bool | None = None,
+        context_quality: Mapping[str, Any] | None = None,
+        evidence: Mapping[str, Any] | None = None,
+        match_category: str | None = None,
+        data_quality_score: int | None = None,
     ) -> int:
         """Insert one immutable forecast. Repeated keys return the original id."""
         required = {
@@ -130,6 +143,16 @@ class ForecastLedger:
         if xg_used is not None and not isinstance(xg_used, bool):
             raise ValueError("xg_used must be bool or None")
         stored_xg = None if xg_used is None else int(xg_used)
+        if context_quality is not None and not isinstance(context_quality, Mapping):
+            raise ValueError("context_quality must be a mapping or None")
+        if evidence is not None and not isinstance(evidence, Mapping):
+            raise ValueError("evidence must be a mapping or None")
+        if data_quality_score is not None:
+            if isinstance(data_quality_score, bool) or not isinstance(data_quality_score, int) or not 0 <= data_quality_score <= 100:
+                raise ValueError("data_quality_score must be an integer between 0 and 100")
+        context_json = json.dumps(dict(context_quality), ensure_ascii=False, sort_keys=True) if context_quality is not None else None
+        evidence_json = json.dumps(dict(evidence), ensure_ascii=False, sort_keys=True) if evidence is not None else None
+        match_category_value = str(match_category).strip() if match_category is not None else None
         stamp = _timestamp(forecast_at)
         kickoff = _timestamp(kickoff_at) if kickoff_at is not None else None
         with self._connect() as conn:
@@ -137,12 +160,14 @@ class ForecastLedger:
                 """INSERT OR IGNORE INTO forecasts
                 (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,
                  home_team,away_team,league,probabilities_json,entry_odds_json,
-                 odds_source,xg_used,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 odds_source,xg_used,context_quality_json,evidence_json,
+                 match_category,data_quality_score,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (forecast_key, fixture_id, kickoff, stamp, model_version,
                  home_team, away_team, league, json.dumps(probs, sort_keys=True),
                  json.dumps(prices, sort_keys=True) if prices is not None else None,
-                 odds_source, stored_xg, _timestamp(None)),
+                 odds_source, stored_xg, context_json, evidence_json,
+                 match_category_value, data_quality_score, _timestamp(None)),
             )
             row = conn.execute(
                 """SELECT id,fixture_id,forecast_at,model_version,home_team,away_team,
@@ -232,8 +257,11 @@ class ForecastLedger:
         with self._connect() as conn:
             rows = [dict(row) for row in conn.execute(query, params).fetchall()]
         for row in rows:
-            for field in ("probabilities_json", "entry_odds_json", "closing_odds_json"):
-                raw = row.pop(field)
+            for field in (
+                "probabilities_json", "entry_odds_json", "closing_odds_json",
+                "context_quality_json", "evidence_json",
+            ):
+                raw = row.pop(field, None)
                 row[field.removesuffix("_json")] = json.loads(raw) if raw else None
         return rows
 
