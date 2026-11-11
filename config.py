@@ -132,6 +132,7 @@ DIV_NAMES = {
     "W_E0": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 WSL (Ж)", "W_SP1": "🇪🇸 Liga F (Ж)",
     "W_F1": "🇫🇷 D1 Féminine (Ж)", "W_D1": "🇩🇪 Frauen-BL (Ж)",
     "W_I1": "🇮🇹 Serie A Fem (Ж)", "W_C1": "🏆 UWCL (Ж)",
+    "W_EUROPA": "🏆 UEFA Women's Europa Cup (Ж)", "W_": "⚽ Женский футбол",
     "NT_UNL": "🏆 Лига Наций", "NT_WCE": "⚽ Отбор ЧМ ЕС",
     "NT_WCC": "⚽ Отбор ЧМ ЮА", "NT_WCA": "⚽ Отбор ЧМ АЗ",
     "NT_WCF": "⚽ Отбор ЧМ АФ", "NT_WCN": "⚽ Отбор ЧМ СА",
