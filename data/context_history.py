@@ -20,6 +20,8 @@ NUMERIC_COLUMNS = {
     "corners_home_level_mean", "corners_away_level_mean",
     "opponent_corner_style_home", "opponent_corner_style_away",
     "base_p_home", "base_p_draw", "base_p_away",
+    "lineup_source_reliability", "referee_source_reliability",
+    "injuries_source_reliability",
 }
 
 
@@ -89,6 +91,17 @@ def parse_context_csv(source: str | bytes) -> dict:
             parsed["is_confirmed"] = str(row.get("is_confirmed", "")).casefold() in {
                 "1", "true", "yes", "y", "да"
             }
+            # Explicit per-source flags take precedence. The aggregate flag is
+            # retained as a backwards-compatible declaration for older archives.
+            for source_name in ("lineup", "referee", "injuries"):
+                raw_flag = row.get(f"{source_name}_is_confirmed")
+                parsed[f"{source_name}_is_confirmed"] = (
+                    parsed["is_confirmed"] if raw_flag is None or str(raw_flag).strip() == ""
+                    else str(raw_flag).casefold() in {"1", "true", "yes", "y", "да"}
+                )
+                reliability_key = f"{source_name}_source_reliability"
+                if parsed.get(reliability_key) is None and source_name in {"lineup", "referee"}:
+                    parsed[reliability_key] = reliability
             parsed["data_source"] = row.get("data_source") or "user_csv"
             parsed["referee_id"] = row.get("referee_id") or None
             parsed["result"] = (row.get("result") or "").upper() or None
