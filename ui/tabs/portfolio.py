@@ -4,6 +4,7 @@ import csv, io, re, hashlib
 from datetime import datetime, timedelta
 
 import streamlit as st
+import pandas as pd
 
 from storage import sqlite_store as db
 from storage import usage
