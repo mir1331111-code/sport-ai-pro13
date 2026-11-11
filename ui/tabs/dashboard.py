@@ -101,7 +101,7 @@ def team_badge(url, name):
     return (
         f"<span class='sp-team-emblem'>{fallback}"
         f"<img src='{esc(url)}' alt='{label}' loading='lazy' "
-        "referrerpolicy='no-referrer' onerror='this.style.display=\'none\''></span>"
+        """referrerpolicy='no-referrer' onerror="this.style.display='none'"></span>"""
     )
 
 
