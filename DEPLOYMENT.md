@@ -7,33 +7,22 @@ The app entry point is `App.py`. It is a Streamlit application and the repositor
 
 When the SStats key is configured and `Games/list` returns fixtures, SStats is the single primary source for the scanner's match list and bookmaker odds. ESPN, TheSportsDB and football-data.org are not queried for the same schedule window in that scan; they are used only as fallback when SStats is not configured or returns no fixtures. SStats fixture IDs are retained for `Odds/{gameId}` and other SStats match endpoints.
 
-API-Football is a separate, optional context provider. Its fixture IDs are provider-specific and must not be replaced with SStats game IDs. It is not used as the scanner's match-list or odds source.
+SStats also supplies optional match context through its own Games/injuries, Ls/GameInfo and Ls/GameLineups endpoints. Ls/List only resolves the SStats/Flashscore event ID for a fixture already selected by Games/list; it never adds or replaces scanner fixtures.
 
-
-1. Open [share.streamlit.io](https://share.streamlit.io/) and switch to the GitHub workspace for `mir1331111-code`.
+1. Open [share.streamlit.io](https://share.streamlit.io/) and switch to the GitHub workspace for mir1331111-code.
 2. Select **Create app** (or manage the existing app connected to this repository).
-3. Choose repository `mir1331111-code/sport-ai-pro13`, branch `main`, and main file path `App.py`.
-4. Open the app. In the left sidebar, expand **🔑 API ключи** and paste your API-Football key into **API-Football key (составы · травмы · дисквалификации · судьи)**. Use **🔎 Проверить API-Football** to verify the key through the provider status endpoint. You do **not** need to edit Streamlit Secrets or repository files to enter the key.
+3. Choose repository mir1331111-code/sport-ai-pro13, branch main, and main file path App.py.
+4. Open the app. In the left sidebar, expand **🔑 API ключи** and paste your SStats.net API key. Use **🔎 Проверить подключение SStats.net** to verify the key, fixture list and odds. The same key is used for the SStats match, odds and supported context endpoints; a separate API-Football key is not required.
 
-   UI-entered credentials are saved in the private, git-ignored `.neuro_secrets.json` file with owner-only permissions and are kept outside portfolio data and downloadable backups. This is local app-host storage, not durable cloud secret storage: Streamlit Community Cloud does not guarantee local-file persistence across reboot/redeploy. If that host clears its filesystem, re-enter the key in the same sidebar field. A durable guarantee requires an external persistent secret store; the app does not copy API keys to GitHub, Gist, or backups.
+   UI-entered credentials are saved in the private, git-ignored .neuro_secrets.json file with owner-only permissions and are kept outside portfolio data and downloadable backups. This is local app-host storage, not durable cloud secret storage: Streamlit Community Cloud does not guarantee local-file persistence across reboot/redeploy. If that host clears its filesystem, re-enter the SStats key in the same sidebar field. A durable guarantee requires an external persistent secret store; the app does not copy API keys to GitHub, Gist, or backups.
 
-5. Run the scanner. It automatically reads the key from the sidebar; there is no second API-Football key field inside the scanner.
+5. Run the scanner. It uses the SStats numeric game ID for Games/injuries and resolves the SStats/Flashscore string event ID for Ls/GameInfo and Ls/GameLineups. It never sends SStats IDs to a different provider.
 
-Streamlit Community Cloud reads `requirements.txt` and installs the Python dependencies. Once deployed, pushes to the connected GitHub branch are reflected in the app; dependency changes trigger a full redeploy. On hosts with ephemeral filesystems, a provider or host restart may clear the local key file; in that case paste the key into the same sidebar field again.
+Streamlit Community Cloud reads requirements.txt and installs the Python dependencies. Once deployed, pushes to the connected GitHub branch are reflected in the app; dependency changes trigger a full redeploy. On hosts with ephemeral filesystems, a provider or host restart may clear the local key file; in that case paste the SStats key into the same sidebar field again.
 
-## API-Football limits
+## SStats context request limits
 
-By default the app reserves 10 requests and allows up to 100 API requests per UTC day (so the scanner spends at most 90). The lineup-call cap defaults to 12 per scan and lineups are requested only inside the six-hour pre-kickoff window.
-
-For an API-Football plan with a different documented quota, set optional Streamlit Secrets:
-
-```toml
-API_FOOTBALL_DAILY_LIMIT = 100
-API_FOOTBALL_DAILY_RESERVE = 10
-API_FOOTBALL_MAX_LINEUP_CALLS = 12
-```
-
-Use the quota values allowed by your provider subscription. The application enforces the configured local limit across concurrent sessions and keeps a reserve. API responses are cached on disk. Provider coverage for lineups and injuries varies by competition; an empty injuries response is not treated as proof that every player is available.
+The scanner checks injuries for up to 20 upcoming SStats fixtures within 24 hours and checks lineups for up to 12 fixtures within six hours of kickoff. Responses are cached. Provider coverage varies by competition. An empty injuries response is only a successful feed response for that fixture; it is not proof that every player is available. A starting XI is confirmed only when the response can be mapped to exactly 11 players for both teams. Missing or ambiguous data stays unknown and Strong/Value remains blocked.
 
 ## Other optional data-source secrets
 
@@ -60,8 +49,8 @@ streamlit run App.py
 ## First-run checklist
 
 1. Confirm the app opens and the scanner can load fixtures.
-2. Paste the API-Football key into the left sidebar field and run **🔎 Проверить API-Football**. The status check uses the provider `/status` endpoint and does not consume its daily request quota.
-3. Run a scan. The log reports fixtures matched, injury batches, lineup calls and quota usage.
+2. Paste the SStats key into the left sidebar and run **🔎 Проверить подключение SStats.net**.
+3. Run a scan. The log reports SStats event-ID matches, injury checks, confirmed XIs and confirmed referees. Markets without verified historical coverage remain forecast-only.
 4. In the scanner, optionally upload the historical match CSV for women's competitions/national teams and the separate pre-kickoff context CSV. Their required columns and leakage rules are documented in [CONTEXT_AND_MARKETS.md](CONTEXT_AND_MARKETS.md).
 5. Run the walk-forward Base vs Context ablation. Context is promoted only when at least 500 paired out-of-time matches show improvement in both Brier score and Log Loss.
 
