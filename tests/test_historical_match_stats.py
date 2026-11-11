@@ -166,12 +166,12 @@ class HistoricalMatchStatsTests(unittest.TestCase):
     def test_corners_expose_halftime_score_state_splits_without_leaking_them_into_base(self):
         model = HistoricalMatchStats(min_team_games=1)
         rows = [
-            {"HomeTeam": "H1", "AwayTeam": "A1", "HC": 8, "AC": 5, "HTHG": 0, "HTAG": 1,
-             "HY": 1, "AY": 1, "HR": 0, "AR": 0},
-            {"HomeTeam": "H2", "AwayTeam": "A2", "HC": 7, "AC": 4, "HTHG": 0, "HTAG": 0,
-             "HY": 1, "AY": 1, "HR": 0, "AR": 0},
+            {"HomeTeam": "H1", "AwayTeam": "A1", "HC": 7, "AC": 4, "HTHG": 0, "HTAG": 1,
+             "HTHC": 3, "HTAC": 2, "HY": 1, "AY": 1, "HR": 0, "AR": 0},
+            {"HomeTeam": "H2", "AwayTeam": "A2", "HC": 8, "AC": 5, "HTHG": 0, "HTAG": 0,
+             "HTHC": 4, "HTAC": 3, "HY": 1, "AY": 1, "HR": 0, "AR": 0},
             {"HomeTeam": "H3", "AwayTeam": "A3", "HC": 9, "AC": 5, "HTHG": 1, "HTAG": 0,
-             "HY": 1, "AY": 1, "HR": 0, "AR": 0},
+             "HTHC": 4, "HTAC": 2, "HY": 1, "AY": 1, "HR": 0, "AR": 0},
         ]
         for row in rows:
             model.learn_step(row, "E0")
@@ -180,8 +180,10 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         self.assertEqual(splits["home_trailing"]["n"], 1)
         self.assertEqual(splits["level"]["n"], 1)
         self.assertEqual(splits["away_trailing"]["n"], 1)
-        self.assertAlmostEqual(prediction["corners"]["total"], 13.0)
-        self.assertAlmostEqual(splits["home_trailing"]["mean"], 13.0)
+        self.assertAlmostEqual(prediction["corners"]["total"], 38.0 / 3.0)
+        self.assertAlmostEqual(splits["home_trailing"]["mean"], 6.0)
+        self.assertAlmostEqual(splits["level"]["mean"], 6.0)
+        self.assertAlmostEqual(splits["away_trailing"]["mean"], 8.0)
 
     def test_history_stats_survive_pickle_round_trip_and_keep_defaultdicts(self):
         from model.engine import Engine
