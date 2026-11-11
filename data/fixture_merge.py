@@ -78,15 +78,19 @@ def merge_fixture_sources(*sources) -> list:
                 "fixture_id": str(row.get("fixture_id") or ""),
             })
             conflicts = current.setdefault("source_conflicts", [])
+            current_div = str(current.get("Div") or current.get("div") or "").upper()
+            incoming_div = str(row.get("Div") or row.get("div") or "").upper()
             current_category = (
-                "women" if current.get("women") or str(current.get("Div") or "").startswith("W_")
-                else "national" if current.get("national") or str(current.get("Div") or "").startswith("NT")
-                else "men" if current.get("category_verified") or not _generic_div(current.get("Div") or current.get("div")) else "unknown"
+                "women_national" if current_div.startswith("W_NT")
+                else "women" if current.get("women") or current_div.startswith("W_")
+                else "national" if current.get("national") or current_div.startswith("NT")
+                else "men" if current.get("category_verified") or not _generic_div(current_div) else "unknown"
             )
             incoming_category = (
-                "women" if row.get("women") or str(row.get("Div") or "").startswith("W_")
-                else "national" if row.get("national") or str(row.get("Div") or "").startswith("NT")
-                else "men" if row.get("category_verified") or not _generic_div(row.get("Div") or row.get("div")) else "unknown"
+                "women_national" if incoming_div.startswith("W_NT")
+                else "women" if row.get("women") or incoming_div.startswith("W_")
+                else "national" if row.get("national") or incoming_div.startswith("NT")
+                else "men" if row.get("category_verified") or not _generic_div(incoming_div) else "unknown"
             )
             if current_category != "unknown" and incoming_category != "unknown" and current_category != incoming_category:
                 conflict = f"category conflict: {current_category} vs {incoming_category}"
@@ -107,9 +111,9 @@ def merge_fixture_sources(*sources) -> list:
                     if "kickoff conflict: unparseable provider timestamps" not in conflicts:
                         conflicts.append("kickoff conflict: unparseable provider timestamps")
             # Prefer explicit positive category evidence over an unclassified generic feed.
-            if incoming_category in {"women", "national"} and current_category in {"unknown", "men"}:
-                current["women"] = incoming_category == "women"
-                current["national"] = incoming_category == "national"
+            if incoming_category in {"women", "women_national", "national"} and current_category in {"unknown", "men"}:
+                current["women"] = incoming_category in {"women", "women_national"}
+                current["national"] = incoming_category in {"national", "women_national"}
                 current["category_verified"] = True
                 current["Div"] = row.get("Div") or current.get("Div") or "G"
                 if row.get("League"):
