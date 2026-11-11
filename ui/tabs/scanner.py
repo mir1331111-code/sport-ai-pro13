@@ -1470,6 +1470,20 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     with st.expander("⚙️ Настройки сканера", expanded=False):
         st.caption("Дополнительные параметры скрыты, чтобы не перегружать основной экран.")
         source_col, portfolio_col = st.columns(2)
+        with source_col:
+            st.selectbox(
+                "Категория соревнований",
+                [
+                    "Мужской футбол · по умолчанию",
+                    "Все категории · включая женские",
+                    "Только женский футбол",
+                ],
+                key="scanner_gender_filter",
+                help=(
+                    "Неизвестная категория не считается мужской. В режиме «Все категории» "
+                    "такие матчи остаются только справочными и не допускаются в портфель."
+                ),
+            )
         with portfolio_col:
             auto_add = st.checkbox(
                 "Автодобавление в виртуальный портфель",
@@ -2347,7 +2361,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         date_filter_counts = {
             "invalid_date": 0, "outside_horizon": 0, "past_kickoff": 0,
             "unknown_same_day_kickoff": 0, "missing_teams": 0,
-            "inside_horizon": 0,
+            "category_filtered": 0, "inside_horizon": 0,
         }
         for match_idx, r in enumerate(rows, 1):
             if match_idx == 1 or match_idx % 5 == 0:
@@ -2399,6 +2413,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 division=lg, league=r.get("League"),
                 women_flag=r.get("women"), home=h_en, away=a_en,
             )
+            gender_filter = st.session_state.get(
+                "scanner_gender_filter", "Мужской футбол · по умолчанию"
+            )
+            if (
+                gender_filter == "Мужской футбол · по умолчанию" and gender != "men"
+            ) or (
+                gender_filter == "Только женский футбол" and gender != "women"
+            ):
+                date_filter_counts["category_filtered"] += 1
+                continue
             if gender == "women" and not str(lg).startswith("W_"):
                 lg = "W_"
             model_home = model_team_identity(h_en, gender=gender)
@@ -2980,6 +3004,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "⚠️ SStats: ID матчей есть, но коэффициенты не загружены. "
                     "Проверьте ответ /Odds/{gameId} и журнал HTTP-статусов."
                 )
+        logs.append(
+            "🏷 Фильтр категории: "
+            + str(st.session_state.get("scanner_gender_filter", "Мужской футбол · по умолчанию"))
+            + f" · исключено категорий: {date_filter_counts['category_filtered']}."
+        )
         logs.append(
             f"🗓️ Фильтр горизонта {days} дн.: в окне {date_filter_counts['inside_horizon']}, "
             f"вне окна {date_filter_counts['outside_horizon']}, "
