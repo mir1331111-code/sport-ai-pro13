@@ -91,6 +91,9 @@ class DataQualityTests(unittest.TestCase):
         self.assertFalse(competition_category_known({
             "Div": "G", "League": "Soccer", "gender_known": False,
         }))
+        self.assertFalse(competition_category_known({
+            "Div": "E0", "League": "Premier League", "gender_known": False,
+        }))
         self.assertTrue(competition_category_known({
             "Div": "W_EUROPA", "League": "UEFA Women's Europa Cup",
             "women": True, "gender_known": True,
