@@ -83,6 +83,11 @@ def merge_fixture_sources(*sources) -> list:
                 current["Div"] = incoming_div
                 if current.get("div") is not None:
                     current["div"] = incoming_div
+                if (
+                    not bool(row.get("women"))
+                    and not str(incoming_div or "").upper().startswith(("W_", "NT"))
+                ):
+                    current["gender_known"] = True
 
             incoming_league = row.get("League") or row.get("league")
             current_league = current.get("League") or current.get("league")
@@ -90,6 +95,8 @@ def merge_fixture_sources(*sources) -> list:
                 current["League"] = incoming_league
                 if current.get("league") is not None:
                     current["league"] = incoming_league
+                if not str(current.get("Div") or "").upper().startswith(("W_", "NT")):
+                    current["gender_known"] = True
 
             for name, value in row.items():
                 if name == "women" and current.get("women") is True:
