@@ -180,12 +180,33 @@ class RiskSizingTests(unittest.TestCase):
             pick="П1",
             now=NOW,
         )
-        self.assertEqual(stake, 2.0)
+        self.assertEqual(stake, 0.0)
         self.assertEqual(info["daily_used"], 48.0)
+        self.assertEqual(info["reason"], "daily_limit_reached")
 
     def test_non_finite_prices_and_probabilities_are_rejected(self):
         self.assertEqual(kelly(float("nan"), 2.0, 1000), 0.0)
         self.assertEqual(kelly(0.75, float("inf"), 1000), 0.0)
+
+    def test_prices_above_maximum_are_rejected(self):
+        stake, info = size_bet(
+            probability=0.99,
+            odds=101.0,
+            bank=1000,
+            bets=[],
+            fixture_id="fixture-1",
+            match="Home FC vs Away FC",
+            date_iso="2026-11-11",
+            market="1X2",
+            pick="П1",
+            now=NOW,
+        )
+        self.assertEqual(stake, 0.0)
+        self.assertEqual(info["reason"], "odds_above_maximum_100")
+
+    def test_stake_rounding_never_exceeds_exact_one_percent(self):
+        stake = kelly(0.90, 2.0, 1000.99, frac=0.25, cap=0.01)
+        self.assertLessEqual(stake, 10.00)
 
 
 if __name__ == "__main__":
