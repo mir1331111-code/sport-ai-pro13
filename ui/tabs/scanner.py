@@ -2700,8 +2700,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if P.get("xg_used"):
                 xg_used_count += 1
 
-            fh = engine.form_str(h_en)
-            fa = engine.form_str(a_en)
+            fh = engine.form_str(h_en, lg)
+            fa = engine.form_str(a_en, lg)
             verdict, rows_, _ = build_verdict(
                 P, min_prob, D["bank"], kelly_frac,
                 h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
