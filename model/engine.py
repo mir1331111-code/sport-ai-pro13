@@ -93,6 +93,12 @@ def _norm(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s)
 
 
+def team_history_key(name: str, division: str | None = None) -> str:
+    """Separate women's-team histories from same-named men's clubs."""
+    normalized = _norm(name)
+    return f"women::{normalized}" if str(division or "").upper().startswith("W_") else normalized
+
+
 class Engine:
     def __init__(self, matrix_n: int = 12, *, temporal_weighting: bool = True, league_rho_fitting: bool = True):
         self.matrix_n = int(matrix_n)
@@ -106,6 +112,11 @@ class Engine:
         self.ag: list = []
         self.hg_dates: list = []
         self.ag_dates: list = []
+        # Women's competitions keep a separate fallback scoring baseline.
+        self.women_hg: list = []
+        self.women_ag: list = []
+        self.women_hg_dates: list = []
+        self.women_ag_dates: list = []
 
         self.lg_hg = defaultdict(list)
         self.lg_ag = defaultdict(list)
@@ -152,14 +163,15 @@ class Engine:
 
     def known_teams(self) -> set:
         out = set()
-
         for team in self.st.keys():
-            n = _norm(team)
-
+            n = _norm(str(team).split("::", 1)[-1])
             if n:
                 out.add(n)
-
         return out
+
+    @staticmethod
+    def team_key(team: str, division: str | None = None) -> str:
+        return team_history_key(team, division)
 
     @staticmethod
     def _logit(p: float) -> float:
@@ -187,18 +199,17 @@ class Engine:
         except Exception:
             return 0.0
 
-    def _form(self, team: str) -> float:
-        form = self.st[team]["form"][-5:]
+    def _form(self, team: str, division: str | None = None) -> float:
+        form = self.st[team_history_key(team, division)]["form"][-5:]
 
         if not form:
             return 0.5
 
         return sum(form) / (len(form) * 3)
 
-    def form_str(self, team: str) -> str:
+    def form_str(self, team: str, division: str | None = None) -> str:
         out = ""
-
-        for value in self.st[team]["form"][-5:]:
+        for value in self.st[team_history_key(team, division)]["form"][-5:]:
             out += {
                 "3": "В",
                 "1": "Н",
@@ -306,8 +317,11 @@ class Engine:
             )
         )
 
-        rh = self.elo.get(h, 1500)
-        ra = self.elo.get(a, 1500)
+        div = str((row or {}).get("Div") or (row or {}).get("div") or "G") if isinstance(row, dict) else "G"
+        h_key = team_history_key(h, div)
+        a_key = team_history_key(a, div)
+        rh = self.elo.get(h_key, 1500)
+        ra = self.elo.get(a_key, 1500)
 
         expected_home = 1 / (
             1
@@ -322,59 +336,54 @@ class Engine:
             else (0.5 if hg == ag else 0.0)
         )
 
-        self.elo[h] = rh + k * (
+        self.elo[h_key] = rh + k * (
             score_home - expected_home
         )
-
-        self.elo[a] = ra + k * (
+        self.elo[a_key] = ra + k * (
             (1 - score_home)
             - (1 - expected_home)
         )
 
         teams = self.st
-
-        teams[h]["hs"].append(hg)
-        teams[h]["hc"].append(ag)
-
-        teams[a]["as"].append(ag)
-        teams[a]["ac"].append(hg)
+        teams[h_key]["hs"].append(hg)
+        teams[h_key]["hc"].append(ag)
+        teams[a_key]["as"].append(ag)
+        teams[a_key]["ac"].append(hg)
 
         stamp = match_date.isoformat() if hasattr(match_date, "isoformat") else match_date
-        teams[h]["hs_dates"].append(stamp)
-        teams[h]["hc_dates"].append(stamp)
-        teams[a]["as_dates"].append(stamp)
-        teams[a]["ac_dates"].append(stamp)
+        teams[h_key]["hs_dates"].append(stamp)
+        teams[h_key]["hc_dates"].append(stamp)
+        teams[a_key]["as_dates"].append(stamp)
+        teams[a_key]["ac_dates"].append(stamp)
 
         home_xg, away_xg = _row_xg_pair(row)
         if home_xg is not None and away_xg is not None:
-            teams[h]["hs_xg"].append(home_xg)
-            teams[h]["hs_xga"].append(away_xg)
-            teams[h]["hs_xg_dates"].append(stamp)
-            teams[h]["hs_xga_dates"].append(stamp)
-            teams[a]["as_xg"].append(away_xg)
-            teams[a]["as_xga"].append(home_xg)
-            teams[a]["as_xg_dates"].append(stamp)
-            teams[a]["as_xga_dates"].append(stamp)
+            teams[h_key]["hs_xg"].append(home_xg)
+            teams[h_key]["hs_xga"].append(away_xg)
+            teams[h_key]["hs_xg_dates"].append(stamp)
+            teams[h_key]["hs_xga_dates"].append(stamp)
+            teams[a_key]["as_xg"].append(away_xg)
+            teams[a_key]["as_xga"].append(home_xg)
+            teams[a_key]["as_xg_dates"].append(stamp)
+            teams[a_key]["as_xga_dates"].append(stamp)
 
-        teams[h]["form"].append(
-            3 if hg > ag
-            else (1 if hg == ag else 0)
+        teams[h_key]["form"].append(
+            3 if hg > ag else (1 if hg == ag else 0)
+        )
+        teams[a_key]["form"].append(
+            3 if ag > hg else (1 if hg == ag else 0)
         )
 
-        teams[a]["form"].append(
-            3 if ag > hg
-            else (1 if hg == ag else 0)
-        )
-
-        self.hg.append(hg)
-        self.ag.append(ag)
-        self.hg_dates.append(stamp)
-        self.ag_dates.append(stamp)
-
-        if isinstance(row, dict):
-            div = row.get("Div") or "G"
+        if str(div).upper().startswith("W_"):
+            self.women_hg.append(hg)
+            self.women_ag.append(ag)
+            self.women_hg_dates.append(stamp)
+            self.women_ag_dates.append(stamp)
         else:
-            div = "G"
+            self.hg.append(hg)
+            self.ag.append(ag)
+            self.hg_dates.append(stamp)
+            self.ag_dates.append(stamp)
 
         self.lg_hg[div].append(hg)
         self.lg_ag[div].append(ag)
@@ -415,20 +424,19 @@ class Engine:
 
         diff = hg - ag
 
-        self.h2h[(h, a)].append(diff)
-        self.h2h[(h, a)] = self.h2h[(h, a)][-8:]
-
-        self.h2h[(a, h)].append(-diff)
-        self.h2h[(a, h)] = self.h2h[(a, h)][-8:]
+        self.h2h[(h_key, a_key)].append(diff)
+        self.h2h[(h_key, a_key)] = self.h2h[(h_key, a_key)][-8:]
+        self.h2h[(a_key, h_key)].append(-diff)
+        self.h2h[(a_key, h_key)] = self.h2h[(a_key, h_key)][-8:]
 
         # Ограничиваем историю команды.
-        for team in (h, a):
+        for team in (h_key, a_key):
             for key in teams[team]:
                 teams[team][key] = teams[team][key][-12:]
 
         if match_date:
-            self.last_match_date[h] = match_date
-            self.last_match_date[a] = match_date
+            self.last_match_date[h_key] = match_date
+            self.last_match_date[a_key] = match_date
 
         self.trained_n += 1
 
@@ -496,6 +504,8 @@ class Engine:
         """
 
         P0 = self.lp[lg]
+        h_key = team_history_key(h, lg)
+        a_key = team_history_key(a, lg)
 
         # ---------------------------------------------------------
         # Лиговые средние
@@ -522,28 +532,17 @@ class Engine:
                 ),
             )
         else:
-            lh_g = max(
-                0.05,
-                self._m(
-                    self.hg,
-                    1.5,
-                    self.hg_dates,
-                    match_date,
-                ),
-            )
+            # Sparse women's competitions must never borrow men's scoring rates.
+            is_women = str(lg).upper().startswith("W_")
+            fallback_home = self.women_hg if is_women else self.hg
+            fallback_away = self.women_ag if is_women else self.ag
+            fallback_home_dates = self.women_hg_dates if is_women else self.hg_dates
+            fallback_away_dates = self.women_ag_dates if is_women else self.ag_dates
+            lh_g = max(0.05, self._m(fallback_home, 1.5, fallback_home_dates, match_date))
+            la_g = max(0.05, self._m(fallback_away, 1.2, fallback_away_dates, match_date))
 
-            la_g = max(
-                0.05,
-                self._m(
-                    self.ag,
-                    1.2,
-                    self.ag_dates,
-                    match_date,
-                ),
-            )
-
-        sh = self.st[h]
-        sa = self.st[a]
+        sh = self.st[h_key]
+        sa = self.st[a_key]
 
         # ---------------------------------------------------------
         # Силы атаки / защиты
@@ -658,12 +657,12 @@ class Engine:
 
         if apply_h2h:
             lam_h, lam_a, h2h_n = self.h2h_adjust(
-                h, a, lam_g_h, lam_g_a,
+                h_key, a_key, lam_g_h, lam_g_a,
             )
         else:
             # Counterfactual path for live A/B auditing; do not mutate state.
             lam_h, lam_a = lam_g_h, lam_g_a
-            h2h_n = len(self.h2h.get((h, a), []))
+            h2h_n = len(self.h2h.get((h_key, a_key), []))
 
         # ---------------------------------------------------------
         # Elo
@@ -674,13 +673,13 @@ class Engine:
 
         eh_eff = (
             1500
-            + (self.elo.get(h, 1500) - 1500)
+            + (self.elo.get(h_key, 1500) - 1500)
             * min(1.0, gh / 10.0)
         )
 
         ea_eff = (
             1500
-            + (self.elo.get(a, 1500) - 1500)
+            + (self.elo.get(a_key, 1500) - 1500)
             * min(1.0, ga / 10.0)
         )
 
