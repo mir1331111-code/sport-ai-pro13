@@ -10,6 +10,7 @@ from typing import Any
 
 from betting.ranking import model_favorite, rank_model_favorites
 from config import CACHE_TTL, LLM_PROVIDERS
+from betting.risk import MIN_BET_ODDS
 from llm.analyst import (
     LLMRateLimitError,
     _extract_chat_completion,
@@ -49,7 +50,21 @@ def _complete_1x2_prices(card: dict) -> bool:
         price = _number(prices.get(key))
         if price is None or not 1.01 < price <= 100:
             return False
-    return True
+    # The shortlist may be researched across markets, but it must contain at
+    # least one real quote at the user's 1.70 floor before it can be promoted.
+    quote_groups = (
+        prices,
+        card.get("total_market_odds") or {},
+        card.get("btts_market_odds") or {},
+        card.get("stat_market_odds") or {},
+        card.get("asian_handicap_market_odds") or {},
+    )
+    return any(
+        (price := _number(value)) is not None and MIN_BET_ODDS <= price <= 100
+        for group in quote_groups
+        if isinstance(group, dict)
+        for value in group.values()
+    )
 
 
 def top_match_shortlist_diagnostics(
