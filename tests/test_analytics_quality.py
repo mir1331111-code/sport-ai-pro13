@@ -14,13 +14,14 @@ class AnalyticsQualityTests(unittest.TestCase):
         report = card_quality({"match": "A vs B", "market_odds": {}})
         states = {x["name"]: x["state"] for x in report["checks"]}
         self.assertEqual(states["Состав хозяев"], "unavailable")
-        self.assertEqual(states["Судья"], "empty")
+        self.assertEqual(states["Судья"], "unavailable")
         self.assertEqual(states["Коэффициенты 1X2"], "empty")
         self.assertEqual(report["completeness"], 0)
 
     def test_card_quality_completeness_is_not_win_probability(self):
-        report = card_quality({"api_context": {"home_lineup": ["1"], "away_lineup": ["2"],
-                                                "referee": "Ref", "injuries": []},
+        report = card_quality({"api_context": {"lineup": {"home": {"starting_xi": list(range(11)), "confirmed": True},
+                                                         "away": {"starting_xi": list(range(11)), "confirmed": True}},
+                                                "referee": {"name": "Ref"}, "injuries": [], "injuries_is_confirmed": True},
                                "market_odds": {"H": 2, "D": 3, "A": 4}})
         self.assertGreater(report["completeness"], 0)
         self.assertLessEqual(report["completeness"], 100)
