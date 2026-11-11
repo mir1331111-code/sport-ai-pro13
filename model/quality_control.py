@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 
 from data.competition import competition_gender
@@ -138,7 +138,7 @@ def assess_fixture_quality(
             return "stale"
         if lineup_stamp:
             return "responded_partial" if players else "responded_empty"
-        if kickoff is not None and kickoff - current > 6 * __import__("datetime").timedelta(hours=1):
+        if kickoff is not None and kickoff - current > timedelta(hours=6):
             return "not_requested_yet"
         return "missing" if provider_present else (
             "not_configured" if not api_configured else "unavailable"
@@ -371,9 +371,6 @@ def portfolio_risk_report(
         for key, items in fixture_groups.items() if len(items) > 1
     ]
 
-    history = sorted(
-        (_finite_float(row.get("bank")) for row in (bank_history or []) if isinstance(row, Mapping)),
-    )
     # Preserve original time order when timestamps are available; don't sort by bank value.
     history_rows = [row for row in (bank_history or []) if isinstance(row, Mapping)]
     history_rows.sort(key=lambda row: str(row.get("ts") or ""))
