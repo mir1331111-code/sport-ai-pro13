@@ -464,6 +464,21 @@ div[data-testid="stMetric"] { min-height:91px; }
 .sp-match-meta { display:flex;justify-content:space-between;gap:8px;color:#8298a0;font-size:.59rem;font-weight:800;letter-spacing:.035em; }
 .sp-team-line { display:flex;align-items:center;justify-content:space-between;gap:9px;margin:10px 0 9px; }
 .sp-team-line b { color:#edf5f2;font-size:.8rem;font-weight:800;line-height:1.3;overflow-wrap:anywhere; }
+.sp-team-side { display:flex;align-items:center;gap:7px;min-width:0;flex:1; }
+.sp-team-side.away { justify-content:flex-end; }
+.sp-team-side b { color:#edf5f2;font-size:.78rem;font-weight:800;line-height:1.3;overflow-wrap:anywhere; }
+.sp-team-emblem {
+  position:relative;display:grid;place-items:center;flex:0 0 27px;width:27px;height:27px;
+  border:1px solid #3a514d;border-radius:50%;background:#172d27;overflow:hidden;
+}
+.sp-team-fallback {
+  position:absolute;inset:0;display:grid;place-items:center;color:#a4e8d0;
+  font-size:.65rem;font-weight:900;
+}
+.sp-team-emblem img {
+  position:absolute;inset:0;width:100%;height:100%;object-fit:contain;
+  background:#f4f7f5;border-radius:50%;padding:2px;
+}
 .sp-vs { display:grid;place-items:center;flex:0 0 26px;height:26px;border:1px solid #35484e;border-radius:8px;color:#9bb1b5;font-size:.55rem;font-weight:900;background:#17242b; }
 .sp-match-bottom { display:flex;align-items:center;justify-content:space-between;gap:8px; }
 .sp-pick { color:#8be6c4;font:800 .72rem 'IBM Plex Mono',monospace; }
