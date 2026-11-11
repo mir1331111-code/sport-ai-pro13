@@ -11,7 +11,7 @@ The provider:
 - sends only API-Football fixture IDs to API-Football endpoints;
 - batches injuries requests in groups of at most 20 fixtures;
 - requests lineups only within six hours of kickoff and caps uncached lineup calls at 12 per scan by default; cache hits do not consume those call slots, so later fixtures are not starved by earlier cached matches;
-- caches fixture, injury and lineup responses on disk and enforces a local UTC-day budget of 100 requests with a 10-request reserve;
+- caches fixture, injury and lineup responses on disk and enforces a cross-process locked UTC-day budget of 100 requests with a 10-request reserve;
 - records a provider response timestamp, confirmation flag and source-reliability field for each data family.
 
 Lineups are commonly published close to kickoff and competition coverage differs. A successful injuries response means the provider answered; it does not prove every competition has exhaustive injury coverage. Unknown source reliability stays NULL and is shown as uncalibrated rather than being fabricated. An explicitly measured reliability below 0.60 makes the corresponding data unusable for the Strong/Value gate.
