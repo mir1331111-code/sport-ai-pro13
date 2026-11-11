@@ -24,6 +24,24 @@ STATUS_LABELS = {
 }
 
 
+def competition_category_known(row: dict[str, Any]) -> bool:
+    """Require a specific competition/category instead of a generic Soccer label."""
+    if not isinstance(row, dict):
+        return False
+    division = str(row.get("Div") or row.get("div") or "").strip()
+    league = str(row.get("League") or row.get("league") or "").strip().casefold()
+    if bool(row.get("women")) or bool(row.get("national")):
+        return True
+    if division.upper().startswith(("W_", "NT_")):
+        return True
+    if row.get("gender_known") is True:
+        return True
+    generic_leagues = {"", "soccer", "football", "матч", "лига", "unknown", "other"}
+    if division and division.upper() not in {"G", "GENERAL", "UNKNOWN"}:
+        return True
+    return league not in generic_leagues
+
+
 def _aware(value: Any) -> datetime | None:
     if not value:
         return None
