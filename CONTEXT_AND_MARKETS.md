@@ -16,6 +16,14 @@ Injuries are checked for up to 20 fixtures within 24 hours of kickoff. Lineup/de
 
 The numeric Games/list ID and string Ls/List event ID belong to different SStats endpoint families. They are never interchanged. Both are from the same SStats provider and use the same SStats API key.
 
+## TOP MATCHES · Groq Deep Analysis
+
+The scanner creates a separate shortlist of at most seven SStats fixtures after the main forecasts are calculated. A fixture is eligible only when its strongest 1X2 model probability is at least the higher of 65% and the user's minimum-probability setting, both teams have at least five same-venue historical matches, and the fixture has a complete SStats 1X2 quote set. The shortlist is not a betting recommendation list and is not padded when fewer than seven fixtures qualify.
+
+For selected fixtures, the scanner refreshes SStats context and submits a single batch dossier to the configured Groq model. The dossier contains source-confirmed starting XI, injury/suspension feed entries, referee assignment, recent form, venue-specific goal history, available corners/cards history, and referee-card history. It deliberately excludes the primary model's probabilities and pick, bookmaker prices, EV, Edge, and Kelly. The application compares independent picks only after Groq returns and validates its structured response.
+
+Missing source data must remain unknown. In particular, an absent or unconfirmed injury feed does not mean that no players are injured, and an unconfirmed lineup/referee cannot be described as confirmed. Groq analysis cannot change the primary forecast, pass a Value gate, or add a bet to the portfolio. The TOP MATCHES tab includes an on-demand SStats refresh for the selected fixtures so the user can repeat the batch after lineups are published nearer kickoff.
+
 ## Context quality and Strong/Value gate
 
 The Base probability forecast always runs and is stored. The Context probability is shown separately. If no approved, walk-forward-validated context blender and all required live features are available, Context remains equal to Base; the app does not invent player strengths or referee effects.
