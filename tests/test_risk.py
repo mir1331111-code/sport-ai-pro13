@@ -105,6 +105,32 @@ class RiskSizingTests(unittest.TestCase):
         self.assertEqual(stake, 10.0)
         self.assertEqual(info["match_used"], 8.0)
 
+    def test_legacy_bet_without_fixture_id_still_counts_towards_match_cap(self):
+        legacy = {
+            "status": "pending",
+            "stake": 19.5,
+            "market": "1X2",
+            "pick": "П1",
+            "match": "Home FC vs Away FC",
+            "date_iso": "2026-11-11",
+            "league": "Premier League",
+        }
+        stake, info = size_bet(
+            probability=0.90,
+            odds=2.0,
+            bank=980.5,
+            bets=[legacy],
+            fixture_id="new-provider-id",
+            match="Home FC vs Away FC",
+            date_iso="2026-11-11",
+            division="E0",
+            market="OU",
+            pick="ТБ 2.5",
+            now=NOW,
+        )
+        self.assertEqual(stake, 0.5)
+        self.assertEqual(info["match_used"], 19.5)
+
     def test_two_percent_match_cap_is_a_hard_combined_ceiling(self):
         stake, info = size_bet(
             probability=0.90,
