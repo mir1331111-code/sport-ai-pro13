@@ -22,6 +22,7 @@ def valid_card():
         "bookmaker_by_pick": {"П1": "1xBet", "X": "1xBet", "П2": "1xBet"},
         "verdict": verdict,
         "best_odds_source": "SStats",
+        "context_quality": {"strong_value_eligible": True, "level": "High"},
     }
 
 class RecommendationShortlistTests(unittest.TestCase):
@@ -47,6 +48,7 @@ class RecommendationShortlistTests(unittest.TestCase):
                                   "BTTS Да": "Book B", "BTTS Нет": "Book B",
                                   "Угл ТБ 9.5": "Book C", "Угл ТМ 9.5": "Book C"},
             "market_odds": {"П1": 2.20, "X": 3.50, "П2": 3.30},
+            "context_quality": {"strong_value_eligible": True, "level": "High"},
         }
         result = _qualified_bet_cards([card])
         self.assertEqual(len(result), 1)
@@ -71,6 +73,7 @@ class RecommendationShortlistTests(unittest.TestCase):
             "bookmaker_by_pick": {"ТБ 2.5": "Book A", "ТМ 2.5": "Book A"},
             "total_market_odds": {"ТБ 2.5": 2.10, "ТМ 2.5": 1.80},
             "total_market_validation": False,
+            "context_quality": {"strong_value_eligible": True, "level": "High"},
         }
         self.assertEqual(_qualified_bet_cards([card]), [])
         card["total_market_validation"] = True
@@ -128,6 +131,7 @@ class RecommendationShortlistTests(unittest.TestCase):
             "market_odds": {"П1": 2.20, "X": 3.50, "П2": 3.30},
             "total_market_odds": {"ТБ 2.5": 2.10, "ТМ 2.5": 1.80},
             "total_market_validation": False,
+            "context_quality": {"strong_value_eligible": True, "level": "High"},
         }
         selected = _portfolio_auto_recommendation(card)
         self.assertIsNotNone(selected)
@@ -136,6 +140,12 @@ class RecommendationShortlistTests(unittest.TestCase):
         card["total_market_validation"] = True
         selected = _portfolio_auto_recommendation(card)
         self.assertEqual(selected["best"][1], "ТБ 2.5")
+
+    def test_legacy_cards_without_confirmed_context_are_not_portfolio_ready(self):
+        card = valid_card()
+        card.pop("context_quality")
+        self.assertEqual(_qualified_bet_cards([card]), [])
+        self.assertIsNone(_portfolio_auto_recommendation(card))
 
     def test_portfolio_never_auto_adds_btts_or_statistics_markets(self):
         card = {
