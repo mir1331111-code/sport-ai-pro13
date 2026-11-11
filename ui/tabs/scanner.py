@@ -1477,6 +1477,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 key="scanner_auto_add_qualified_v4",
                 help="Добавляются только прогнозы с реальными коэффициентами, прошедшие value-фильтры. Реальные ставки не размещаются.",
             )
+            st.checkbox(
+                "Защищать портфель лимитами риска",
+                value=True,
+                key="risk_guard_enabled",
+                help="Ограничивает экспозицию на матч/лигу/день и запрещает увеличивать размер позиции после серии из трёх поражений.",
+            )
     auto_add = st.session_state.get("scanner_auto_add_qualified_v4", False)
 
     if not scan:
