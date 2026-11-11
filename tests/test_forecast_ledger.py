@@ -15,7 +15,7 @@ class ForecastLedgerTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def record(self, key="fx-1", probs=None, odds=None, xg_used=None):
+    def record(self, key="fx-1", probs=None, odds=None, xg_used=None, feature_snapshot=None):
         return self.ledger.record_prediction(
             forecast_key=key, fixture_id="fixture-1", home_team="Home",
             away_team="Away", model_version="test-v1",
@@ -23,6 +23,7 @@ class ForecastLedgerTests(unittest.TestCase):
             forecast_at=self.t0, kickoff_at=self.t0 + timedelta(hours=4),
             entry_odds=odds or {"H": 2.0, "D": 3.5, "A": 4.5},
             odds_source="test-book", xg_used=xg_used,
+            feature_snapshot=feature_snapshot,
         )
 
     def test_record_is_idempotent_and_prediction_is_immutable(self):
@@ -115,7 +116,7 @@ class ForecastLedgerTests(unittest.TestCase):
         path = self.tmp.name + "/old-schema.sqlite"
         old_schema = SCHEMA.replace(
             " xg_used INTEGER CHECK(xg_used IS NULL OR xg_used IN (0,1)),\n", ""
-        )
+        ).replace(" feature_snapshot_json TEXT,\n", "")
         with sqlite3.connect(path) as connection:
             connection.executescript(old_schema)
         migrated = ForecastLedger(path)
@@ -125,6 +126,7 @@ class ForecastLedgerTests(unittest.TestCase):
             ).fetchall()
         }
         self.assertIn("xg_used", columns)
+        self.assertIn("feature_snapshot_json", columns)
         migrated.record_prediction(
             forecast_key="legacy", fixture_id="legacy", home_team="Home",
             away_team="Away", model_version="main-model-old",
@@ -139,6 +141,43 @@ class ForecastLedgerTests(unittest.TestCase):
             forecast_at=self.t0, xg_used=True,
         )
         self.assertIsNone(migrated.rows()[0]["xg_used"])
+
+    def test_feature_snapshot_is_stored_immutably(self):
+        snapshot = {
+            "competition_gender": "women",
+            "lineup_home_confirmed": True,
+            "lineup_away_confirmed": False,
+            "referee_present": True,
+            "xg_used": False,
+        }
+        self.record(feature_snapshot=snapshot)
+        row = self.ledger.rows()[0]
+        self.assertEqual(row["feature_snapshot"], snapshot)
+        self.assertIsNone(row["xg_used"])
+
+        with self.assertRaises(ValueError):
+            self.record(feature_snapshot={**snapshot, "referee_present": False})
+
+    def test_old_ledger_schema_adds_feature_snapshot_without_backfill(self):
+        path = self.tmp.name + "/pre-feature-schema.sqlite"
+        old_schema = SCHEMA.replace(
+            " feature_snapshot_json TEXT,\n", ""
+        )
+        with sqlite3.connect(path) as connection:
+            connection.executescript(old_schema)
+            connection.execute(
+                "INSERT INTO forecasts "
+                "(forecast_key,fixture_id,forecast_at,model_version,home_team,away_team,"
+                "probabilities_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    "old", "fixture-old", self.t0.isoformat(), "old-v1",
+                    "Old Home", "Old Away",
+                    '{"H": 0.5, "D": 0.3, "A": 0.2}', self.t0.isoformat(),
+                ),
+            )
+        migrated = ForecastLedger(path)
+        row = migrated.rows()[0]
+        self.assertIsNone(row["feature_snapshot"])
 
     def test_unknown_forecast_and_conflicting_result_fail(self):
         with self.assertRaises(KeyError):
