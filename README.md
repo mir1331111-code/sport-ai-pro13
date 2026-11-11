@@ -1,6 +1,16 @@
-# Sport-AI-Pro13
+# NEURO BET PRO · v14.0.0
 
-Football match probability forecasting with a Poisson/Dixon–Coles score model, Elo, team form, head-to-head adjustments, probability calibration, and an append-only forecast ledger.
+Football match probability forecasting with a Poisson/Dixon–Coles score model, Elo, competition-scoped team form and ratings, head-to-head adjustments, probability calibration, and an append-only forecast ledger.
+
+The v14 analytics terminal adds **LIVE SCANNER**, **PORTFOLIO**, **DATA QUALITY**, **AI LEARNING**, **STATISTICS**, **MODEL LAB**, **CALCULATOR**, and **API CENTER** as the main navigation.
+
+## v14 analytics and safety controls
+
+- **DATA QUALITY** reports per-fixture source provenance, freshness, and missing/empty/unavailable/unmatched/deferred states. Its 0–100 score measures input completeness, not forecast accuracy or betting probability. Fixtures with an unverified generic Soccer category are shown as excluded before model forecasting and Value selection.
+- **AI LEARNING** reports immutable forecast metrics (Brier, Log Loss, calibration bins and CLV), recent settled forecasts, and an expanding-window diagnostic. The diagnostic only uses outcomes already settled before each forecast and filters by model version. It does not change live model weights or enable online corrections automatically.
+- **MODEL LAB** gives each market a separate record of forecasts, decisive outcomes, Brier, Log Loss, ROI and CLV. A sample size by itself never promotes a market into Value or the portfolio.
+- **PORTFOLIO** reports total exposure, concentration by fixture/league/day, potentially dependent positions within the same match, and drawdown. Default monitoring limits are 20% total portfolio, 5% per match, 15% per league, and 10% per calendar day. Automatic paper entries allow at most one position per fixture and reject additions that breach the limits; manual entries remain visible with alerts.
+- Men's and women's training histories, form, Elo, H2H, rest-day records and probability calibrators use separate namespaces. Women's matches do not borrow men's scoring priors when their own historical sample is sparse.
 
 ## LLM provider routing and API-key trust
 
@@ -12,7 +22,7 @@ Keys entered in the sidebar are saved separately in `.neuro_secrets.json` with o
 
 ### Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for the Streamlit Community Cloud setup, `App.py` entrypoint, API-Football secret, and configurable request budget.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the Streamlit Community Cloud setup, `App.py` entrypoint, sidebar API-key workflow, and configurable request budget.
 
 ### Context pipeline and additional markets
 
