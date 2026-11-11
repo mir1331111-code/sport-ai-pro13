@@ -2936,7 +2936,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "women": match_category == "women",
                 "national": match_category == "national",
                 "match_category": match_category,
-                "category_verified": bool(r.get("category_verified") or str(lg).startswith(("W_", "NT"))),
+                "category_verified": category_verified,
                 "source_provider": str(r.get("source_provider") or "unknown"),
                 "source_evidence": list(r.get("_source_evidence") or []),
                 "source_conflicts": list(r.get("source_conflicts") or []),
