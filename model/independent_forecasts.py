@@ -29,11 +29,16 @@ def _mean(values: list[Any]) -> float | None:
     return sum(clean) / len(clean) if clean else None
 
 
-def historical_features(engine: Any, home: str, away: str, limit: int = 8) -> dict[str, Any]:
-    """Build LLM features from observed same-venue goals, not the main model's xG lambdas."""
+def historical_features(
+    engine: Any, home: str, away: str, limit: int = 8, league: str = "G",
+) -> dict[str, Any]:
+    """Build independent observed-goal features from the same competition only."""
     teams = getattr(engine, "st", {})
-    home_stats = teams.get(home, {}) if hasattr(teams, "get") else {}
-    away_stats = teams.get(away, {}) if hasattr(teams, "get") else {}
+    division = str(league or "G").strip().upper() or "G"
+    home_key = home if division == "G" else (division, home)
+    away_key = away if division == "G" else (division, away)
+    home_stats = teams.get(home_key, {}) if hasattr(teams, "get") else {}
+    away_stats = teams.get(away_key, {}) if hasattr(teams, "get") else {}
     hs = list(home_stats.get("hs") or [])[-limit:]
     hc = list(home_stats.get("hc") or [])[-limit:]
     ass = list(away_stats.get("as") or [])[-limit:]
