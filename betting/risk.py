@@ -75,7 +75,7 @@ def risk_snapshot(
     daily = sum(
         _safe_float(b.get("stake"))
         for b in all_rows
-        if _placed_day(b, current.date()) == current.date()
+        if _placed_day(b, current.date() if _pending(b) else date.min) == current.date()
     )
     match_exposures: dict[str, float] = {}
     for bet in rows:
@@ -161,7 +161,7 @@ def size_bet(
     daily_used = sum(
         _safe_float(bet.get("stake"))
         for bet in all_rows
-        if _placed_day(bet, current.date()) == current.date()
+        if _placed_day(bet, current.date() if _pending(bet) else date.min) == current.date()
     )
 
     diagnostics.update({
