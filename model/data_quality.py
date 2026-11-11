@@ -36,6 +36,8 @@ def competition_category_known(row: dict[str, Any]) -> bool:
         return True
     if row.get("gender_known") is True:
         return True
+    if row.get("gender_known") is False:
+        return False
     generic_leagues = {"", "soccer", "football", "матч", "лига", "unknown", "other"}
     if division and division.upper() not in {"G", "GENERAL", "UNKNOWN"}:
         return True
