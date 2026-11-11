@@ -163,7 +163,7 @@ except ImportError as exc:
     _SETTLEMENT_READY_FALLBACK = True
 from model.forecast_ledger import MarketForecastLedger  # noqa: E402
 from ui import theme  # noqa: E402
-from ui.tabs import scanner, portfolio, stats, calculator, backtest  # noqa: E402
+from ui.tabs import scanner, portfolio, stats, calculator, backtest, analytics  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[APP] %(message)s")
 log = logging.getLogger("neurobet")
@@ -1007,18 +1007,28 @@ with st.sidebar:
             st.session_state.confirm_clear = False
             st.rerun()
 
-# ==================== TABS ====================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["🏟 Сканер", "💼 Портфель", "📈 Статистика",
-     "🧮 Калькулятор", "🧪 Бэктест"])
+# ==================== ANALYTICS TERMINAL ====================
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
+    ["🏟 LIVE SCANNER", "📊 AI FORECASTS", "💎 VALUE ENGINE", "🧭 DATA QUALITY",
+     "🧠 AI LEARNING", "🛡️ PORTFOLIO", "📉 RISK CONTROL", "🧪 MODEL LAB", "⚙️ API / TOOLS"])
 
 with tab1:
     scanner.render(min_prob, kelly_frac, matrix_n, min_edge)
 with tab2:
-    portfolio.render()
-with tab3:
     stats.render()
+with tab3:
+    portfolio.render()
 with tab4:
-    calculator.render(matrix_n)
+    analytics.render_data_quality()
 with tab5:
+    analytics.render_learning_center()
+with tab6:
+    portfolio.render()
+with tab7:
+    analytics.render_portfolio_risk()
+with tab8:
+    analytics.render_model_lab()
+with tab9:
+    calculator.render(matrix_n)
+    st.divider()
     backtest.render(matrix_n)
