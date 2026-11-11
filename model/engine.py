@@ -851,27 +851,12 @@ class Engine:
         else:
             outcome = 2
 
-        self.calib_logits += [
-            self._logit(prediction["p1_raw"]),
-            self._logit(prediction["x_raw"]),
-            self._logit(prediction["p2_raw"]),
-        ]
-        self.calib_outcomes += [
-            1.0 if outcome == 0 else 0.0,
-            1.0 if outcome == 1 else 0.0,
-            1.0 if outcome == 2 else 0.0,
-        ]
-        if len(self.calib_logits) > 12000:
-            del self.calib_logits[:-12000]
-        if len(self.calib_outcomes) > 12000:
-            del self.calib_outcomes[:-12000]
+        row = dict(item.get("row") or {})
+        division = _division_key(item.get("league") or row.get("Div"))
+        self.record_calibration(division, prediction, outcome)
 
         self.match_count += 1
-        if self.match_count % 150 == 0:
-            self.refit_calibrator()
-
-        row = dict(item.get("row") or {})
-        row["Div"] = item.get("league") or "G"
+        row["Div"] = division
         self.add(
             item["home"], item["away"], hg, ag, row,
             match_num=item.get("match_num"),
