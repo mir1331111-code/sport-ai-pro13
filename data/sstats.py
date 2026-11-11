@@ -1135,16 +1135,21 @@ def _sstats_context_find_value(value, wanted_keys):
 
 
 def _sstats_context_player_rows(value):
-    """Extract player labels from common Ls/GameLineups response shapes."""
+    """Extract starters from common Ls/GameLineups response shapes.
+
+    Generic squad/player collections are accepted only when each record marks
+    the player as a starter. Dedicated starting-XI arrays need no extra flag.
+    """
     player_fields = {
         "player", "playername", "fullname", "shortname", "displayname",
     }
-    array_fields = {
-        "players", "lineup", "startingxi", "startxi", "startingplayers",
-        "startinglineup", "squad", "starters",
+    starter_arrays = {
+        "lineup", "startingxi", "startxi", "startingplayers",
+        "startinglineup", "starters",
     }
+    generic_arrays = {"players", "squad"}
 
-    def _walk(node):
+    def _walk(node, require_starter_marker=False):
         if isinstance(node, list):
             result = []
             for item in node:
@@ -1155,20 +1160,33 @@ def _sstats_context_player_rows(value):
                         is_starter = None
                         for flag in ("isStarting", "isStarter", "starting", "starter"):
                             if flag in item:
-                                is_starter = bool(item.get(flag))
+                                raw = item.get(flag)
+                                is_starter = (
+                                    raw is True
+                                    or str(raw).strip().casefold() in {"1", "true", "yes", "starter", "starting"}
+                                )
                                 break
-                        if is_starter is not False:
-                            result.append(name)
+                        if is_starter is False:
+                            continue
+                        if require_starter_marker and is_starter is not True:
+                            continue
+                        result.append(name)
                     else:
-                        result.extend(_walk(item))
-                elif isinstance(item, str) and item.strip():
+                        result.extend(_walk(item, require_starter_marker))
+                elif isinstance(item, str) and item.strip() and not require_starter_marker:
                     result.append(item.strip())
             return result
         if isinstance(node, dict):
             for key, item in node.items():
                 normalized = re.sub(r"[^a-z]", "", str(key).casefold())
-                if normalized in array_fields and isinstance(item, (dict, list)):
-                    found = _walk(item)
+                if normalized in starter_arrays and isinstance(item, (dict, list)):
+                    found = _walk(item, False)
+                    if found:
+                        return found
+            for key, item in node.items():
+                normalized = re.sub(r"[^a-z]", "", str(key).casefold())
+                if normalized in generic_arrays and isinstance(item, (dict, list)):
+                    found = _walk(item, True)
                     if found:
                         return found
             result = []
@@ -1181,7 +1199,7 @@ def _sstats_context_player_rows(value):
             if result:
                 return result
             for item in node.values():
-                found = _walk(item)
+                found = _walk(item, require_starter_marker)
                 if found:
                     return found
         return []
@@ -1371,7 +1389,7 @@ def sstats_context_enrich(
             return parsed.replace(tzinfo=local_tz).astimezone(dt_timezone.utc)
         return parsed.astimezone(dt_timezone.utc)
 
-    current_utc = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    current_utc = now.astimezone(dt_timezone.utc) if now.tzinfo else now.replace(tzinfo=dt_timezone.utc)
     injury_candidates = sorted(
         [
             row for row in valid_rows
