@@ -11,6 +11,7 @@ from ui.cards import translate_match, day_label
 from config import DB_FILE
 from betting.settlement import determine_stat_outcome
 from model.forecast_ledger import MarketForecastLedger
+from betting.risk import risk_snapshot, MAX_MARKET_STAKE_PCT, MAX_MATCH_EXPOSURE_PCT, MAX_DAILY_EXPOSURE_PCT
 
 
 def _bet_date(b: dict):
@@ -438,27 +439,42 @@ def render():
     k3.metric("Won / Lost", f"{won_cnt} / {lost_cnt}")
     k4.metric("Profit", f"{profit:+.2f}")
 
-    bank_now = float(D.get("bank") or 0.0)
-    pending_exposure = sum(float(b.get("stake") or 0) for b, _ in indexed
-                            if b.get("status") == "pending")
-    exposure_pct = (pending_exposure / bank_now * 100) if bank_now > 0 else 0.0
-    league_pending = {}
-    for b, _ in indexed:
-        if b.get("status") != "pending":
-            continue
-        league = str(b.get("league") or b.get("div") or "OTHER")
-        league_pending[league] = league_pending.get(league, 0.0) + float(b.get("stake") or 0)
-    largest_league = max(league_pending.items(), key=lambda x: x[1], default=("—", 0.0))
-    largest_league_pct = (largest_league[1] / bank_now * 100) if bank_now > 0 else 0.0
-
+    snapshot = risk_snapshot(D.get("bank"), D.get("bets") or [])
+    bankroll_basis = float(snapshot.get("bankroll_basis") or 0.0)
+    pending_exposure = float(snapshot.get("pending_exposure") or 0.0)
+    daily_exposure = float(snapshot.get("daily_exposure") or 0.0)
+    max_match_exposure = float(snapshot.get("max_match_exposure") or 0.0)
     st.markdown("#### 🛡️ Risk Monitor")
     r1, r2, r3, r4 = st.columns(4)
-    r1.metric("Экспозиция", f"{pending_exposure:.0f}", f"{exposure_pct:.1f}% банка")
-    r2.metric("Открытых ставок", pending_cnt)
-    r3.metric("Макс. лига", f"{largest_league[1]:.0f}", largest_league[0])
-    r4.metric("Доля макс. лиги", f"{largest_league_pct:.1f}%")
-    if exposure_pct >= 20:
-        st.warning("⚠️ Экспозиция достигла 20% банка.")
+    r1.metric(
+        "Открытая экспозиция",
+        f"{pending_exposure:.2f}",
+        f"{snapshot.get('pending_exposure_pct', 0.0):.1%} банка",
+    )
+    r2.metric(
+        "Риск за сегодня",
+        f"{daily_exposure:.2f}",
+        f"{snapshot.get('daily_exposure_pct', 0.0):.1%} банка",
+    )
+    r3.metric(
+        "Остаток дневного лимита",
+        f"{float(snapshot.get('daily_remaining') or 0.0):.2f}",
+        f"из {float(snapshot.get('daily_limit_amount') or 0.0):.2f}",
+    )
+    r4.metric(
+        "Максимум на матч",
+        f"{max_match_exposure:.2f}",
+        f"{snapshot.get('max_match_exposure_pct', 0.0):.1%} банка",
+    )
+    st.caption(
+        "Автоматические ограничения: ¼ Kelly · ≤1% банка на рынок · "
+        "≤2% на матч с учётом связанных исходов · ≤5% суммарного риска за день. "
+        "Экспозиция считается по всем открытым ставкам, а не только по текущему фильтру."
+    )
+    if float(snapshot.get("daily_exposure_pct") or 0.0) >= MAX_DAILY_EXPOSURE_PCT:
+        st.warning("Дневной лимит риска 5% достигнут: новые ставки сегодня блокируются.")
+    if float(snapshot.get("max_match_exposure_pct") or 0.0) >= MAX_MATCH_EXPOSURE_PCT:
+        st.warning("На одном матче достигнут лимит совокупной экспозиции 2%.")
 
     if st.button("📥 Экспорт CSV"):
         buf = io.StringIO()
