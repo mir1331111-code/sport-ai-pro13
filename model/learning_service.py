@@ -79,7 +79,9 @@ class ForecastLearningService:
             if existing is not None:
                 return self._decision(existing, forecast_id, replay=True)
 
-        learned = self.learner.calibrate(raw, as_of=forecast_stamp, league=league)
+        learned = self.learner.calibrate(
+            raw, as_of=forecast_stamp, league=league, model_version=model_version,
+        )
         enough_history = learned["history_n"] >= self.min_history
         use_correction = self.enabled and enough_history and any(learned["correction_applied"].values())
         served = learned["probabilities"] if use_correction else raw
@@ -142,9 +144,14 @@ class ForecastLearningService:
             ).fetchall()
         return [self._decision(row, -1) for row in rows]
 
-    def evaluate(self, *, as_of: datetime | str, league: str | None = None) -> dict[str, Any]:
-        """Return chronological raw-vs-calibrated diagnostics from the learner."""
-        report = self.learner.evaluate(as_of=as_of, league=league)
+    def evaluate(
+        self, *, as_of: datetime | str, league: str | None = None,
+        model_version: str | None = None,
+    ) -> dict[str, Any]:
+        """Return chronological raw-vs-calibrated diagnostics for one model version."""
+        report = self.learner.evaluate(
+            as_of=as_of, league=league, model_version=model_version,
+        )
         report["deployment_guidance"] = (
             "Keep calibration disabled unless it improves Brier and log loss on an "
             "untouched chronological holdout; these scores do not measure betting ROI."
