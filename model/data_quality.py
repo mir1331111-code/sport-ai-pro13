@@ -95,20 +95,21 @@ def evaluate_fixture_quality(
     now = now.astimezone(timezone.utc)
 
     context = card.get("api_context") or {}
-    api_present = bool(
-        card.get("api_football_configured")
-        if api_configured is None else api_configured
-    )
+    if api_configured is None:
+        api_present = card.get("api_football_configured")
+    else:
+        api_present = bool(api_configured)
     api_raw = str(context.get("api_status") or "").casefold()
-    if not api_present:
-        api_status = "not_configured"
-    elif api_raw in {"unavailable", "error"}:
+    if api_raw in {"unavailable", "error"}:
         api_status = "unavailable"
     elif api_raw in {"no_match", "not_matched", "unmatched"}:
         api_status = "unmatched"
     elif api_raw in {"matched", "confirmed"} or context.get("api_fixture_id"):
         api_status = "confirmed"
+    elif api_present is False:
+        api_status = "not_configured"
     else:
+        # Old cards without provenance cannot prove that the key was absent.
         api_status = "unknown"
 
     lineup = context.get("lineup") or {}
@@ -137,7 +138,7 @@ def evaluate_fixture_quality(
         )
     home_status = _fresh(
         home_status, lineup.get("timestamp"),
-        max_age_hours=3, now=now,
+        max_age_hours=6, now=now,
     )
     away_status = _fresh(
         away_status, lineup.get("timestamp"),
@@ -225,10 +226,7 @@ def evaluate_fixture_quality(
     generic_league = league.casefold() in {
         "", "soccer", "football", "матч", "лига", "unknown", "other",
     }
-    competition_status = (
-        "confirmed" if div not in {"", "G"} and not generic_league
-        else "unknown"
-    )
+    competition_status = "confirmed" if competition_category_known(card) else "unknown"
 
     # Transparent completeness points. Unavailable/missing data scores zero;
     # a successful empty endpoint is reported separately and is not called "OK".
