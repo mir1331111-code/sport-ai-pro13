@@ -12,11 +12,11 @@ Keys entered in the sidebar are saved separately in `.neuro_secrets.json` with o
 
 ### Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for the Streamlit Community Cloud setup, `App.py` entrypoint, API-Football secret, and configurable request budget.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the Streamlit Community Cloud setup, `App.py` entrypoint, and SStats key setup.
 
 ### Context pipeline and additional markets
 
-See [`CONTEXT_AND_MARKETS.md`](CONTEXT_AND_MARKETS.md) for API-Football setup, context confidence and Value gates, historical CSV schemas for women/national teams, referee/card handling, halftime corner splits, and Asian handicap settlement calculations.
+See [`CONTEXT_AND_MARKETS.md`](CONTEXT_AND_MARKETS.md) for SStats context enrichment, context confidence and Value gates, historical CSV schemas for women/national teams, referee/card handling, halftime corner splits, and Asian handicap settlement calculations.
 
 # Model evaluation and xG ablation
 
@@ -62,7 +62,7 @@ The Streamlit app entry point is `App.py`.
 
 ## Broad league coverage and fixture scanning
 
-The scanner merges fixtures from football-data.org (when a token is configured), TheSportsDB, and ESPN. Each source is isolated: a timeout, missing token, or quota exhaustion on one provider does not prevent the other available sources from contributing matches. Cross-provider duplicates are merged by local match date and normalized home/away names, preserving the preferred provider's official fixture ID and odds while filling missing badges/metadata from other feeds.
+SStats is the primary fixture and bookmaker-odds source. When SStats returns matches, the scanner uses that list alone and does not query ESPN, TheSportsDB or football-data.org for a duplicate schedule. Those providers remain fallback sources only when SStats is not configured or returns no fixtures. SStats context endpoints enrich those same fixture rows by SStats-owned IDs; they never add duplicate matches.
 
 Historical engine training keeps the original priority leagues first and then includes every configured seasonal CSV division, plus English League One/Two and German 3. Liga codes. A configured division with no current CSV data is skipped naturally by the source; it no longer disappears merely because it was omitted from a hard-coded 15-league list.
 
@@ -98,9 +98,9 @@ Official reference: https://highlightly.net/football-api/documentation/ and http
 
 ## Free SStats.net football odds source
 
-The scanner can also use SStats.net with a free personal API key. Configure `SSTATS_API_KEY` in Streamlit Secrets or the sidebar. The scanner requests upcoming games through `/Games/list` and reads the compact match-level 1X2 and totals prices included in the game response. For up to 100 fixtures per scan, it additionally requests `/Odds/{gameId}` to enrich the card with bookmaker-specific markets such as BTTS, totals, corners, cards, and handicap where supplied.
+The scanner uses SStats.net as its primary source with one personal API key configured in the sidebar or Streamlit Secrets. It requests upcoming games through `/Games/list` and reads the compact match-level 1X2 and totals prices included in the game response. For up to 100 fixtures per scan, it additionally requests `/Odds/{gameId}` to enrich the card with bookmaker-specific markets such as BTTS, totals, corners, cards, and handicap where supplied.
 
-The key is sent only as the documented `apikey` query parameter. It is kept out of logs, portfolio data, and Gist synchronization; UI-entered keys are stored in the private local secrets file. The API refreshes prematch match information approximately every three hours, so one daily scan is sufficient for this workflow but is not a live odds feed. A detailed card identifies the bookmaker for the selected outcome when the provider supplies that mapping. Compact match-list prices may not include bookmaker attribution.
+The key is sent only as the documented `apikey` query parameter. It is kept out of logs, portfolio data, and Gist synchronization; UI-entered keys are stored in the private local secrets file. The API refreshes prematch match information approximately every three hours, so one daily scan is sufficient for this workflow but is not a live odds feed. A detailed card identifies the bookmaker for the selected outcome when the provider supplies that mapping. Compact match-list prices may not include bookmaker attribution. The same SStats key is also used for `Games/injuries`, `Ls/GameInfo`, and `Ls/GameLineups` where those endpoints return data. `Ls/List` resolves an event ID only to enrich an already-selected SStats fixture; it does not create a second schedule source.
 
 Official documentation: https://api.sstats.net/docs/
 
