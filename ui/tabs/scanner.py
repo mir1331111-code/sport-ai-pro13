@@ -36,7 +36,7 @@ from model.context_model import (
     assess_context_quality, context_probabilities, walk_forward_context_ablation,
 )
 from model.market_models import (
-    asian_handicap_probabilities, asian_handicap_expected_value,
+    asian_handicap_probabilities,
     adjust_corners_for_game_state,
 )
 from storage.context_store import ContextStore
@@ -1138,8 +1138,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             placeholder='[{"date":"2026-10-26","home":"Santa Clara","away":"Benfica","П1":9.0,"X":5.0,"П2":1.3,"ТБ 2.5":1.9,"ТМ 2.5":1.9,"BTTS Да":1.8,"BTTS Нет":2.0,"source":"manual"}]',
         )
 
-        st.markdown("**Контекст матча · API-Football + исторический CSV**")
-        st.caption("🔑 API-Football key берётся из боковой панели «API ключи»; отдельный повторный ввод здесь не требуется.")
+        st.markdown("**Контекст матча · SStats + исторический CSV**")
+        st.caption("Составы, травмы и судьи запрашиваются через SStats для тех матчей, где поставщик отдаёт подтверждённые данные.")
         context_csv_file = st.file_uploader(
             "Исторический архив составов/судей (.csv)",
             type=["csv"],
