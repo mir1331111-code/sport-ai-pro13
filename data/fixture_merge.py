@@ -52,10 +52,68 @@ def merge_fixture_sources(*sources) -> list:
                 # silently discard the fixture.
                 key = ("provider-row", len(order), str(row.get("fixture_id") or ""))
             if key not in merged:
-                merged[key] = dict(row)
+                first = dict(row)
+                first["_source_evidence"] = [{
+                    "provider": str(row.get("source_provider") or "unknown"),
+                    "league": str(row.get("League") or ""),
+                    "div": str(row.get("Div") or ""),
+                    "women": row.get("women"),
+                    "national": row.get("national"),
+                    "kickoff_utc": str(row.get("kickoff_utc") or ""),
+                    "fixture_id": str(row.get("fixture_id") or ""),
+                }]
+                first.setdefault("source_conflicts", [])
+                merged[key] = first
                 order.append(key)
                 continue
             current = merged[key]
+            evidence = current.setdefault("_source_evidence", [])
+            evidence.append({
+                "provider": str(row.get("source_provider") or "unknown"),
+                "league": str(row.get("League") or ""),
+                "div": str(row.get("Div") or ""),
+                "women": row.get("women"),
+                "national": row.get("national"),
+                "kickoff_utc": str(row.get("kickoff_utc") or ""),
+                "fixture_id": str(row.get("fixture_id") or ""),
+            })
+            conflicts = current.setdefault("source_conflicts", [])
+            current_category = (
+                "women" if current.get("women") or str(current.get("Div") or "").startswith("W_")
+                else "national" if current.get("national") or str(current.get("Div") or "").startswith("NT")
+                else "men" if current.get("category_verified") else "unknown"
+            )
+            incoming_category = (
+                "women" if row.get("women") or str(row.get("Div") or "").startswith("W_")
+                else "national" if row.get("national") or str(row.get("Div") or "").startswith("NT")
+                else "men" if row.get("category_verified") else "unknown"
+            )
+            if current_category != "unknown" and incoming_category != "unknown" and current_category != incoming_category:
+                conflict = f"category conflict: {current_category} vs {incoming_category}"
+                if conflict not in conflicts:
+                    conflicts.append(conflict)
+            current_kickoff = str(current.get("kickoff_utc") or "")
+            incoming_kickoff = str(row.get("kickoff_utc") or "")
+            if current_kickoff and incoming_kickoff and current_kickoff != incoming_kickoff:
+                try:
+                    from datetime import datetime
+                    a = datetime.fromisoformat(current_kickoff.replace("Z", "+00:00"))
+                    b = datetime.fromisoformat(incoming_kickoff.replace("Z", "+00:00"))
+                    if a.tzinfo is not None and b.tzinfo is not None and abs((a-b).total_seconds()) > 900:
+                        conflict = f"kickoff conflict: {current_kickoff} vs {incoming_kickoff}"
+                        if conflict not in conflicts:
+                            conflicts.append(conflict)
+                except (TypeError, ValueError):
+                    if "kickoff conflict: unparseable provider timestamps" not in conflicts:
+                        conflicts.append("kickoff conflict: unparseable provider timestamps")
+            # Prefer explicit positive category evidence over an unclassified generic feed.
+            if incoming_category in {"women", "national"} and current_category in {"unknown", "men"}:
+                current["women"] = incoming_category == "women"
+                current["national"] = incoming_category == "national"
+                current["category_verified"] = True
+                current["Div"] = row.get("Div") or current.get("Div") or "G"
+                if row.get("League"):
+                    current["League"] = row.get("League")
 
             # A generic first-provider label must not mask a precise competition
             # supplied later (e.g. TSDB "Soccer" followed by SStats "Eredivisie").
