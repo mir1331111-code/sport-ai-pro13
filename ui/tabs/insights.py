@@ -520,6 +520,8 @@ def render_portfolio_risk(D: dict) -> None:
     c2.metric("Открытая экспозиция", f"{report['pending_stake']:.2f}")
     c3.metric("Экспозиция / equity", _format_pct(report["open_risk_share"]))
     c4.metric("Макс. просадка банка", _format_pct(report["max_drawdown"]))
+    c5 = st.columns(1)[0]
+    c5.metric("Серия поражений", int(report.get("loss_streak") or 0))
     if not enabled:
         st.warning("Защитное блокирование выключено. Ниже остаётся только мониторинг концентрации.")
     if report["breaches"]:
