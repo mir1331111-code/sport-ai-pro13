@@ -359,9 +359,12 @@ class ApiFootballContextProvider:
             league_obj = fixture.get("league") or {}
             league_name = str(league_obj.get("name") or "")
             league_lower = league_name.casefold()
+            is_women = any(token in league_lower for token in ("women", "womens", "ladies", "female"))
+            is_national = any(token in league_lower for token in ("national", "world cup", "nations league", "international", "euro"))
             match_category = (
-                "women" if any(token in league_lower for token in ("women", "womens", "ladies", "female"))
-                else "national" if any(token in league_lower for token in ("national", "world cup", "nations league"))
+                "women_national" if is_women and is_national
+                else "women" if is_women
+                else "national" if is_national
                 else "men" if league_name else "unknown"
             )
             context = {
