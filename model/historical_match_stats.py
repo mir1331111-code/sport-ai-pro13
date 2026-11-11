@@ -40,6 +40,10 @@ class HistoricalMatchStats:
             lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
         )
         self.trained_matches = defaultdict(int)
+        self.referees = defaultdict(list)
+        self.corners_halftime_state = defaultdict(
+            lambda: defaultdict(list)
+        )
 
     @staticmethod
     def _plain(value):
@@ -63,6 +67,8 @@ class HistoricalMatchStats:
             "league": self._plain(self.league),
             "teams": self._plain(self.teams),
             "trained_matches": self._plain(self.trained_matches),
+            "referees": self._plain(self.referees),
+            "corners_halftime_state": self._plain(self.corners_halftime_state),
         }
 
     def __setstate__(self, state):
@@ -89,6 +95,15 @@ class HistoricalMatchStats:
             league: int(count)
             for league, count in (state.get("trained_matches") or {}).items()
         })
+        self.referees.update({
+            str(name): list(values)
+            for name, values in (state.get("referees") or {}).items()
+        })
+        for league, states in (state.get("corners_halftime_state") or {}).items():
+            self.corners_halftime_state[league] = defaultdict(
+                list,
+                {str(name): list(values) for name, values in states.items()},
+            )
 
     def learn_step(self, row, league="G"):
         if not isinstance(row, dict):
@@ -121,10 +136,32 @@ class HistoricalMatchStats:
             self.teams[league][home][market]["home_against"].append(a)
             self.teams[league][away][market]["away_for"].append(a)
             self.teams[league][away][market]["away_against"].append(h)
+
+            if market == "cards":
+                referee = str(
+                    row.get("Referee") or row.get("referee_id") or row.get("referee") or ""
+                ).strip().casefold()
+                if referee:
+                    self.referees[referee].append(h + a)
+
+            if market == "corners":
+                half_home = _num(row.get("HTHG"))
+                half_away = _num(row.get("HTAG"))
+                if (
+                    half_home is not None and half_away is not None
+                    and half_home.is_integer() and half_away.is_integer()
+                ):
+                    state = (
+                        "home_trailing" if half_home < half_away
+                        else "away_trailing" if half_home > half_away
+                        else "level"
+                    )
+                    self.corners_halftime_state[league][state].append(h + a)
+
         self.trained_matches[league] += 1
         return True
 
-    def predict(self, home, away, league="G"):
+    def predict(self, home, away, league="G", referee_id=None):
         result = {}
         for market in _FIELDS:
             league_rows = self.league[league][market]
@@ -165,11 +202,54 @@ class HistoricalMatchStats:
                 / max(1, len(league_totals) - 1)
                 if len(league_totals) > 1 else league_total_mean
             )
+            total_mean = max(0.2, exp_h + exp_a)
+            total_variance = max(0.1, league_total_variance)
+            referee_report = {
+                "available": False, "n": 0, "mean": None, "variance": None,
+                "blend_weight": 0.0,
+            }
+            if market == "cards" and referee_id:
+                referee_key = str(referee_id).strip().casefold()
+                referee_values = self.referees.get(referee_key, [])
+                referee_n = len(referee_values)
+                if referee_n >= 5:
+                    referee_mean = sum(referee_values) / referee_n
+                    referee_variance = (
+                        sum((value - referee_mean) ** 2 for value in referee_values)
+                        / max(1, referee_n - 1)
+                    )
+                    # Conservative empirical-Bayes shrinkage to the team/league
+                    # estimate. The market remains forecast-only pending OOS tests.
+                    referee_weight = min(0.35, referee_n / (referee_n + 20.0))
+                    blended_mean = (
+                        (1.0 - referee_weight) * total_mean
+                        + referee_weight * referee_mean
+                    )
+                    blended_variance = (
+                        (1.0 - referee_weight) * total_variance
+                        + referee_weight * referee_variance
+                        + referee_weight * (1.0 - referee_weight)
+                        * (referee_mean - total_mean) ** 2
+                    )
+                    scale = blended_mean / total_mean if total_mean > 0 else 1.0
+                    exp_h *= scale
+                    exp_a *= scale
+                    total_mean = blended_mean
+                    total_variance = max(0.1, blended_variance)
+                    referee_report = {
+                        "available": True,
+                        "n": referee_n,
+                        "mean": referee_mean,
+                        "variance": referee_variance,
+                        "blend_weight": referee_weight,
+                    }
+
             result[market] = {
                 "home": max(0.1, exp_h),
                 "away": max(0.1, exp_a),
-                "total": max(0.2, exp_h + exp_a),
-                "total_variance": max(0.1, league_total_variance),
+                "total": total_mean,
+                "total_variance": total_variance,
+                "referee": referee_report,
                 "league_home_avg": lh,
                 "league_away_avg": la,
                 "home_for_avg": home_for_avg,
@@ -180,6 +260,24 @@ class HistoricalMatchStats:
                 "home_team_games": len(h_for),
                 "away_team_games": len(a_for),
             }
+            if market == "corners":
+                state_splits = {}
+                for state_name, observations in self.corners_halftime_state[league].items():
+                    n_state = len(observations)
+                    if not n_state:
+                        continue
+                    mean_state = sum(observations) / n_state
+                    variance_state = (
+                        sum((value - mean_state) ** 2 for value in observations)
+                        / max(1, n_state - 1)
+                        if n_state > 1 else mean_state
+                    )
+                    state_splits[state_name] = {
+                        "n": n_state,
+                        "mean": mean_state,
+                        "variance": variance_state,
+                    }
+                result[market]["game_state_splits"] = state_splits
         return result
 
 
