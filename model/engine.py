@@ -29,6 +29,8 @@ def _new_team():
         "hs_xga_dates": [],
         "as_xg_dates": [],
         "as_xga_dates": [],
+        "home_matches": [],
+        "away_matches": [],
     }
 
 
@@ -74,6 +76,20 @@ def _new_lp():
         "rho": -0.13,
         "w_dc": 0.72,
     }
+
+def _team_namespace(division: str) -> str:
+    """Keep men's, women's and national-team records in separate identities."""
+    value = str(division or "").upper()
+    if value.startswith("W_"):
+        return "women"
+    if value.startswith("NT"):
+        return "national"
+    return ""
+
+
+def _team_identity(name: str, division: str) -> str:
+    namespace = _team_namespace(division)
+    return f"{namespace}::{name}" if namespace else str(name)
 
 
 def is_cup(div: str) -> bool:
@@ -297,6 +313,11 @@ class Engine:
         этот метод вызывается ПОСЛЕ prediction в walk-forward.
         """
 
+        raw_home, raw_away = str(h), str(a)
+        div = str((row or {}).get("Div") or "G") if isinstance(row, dict) else "G"
+        h = _team_identity(raw_home, div)
+        a = _team_identity(raw_away, div)
+
         k = (
             48
             - 32
@@ -346,6 +367,30 @@ class Engine:
         teams[a]["ac_dates"].append(stamp)
 
         home_xg, away_xg = _row_xg_pair(row)
+        # Store dated, pre-match opponent-strength snapshots for evidence
+        # reporting. These records are diagnostic; they do not alter lambdas.
+        home_record = {
+            "date": str(stamp or ""),
+            "opponent": raw_away,
+            "goals_for": float(hg),
+            "goals_against": float(ag),
+            "opponent_elo_before": float(ra),
+            "xg_for": home_xg,
+            "xg_against": away_xg,
+        }
+        away_record = {
+            "date": str(stamp or ""),
+            "opponent": raw_home,
+            "goals_for": float(ag),
+            "goals_against": float(hg),
+            "opponent_elo_before": float(rh),
+            "xg_for": away_xg,
+            "xg_against": home_xg,
+        }
+        teams[h]["home_matches"].append(home_record)
+        teams[a]["away_matches"].append(away_record)
+        teams[h]["home_matches"] = teams[h]["home_matches"][-20:]
+        teams[a]["away_matches"] = teams[a]["away_matches"][-20:]
         if home_xg is not None and away_xg is not None:
             teams[h]["hs_xg"].append(home_xg)
             teams[h]["hs_xga"].append(away_xg)
@@ -370,11 +415,6 @@ class Engine:
         self.ag.append(ag)
         self.hg_dates.append(stamp)
         self.ag_dates.append(stamp)
-
-        if isinstance(row, dict):
-            div = row.get("Div") or "G"
-        else:
-            div = "G"
 
         self.lg_hg[div].append(hg)
         self.lg_ag[div].append(ag)
@@ -495,6 +535,8 @@ class Engine:
         с остальной системой.
         """
 
+        h = _team_identity(str(h), lg)
+        a = _team_identity(str(a), lg)
         P0 = self.lp[lg]
 
         # ---------------------------------------------------------
@@ -816,6 +858,18 @@ class Engine:
 
             "games": games,
             "h2h_n": h2h_n,
+            "home_history_n": gh,
+            "away_history_n": ga,
+            "home_venue_history_n": len(sh["hs"]),
+            "away_venue_history_n": len(sa["as"]),
+            "home_opponent_elo_avg": (
+                sum(float(item["opponent_elo_before"]) for item in sh["home_matches"][-5:])
+                / len(sh["home_matches"][-5:]) if sh["home_matches"] else None
+            ),
+            "away_opponent_elo_avg": (
+                sum(float(item["opponent_elo_before"]) for item in sa["away_matches"][-5:])
+                / len(sa["away_matches"][-5:]) if sa["away_matches"] else None
+            ),
 
             "e": elo_home,
             "pde": pde,
