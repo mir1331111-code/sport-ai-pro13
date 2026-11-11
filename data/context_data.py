@@ -317,6 +317,7 @@ class ApiFootballContextProvider:
             context = {
                 "provider": "api-football",
                 "api_fixture_id": fixture_id,
+                "kickoff_at": kickoff.isoformat() if kickoff is not None else None,
                 "referee": {
                     "id": referee_entity_id(referee) if referee else None,
                     "name": referee or None,
@@ -334,6 +335,7 @@ class ApiFootballContextProvider:
                 "injuries": [],
                 "injuries_is_confirmed": False,
                 "injuries_timestamp": None,
+                "injuries_source_reliability": None,
                 "timestamp": now.isoformat(),
             }
             row["api_football_fixture_id"] = fixture_id
