@@ -3508,6 +3508,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         date_iso=card.get("date_iso"),
                         market=market_code,
                         pick=pick,
+                        division=card.get("div"),
                         now=datetime.now(app_timezone()),
                     )
                     if stake_value <= 0 or stake_value > available_bank:
