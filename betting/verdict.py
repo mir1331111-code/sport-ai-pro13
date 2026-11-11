@@ -1,6 +1,8 @@
 """betting/verdict.py — модельный verdict + проверка реального рынка."""
 from __future__ import annotations
 
+import math
+
 from betting.kelly import (
     edge,
     expected_value,
@@ -297,12 +299,12 @@ def refine_with_real_odds(
 
         try:
             ro = float(ro)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             r["odd"] = None
             r["real"] = False
             continue
 
-        if ro <= 1.01:
+        if not math.isfinite(ro) or ro <= 1.01 or ro > 100.0:
             r["odd"] = None
             r["real"] = False
             continue
@@ -335,6 +337,15 @@ def refine_with_real_odds(
 
         return verdict, None
 
+    if not math.isfinite(real_odd) or real_odd <= 1.01 or real_odd > 100.0:
+        verdict["real_odds"] = False
+        verdict["odd"] = None
+        verdict["ev"] = None
+        verdict["edge"] = None
+        verdict["stake"] = 0.0
+        verdict["is_bet"] = False
+        return verdict, None
+
     if real_odd < MIN_BET_ODDS:
         verdict["real_odds"] = True
         verdict["odd"] = real_odd
@@ -344,16 +355,6 @@ def refine_with_real_odds(
         verdict["is_bet"] = False
         verdict["value_passed"] = False
         verdict["bet_block_reason"] = "odds_below_minimum_1_70"
-        return verdict, None
-
-    if real_odd <= 1.01:
-        verdict["real_odds"] = False
-        verdict["odd"] = None
-        verdict["ev"] = None
-        verdict["edge"] = None
-        verdict["stake"] = 0.0
-        verdict["is_bet"] = False
-
         return verdict, None
 
     model_prob = float(verdict["prob"])
