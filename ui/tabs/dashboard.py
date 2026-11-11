@@ -92,6 +92,19 @@ def probability_rows(card):
     return "".join(rows)
 
 
+def team_badge(url, name):
+    label = esc(name)
+    letter = esc((str(name or "?").strip()[:1] or "?").upper())
+    fallback = f"<span class='sp-team-fallback'>{letter}</span>"
+    if not url:
+        return fallback
+    return (
+        f"<span class='sp-team-emblem'>{fallback}"
+        f"<img src='{esc(url)}' alt='{label}' loading='lazy' "
+        "referrerpolicy='no-referrer' onerror='this.style.display=\'none\''></span>"
+    )
+
+
 def match_tile(card, rank):
     pred = favorite(card) or {}
     deep = card.get("deep_analysis") if isinstance(card.get("deep_analysis"), dict) else {}
@@ -106,9 +119,12 @@ def match_tile(card, rank):
         f"<span>#{rank:02d} · {esc(card.get('league') or card.get('div') or 'ФУТБОЛ')}</span>"
         f"<span>{esc(card.get('date') or card.get('date_iso') or '')} {esc(card.get('time') or '')}</span>"
         "</div>"
-        f"<div class='sp-team-line'><b>{esc(card.get('home_team') or 'Хозяева')}</b>"
+        "<div class='sp-team-line'>"
+        f"<div class='sp-team-side'>{team_badge(card.get('home_badge'), card.get('home_team') or 'Хозяева')}"
+        f"<b>{esc(card.get('home_team') or 'Хозяева')}</b></div>"
         "<span class='sp-vs'>VS</span>"
-        f"<b>{esc(card.get('away_team') or 'Гости')}</b></div>"
+        f"<div class='sp-team-side away'><b>{esc(card.get('away_team') or 'Гости')}</b>"
+        f"{team_badge(card.get('away_badge'), card.get('away_team') or 'Гости')}</div></div>"
         f"<div class='sp-match-bottom'><span class='sp-pick'>{esc(pred.get('pick') or '—')} · {float(pred.get('probability') or 0):.1%}</span>{groq_tag}</div>"
         "</div>"
     )
