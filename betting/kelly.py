@@ -1,6 +1,8 @@
 """betting/kelly.py — безопасный fractional Kelly."""
 from __future__ import annotations
 
+import math
+
 
 def kelly(
     prob: float,
@@ -25,7 +27,10 @@ def kelly(
         bank = float(bank)
         frac = float(frac)
         cap = float(cap)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+    if not all(math.isfinite(value) for value in (prob, odds, bank, frac, cap)):
         return 0.0
 
     if bank <= 0:
