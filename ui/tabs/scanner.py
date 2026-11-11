@@ -25,7 +25,7 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
                           parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture,
                           sstats_upcoming_matches, sstats_odds_fixture,
                           footballapi_xg_history)
-from data.fixture_merge import merge_fixture_sources, fixture_key
+from data.fixture_merge import merge_fixture_sources
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from data.context_data import (
     ApiFootballClient, ApiFootballContextProvider, fixture_row_key,
@@ -2108,38 +2108,54 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         fdorg_rows = []
         sstats_rows = []
         source_counts = {"TheSportsDB": 0, "ESPN": 0, "football-data.org": 0, "SStats": 0}
-        try:
-            tsdb_rows = tsdb_matches(days, logs)
-            source_counts["TheSportsDB"] = len(tsdb_rows)
-        except Exception as exc:
-            logs.append(f"⚠️ TheSportsDB fixtures: {type(exc).__name__}")
-        try:
-            espn_rows = espn_matches(days, logs)
-            source_counts["ESPN"] = len(espn_rows)
-        except Exception as exc:
-            logs.append(f"⚠️ ESPN fixtures: {type(exc).__name__}")
-        if token:
-            try:
-                fdorg_rows = fdorg_matches(days, token, logs)
-                source_counts["football-data.org"] = len(fdorg_rows)
-            except Exception as exc:
-                logs.append(f"⚠️ football-data.org fixtures: {type(exc).__name__}")
+
+        # SStats is the primary match-and-odds source. Do not call several
+        # other schedule APIs for the same horizon when SStats already returned
+        # fixtures: keep those providers as failover only.
         if sstats_key:
             try:
                 sstats_rows = sstats_upcoming_matches(days, sstats_key, logs)
                 source_counts["SStats"] = len(sstats_rows)
             except Exception as exc:
                 logs.append(f"⚠️ SStats fixtures/odds: {type(exc).__name__}")
-        else:
-            logs.append("ℹ️ SSTATS_API_KEY не настроен — бесплатный источник SStats пропущен.")
 
-        # Merge from highest-quality competition metadata to broad schedule feeds.
-        # SStats remains last for odds enrichment, while fixture_merge can now
-        # upgrade generic Div/League placeholders when it sees a specific league.
-        fixture_sources.extend(fdorg_rows)
-        fixture_sources.extend(tsdb_rows)
-        fixture_sources.extend(espn_rows)
-        fixture_sources.extend(sstats_rows)
+        sstats_is_primary = bool(sstats_rows)
+        if sstats_is_primary:
+            fixture_sources.extend(sstats_rows)
+            logs.append(
+                f"✅ SStats выбран единственным источником расписания: "
+                f"{len(sstats_rows)} матчей. Дублирующие schedule API пропущены."
+            )
+        else:
+            if sstats_key:
+                logs.append(
+                    "⚠️ SStats не вернул матчи; включаю резервные источники расписания."
+                )
+            else:
+                logs.append(
+                    "ℹ️ SSTATS_API_KEY не настроен — SStats пропущен; "
+                    "включаю резервные источники расписания."
+                )
+            try:
+                tsdb_rows = tsdb_matches(days, logs)
+                source_counts["TheSportsDB"] = len(tsdb_rows)
+            except Exception as exc:
+                logs.append(f"⚠️ TheSportsDB fixtures: {type(exc).__name__}")
+            try:
+                espn_rows = espn_matches(days, logs)
+                source_counts["ESPN"] = len(espn_rows)
+            except Exception as exc:
+                logs.append(f"⚠️ ESPN fixtures: {type(exc).__name__}")
+            if token:
+                try:
+                    fdorg_rows = fdorg_matches(days, token, logs)
+                    source_counts["football-data.org"] = len(fdorg_rows)
+                except Exception as exc:
+                    logs.append(f"⚠️ football-data.org fixtures: {type(exc).__name__}")
+            fixture_sources.extend(fdorg_rows)
+            fixture_sources.extend(tsdb_rows)
+            fixture_sources.extend(espn_rows)
+
         logs.append(
             "📡 Источники расписания: " + " · ".join(
                 f"{name} {count}" for name, count in source_counts.items()
@@ -2151,53 +2167,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             # Keep scanner usable even if cross-provider deduplication fails.
             rows = _safe_filter(fixture_sources)
 
-        # Explicitly merge SStats quotes by canonical fixture key. Some fixture
-        # providers populate a partial/estimated odds dictionary; the SStats
-        # quote should still be attached to the same scheduled match.
-        if sstats_rows:
-            sstats_by_key = {
-                fixture_key(source_row): source_row
-                for source_row in sstats_rows
-                if isinstance(source_row, dict) and all(fixture_key(source_row))
-            }
-            merged_sstats = 0
-            for row in rows:
-                source_row = sstats_by_key.get(fixture_key(row))
-                if not source_row:
-                    continue
-                for group in (
-                    "market_odds", "total_market_odds", "btts_market_odds",
-                    "stat_market_odds", "asian_handicap_market_odds",
-                ):
-                    target = row.setdefault(group, {})
-                    incoming = source_row.get(group) or {}
-                    if not isinstance(target, dict) or not isinstance(incoming, dict):
-                        continue
-                    for market_name, raw_price in incoming.items():
-                        try:
-                            price = float(raw_price)
-                            if 1.01 < price <= 100:
-                                target[market_name] = max(
-                                    float(target.get(market_name) or 0), price
-                                )
-                        except (TypeError, ValueError):
-                            continue
-                row["sstats_game_id"] = source_row.get("sstats_game_id")
-                row.setdefault("bookmaker_by_pick", {}).update(
-                    source_row.get("bookmaker_by_pick") or {}
-                )
-                if row.get("market_odds") and row.get("odds_source") in (None, "", "no_market"):
-                    row["odds_source"] = "sstats"
-                if row.get("total_market_odds") and row.get("total_odds_source") in (None, "", "no_market"):
-                    row["total_odds_source"] = "sstats"
-                if any(row.get(group) for group in (
-                    "total_market_odds", "btts_market_odds", "stat_market_odds",
-                    "asian_handicap_market_odds",
-                )) and not row.get("extra_market_source"):
-                    row["extra_market_source"] = "sstats"
-                merged_sstats += 1
-            if merged_sstats:
-                logs.append(f"🔗 SStats: коэффициенты сопоставлены с {merged_sstats} матчами из общего расписания.")
+        # The selected source is either SStats alone or the fallback set.
+        # When SStats is primary, its odds are already on the same rows as its
+        # game IDs, so no cross-provider quote re-join is necessary.
 
         logs.append(
             f"🔀 Объединение расписаний: получено {len(fixture_sources)} строк, "
