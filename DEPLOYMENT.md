@@ -10,6 +10,8 @@ The app entry point is `App.py`. It is a Streamlit application and the repositor
 4. Open the app. In the left sidebar, expand **🔑 API ключи** and paste your API-Football key into **API-Football key (составы · травмы · дисквалификации · судьи)**. The app saves UI-entered credentials in the private, git-ignored `.neuro_secrets.json` file with owner-only permissions. You do **not** need to edit Streamlit Secrets or repository files to enter the key.
 
 5. Run the scanner. It automatically reads the key from the sidebar; there is no second API-Football key field inside the scanner.
+6. The main page now opens as the v14 Analytics Terminal. In Scanner settings the category filter defaults to men's football; choose “All categories” or “Only women's football” to include those fixtures. Unknown competition categories remain informational and are not admitted to the paper portfolio.
+7. Use DATA QUALITY, MODEL LAB, AI LEARNING and PORTFOLIO · RISK to inspect actual saved records. New forecasts retain their pre-kickoff feature snapshots; older forecasts are not backfilled.
 
 Streamlit Community Cloud reads `requirements.txt` and installs the Python dependencies. Once deployed, pushes to the connected GitHub branch are reflected in the app; dependency changes trigger a full redeploy. On hosts with ephemeral filesystems, a provider or host restart may clear the local key file; in that case paste the key into the same sidebar field again.
 
@@ -58,3 +60,8 @@ streamlit run App.py
 5. Run the walk-forward Base vs Context ablation. Context is promoted only when at least 500 paired out-of-time matches show improvement in both Brier score and Log Loss.
 
 A successful deployment does not mean the new context model has already demonstrated a higher hit rate or positive return. Until real historical context data passes the stated tests, Context probabilities remain equal to Base; corners, cards and Asian handicaps remain informational and are not automatically staked.
+
+
+## v14 analytics terminal
+
+See [ANALYTICS_TERMINAL.md](ANALYTICS_TERMINAL.md) for dashboard definitions, data-quality statuses, competition isolation, calibration samples, market-validation limitations and default portfolio risk guards.
