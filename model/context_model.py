@@ -256,19 +256,37 @@ def walk_forward_context_ablation(
     Production model is promoted only when the out-of-time paired sample reaches
     min_validation and Context improves both Brier and Log Loss.
     """
-    prepared = []
-    seen = set()
+    latest_snapshots = {}
     for row in rows or []:
         if not isinstance(row, dict):
             continue
         fixture_id = str(row.get("fixture_id") or "")
-        if not fixture_id or fixture_id in seen:
+        if not fixture_id:
             continue
         try:
             kickoff = datetime.fromisoformat(str(row["kickoff_at"]).replace("Z", "+00:00"))
             observed = datetime.fromisoformat(str(row["observed_at"]).replace("Z", "+00:00"))
-            if kickoff.tzinfo is None or observed.tzinfo is None or observed >= kickoff:
+            if (
+                kickoff.tzinfo is None or observed.tzinfo is None
+                or observed >= kickoff
+            ):
                 continue
+            previous = latest_snapshots.get(fixture_id)
+            if previous is None:
+                latest_snapshots[fixture_id] = row
+            else:
+                previous_observed = datetime.fromisoformat(
+                    str(previous["observed_at"]).replace("Z", "+00:00")
+                )
+                if observed > previous_observed:
+                    latest_snapshots[fixture_id] = row
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    prepared = []
+    for row in latest_snapshots.values():
+        try:
+            kickoff = datetime.fromisoformat(str(row["kickoff_at"]).replace("Z", "+00:00"))
             _feature_vector(row)
             base = _valid_probability_map({
                 "H": row.get("base_p_home"),
@@ -280,7 +298,6 @@ def walk_forward_context_ablation(
                 continue
         except (KeyError, TypeError, ValueError):
             continue
-        seen.add(fixture_id)
         prepared.append((kickoff, row, base, outcome))
     prepared.sort(key=lambda item: (item[0], str(item[1].get("fixture_id") or "")))
 
