@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from model.analytics_quality import card_quality, portfolio_risk, source_state
 
@@ -17,6 +18,15 @@ class AnalyticsQualityTests(unittest.TestCase):
         self.assertEqual(states["Судья"], "unavailable")
         self.assertEqual(states["Коэффициенты 1X2"], "empty")
         self.assertEqual(report["completeness"], 0)
+
+    def test_card_quality_marks_old_context_stale_and_odds_conflict(self):
+        observed = (datetime.now(timezone.utc) - timedelta(hours=8)).isoformat()
+        report = card_quality({"api_context": {"timestamp": observed},
+                               "market_odds": {"H": 2},
+                               "data_conflicts": ["1x2_odds"]})
+        states = {x["name"]: x["state"] for x in report["checks"]}
+        self.assertEqual(states["API-Football"], "stale")
+        self.assertEqual(states["Коэффициенты 1X2"], "conflict")
 
     def test_card_quality_completeness_is_not_win_probability(self):
         report = card_quality({"api_context": {"lineup": {"home": {"starting_xi": list(range(11)), "confirmed": True},
