@@ -29,6 +29,30 @@ Missing lineup or referee blocks Strong/Value but does not remove the fixture or
 
 A context blender is fitted only from confirmed snapshots observed strictly before kickoff. The chronological ablation forecasts all fixtures on one date before learning any result from that date. It uses the latest pre-kickoff snapshot per fixture and compares Base and Context on the exact same settled fixture IDs. A model is promoted only with at least 500 paired out-of-time fixtures and improvement in both Brier score and log loss. Training starts only with at least 200 previous confirmed fixtures.
 
+## Fixture identity, gender separation and source quality
+
+Women's competition classification is applied before generic markers such as "Euro" or "World Cup", so a tournament such as UEFA Women's Europa Cup is not treated as a national-team competition. Each contributing schedule provider is retained in the merged fixture's provenance.
+
+The model uses separate men's and women's namespaces for team form, goals/xG history, Elo, H2H, rest-day features, league fallback scoring rates, and probability calibration. If a schedule feed supplies only a generic Soccer label and does not establish the competition category, the fixture is listed in DATA QUALITY as excluded and is not modelled or admitted to Value.
+
+DATA QUALITY distinguishes:
+- a confirmed source response with records;
+- a successful empty response (for example, an empty injury feed);
+- an unavailable endpoint;
+- a fixture that could not be matched to API-Football;
+- a feed that is not yet due or deferred by request limits;
+- stale observations outside the freshness window.
+
+Its 0–100 score is a weighted completeness measure for input data. It is not a probability of winning, accuracy estimate, or betting confidence score.
+
+## AI learning, market evaluation and portfolio risk
+
+AI LEARNING reads the immutable forecast ledger and reports Brier, Log Loss, calibration bins, CLV and recent settled forecast errors. The expanding-window diagnostic only uses results settled before each historic forecast and isolates each model version. It does not rewrite model weights or enable live corrections automatically.
+
+MODEL LAB reports each market separately. A market is not promoted into Value/portfolio merely because a forecast exists or its observed ROI is positive on a small sample. Existing independent bookmaker and out-of-sample promotion requirements remain in force.
+
+PORTFOLIO monitors exposure by match, league and date, identifies multiple positions on the same fixture as potentially dependent, and reports drawdown reconstructed from settled virtual bets. Default limits are 20% overall, 5% per match, 15% per league and 10% per date. Auto-portfolio allows at most one open position per fixture and rejects additions that breach those limits. These safeguards do not guarantee a positive return.
+
 ## Historical match CSV for women, national teams and other competitions
 
 Upload the separate "historical match archive" CSV in the scanner. Required columns:
