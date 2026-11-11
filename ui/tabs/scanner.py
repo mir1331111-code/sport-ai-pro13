@@ -140,9 +140,12 @@ def _render_context_comparison(card: dict) -> None:
             icon="🔒",
         )
     reliability = referee.get("source_reliability")
+    lineup_reliability = lineup.get("source_reliability")
     st.caption(
-        "Надёжность API-источника: "
-        + (f"{float(reliability):.0%}" if reliability is not None else "ещё не откалибрована")
+        "Надёжность источников · составы: "
+        + (f"{float(lineup_reliability):.0%}" if lineup_reliability is not None else "не откалибрована")
+        + " · судья: "
+        + (f"{float(reliability):.0%}" if reliability is not None else "не откалибрована")
         + " · травматический фид: "
         + ("ответ получен" if api_context.get("injuries_is_confirmed") else "нет подтверждения")
     )
@@ -2312,11 +2315,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
             if context_store is not None and api_context:
                 try:
+                    stable_context_key = fixture_row_key(
+                        h_en, a_en, d.strftime("%Y-%m-%d")
+                    )
                     context_store.record_snapshot(
-                        fixture_id=str(
-                            r.get("fixture_id")
-                            or f"api-football:{api_context.get('api_fixture_id')}"
-                        ),
+                        fixture_id="|".join(stable_context_key),
                         kickoff_at=(
                             kickoff_local.isoformat()
                             if kickoff_local else str(api_context.get("kickoff_at") or "")
