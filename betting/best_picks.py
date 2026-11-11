@@ -89,6 +89,7 @@ def best_value_markets(
     min_ev: float = 0.05,
     bookmaker_by_pick: dict | None = None,
     market_validation_by_pick: dict | None = None,
+    context_qualified: bool = True,
 ) -> dict:
     """Select one independent best signal for each market family in a fixture.
 
@@ -96,6 +97,8 @@ def best_value_markets(
     through the same exact-price, line-validation, same-bookmaker, EV, edge and
     Kelly gates as the combined selector.
     """
+    if not context_qualified:
+        return {}
     if not isinstance(rows, list):
         return {}
     families = {
@@ -124,6 +127,7 @@ def best_value_markets(
             min_edge=min_edge, min_ev=min_ev,
             bookmaker_by_pick=bookmaker_by_pick,
             market_validation_by_pick=market_validation_by_pick,
+            context_qualified=context_qualified,
         )
         if not chosen or not best:
             continue
@@ -152,6 +156,7 @@ def best_value_market(
     min_ev: float = 0.03,
     bookmaker_by_pick: dict | None = None,
     market_validation_by_pick: dict | None = None,
+    context_qualified: bool = True,
 ):
     """Choose the best market only from tested forecasts and exact bookmaker lines.
 
@@ -159,6 +164,8 @@ def best_value_market(
     and a complete coherent line from one named bookmaker. No single-price
     fallback is promoted to Value, and no other-market price may be substituted.
     """
+    if not context_qualified:
+        return None, None
     if not isinstance(market_odds, dict) or not market_odds:
         return None, None
 
