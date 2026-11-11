@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from data.team_names import normalize_team
+from data.competition import is_women_competition
 
 
 def _team_key(value) -> str:
@@ -56,6 +57,37 @@ def merge_fixture_sources(*sources) -> list:
                 order.append(key)
                 continue
             current = merged[key]
+
+            incoming_division = str(row.get("Div") or row.get("div") or "").upper()
+            current_division = str(current.get("Div") or current.get("div") or "").upper()
+            incoming_women = (
+                row.get("women") is True
+                or incoming_division.startswith("W_")
+                or is_women_competition(row.get("League"), row.get("competition"))
+            )
+            current_women = (
+                current.get("women") is True
+                or current_division.startswith("W_")
+                or is_women_competition(current.get("League"), current.get("competition"))
+            )
+            if incoming_women:
+                current["women"] = True
+                current["kind"] = "women"
+                if not current_division.startswith("W_"):
+                    current["Div"] = incoming_division if incoming_division.startswith("W_") else "W_"
+                    if current.get("div") is not None:
+                        current["div"] = current["Div"]
+                # Prefer the explicitly named women's competition over a generic provider label.
+                incoming_league_text = str(row.get("League") or row.get("league") or "")
+                if is_women_competition(incoming_league_text):
+                    current["League"] = incoming_league_text
+            elif current_women:
+                current["women"] = True
+                current["kind"] = "women"
+                if not current_division.startswith("W_"):
+                    current["Div"] = "W_"
+                    if current.get("div") is not None:
+                        current["div"] = "W_"
 
             # A generic first-provider label must not mask a precise competition
             # supplied later (e.g. TSDB "Soccer" followed by SStats "Eredivisie").
