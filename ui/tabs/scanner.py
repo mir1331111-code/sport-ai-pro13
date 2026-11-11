@@ -2142,6 +2142,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Merge from highest-quality competition metadata to broad schedule feeds.
         # SStats remains last for odds enrichment, while fixture_merge can now
         # upgrade generic Div/League placeholders when it sees a specific league.
+        for provider_name, provider_rows in (
+            ("football-data.org", fdorg_rows),
+            ("TheSportsDB", tsdb_rows),
+            ("ESPN", espn_rows),
+            ("SStats", sstats_rows),
+        ):
+            for provider_row in provider_rows:
+                if not isinstance(provider_row, dict):
+                    continue
+                source_names = list(provider_row.get("_source_providers") or [])
+                if provider_name not in source_names:
+                    source_names.append(provider_name)
+                provider_row["_source_providers"] = source_names
         fixture_sources.extend(fdorg_rows)
         fixture_sources.extend(tsdb_rows)
         fixture_sources.extend(espn_rows)
@@ -2318,6 +2331,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "unknown_same_day_kickoff": 0, "missing_teams": 0,
             "inside_horizon": 0,
         }
+        quality_skipped_fixtures = []
         for match_idx, r in enumerate(rows, 1):
             if match_idx == 1 or match_idx % 5 == 0:
                 update_loader(
@@ -2368,6 +2382,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if not category_known:
                 date_filter_counts.setdefault("unknown_competition_category", 0)
                 date_filter_counts["unknown_competition_category"] += 1
+                quality_skipped_fixtures.append({
+                    "match": f"{h_en} vs {a_en}",
+                    "match_ru": f"{h_ru} — {a_ru}",
+                    "league": str(r.get("League") or "Неизвестный турнир"),
+                    "div": str(lg),
+                    "date_iso": d.strftime("%Y-%m-%d"),
+                    "time": kickoff_time_text,
+                    "fixture_id": str(r.get("fixture_id") or ""),
+                    "fixture_sources": list(r.get("_source_providers") or []),
+                    "gender_known": False,
+                    "reason": "Категория соревнования не подтверждена источником; модель и Value пропущены.",
+                })
                 logs.append(
                     f"⏭️ Пропуск {h_ru} — {a_ru}: источник не подтвердил категорию "
                     "соревнования (общая метка Soccer). Прогноз и Value не формируются."
@@ -3253,6 +3279,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         D2 = dict(D)
         D2["cards"] = cards
+        D2["quality_skipped_fixtures"] = quality_skipped_fixtures
         D2["report"] = logs
         D2["bets"] = list(D.get("bets") or []) + new_bets
         D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - total_stake)
