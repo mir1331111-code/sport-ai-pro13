@@ -38,7 +38,58 @@ from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
-from data.context_data import api_football_connection_check  # noqa: E402
+try:
+    from data.context_data import api_football_connection_check  # noqa: E402
+except ImportError:  # Compatibility with a host that still has the previous module revision.
+    import requests  # noqa: E402
+
+    def api_football_connection_check(api_key, session=None):
+        """Fallback status check so an older deployed context module cannot crash app startup."""
+        key = str(api_key or "").strip()
+        if not key:
+            return {"ok": False, "message": "Введите API-Football key в левой панели."}
+        client = session or requests.Session()
+        try:
+            response = client.get(
+                "https://v3.football.api-sports.io/status",
+                headers={"x-apisports-key": key},
+                timeout=(5, 15),
+            )
+        except requests.RequestException as exc:
+            return {"ok": False, "message": f"Не удалось подключиться к API-Football ({type(exc).__name__})."}
+        except Exception as exc:
+            return {"ok": False, "message": f"Проверка API-Football завершилась ошибкой ({type(exc).__name__})."}
+        if response.status_code in (401, 403):
+            return {"ok": False, "message": "API-Football отклонил ключ. Проверьте его в личном кабинете провайдера."}
+        if response.status_code == 429:
+            return {"ok": False, "message": "API-Football временно ограничил частоту запросов. Повторите позже."}
+        try:
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            return {"ok": False, "message": "API-Football вернул некорректный HTTP-ответ."}
+        if not isinstance(payload, dict) or payload.get("errors"):
+            return {"ok": False, "message": "API-Football не подтвердил ключ. Проверьте доступ и подписку."}
+        data = payload.get("response")
+        if isinstance(data, list):
+            data = data[0] if data else None
+        if not isinstance(data, dict) or not data:
+            return {"ok": False, "message": "API-Football ответил без сведений о статусе аккаунта."}
+        subscription = data.get("subscription")
+        if isinstance(subscription, dict) and subscription.get("active") is False:
+            return {"ok": False, "message": "Ключ распознан, но подписка API-Football не активна."}
+        usage = data.get("requests") if isinstance(data.get("requests"), dict) else {}
+        def _int_or_none(value):
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+        return {
+            "ok": True,
+            "message": "API-Football принял ключ. Подключение подтверждено.",
+            "requests_current": _int_or_none(usage.get("current")),
+            "requests_limit": _int_or_none(usage.get("limit_day")),
+        }
 from data.sources import (
     parse_date, fdorg_match_result, highlightly_connection_check,
     sstats_account_check, sstats_match_statistics, sstats_find_match_id,
