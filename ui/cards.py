@@ -242,7 +242,10 @@ def render_verdict_card(c: dict, thr: float) -> str:
     conf = v.get("confidence", "средняя")
     cc = v.get("conf_color", "#fbbf24")
     reasons = v.get("reasons", [])
-    is_action = v.get("is_action", False)
+    is_action = bool(
+        v.get("is_action", False)
+        and (c.get("context_quality") or {}).get("strong_value_eligible")
+    )
     alt = v.get("alternatives", [])
 
     parts = c.get("match", "— vs —").split(" vs ")
