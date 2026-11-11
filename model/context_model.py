@@ -57,7 +57,9 @@ def assess_context_quality(context: dict | None) -> dict:
         referee.get("is_confirmed") and str(referee.get("name") or "").strip()
     ) and referee_reliability_ok
     injuries_confirmed = bool(context.get("injuries_is_confirmed"))
-    injuries_reliability_ok, injuries_reliability_known = _reliability_ok(context)
+    injuries_reliability_ok, injuries_reliability_known = _reliability_ok({
+        "source_reliability": context.get("injuries_source_reliability")
+    })
     injuries_confirmed = injuries_confirmed and injuries_reliability_ok
     core_complete = lineup_confirmed and referee_confirmed
     reliability_calibrated = (
