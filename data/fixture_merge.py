@@ -57,6 +57,22 @@ def merge_fixture_sources(*sources) -> list:
                 continue
             current = merged[key]
 
+            # Women's metadata is safety-critical: a later, explicit women feed
+            # upgrades an earlier generic provider row, never the reverse.
+            if bool(row.get("women")) or str(row.get("Div") or "").upper().startswith("W_"):
+                current["women"] = True
+                current["gender_known"] = True
+                current["kind"] = "women"
+                current["gender_evidence"] = (
+                    row.get("gender_evidence") or row.get("League") or "women competition"
+                )
+                incoming_women_div = str(row.get("Div") or "")
+                if incoming_women_div.upper().startswith("W_"):
+                    current["Div"] = incoming_women_div
+                incoming_women_league = row.get("League") or row.get("league")
+                if incoming_women_league:
+                    current["League"] = incoming_women_league
+
             # A generic first-provider label must not mask a precise competition
             # supplied later (e.g. TSDB "Soccer" followed by SStats "Eredivisie").
             # The historical corners/cards model is indexed by Div, so keeping
@@ -76,6 +92,12 @@ def merge_fixture_sources(*sources) -> list:
                     current["league"] = incoming_league
 
             for name, value in row.items():
+                if name == "women" and current.get("women") is True:
+                    continue
+                if name == "kind" and current.get("kind") == "women":
+                    continue
+                if name == "gender_known" and current.get("gender_known") is True:
+                    continue
                 if current.get(name) in (None, "", {}, []) and value not in (None, "", {}, []):
                     current[name] = value
     return [merged[key] for key in order]
