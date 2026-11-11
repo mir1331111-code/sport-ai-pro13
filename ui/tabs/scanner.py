@@ -2106,6 +2106,164 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "В этом сканировании нет матчей, прошедших все условия TOP MATCHES. "
                     "Список не заполняется слабыми событиями искусственно."
                 )
+
+            refresh_top_dossiers = st.button(
+                "🔄 Обновить SStats-досье и повторить анализ Groq",
+                key="top_matches_refresh_sstats_groq",
+                disabled=not bool(top_match_candidates),
+                help=(
+                    "Повторно проверяет составы, травмы и судью только у выбранных "
+                    "матчей, затем отправляет Groq один пакетный запрос."
+                ),
+            )
+            if refresh_top_dossiers:
+                refresh_sstats_key = _runtime_secret(
+                    "sstats_api_key_input", "SSTATS_API_KEY", "sstats_api_key"
+                )
+                refresh_llm_key = _runtime_secret(
+                    "llm_api_key_input", "LLM_API_KEY", "llm_api_key"
+                )
+                if not refresh_sstats_key:
+                    st.error("Для обновления досье не найден ключ SStats.")
+                elif not refresh_llm_key:
+                    st.error("Для подробного анализа Groq не задан LLM key.")
+                elif usage.llm_remaining() <= 0:
+                    st.error("Дневной лимит LLM исчерпан.")
+                else:
+                    with st.spinner(
+                        f"Обновляю SStats и отправляю Groq до {len(top_match_candidates)} матчей одним пакетом…"
+                    ):
+                        refresh_now = datetime.now(app_timezone())
+                        refresh_rows = []
+                        refresh_lookup = {}
+                        for item in top_match_candidates:
+                            refresh_card = item["card"]
+                            if refresh_card.get("sstats_game_id") in (None, ""):
+                                continue
+                            home_name = str(refresh_card.get("home_team") or "")
+                            away_name = str(refresh_card.get("away_team") or "")
+                            date_key = str(refresh_card.get("date_iso") or "")[:10]
+                            refresh_key = fixture_row_key(
+                                home_name, away_name, date_key
+                            )
+                            refresh_rows.append({
+                                "Date": (
+                                    f"{date_key} {refresh_card.get('time') or ''}"
+                                ).strip(),
+                                "date_iso": date_key,
+                                "kickoff_utc": refresh_card.get("kickoff_utc") or "",
+                                "HomeTeam": home_name,
+                                "AwayTeam": away_name,
+                                "sstats_game_id": refresh_card.get("sstats_game_id"),
+                            })
+                            refresh_lookup[refresh_key] = refresh_card
+
+                        refreshed_contexts = {}
+                        refresh_logs = []
+                        if refresh_rows:
+                            offset = refresh_now.utcoffset()
+                            offset_hours = (
+                                int(round(offset.total_seconds() / 3600))
+                                if offset else 0
+                            )
+                            try:
+                                refreshed_contexts, refresh_logs = sstats_context_enrich(
+                                    refresh_rows,
+                                    refresh_sstats_key,
+                                    date_from=refresh_now.date().isoformat(),
+                                    date_to=(
+                                        refresh_now.date() + timedelta(days=days - 1)
+                                    ).isoformat(),
+                                    now=refresh_now,
+                                    max_injury_checks=MAX_TOP_MATCHES,
+                                    max_lineup_checks=MAX_TOP_MATCHES,
+                                    timezone_offset=offset_hours,
+                                )
+                            except Exception as exc:
+                                refresh_logs.append(
+                                    f"SStats refresh error: {type(exc).__name__}"
+                                )
+                        elif not refresh_rows:
+                            refresh_logs.append(
+                                "SStats game IDs отсутствуют; обновить досье невозможно."
+                            )
+
+                        refresh_dossiers = []
+                        refresh_cards_by_id = {}
+                        for rank, item in enumerate(top_match_candidates, start=1):
+                            refresh_card = item["card"]
+                            home_name = str(refresh_card.get("home_team") or "")
+                            away_name = str(refresh_card.get("away_team") or "")
+                            date_key = str(refresh_card.get("date_iso") or "")[:10]
+                            refresh_key = fixture_row_key(
+                                home_name, away_name, date_key
+                            )
+                            refresh_card["deep_analysis_context"] = merge_context_snapshots(
+                                refresh_card.get("deep_analysis_context")
+                                or refresh_card.get("api_context") or {},
+                                refreshed_contexts.get(refresh_key)
+                                if isinstance(refreshed_contexts.get(refresh_key), dict)
+                                else {},
+                            )
+                            dossier = build_match_dossier(refresh_card)
+                            dossier["shortlist_rank"] = rank
+                            refresh_dossiers.append(dossier)
+                            refresh_cards_by_id[dossier["fixture_id"]] = refresh_card
+
+                        try:
+                            refreshed_analyses = analyze_top_matches({
+                                "api_key": refresh_llm_key,
+                                "provider": D.get("meta", {}).get(
+                                    "llm_provider", "Groq (бесплатно, быстро)"
+                                ),
+                                "model": D.get("meta", {}).get("llm_model", ""),
+                                "candidates": refresh_dossiers,
+                            })
+                        except LLMRateLimitError as exc:
+                            refreshed_analyses = {}
+                            refresh_logs.append(
+                                "Groq rate limit: "
+                                + (
+                                    f"retry after {exc.retry_after_seconds:.0f}s"
+                                    if exc.retry_after_seconds is not None
+                                    else "лимит провайдера"
+                                )
+                            )
+                        for fixture_id, analysis in refreshed_analyses.items():
+                            refresh_card = refresh_cards_by_id.get(fixture_id)
+                            if not refresh_card:
+                                continue
+                            model_pick = max(
+                                (("П1", float(refresh_card.get("p1") or 0.0)),
+                                 ("X", float(refresh_card.get("px") or 0.0)),
+                                 ("П2", float(refresh_card.get("p2") or 0.0))),
+                                key=lambda pair: pair[1],
+                            )[0]
+                            refresh_card["deep_analysis"] = analysis
+                            refresh_card["llm_opinion"] = format_top_match_opinion(
+                                analysis, model_pick_code=model_pick
+                            )
+                            refresh_card["deep_analysis_fixture_id"] = fixture_id
+
+                        updated_data = dict(D)
+                        updated_data["cards"] = all_cards
+                        updated_report = list(D.get("report") or [])
+                        updated_report.extend(
+                            "🏆 TOP refresh: " + str(line) for line in refresh_logs
+                        )
+                        updated_report.append(
+                            f"🏆 TOP refresh: Groq получил {len(refreshed_analyses)}/"
+                            f"{len(refresh_dossiers)} досье."
+                        )
+                        updated_data["report"] = updated_report[-150:]
+                        st.session_state.data = updated_data
+                        usage.set_local_data(updated_data)
+                        st.success(
+                            f"Досье обновлены; Groq вернул {len(refreshed_analyses)} "
+                            f"из {len(refresh_dossiers)} разборов."
+                        )
+                        st.rerun()
+
             for rank, favorite_item in enumerate(top_match_candidates, start=1):
                 card = favorite_item["card"]
                 analysis = card.get("deep_analysis") or {}
