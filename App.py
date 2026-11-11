@@ -177,7 +177,10 @@ SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)
 RETRY_EVERY = timedelta(minutes=60)
 STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 20
-SECRET_KEYS = ("fdorg_token", "highlightly_api_key", "sstats_api_key", "footballapi_key", "llm_api_key")
+SECRET_KEYS = (
+    "fdorg_token", "highlightly_api_key", "sstats_api_key",
+    "footballapi_key", "api_football_key", "llm_api_key",
+)
 
 
 def _configured_secret(*keys):
@@ -810,6 +813,13 @@ with st.sidebar:
         value=_api_key_default("footballapi_key", "FOOTBALLAPI_KEY", "footballapi_key"),
         type="password", key="footballapi_key_input",
         help="Даёт xG обеих команд для завершённых матчей текущего сезона Премьер-лиги. Бесплатный тариф: 50 запросов в день.")
+
+    api_football_key = st.text_input(
+        "API-Football key (составы · травмы · дисквалификации · судьи)",
+        value=_api_key_default("api_football_key", "API_FOOTBALL_KEY", "api_football_key"),
+        type="password", key="api_football_key_input",
+        help="Вводится здесь, в панели API-ключей. Сохраняется в приватном локальном хранилище вместе с остальными ключами и автоматически используется сканером."
+    )
     if st.button("🔎 Проверить подключение xG Football API", key="check_footballapi_xg",
                  use_container_width=True):
         with st.spinner("Проверяю ключ и дневную квоту Football API…"):
@@ -866,6 +876,7 @@ with st.sidebar:
         "highlightly_api_key": ("highlightly_api_key_input", ("HIGHLIGHTLY_API_KEY",), ("HIGHLIGHTLY_API_KEY", "highlightly_api_key")),
         "sstats_api_key": ("sstats_api_key_input", ("SSTATS_API_KEY",), ("SSTATS_API_KEY", "sstats_api_key")),
         "footballapi_key": ("footballapi_key_input", ("FOOTBALLAPI_KEY",), ("FOOTBALLAPI_KEY", "footballapi_key")),
+        "api_football_key": ("api_football_key_input", ("API_FOOTBALL_KEY",), ("API_FOOTBALL_KEY", "api_football_key")),
         "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
     }
     _user_entered_keys = {}

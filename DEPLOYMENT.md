@@ -7,15 +7,11 @@ The app entry point is `App.py`. It is a Streamlit application and the repositor
 1. Open [share.streamlit.io](https://share.streamlit.io/) and switch to the GitHub workspace for `mir1331111-code`.
 2. Select **Create app** (or manage the existing app connected to this repository).
 3. Choose repository `mir1331111-code/sport-ai-pro13`, branch `main`, and main file path `App.py`.
-4. In **Advanced settings → Secrets**, add the API key securely. Do not commit secrets to GitHub:
+4. Open the app. In the left sidebar, expand **🔑 API ключи** and paste your API-Football key into **API-Football key (составы · травмы · дисквалификации · судьи)**. The app saves UI-entered credentials in the private, git-ignored `.neuro_secrets.json` file with owner-only permissions. You do **not** need to edit Streamlit Secrets or repository files to enter the key.
 
-```toml
-API_FOOTBALL_KEY = "YOUR_API_FOOTBALL_KEY"
-```
+5. Run the scanner. It automatically reads the key from the sidebar; there is no second API-Football key field inside the scanner.
 
-5. Save and deploy. For an existing app, add the secret under **Manage app → Settings → Secrets**, save, and reboot the app.
-
-Streamlit Community Cloud reads `requirements.txt` and installs the Python dependencies. Once deployed, pushes to the connected GitHub branch are reflected in the app; dependency changes trigger a full redeploy.
+Streamlit Community Cloud reads `requirements.txt` and installs the Python dependencies. Once deployed, pushes to the connected GitHub branch are reflected in the app; dependency changes trigger a full redeploy. On hosts with ephemeral filesystems, a provider or host restart may clear the local key file; in that case paste the key into the same sidebar field again.
 
 ## API-Football limits
 

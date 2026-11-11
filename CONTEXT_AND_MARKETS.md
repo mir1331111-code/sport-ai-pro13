@@ -4,7 +4,7 @@ This branch adds a pre-match context pipeline while keeping the existing Base mo
 
 ## API-Football live provider
 
-Set `API_FOOTBALL_KEY` in the host environment or Streamlit Secrets. The scanner also has a password input for a session-only key. Do not commit API keys.
+Enter the API-Football key in the main app sidebar under **🔑 API ключи**. The existing UI credential manager persists it in the private, git-ignored `.neuro_secrets.json` file; no Streamlit Secrets or environment editing is required. Do not commit API keys.
 
 The provider:
 - makes one fixtures request for the requested date range and matches fixtures by local date plus normalized home/away teams;

@@ -1139,13 +1139,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
 
         st.markdown("**Контекст матча · API-Football + исторический CSV**")
-        st.text_input(
-            "API-Football API key (можно также задать через API_FOOTBALL_KEY)",
-            value=_runtime_secret("api_football_key_input", "API_FOOTBALL_KEY", "api_football_key"),
-            type="password",
-            key="api_football_key_input",
-            help="Ключ хранится только в настройках среды/текущей Streamlit-сессии; код и журнал его не сохраняют.",
-        )
+        st.caption("🔑 API-Football key берётся из боковой панели «API ключи»; отдельный повторный ввод здесь не требуется.")
         context_csv_file = st.file_uploader(
             "Исторический архив составов/судей (.csv)",
             type=["csv"],
