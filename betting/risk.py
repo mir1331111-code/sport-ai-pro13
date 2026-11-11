@@ -44,9 +44,16 @@ def _same_fixture(left: dict[str, Any], right: dict[str, Any]) -> bool:
     left_date, right_date = str(left.get("date_iso") or "")[:10], str(right.get("date_iso") or "")[:10]
     if left_date and right_date and left_date != right_date:
         return False
-    left_div = str(left.get("div") or left.get("league") or "").strip().casefold()
-    right_div = str(right.get("div") or right.get("league") or "").strip().casefold()
-    return not (left_div and right_div and left_div != right_div)
+    left_div = str(left.get("div") or "").strip().casefold()
+    right_div = str(right.get("div") or "").strip().casefold()
+    if left_div and right_div and left_div != right_div:
+        return False
+    if not left_div and not right_div:
+        left_league = str(left.get("league") or "").strip().casefold()
+        right_league = str(right.get("league") or "").strip().casefold()
+        if left_league and right_league and left_league != right_league:
+            return False
+    return True
 
 
 def _market_family(market: object, pick: object) -> str:
