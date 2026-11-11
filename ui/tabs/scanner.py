@@ -17,7 +17,7 @@ import streamlit as st
 
 from config import (
     APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE,
-    DISK_CACHE_DIR, STRONG_FORECAST_MIN_PROB,
+    STRONG_FORECAST_MIN_PROB,
 )
 from storage import usage
 from storage import sqlite_store as db
@@ -2098,9 +2098,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         sstats_key = _runtime_secret("sstats_api_key_input", "SSTATS_API_KEY", "sstats_api_key")
         footballapi_key = _runtime_secret(
             "footballapi_key_input", "FOOTBALLAPI_KEY", "footballapi_key"
-        )
-        api_football_key = _runtime_secret(
-            "api_football_key_input", "API_FOOTBALL_KEY", "api_football_key"
         )
         fixture_sources = []
         tsdb_rows = []
