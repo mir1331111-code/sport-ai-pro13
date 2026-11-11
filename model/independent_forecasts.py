@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger, OUTCOMES
+from model.engine import team_history_key
 
 
 def _mean(values: list[Any]) -> float | None:
@@ -29,11 +30,16 @@ def _mean(values: list[Any]) -> float | None:
     return sum(clean) / len(clean) if clean else None
 
 
-def historical_features(engine: Any, home: str, away: str, limit: int = 8) -> dict[str, Any]:
-    """Build LLM features from observed same-venue goals, not the main model's xG lambdas."""
+def historical_features(
+    engine: Any, home: str, away: str, limit: int = 8,
+    division: str | None = None,
+) -> dict[str, Any]:
+    """Build same-venue features inside the correct men's/women's history namespace."""
     teams = getattr(engine, "st", {})
-    home_stats = teams.get(home, {}) if hasattr(teams, "get") else {}
-    away_stats = teams.get(away, {}) if hasattr(teams, "get") else {}
+    home_key = team_history_key(home, division)
+    away_key = team_history_key(away, division)
+    home_stats = teams.get(home_key, {}) if hasattr(teams, "get") else {}
+    away_stats = teams.get(away_key, {}) if hasattr(teams, "get") else {}
     hs = list(home_stats.get("hs") or [])[-limit:]
     hc = list(home_stats.get("hc") or [])[-limit:]
     ass = list(away_stats.get("as") or [])[-limit:]
