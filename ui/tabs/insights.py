@@ -11,6 +11,7 @@ import streamlit as st
 from config import APP_VERSION, DB_FILE
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger
 from model.quality_control import assess_fixture_quality, portfolio_risk_report
+from data.competition import competition_gender
 from storage import sqlite_store as db
 
 
@@ -348,15 +349,16 @@ def _binary_metrics(rows: list[dict]) -> dict[str, Any]:
     valid = []
     for row in rows:
         try:
-            probability = float(row.get("probability"))
             result = str(row.get("result") or "")
-            if result not in {"H", "D", "A"} or not 0 <= probability <= 1:
+            if result not in {"H", "D", "A"}:
                 continue
             probs = row.get("probabilities") or {}
-            p = float(probs[result])
-            if not math_is_finite(p):
+            normalized = {key: float(probs[key]) for key in ("H", "D", "A")}
+            if any(not 0 <= value <= 1 or not math_is_finite(value) for value in normalized.values()):
                 continue
-            valid.append((probs, result))
+            if abs(sum(normalized.values()) - 1.0) > 1e-6:
+                continue
+            valid.append((normalized, result))
         except (TypeError, ValueError, KeyError):
             continue
     if not valid:
@@ -380,8 +382,8 @@ def math_is_finite(value: Any) -> bool:
 
 def _feature_groups(rows: list[dict]) -> list[dict]:
     definitions = (
-        ("XG отмечен", lambda row, feature: row.get("xg_used") is True),
-        ("XG не использован", lambda row, feature: row.get("xg_used") is False),
+        ("XG отмечен", lambda row, feature: row.get("xg_used") in (1, True)),
+        ("XG не использован", lambda row, feature: row.get("xg_used") in (0, False)),
         ("Оба состава подтверждены", lambda row, feature: bool(feature.get("lineup_home_confirmed") and feature.get("lineup_away_confirmed"))),
         ("Нет двух подтверждённых составов", lambda row, feature: not bool(feature.get("lineup_home_confirmed") and feature.get("lineup_away_confirmed"))),
         ("Судья указан", lambda row, feature: bool(feature.get("referee_present"))),
