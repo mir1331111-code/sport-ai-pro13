@@ -1239,11 +1239,12 @@ def _sstats_context_injuries(payload):
     if data is None:
         return []
     if isinstance(data, dict):
+        collected = []
         for field in ("injuries", "players", "home", "away", "items", "results"):
             value = data.get(field)
             if isinstance(value, list):
-                data = value
-                break
+                collected.extend(value)
+        data = collected
     if not isinstance(data, list):
         return []
     result = []
@@ -1342,6 +1343,12 @@ def sstats_context_enrich(
             ttl=1800,
         )
         ls_records = _sstats_context_data(ls_payload)
+        if isinstance(ls_records, dict):
+            ls_records = next(
+                (ls_records.get(field) for field in ("games", "matches", "events", "items", "results")
+                 if isinstance(ls_records.get(field), list)),
+                [],
+            )
         if isinstance(ls_records, list):
             for event in ls_records:
                 match_key, external_id = _sstats_ls_event_key(event)
