@@ -31,6 +31,11 @@ def _date_key(row):
     return str(row.get("Date", ""))
 
 
+def _referee_state_key(league, referee):
+    code = str(league or "G").strip().upper() or "G"
+    return referee if code == "G" else (code, referee)
+
+
 class HistoricalMatchStats:
     """Online, chronological rates; call predict before learn_step for each match."""
     def __init__(self, min_team_games=4):
@@ -96,7 +101,7 @@ class HistoricalMatchStats:
             for league, count in (state.get("trained_matches") or {}).items()
         })
         self.referees.update({
-            str(name): list(values)
+            name if isinstance(name, tuple) else str(name): list(values)
             for name, values in (state.get("referees") or {}).items()
         })
         for league, states in (state.get("corners_halftime_state") or {}).items():
@@ -142,7 +147,7 @@ class HistoricalMatchStats:
                     row.get("Referee") or row.get("referee_id") or row.get("referee") or ""
                 ).strip().casefold()
                 if referee:
-                    self.referees[referee].append(h + a)
+                    self.referees[_referee_state_key(league, referee)].append(h + a)
 
             if market == "corners":
                 half_home = _num(row.get("HTHG"))
@@ -220,7 +225,7 @@ class HistoricalMatchStats:
             }
             if market == "cards" and referee_id:
                 referee_key = str(referee_id).strip().casefold()
-                referee_values = self.referees.get(referee_key, [])
+                referee_values = self.referees.get(_referee_state_key(league, referee_key), [])
                 referee_n = len(referee_values)
                 if referee_n >= 5:
                     referee_mean = sum(referee_values) / referee_n
