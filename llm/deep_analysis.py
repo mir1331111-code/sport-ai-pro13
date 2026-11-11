@@ -37,7 +37,9 @@ def _number(value: object) -> float | None:
 
 
 def _complete_1x2_prices(card: dict) -> bool:
-    """Require three real prices; this is a research-candidate gate, not a Value gate."""
+    """Require an SStats fixture ID and three real prices; this is not a Value gate."""
+    if card.get("sstats_game_id") in (None, ""):
+        return False
     prices = card.get("market_odds") or {}
     source = str(card.get("odds_source") or "").strip().casefold()
     if source in {"", "no_market", "model_only", "unknown"}:
@@ -300,6 +302,7 @@ def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
         },
         "sstats_context": {
             "provider": str(context.get("provider") or "sstats"),
+            "sstats_game_id": str(card.get("sstats_game_id") or context.get("sstats_game_id") or ""),
             "event_id_resolved": bool(context.get("sstats_event_id")),
             "kickoff_at": str(context.get("kickoff_at") or card.get("kickoff_utc") or "")[:40],
             "lineup": {
