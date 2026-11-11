@@ -18,7 +18,7 @@ class CompetitionIsolationTests(unittest.TestCase):
             )
 
         women = model.predict("Same Team", "Other Team", "W_E0", match_date="2025-01-01")
-        men's = model.predict("Same Team", "Other Team", "E0", match_date="2025-01-01")
+        men = model.predict("Same Team", "Other Team", "E0", match_date="2025-01-01")
         untouched_mens = other_comp.predict(
             "Same Team", "Other Team", "E0", match_date="2025-01-01"
         )
