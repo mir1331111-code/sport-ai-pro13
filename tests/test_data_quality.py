@@ -60,6 +60,10 @@ class DataQualityTests(unittest.TestCase):
         card = self.full_card()
         card["api_context"]["api_status"] = "unavailable"
         card["api_context"]["lineup"]["status"] = "unavailable"
+        card["api_context"]["lineup"]["home"]["confirmed"] = False
+        card["api_context"]["lineup"]["away"]["confirmed"] = False
+        card["api_context"]["lineup"]["home"]["starting_xi"] = []
+        card["api_context"]["lineup"]["away"]["starting_xi"] = []
         card["api_context"]["referee"]["status"] = "unavailable"
         card["api_context"]["injuries_is_confirmed"] = False
         card["api_context"]["injuries_status"] = "unavailable"
