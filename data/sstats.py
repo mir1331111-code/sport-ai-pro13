@@ -1101,7 +1101,7 @@ def _sstats_context_data(payload):
 
 def _sstats_context_name(value):
     if isinstance(value, dict):
-        for field in ("name", "playerName", "fullName", "shortName", "displayName", "title"):
+        for field in ("name", "teamName", "team_name", "participantName", "playerName", "player_name", "fullName", "shortName", "displayName", "title"):
             candidate = value.get(field)
             if candidate not in (None, "") and not isinstance(candidate, (dict, list)):
                 return str(candidate).strip()
@@ -1250,6 +1250,18 @@ def _sstats_context_side_lineup(payload, side: str, team_name: str):
                     return found
         return []
     return _find_team(data)
+
+
+def _sstats_context_injuries_confirmed(data):
+    """Only treat a documented list payload as a confirmed injury-feed response."""
+    if isinstance(data, list):
+        return True
+    if isinstance(data, dict):
+        return any(
+            isinstance(data.get(field), list)
+            for field in ("injuries", "players", "home", "away", "items", "results")
+        )
+    return False
 
 
 def _sstats_context_injuries(payload):
@@ -1445,11 +1457,17 @@ def sstats_context_enrich(
                     {"gameId": row.get("sstats_game_id")}, ttl=4 * 60 * 60,
                 )
                 injury_data = _sstats_context_data(injury_payload)
+                injuries_confirmed = _sstats_context_injuries_confirmed(injury_data)
                 context["injuries"] = _sstats_context_injuries(injury_payload)
-                context["injuries_is_confirmed"] = injury_data is not None
-                context["injuries_timestamp"] = current_utc.isoformat() if injury_data is not None else None
-                injury_checked += int(injury_data is not None)
+                context["injuries_is_confirmed"] = injuries_confirmed
+                context["injuries_timestamp"] = current_utc.isoformat() if injuries_confirmed else None
+                injury_checked += int(injuries_confirmed)
                 injury_found += len(context["injuries"])
+                if not injuries_confirmed:
+                    logs.append(
+                        f"ℹ️ SStats injuries game={row.get('sstats_game_id')}: "
+                        "структура ответа не подтверждает полный injury feed."
+                    )
             except Exception as exc:
                 logs.append(
                     f"⚠️ SStats injuries game={row.get('sstats_game_id')}: {type(exc).__name__}"
