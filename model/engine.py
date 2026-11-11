@@ -7,6 +7,7 @@ import unicodedata
 from collections import defaultdict
 
 from model.calibration import PlattCalibrator
+from data.competition import competition_gender, model_team_identity
 from model.temporal import days_since_last_match, estimate_dixon_coles_rho, weighted_mean
 
 
@@ -366,31 +367,51 @@ class Engine:
             else (1 if hg == ag else 0)
         )
 
-        self.hg.append(hg)
-        self.ag.append(ag)
-        self.hg_dates.append(stamp)
-        self.ag_dates.append(stamp)
-
         if isinstance(row, dict):
-            div = row.get("Div") or "G"
+            div = str(row.get("Div") or "G")
+            model_group = str(row.get("model_group") or (
+                "women" if str(h).startswith("women::")
+                else "unknown" if str(h).startswith("unknown::")
+                else "men"
+            ))
         else:
             div = "G"
+            model_group = (
+                "women" if str(h).startswith("women::")
+                else "unknown" if str(h).startswith("unknown::")
+                else "men"
+            )
+        # Keep each population isolated. A sparse women's league borrows only
+        # from other women's fixtures, never from the men's/global goal average.
+        population_div = {
+            "women": "W_ALL", "unknown": "UNK_ALL",
+        }.get(model_group, "MEN_ALL")
+        if model_group == "men":
+            self.hg.append(hg)
+            self.ag.append(ag)
+            self.hg_dates.append(stamp)
+            self.ag_dates.append(stamp)
 
-        self.lg_hg[div].append(hg)
-        self.lg_ag[div].append(ag)
-        self.lg_hg_dates[div].append(stamp)
-        self.lg_ag_dates[div].append(stamp)
-        if home_xg is not None and away_xg is not None:
-            self.lg_hxg[div].append(home_xg)
-            self.lg_axg[div].append(away_xg)
-            self.lg_hxg_dates[div].append(stamp)
-            self.lg_axg_dates[div].append(stamp)
-            self.lg_hxg[div] = self.lg_hxg[div][-500:]
-            self.lg_axg[div] = self.lg_axg[div][-500:]
-            self.lg_hxg_dates[div] = self.lg_hxg_dates[div][-500:]
-            self.lg_axg_dates[div] = self.lg_axg_dates[div][-500:]
-        self.league_scores[div].append((stamp, hg, ag))
-        self.league_scores[div] = self.league_scores[div][-500:]
+        for bucket in (div, population_div):
+            self.lg_hg[bucket].append(hg)
+            self.lg_ag[bucket].append(ag)
+            self.lg_hg_dates[bucket].append(stamp)
+            self.lg_ag_dates[bucket].append(stamp)
+            self.lg_hg[bucket] = self.lg_hg[bucket][-1000:]
+            self.lg_ag[bucket] = self.lg_ag[bucket][-1000:]
+            self.lg_hg_dates[bucket] = self.lg_hg_dates[bucket][-1000:]
+            self.lg_ag_dates[bucket] = self.lg_ag_dates[bucket][-1000:]
+            if home_xg is not None and away_xg is not None:
+                self.lg_hxg[bucket].append(home_xg)
+                self.lg_axg[bucket].append(away_xg)
+                self.lg_hxg_dates[bucket].append(stamp)
+                self.lg_axg_dates[bucket].append(stamp)
+                self.lg_hxg[bucket] = self.lg_hxg[bucket][-500:]
+                self.lg_axg[bucket] = self.lg_axg[bucket][-500:]
+                self.lg_hxg_dates[bucket] = self.lg_hxg_dates[bucket][-500:]
+                self.lg_axg_dates[bucket] = self.lg_axg_dates[bucket][-500:]
+            self.league_scores[bucket].append((stamp, hg, ag))
+            self.league_scores[bucket] = self.league_scores[bucket][-500:]
 
         # ---------------------------------------------------------
         # H2H
@@ -501,46 +522,39 @@ class Engine:
         # Лиговые средние
         # ---------------------------------------------------------
 
+        model_group = (
+            "women" if str(h).startswith("women::")
+            else "unknown" if str(h).startswith("unknown::")
+            else "men"
+        )
+        population_div = {
+            "women": "W_ALL", "unknown": "UNK_ALL",
+        }.get(model_group, "MEN_ALL")
         if len(self.lg_hg.get(lg, [])) >= 20:
-            lh_g = max(
-                0.05,
-                self._m(
-                    self.lg_hg[lg],
-                    1.5,
-                    self.lg_hg_dates[lg],
-                    match_date,
-                ),
-            )
-
-            la_g = max(
-                0.05,
-                self._m(
-                    self.lg_ag[lg],
-                    1.2,
-                    self.lg_ag_dates[lg],
-                    match_date,
-                ),
-            )
+            rate_div = lg
+        elif len(self.lg_hg.get(population_div, [])) >= 20:
+            rate_div = population_div
         else:
-            lh_g = max(
-                0.05,
-                self._m(
-                    self.hg,
-                    1.5,
-                    self.hg_dates,
-                    match_date,
-                ),
-            )
+            rate_div = ""
 
-            la_g = max(
-                0.05,
-                self._m(
-                    self.ag,
-                    1.2,
-                    self.ag_dates,
-                    match_date,
-                ),
-            )
+        if rate_div:
+            lh_g = max(0.05, self._m(
+                self.lg_hg[rate_div], 1.5, self.lg_hg_dates[rate_div], match_date,
+            ))
+            la_g = max(0.05, self._m(
+                self.lg_ag[rate_div], 1.2, self.lg_ag_dates[rate_div], match_date,
+            ))
+        else:
+            # No valid same-population baseline exists yet. Use neutral priors;
+            # never substitute a men's/global mean for women's or unknown fixtures.
+            lh_g, la_g = 1.5, 1.2
+
+        if len(self.lg_hxg.get(lg, [])) >= 30:
+            xg_rate_div = lg
+        elif len(self.lg_hxg.get(population_div, [])) >= 30:
+            xg_rate_div = population_div
+        else:
+            xg_rate_div = ""
 
         sh = self.st[h]
         sa = self.st[a]
@@ -573,12 +587,14 @@ class Engine:
         xg_away_samples = len(sa["as_xg"])
         league_home_xg = None
         league_away_xg = None
-        league_xg_n = len(self.lg_hxg.get(lg, []))
+        league_xg_n = len(self.lg_hxg.get(xg_rate_div, [])) if xg_rate_div else 0
         if league_xg_n >= 30:
             league_home_xg = self._m(
-                self.lg_hxg[lg], lh_g, self.lg_hxg_dates[lg], match_date)
+                self.lg_hxg[xg_rate_div], lh_g,
+                self.lg_hxg_dates[xg_rate_div], match_date)
             league_away_xg = self._m(
-                self.lg_axg[lg], la_g, self.lg_axg_dates[lg], match_date)
+                self.lg_axg[xg_rate_div], la_g,
+                self.lg_axg_dates[xg_rate_div], match_date)
 
         def blend_strength(goal_strength, values, dates, league_xg):
             nonlocal xg_used
@@ -708,16 +724,20 @@ class Engine:
 
         # Мемоизация: история меняется только в add(), поэтому
         # оценка rho не должна пересчитываться на каждый predict.
+        rho_div = (
+            lg if len(self.league_scores.get(lg, [])) >= 80
+            else population_div
+        )
         rho_cache_key = (
-            lg,
-            len(self.league_scores.get(lg, [])),
+            rho_div,
+            len(self.league_scores.get(rho_div, [])),
             str(match_date)[:10] if match_date is not None else "",
         )
         rho = self._rho_cache.get(rho_cache_key)
         if rho is None:
             rho = (
                 estimate_dixon_coles_rho(
-                    self.league_scores.get(lg, []),
+                    self.league_scores.get(rho_div, []),
                     lh_g,
                     la_g,
                     prior_rho=P0["rho"],
@@ -861,6 +881,11 @@ class Engine:
 
         row = dict(item.get("row") or {})
         row["Div"] = item.get("league") or "G"
+        row["model_group"] = item.get("model_group") or (
+            "women" if str(item.get("home") or "").startswith("women::")
+            else "unknown" if str(item.get("home") or "").startswith("unknown::")
+            else "men"
+        )
         self.add(
             item["home"], item["away"], hg, ag, row,
             match_num=item.get("match_num"),
@@ -898,14 +923,22 @@ class Engine:
             ):
                 raise ValueError("completed scores must be finite non-negative integers")
             league = str(item.get("league") or "G")
+            row_data = item.get("row") if isinstance(item.get("row"), dict) else {}
+            gender = competition_gender(
+                division=league, league=row_data.get("League"),
+                women_flag=row_data.get("women"), home=home, away=away,
+            )
+            model_home = model_team_identity(home, gender=gender)
+            model_away = model_team_identity(away, gender=gender)
             prediction = self.predict(
-                home, away, league,
+                model_home, model_away, league,
                 match_date=item.get("match_date"),
                 cup=is_cup(league),
             )
             clean = dict(item)
             clean.update({
-                "home": home, "away": away,
+                "home": model_home, "away": model_away,
+                "model_group": gender,
                 "home_goals": int(hg), "away_goals": int(ag),
                 "league": league,
             })
