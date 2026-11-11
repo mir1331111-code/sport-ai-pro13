@@ -33,7 +33,7 @@ class PortfolioRiskTests(unittest.TestCase):
              "match": "E vs F", "league": "League B"},
         ]
         report = portfolio_risk_report(
-            bets, bank=1000, limits={"portfolio_pct": 10},
+            bets, bank=1000, limits={"portfolio_pct": 10, "league_pct": 10},
         )
         messages = " ".join(report["alerts"])
         self.assertIn("Общая открытая экспозиция", messages)
