@@ -549,7 +549,7 @@ def _tsdb_league_meta(league_name: str):
     if "scottish" in ln or "scotland" in ln:
         return ("SC_", "club", False, False)
     # Австралия
-    if "a-league" in ln or "a league" in ln or "australia" in ln:
+    if re.search(r"\\ba[- ]league\\b", ln) or "australia" in ln:
         return ("AU_", "club", False, False)
     # Япония
     if "j1" in ln or "j-league" in ln or "jleague" in ln or "japan" in ln:
