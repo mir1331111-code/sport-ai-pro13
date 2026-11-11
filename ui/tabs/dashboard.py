@@ -4,10 +4,12 @@ from __future__ import annotations
 import html
 import math
 from collections import Counter
+from datetime import datetime
 
 import streamlit as st
 from betting.ranking import model_favorite
 from betting.risk import risk_snapshot, MAX_MARKET_STAKE_PCT, MAX_MATCH_EXPOSURE_PCT, MAX_DAILY_EXPOSURE_PCT
+from data.fixture_time import app_timezone
 
 
 def esc(value):
@@ -175,7 +177,7 @@ def render():
         for b in closed
     )
     roi = profit / turnover * 100 if turnover else 0.0
-    risk = risk_snapshot(data.get("bank"), bets)
+    risk = risk_snapshot(data.get("bank"), bets, now=datetime.now(app_timezone()))
     priced = sum(has_prices(c) for c in cards)
     value = sum(
         bool(c.get("best") is not None
