@@ -152,7 +152,12 @@ class Engine:
         self.calib_logits: list = []
         self.calib_outcomes: list = []
 
-        self.calibrator = PlattCalibrator()
+        # Calibrators are segmented by gender; women's results never adjust men's probabilities.
+        self.calibrators = {"men": PlattCalibrator(), "women": PlattCalibrator()}
+        self.calibrator = self.calibrators["men"]  # backwards-compatible alias
+        self.calib_logits_by_group = {"men": [], "women": []}
+        self.calib_outcomes_by_group = {"men": [], "women": []}
+        self.calibration_match_count = {"men": 0, "women": 0}
 
         self.lp = defaultdict(_new_lp)
 
@@ -218,25 +223,25 @@ class Engine:
 
         return out or "—"
 
-    def calibrate(self, p: float, ci: int = 0) -> float:
-        return self.calibrator.calibrate(p, ci)
+    def calibrate(
+        self, p: float, ci: int = 0, division: str | None = None,
+    ) -> float:
+        group = "women" if str(division or "").upper().startswith("W_") else "men"
+        return self.calibrators[group].calibrate(p, ci)
 
-    def refit_calibrator(self) -> None:
-        """
-        Переобучаем калибратор только на уже сыгранных матчах.
-
-        В walk-forward текущий матч сначала получает prediction,
-        затем его результат добавляется в calib_*.
-        Поэтому будущие результаты не используются для текущего
-        прогноза.
-        """
-        if len(self.calib_logits) < 240:
-            return
-
-        self.calibrator.fit(
-            self.calib_logits[-6000:],
-            self.calib_outcomes[-6000:],
+    def refit_calibrator(self, division: str | None = None) -> None:
+        """Fit each gender calibrator only on its own earlier, settled match outcomes."""
+        groups = (
+            ("women",) if str(division or "").upper().startswith("W_")
+            else ("men",) if division is not None
+            else ("men", "women")
         )
+        for group in groups:
+            logits = self.calib_logits_by_group[group]
+            outcomes = self.calib_outcomes_by_group[group]
+            if len(logits) < 240:
+                continue
+            self.calibrators[group].fit(logits[-6000:], outcomes[-6000:])
 
     def _p1px(
         self,
@@ -632,9 +637,9 @@ class Engine:
         # Коэффициенты — приор, не истина: гонять A/B через ledger
         # (self.rest_days_adjustment выключить/включить).
         home_rest = days_since_last_match(
-            self.last_match_date.get(h), match_date)
+            self.last_match_date.get(h_key), match_date)
         away_rest = days_since_last_match(
-            self.last_match_date.get(a), match_date)
+            self.last_match_date.get(a_key), match_date)
 
         def _rest_factor(rest):
             if rest is None:
@@ -762,9 +767,9 @@ class Engine:
         # Calibration
         # ---------------------------------------------------------
 
-        c1 = self.calibrate(f1, 0)
-        cx = self.calibrate(fd, 1)
-        c2 = self.calibrate(f2, 2)
+        c1 = self.calibrate(f1, 0, lg)
+        cx = self.calibrate(fd, 1, lg)
+        c2 = self.calibrate(f2, 2, lg)
 
         total_calibrated = c1 + cx + c2 or 1.0
 
@@ -839,27 +844,36 @@ class Engine:
         else:
             outcome = 2
 
-        self.calib_logits += [
+        row = dict(item.get("row") or {})
+        division = str(row.get("Div") or item.get("league") or "G")
+        group = "women" if division.upper().startswith("W_") else "men"
+        logits = self.calib_logits_by_group[group]
+        targets = self.calib_outcomes_by_group[group]
+        logits += [
             self._logit(prediction["p1_raw"]),
             self._logit(prediction["x_raw"]),
             self._logit(prediction["p2_raw"]),
         ]
-        self.calib_outcomes += [
+        targets += [
             1.0 if outcome == 0 else 0.0,
             1.0 if outcome == 1 else 0.0,
             1.0 if outcome == 2 else 0.0,
         ]
-        if len(self.calib_logits) > 12000:
-            del self.calib_logits[:-12000]
-        if len(self.calib_outcomes) > 12000:
-            del self.calib_outcomes[:-12000]
+        if len(logits) > 12000:
+            del logits[:-12000]
+        if len(targets) > 12000:
+            del targets[:-12000]
+        # Keep the legacy public buffers men-only; they are not a mixed-gender sample.
+        if group == "men":
+            self.calib_logits = list(logits)
+            self.calib_outcomes = list(targets)
 
         self.match_count += 1
-        if self.match_count % 150 == 0:
-            self.refit_calibrator()
+        self.calibration_match_count[group] += 1
+        if self.calibration_match_count[group] % 150 == 0:
+            self.refit_calibrator(division)
 
-        row = dict(item.get("row") or {})
-        row["Div"] = item.get("league") or "G"
+        row["Div"] = division
         self.add(
             item["home"], item["away"], hg, ag, row,
             match_num=item.get("match_num"),
