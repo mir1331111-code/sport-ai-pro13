@@ -31,7 +31,7 @@ if os.environ.get("NEURO_KEEP_PROXY") != "1":
 
 st.set_page_config(page_title="NEURO BET PRO",
                    page_icon="🏟", layout="wide",
-                   initial_sidebar_state="expanded")
+                   initial_sidebar_state="collapsed")
 
 from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
                     AUTO_SETTLE_THROTTLE_SEC, DB_FILE)
@@ -163,7 +163,7 @@ except ImportError as exc:
     _SETTLEMENT_READY_FALLBACK = True
 from model.forecast_ledger import MarketForecastLedger  # noqa: E402
 from ui import theme  # noqa: E402
-from ui.tabs import scanner, portfolio, stats, calculator, backtest, analytics  # noqa: E402
+from ui.tabs import scanner, portfolio, stats, calculator, backtest, analytics, dashboard  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[APP] %(message)s")
 log = logging.getLogger("neurobet")
@@ -733,36 +733,21 @@ def _model_health(D):
 
 model_health = _model_health(D)
 
-# ==================== HERO ====================
-_today = datetime.now().strftime("%Y-%m-%d")
-signals_today = sum(
-    1 for c in D.get("cards", [])
-    if isinstance(c, dict)
-    and (c.get("date_iso") or "").startswith(_today)
-    and c.get("best") is not None)
-roi_pct, _profit, _turnover = _roi_from_bets(_bets)
-roi_cls = "r" if roi_pct < 0 else "g"
+# ==================== PRODUCT HEADER ====================
 bank_now = float(D.get("bank", DEFAULT_BANK))
 mode_label = str(D.get("mode", "paper")).upper()
-
 st.markdown(f"""
-<div class="hero">
-<div class="hero-head">
-<div>
-<div class="hero-eyebrow">TODAY · VALUE TERMINAL</div>
-<h1>NEURO BET PRO</h1>
-<p>Модель → рынок → value → портфель</p>
+<div class="sp-appbar">
+  <div class="sp-brandmark">N<span>●</span></div>
+  <div>
+    <div class="sp-brandname">NEURO BET <em>PRO</em></div>
+    <div class="sp-brand-sub">FOOTBALL INTELLIGENCE · DATA FIRST</div>
+  </div>
+  <div class="sp-appbar-spacer"></div>
+  <div class="sp-appbar-chip"><i></i> PRE-MATCH · {mode_label}</div>
+  <div class="sp-appbar-bank">БАНК {bank_now:,.0f} у.е.</div>
 </div>
-<div class="hero-status"><span class="status-dot"></span>LIVE · {mode_label}</div>
-</div>
-<div class="kpis">
-<div class="kpi"><div class="t">Банкролл</div>
-<div class="v y">{bank_now:.0f} у.е.</div></div>
-<div class="kpi"><div class="t">Сигналы сегодня</div><div class="v">{signals_today}</div></div>
-<div class="kpi"><div class="t">Активные ставки</div><div class="v">{pending_count}</div></div>
-<div class="kpi"><div class="t">ROI (от оборота)</div>
-<div class="v {roi_cls}">{roi_pct:+.1f}%</div></div>
-</div></div>""", unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 if model_health["status"] == "ATTENTION":
     _health_items = " · ".join(f"{x[1]} ({x[2]})" for x in model_health["details"])
@@ -1006,6 +991,10 @@ with st.sidebar:
 # ==================== ANALYTICS TERMINAL ====================
 # One active workspace at a time: compact terminal navigation, no stacked pages.
 TERMINAL_SECTIONS = {
+    "🏠 DASHBOARD": (
+        "SPORTS INTELLIGENCE", "OVERVIEW",
+        "Главная панель: матчи в фокусе, прогнозы, коэффициенты SStats и качество контекста.", "OVERVIEW DESK",
+    ),
     "🏟 LIVE SCANNER": (
         "MATCH INTELLIGENCE", "LIVE SCANNER",
         "Поиск матчей, проверка источников и предматчевая аналитика.", "LIVE WORKSPACE",
@@ -1045,7 +1034,7 @@ TERMINAL_SECTIONS = {
 }
 active_section = st.radio(
     "Рабочая область", list(TERMINAL_SECTIONS.keys()),
-    horizontal=True, label_visibility="collapsed", key="terminal_navigation",
+    horizontal=True, label_visibility="collapsed", key="terminal_navigation_v15",
 )
 section_kicker, section_title, section_subtitle, section_status = TERMINAL_SECTIONS[active_section]
 st.markdown(f"""
@@ -1059,7 +1048,9 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-if active_section == "🏟 LIVE SCANNER":
+if active_section == "🏠 DASHBOARD":
+    dashboard.render()
+elif active_section == "🏟 LIVE SCANNER":
     scanner.render(min_prob, kelly_frac, matrix_n, min_edge)
 elif active_section == "📊 AI FORECASTS":
     stats.render()
