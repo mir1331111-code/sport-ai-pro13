@@ -501,7 +501,7 @@ def _load_engine(
 
         p = os.path.join(
             DISK_CACHE_DIR,
-            f"engine_{APP_VERSION}_{matrix_n}_{xg_cache_tag}_{xg_data_tag}.pkl.gz",
+            f"engine_{APP_VERSION}_{matrix_n}_{xg_cache_tag}_{xg_data_tag}_{custom_data_tag}.pkl.gz",
         )
         update_loader("💾 Проверяю сохранённую модель на диске...", 0.22, logs)
         if os.path.exists(p):
