@@ -333,6 +333,10 @@ class Engine:
         этот метод вызывается ПОСЛЕ prediction в walk-forward.
         """
 
+        div = _division_key(row.get("Div") if isinstance(row, dict) else "G")
+        home_key = _team_state_key(div, h)
+        away_key = _team_state_key(div, a)
+
         k = (
             48
             - 32
@@ -342,8 +346,8 @@ class Engine:
             )
         )
 
-        rh = self.elo.get(h, 1500)
-        ra = self.elo.get(a, 1500)
+        rh = self.elo.get(home_key, 1500)
+        ra = self.elo.get(away_key, 1500)
 
         expected_home = 1 / (
             1
@@ -358,46 +362,46 @@ class Engine:
             else (0.5 if hg == ag else 0.0)
         )
 
-        self.elo[h] = rh + k * (
+        self.elo[home_key] = rh + k * (
             score_home - expected_home
         )
 
-        self.elo[a] = ra + k * (
+        self.elo[away_key] = ra + k * (
             (1 - score_home)
             - (1 - expected_home)
         )
 
         teams = self.st
 
-        teams[h]["hs"].append(hg)
-        teams[h]["hc"].append(ag)
+        teams[home_key]["hs"].append(hg)
+        teams[home_key]["hc"].append(ag)
 
-        teams[a]["as"].append(ag)
-        teams[a]["ac"].append(hg)
+        teams[away_key]["as"].append(ag)
+        teams[away_key]["ac"].append(hg)
 
         stamp = match_date.isoformat() if hasattr(match_date, "isoformat") else match_date
-        teams[h]["hs_dates"].append(stamp)
-        teams[h]["hc_dates"].append(stamp)
-        teams[a]["as_dates"].append(stamp)
-        teams[a]["ac_dates"].append(stamp)
+        teams[home_key]["hs_dates"].append(stamp)
+        teams[home_key]["hc_dates"].append(stamp)
+        teams[away_key]["as_dates"].append(stamp)
+        teams[away_key]["ac_dates"].append(stamp)
 
         home_xg, away_xg = _row_xg_pair(row)
         if home_xg is not None and away_xg is not None:
-            teams[h]["hs_xg"].append(home_xg)
-            teams[h]["hs_xga"].append(away_xg)
-            teams[h]["hs_xg_dates"].append(stamp)
-            teams[h]["hs_xga_dates"].append(stamp)
-            teams[a]["as_xg"].append(away_xg)
-            teams[a]["as_xga"].append(home_xg)
-            teams[a]["as_xg_dates"].append(stamp)
-            teams[a]["as_xga_dates"].append(stamp)
+            teams[home_key]["hs_xg"].append(home_xg)
+            teams[home_key]["hs_xga"].append(away_xg)
+            teams[home_key]["hs_xg_dates"].append(stamp)
+            teams[home_key]["hs_xga_dates"].append(stamp)
+            teams[away_key]["as_xg"].append(away_xg)
+            teams[away_key]["as_xga"].append(home_xg)
+            teams[away_key]["as_xg_dates"].append(stamp)
+            teams[away_key]["as_xga_dates"].append(stamp)
 
-        teams[h]["form"].append(
+        teams[home_key]["form"].append(
             3 if hg > ag
             else (1 if hg == ag else 0)
         )
 
-        teams[a]["form"].append(
+        teams[away_key]["form"].append(
             3 if ag > hg
             else (1 if hg == ag else 0)
         )
@@ -406,11 +410,6 @@ class Engine:
         self.ag.append(ag)
         self.hg_dates.append(stamp)
         self.ag_dates.append(stamp)
-
-        if isinstance(row, dict):
-            div = row.get("Div") or "G"
-        else:
-            div = "G"
 
         self.lg_hg[div].append(hg)
         self.lg_ag[div].append(ag)
@@ -451,20 +450,22 @@ class Engine:
 
         diff = hg - ag
 
-        self.h2h[(h, a)].append(diff)
-        self.h2h[(h, a)] = self.h2h[(h, a)][-8:]
+        home_h2h_key = _h2h_state_key(div, h, a)
+        away_h2h_key = _h2h_state_key(div, a, h)
+        self.h2h[home_h2h_key].append(diff)
+        self.h2h[home_h2h_key] = self.h2h[home_h2h_key][-8:]
 
-        self.h2h[(a, h)].append(-diff)
-        self.h2h[(a, h)] = self.h2h[(a, h)][-8:]
+        self.h2h[away_h2h_key].append(-diff)
+        self.h2h[away_h2h_key] = self.h2h[away_h2h_key][-8:]
 
         # Ограничиваем историю команды.
-        for team in (h, a):
+        for team in (home_key, away_key):
             for key in teams[team]:
                 teams[team][key] = teams[team][key][-12:]
 
         if match_date:
-            self.last_match_date[h] = match_date
-            self.last_match_date[a] = match_date
+            self.last_match_date[home_key] = match_date
+            self.last_match_date[away_key] = match_date
 
         self.trained_n += 1
 
@@ -474,6 +475,7 @@ class Engine:
         a,
         lh,
         la,
+        lg="G",
     ):
         """
         Осторожная поправка по личным встречам.
@@ -483,7 +485,7 @@ class Engine:
         полностью переопределить основную Poisson-модель.
         """
 
-        hist = self.h2h.get((h, a), [])
+        hist = self.h2h.get(_h2h_state_key(lg, h, a), [])
         n = len(hist)
 
         if n < 6:
