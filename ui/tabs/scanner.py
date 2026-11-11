@@ -37,6 +37,7 @@ from model.context_model import (
 from model.market_models import (
     asian_handicap_probabilities, asian_handicap_expected_value,
 )
+from storage.context_store import ContextStore
 from model.engine import Engine, _norm
 from model.validation_cache import select_validation_rows, validation_cache_key
 from model.training import prepare_completed_training_rows, train_engine_chronologically
@@ -2066,6 +2067,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 fixture_row["date_iso"] = parsed_fixture_date.strftime("%Y-%m-%d")
 
         context_by_fixture = {}
+        context_store = None
+        if api_football_key:
+            try:
+                context_store = ContextStore(DB_FILE)
+            except Exception as exc:
+                logs.append(f"⚠️ Context DB недоступна ({type(exc).__name__}); live-скан продолжается.")
         if api_football_key:
             try:
                 try:
@@ -2201,6 +2208,20 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             api_context = context_by_fixture.get(
                 fixture_row_key(h_en, a_en, d.strftime("%Y-%m-%d")), {}
             )
+            if context_store is not None and api_context:
+                try:
+                    context_store.record_snapshot(
+                        fixture_id=str(
+                            r.get("fixture_id")
+                            or f"api-football:{api_context.get('api_fixture_id')}"
+                        ),
+                        kickoff_at=(kickoff_local.isoformat() if kickoff_local else ""),
+                        observed_at=str(api_context.get("timestamp") or ""),
+                        context=api_context,
+                        data_source="api-football",
+                    )
+                except (TypeError, ValueError, OSError) as exc:
+                    logs.append(f"⚠️ Context snapshot не сохранён: {type(exc).__name__}")
             context_quality = assess_context_quality(api_context)
             context_forecasts = context_probabilities(
                 {"H": P["p1"], "D": P["x"], "A": P["p2"]},
