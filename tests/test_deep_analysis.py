@@ -155,6 +155,19 @@ class TopMatchSelectionTests(unittest.TestCase):
         card.pop("sstats_game_id")
         self.assertEqual(select_top_matches([card]), [])
 
+    def test_no_market_price_at_or_above_1_70_excludes_candidate(self):
+        card = make_card(odds={"П1": 1.60, "X": 1.65, "П2": 1.66})
+        card["total_market_odds"] = {}
+        card["btts_market_odds"] = {}
+        card["stat_market_odds"] = {}
+        card["asian_handicap_market_odds"] = {}
+        self.assertEqual(select_top_matches([card]), [])
+
+    def test_qualifying_alternative_market_price_can_keep_match_for_research(self):
+        card = make_card(odds={"П1": 1.60, "X": 1.65, "П2": 1.66})
+        card["total_market_odds"] = {"ТБ 2.5": 1.90}
+        self.assertEqual(len(select_top_matches([card])), 1)
+
     def test_diagnostics_show_why_candidates_are_excluded(self):
         cards = [
             make_card(),
