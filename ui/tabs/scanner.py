@@ -2108,38 +2108,54 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         fdorg_rows = []
         sstats_rows = []
         source_counts = {"TheSportsDB": 0, "ESPN": 0, "football-data.org": 0, "SStats": 0}
-        try:
-            tsdb_rows = tsdb_matches(days, logs)
-            source_counts["TheSportsDB"] = len(tsdb_rows)
-        except Exception as exc:
-            logs.append(f"⚠️ TheSportsDB fixtures: {type(exc).__name__}")
-        try:
-            espn_rows = espn_matches(days, logs)
-            source_counts["ESPN"] = len(espn_rows)
-        except Exception as exc:
-            logs.append(f"⚠️ ESPN fixtures: {type(exc).__name__}")
-        if token:
-            try:
-                fdorg_rows = fdorg_matches(days, token, logs)
-                source_counts["football-data.org"] = len(fdorg_rows)
-            except Exception as exc:
-                logs.append(f"⚠️ football-data.org fixtures: {type(exc).__name__}")
+
+        # SStats is the primary match-and-odds source. Do not call several
+        # other schedule APIs for the same horizon when SStats already returned
+        # fixtures: keep those providers as failover only.
         if sstats_key:
             try:
                 sstats_rows = sstats_upcoming_matches(days, sstats_key, logs)
                 source_counts["SStats"] = len(sstats_rows)
             except Exception as exc:
                 logs.append(f"⚠️ SStats fixtures/odds: {type(exc).__name__}")
-        else:
-            logs.append("ℹ️ SSTATS_API_KEY не настроен — бесплатный источник SStats пропущен.")
 
-        # Merge from highest-quality competition metadata to broad schedule feeds.
-        # SStats remains last for odds enrichment, while fixture_merge can now
-        # upgrade generic Div/League placeholders when it sees a specific league.
-        fixture_sources.extend(fdorg_rows)
-        fixture_sources.extend(tsdb_rows)
-        fixture_sources.extend(espn_rows)
-        fixture_sources.extend(sstats_rows)
+        sstats_is_primary = bool(sstats_rows)
+        if sstats_is_primary:
+            fixture_sources.extend(sstats_rows)
+            logs.append(
+                f"✅ SStats выбран единственным источником расписания: "
+                f"{len(sstats_rows)} матчей. Дублирующие schedule API пропущены."
+            )
+        else:
+            if sstats_key:
+                logs.append(
+                    "⚠️ SStats не вернул матчи; включаю резервные источники расписания."
+                )
+            else:
+                logs.append(
+                    "ℹ️ SSTATS_API_KEY не настроен — SStats пропущен; "
+                    "включаю резервные источники расписания."
+                )
+            try:
+                tsdb_rows = tsdb_matches(days, logs)
+                source_counts["TheSportsDB"] = len(tsdb_rows)
+            except Exception as exc:
+                logs.append(f"⚠️ TheSportsDB fixtures: {type(exc).__name__}")
+            try:
+                espn_rows = espn_matches(days, logs)
+                source_counts["ESPN"] = len(espn_rows)
+            except Exception as exc:
+                logs.append(f"⚠️ ESPN fixtures: {type(exc).__name__}")
+            if token:
+                try:
+                    fdorg_rows = fdorg_matches(days, token, logs)
+                    source_counts["football-data.org"] = len(fdorg_rows)
+                except Exception as exc:
+                    logs.append(f"⚠️ football-data.org fixtures: {type(exc).__name__}")
+            fixture_sources.extend(fdorg_rows)
+            fixture_sources.extend(tsdb_rows)
+            fixture_sources.extend(espn_rows)
+
         logs.append(
             "📡 Источники расписания: " + " · ".join(
                 f"{name} {count}" for name, count in source_counts.items()
