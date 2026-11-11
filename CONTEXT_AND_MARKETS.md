@@ -49,9 +49,10 @@ The context CSV is a different file from the score archive. Required columns:
 
 - `fixture_id`, `home_team`, `away_team`
 - `kickoff_at`, `observed_at` (ISO-8601 with timezone or `Z`)
-- `is_confirmed`, `data_source`, `source_reliability`
+- `is_confirmed`, `lineup_is_confirmed`, `referee_is_confirmed`, `injuries_is_confirmed`
+- `data_source`, `source_reliability`, plus per-feed `lineup_source_reliability`, `referee_source_reliability`, and `injuries_source_reliability`
 
-The observation timestamp must be strictly earlier than kickoff. Post-kickoff observations are rejected. Repeated fixture IDs are allowed as snapshots; the latest pre-kickoff snapshot is selected for walk-forward evaluation. Context features supported by the CSV include `lineup_strength_home`, `lineup_strength_away`, `key_players_missing_home`, `key_players_missing_away`, referee discipline mean/variance, corner score-state means, opponent corner style, and Base probabilities `base_p_home`, `base_p_draw`, `base_p_away`. To train the current 1X2 context blender, lineup strength, missing-player counts, source reliability, Base probabilities and a settled `result` are required.
+The observation timestamp must be strictly earlier than kickoff. Post-kickoff observations are rejected. Repeated fixture IDs are allowed as snapshots; the latest pre-kickoff snapshot is selected for walk-forward evaluation. The historical context fitter requires explicit (or aggregate-backward-compatible) confirmation for the XI and referee and at least one calibrated source-reliability value; every provided reliability value must be at least 0.60. Context features supported by the CSV include `lineup_strength_home`, `lineup_strength_away`, `key_players_missing_home`, `key_players_missing_away`, referee discipline mean/variance, corner score-state means, opponent corner style, and Base probabilities `base_p_home`, `base_p_draw`, `base_p_away`. To train the current 1X2 context blender, lineup strength, missing-player counts, source reliability, Base probabilities and a settled `result` are required.
 
 ## Cards and corners
 
