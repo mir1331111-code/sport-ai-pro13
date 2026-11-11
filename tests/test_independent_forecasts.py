@@ -136,7 +136,7 @@ class IndependentForecastTests(unittest.TestCase):
             "best_odds_source": "test-book",
         }
         first = record_scan_forecasts([card], db_path=path, now=now)
-        second = record_scan_forecasts([card], db_path=path, now=now)
+        second = record_scan_forecasts([card], db_path=path, now=now + timedelta(minutes=15))
         self.assertEqual(first["market_recorded"], 1)
         self.assertEqual(second["market_recorded"], 0)
         rows = MarketForecastLedger(path).rows()
@@ -177,7 +177,7 @@ class IndependentForecastTests(unittest.TestCase):
         }
 
         first = record_scan_forecasts([card], db_path=path, now=now)
-        second = record_scan_forecasts([card], db_path=path, now=now)
+        second = record_scan_forecasts([card], db_path=path, now=now + timedelta(minutes=15))
         rows = MarketForecastLedger(path).rows()
 
         self.assertEqual(first["market_recorded"], 3)
