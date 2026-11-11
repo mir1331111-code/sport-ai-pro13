@@ -204,7 +204,7 @@ class ContextDataTests(unittest.TestCase):
                 date_from="2026-11-12", date_to="2026-11-12",
                 now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
             )
-            self.assertIn(("2026-11-12", "home_fc", "away_fc"), mapping)
+            self.assertIn(("2026-11-12", "home", "away"), mapping)
 
     def test_fixture_match_requires_exact_canonical_home_away_and_date(self):
         with tempfile.TemporaryDirectory() as directory:
