@@ -823,9 +823,14 @@ def espn_matches(days: int, logs=None) -> list:
                 # Retain competition metadata/notes where ESPN uses a generic
                 # "Soccer" league label; do not infer gender from club name alone.
                 competition = comp.get("competition") or {}
+                if not isinstance(competition, dict):
+                    competition = {}
+                notes = comp.get("notes") or []
+                if not isinstance(notes, list):
+                    notes = []
                 note_text = " ".join(
                     str(item.get("text") or item.get("headline") or "")
-                    for item in (comp.get("notes") or []) if isinstance(item, dict)
+                    for item in notes if isinstance(item, dict)
                 )
                 team_text = " ".join((
                     hn, an,
