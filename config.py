@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "13.13.0"
+APP_VERSION = "14.0.0"
 DATA_VERSION = 17
 
 # A model forecast is labelled strong at or above this event probability.
@@ -129,6 +129,7 @@ DIV_NAMES = {
     "JP1": "🇯🇵 Япония", "KR1": "🇰🇷 Корея",
     "MX1": "🇲🇽 Мексика", "CO1": "🇨🇴 Колумбия",
     "C1": "🏆 ЛЧ", "EL": "🏆 ЛЕ", "EC": "🏆 ЛК",
+    "W_NT": "🌍 Женские сборные",
     "W_E0": "🏴󠁧󠁢󠁥󠁮󠁧󠁿 WSL (Ж)", "W_SP1": "🇪🇸 Liga F (Ж)",
     "W_F1": "🇫🇷 D1 Féminine (Ж)", "W_D1": "🇩🇪 Frauen-BL (Ж)",
     "W_I1": "🇮🇹 Serie A Fem (Ж)", "W_C1": "🏆 UWCL (Ж)",

@@ -29,6 +29,8 @@ def _new_team():
         "hs_xga_dates": [],
         "as_xg_dates": [],
         "as_xga_dates": [],
+        "home_matches": [],
+        "away_matches": [],
     }
 
 
@@ -75,6 +77,26 @@ def _new_lp():
         "w_dc": 0.72,
     }
 
+def _new_namespace_calibration():
+    """Pickle-safe empty calibration history for one competition namespace."""
+    return {"logits": [], "outcomes": []}
+
+def _team_namespace(division: str) -> str:
+    """Keep men's clubs, women's clubs, and national teams in separate identities."""
+    value = str(division or "").upper()
+    if value.startswith("W_NT"):
+        return "women_national"
+    if value.startswith("W_"):
+        return "women"
+    if value.startswith("NT"):
+        return "national"
+    return ""
+
+
+def _team_identity(name: str, division: str) -> str:
+    namespace = _team_namespace(division)
+    return f"{namespace}::{name}" if namespace else str(name)
+
 
 def is_cup(div: str) -> bool:
     return div in ("C1", "EL", "EC")
@@ -106,6 +128,11 @@ class Engine:
         self.ag: list = []
         self.hg_dates: list = []
         self.ag_dates: list = []
+        # Global fallback averages are split by gender/competition namespace.
+        self.namespace_hg = defaultdict(list)
+        self.namespace_ag = defaultdict(list)
+        self.namespace_hg_dates = defaultdict(list)
+        self.namespace_ag_dates = defaultdict(list)
 
         self.lg_hg = defaultdict(list)
         self.lg_ag = defaultdict(list)
@@ -140,6 +167,8 @@ class Engine:
 
         self.calib_logits: list = []
         self.calib_outcomes: list = []
+        self.namespace_calibration = defaultdict(_new_namespace_calibration)
+        self.namespace_calibrators = {}
 
         self.calibrator = PlattCalibrator()
 
@@ -207,7 +236,12 @@ class Engine:
 
         return out or "—"
 
-    def calibrate(self, p: float, ci: int = 0) -> float:
+    def calibrate(self, p: float, ci: int = 0, namespace: str = "") -> float:
+        if namespace:
+            # Never borrow the men's calibrator for a women's or national-team
+            # fixture. Until that namespace has enough outcomes, use raw P.
+            calibrator = self.namespace_calibrators.get(namespace)
+            return calibrator.calibrate(p, ci) if calibrator is not None else float(p)
         return self.calibrator.calibrate(p, ci)
 
     def refit_calibrator(self) -> None:
@@ -219,13 +253,20 @@ class Engine:
         Поэтому будущие результаты не используются для текущего
         прогноза.
         """
-        if len(self.calib_logits) < 240:
-            return
-
-        self.calibrator.fit(
-            self.calib_logits[-6000:],
-            self.calib_outcomes[-6000:],
-        )
+        if len(self.calib_logits) >= 240:
+            self.calibrator.fit(
+                self.calib_logits[-6000:],
+                self.calib_outcomes[-6000:],
+            )
+        for namespace, history in self.namespace_calibration.items():
+            logits = history["logits"]
+            outcomes = history["outcomes"]
+            if len(logits) < 240:
+                continue
+            calibrator = self.namespace_calibrators.setdefault(
+                namespace, PlattCalibrator()
+            )
+            calibrator.fit(logits[-6000:], outcomes[-6000:])
 
     def _p1px(
         self,
@@ -297,6 +338,11 @@ class Engine:
         этот метод вызывается ПОСЛЕ prediction в walk-forward.
         """
 
+        raw_home, raw_away = str(h), str(a)
+        div = str((row or {}).get("Div") or "G") if isinstance(row, dict) else "G"
+        h = _team_identity(raw_home, div)
+        a = _team_identity(raw_away, div)
+
         k = (
             48
             - 32
@@ -346,6 +392,30 @@ class Engine:
         teams[a]["ac_dates"].append(stamp)
 
         home_xg, away_xg = _row_xg_pair(row)
+        # Store dated, pre-match opponent-strength snapshots for evidence
+        # reporting. These records are diagnostic; they do not alter lambdas.
+        home_record = {
+            "date": str(stamp or ""),
+            "opponent": raw_away,
+            "goals_for": float(hg),
+            "goals_against": float(ag),
+            "opponent_elo_before": float(ra),
+            "xg_for": home_xg,
+            "xg_against": away_xg,
+        }
+        away_record = {
+            "date": str(stamp or ""),
+            "opponent": raw_home,
+            "goals_for": float(ag),
+            "goals_against": float(hg),
+            "opponent_elo_before": float(rh),
+            "xg_for": away_xg,
+            "xg_against": home_xg,
+        }
+        teams[h]["home_matches"].append(home_record)
+        teams[a]["away_matches"].append(away_record)
+        teams[h]["home_matches"] = teams[h]["home_matches"][-20:]
+        teams[a]["away_matches"] = teams[a]["away_matches"][-20:]
         if home_xg is not None and away_xg is not None:
             teams[h]["hs_xg"].append(home_xg)
             teams[h]["hs_xga"].append(away_xg)
@@ -366,15 +436,17 @@ class Engine:
             else (1 if hg == ag else 0)
         )
 
-        self.hg.append(hg)
-        self.ag.append(ag)
-        self.hg_dates.append(stamp)
-        self.ag_dates.append(stamp)
-
-        if isinstance(row, dict):
-            div = row.get("Div") or "G"
-        else:
-            div = "G"
+        namespace = _team_namespace(div)
+        self.namespace_hg[namespace].append(hg)
+        self.namespace_ag[namespace].append(ag)
+        self.namespace_hg_dates[namespace].append(stamp)
+        self.namespace_ag_dates[namespace].append(stamp)
+        # Preserve legacy global arrays as men's-only averages.
+        if not namespace:
+            self.hg.append(hg)
+            self.ag.append(ag)
+            self.hg_dates.append(stamp)
+            self.ag_dates.append(stamp)
 
         self.lg_hg[div].append(hg)
         self.lg_ag[div].append(ag)
@@ -495,6 +567,9 @@ class Engine:
         с остальной системой.
         """
 
+        namespace = _team_namespace(lg)
+        h = _team_identity(str(h), lg)
+        a = _team_identity(str(a), lg)
         P0 = self.lp[lg]
 
         # ---------------------------------------------------------
@@ -522,12 +597,16 @@ class Engine:
                 ),
             )
         else:
+            global_home = self.namespace_hg[namespace]
+            global_away = self.namespace_ag[namespace]
+            global_home_dates = self.namespace_hg_dates[namespace]
+            global_away_dates = self.namespace_ag_dates[namespace]
             lh_g = max(
                 0.05,
                 self._m(
-                    self.hg,
+                    global_home,
                     1.5,
-                    self.hg_dates,
+                    global_home_dates,
                     match_date,
                 ),
             )
@@ -535,9 +614,9 @@ class Engine:
             la_g = max(
                 0.05,
                 self._m(
-                    self.ag,
+                    global_away,
                     1.2,
-                    self.ag_dates,
+                    global_away_dates,
                     match_date,
                 ),
             )
@@ -763,9 +842,10 @@ class Engine:
         # Calibration
         # ---------------------------------------------------------
 
-        c1 = self.calibrate(f1, 0)
-        cx = self.calibrate(fd, 1)
-        c2 = self.calibrate(f2, 2)
+        namespace = _team_namespace(lg)
+        c1 = self.calibrate(f1, 0, namespace)
+        cx = self.calibrate(fd, 1, namespace)
+        c2 = self.calibrate(f2, 2, namespace)
 
         total_calibrated = c1 + cx + c2 or 1.0
 
@@ -816,6 +896,19 @@ class Engine:
 
             "games": games,
             "h2h_n": h2h_n,
+            "namespace": namespace,
+            "home_history_n": gh,
+            "away_history_n": ga,
+            "home_venue_history_n": len(sh["hs"]),
+            "away_venue_history_n": len(sa["as"]),
+            "home_opponent_elo_avg": (
+                sum(float(item["opponent_elo_before"]) for item in sh["home_matches"][-5:])
+                / len(sh["home_matches"][-5:]) if sh["home_matches"] else None
+            ),
+            "away_opponent_elo_avg": (
+                sum(float(item["opponent_elo_before"]) for item in sa["away_matches"][-5:])
+                / len(sa["away_matches"][-5:]) if sa["away_matches"] else None
+            ),
 
             "e": elo_home,
             "pde": pde,
@@ -840,20 +933,30 @@ class Engine:
         else:
             outcome = 2
 
-        self.calib_logits += [
+        namespace = str(prediction.get("namespace") or "")
+        logits = [
             self._logit(prediction["p1_raw"]),
             self._logit(prediction["x_raw"]),
             self._logit(prediction["p2_raw"]),
         ]
-        self.calib_outcomes += [
+        outcomes = [
             1.0 if outcome == 0 else 0.0,
             1.0 if outcome == 1 else 0.0,
             1.0 if outcome == 2 else 0.0,
         ]
-        if len(self.calib_logits) > 12000:
-            del self.calib_logits[:-12000]
-        if len(self.calib_outcomes) > 12000:
-            del self.calib_outcomes[:-12000]
+        if namespace:
+            history = self.namespace_calibration[namespace]
+            history["logits"].extend(logits)
+            history["outcomes"].extend(outcomes)
+            if len(history["logits"]) > 12000:
+                del history["logits"][:-12000]
+                del history["outcomes"][:-12000]
+        else:
+            self.calib_logits.extend(logits)
+            self.calib_outcomes.extend(outcomes)
+            if len(self.calib_logits) > 12000:
+                del self.calib_logits[:-12000]
+                del self.calib_outcomes[:-12000]
 
         self.match_count += 1
         if self.match_count % 150 == 0:

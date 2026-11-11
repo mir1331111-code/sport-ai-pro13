@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger, OUTCOMES
+from model.data_quality import assess_fixture_quality
 
 
 def _mean(values: list[Any]) -> float | None:
@@ -220,6 +221,15 @@ def record_scan_forecasts(
             forecast_at=now, kickoff_at=kickoff, league=league,
             entry_odds=prices, odds_source=str(card.get("odds_source") or "") or None,
         )
+        quality = card.get("data_quality")
+        if not isinstance(quality, dict):
+            quality = assess_fixture_quality(card, now=now)
+        forecast_metadata = {
+            "context_quality": card.get("context_quality") or {},
+            "evidence": card.get("forecast_evidence") or {},
+            "match_category": str(card.get("match_category") or "unknown"),
+            "data_quality_score": quality.get("score"),
+        }
         if main_probs is not None:
             key = f"{fixture_id}|{main_version}"
             if key not in existing:
@@ -227,7 +237,8 @@ def record_scan_forecasts(
                     ledger.record_prediction(
                         forecast_key=key, model_version=main_version,
                         probabilities=main_probs,
-                        xg_used=bool(card.get("xg_used")), **common,
+                        xg_used=bool(card.get("xg_used")),
+                        **forecast_metadata, **common,
                     )
                     existing.add(key)
                     stats["main_recorded"] += 1

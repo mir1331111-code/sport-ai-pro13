@@ -35,6 +35,8 @@ from data.history_import import parse_historical_matches_csv
 from model.context_model import (
     assess_context_quality, context_probabilities, walk_forward_context_ablation,
 )
+from model.data_quality import assess_fixture_quality
+from model.portfolio_risk import build_portfolio_risk_report
 from model.market_models import (
     asian_handicap_probabilities, asian_handicap_expected_value,
     adjust_corners_for_game_state,
@@ -2136,6 +2138,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Merge from highest-quality competition metadata to broad schedule feeds.
         # SStats remains last for odds enrichment, while fixture_merge can now
         # upgrade generic Div/League placeholders when it sees a specific league.
+        for provider_name, provider_rows in (
+            ("football-data.org", fdorg_rows),
+            ("TheSportsDB", tsdb_rows),
+            ("ESPN", espn_rows),
+            ("SStats", sstats_rows),
+        ):
+            for source_row in provider_rows:
+                if isinstance(source_row, dict):
+                    source_row.setdefault("source_provider", provider_name)
         fixture_sources.extend(fdorg_rows)
         fixture_sources.extend(tsdb_rows)
         fixture_sources.extend(espn_rows)
@@ -2310,7 +2321,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         date_filter_counts = {
             "invalid_date": 0, "outside_horizon": 0, "past_kickoff": 0,
             "unknown_same_day_kickoff": 0, "missing_teams": 0,
-            "inside_horizon": 0,
+            "category_conflict": 0, "inside_horizon": 0,
         }
         for match_idx, r in enumerate(rows, 1):
             if match_idx == 1 or match_idx % 5 == 0:
@@ -2359,6 +2370,54 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             a_ru = translate_team(a_en)
             lg = r.get("Div") or "G"
 
+            # Reconcile known competition category with API-Football BEFORE
+            # creating a prediction. A context-only women's match must not be
+            # scored against men's team histories.
+            pre_api_context = context_by_fixture.get(
+                fixture_row_key(h_en, a_en, d.strftime("%Y-%m-%d")), {}
+            )
+            api_category = str(pre_api_context.get("match_category") or "").casefold()
+            div_upper = str(lg).upper()
+            schedule_category = (
+                "women_national" if div_upper.startswith("W_NT")
+                else "women" if bool(r.get("women")) or div_upper.startswith("W_")
+                else "national" if bool(r.get("national")) or div_upper.startswith("NT")
+                else "men" if bool(r.get("category_verified")) or div_upper not in {"", "G", "GENERAL", "UNKNOWN", "OTHER"}
+                else "unknown"
+            )
+            category_conflict = bool(
+                schedule_category != "unknown" and api_category in
+                {"men", "women", "national", "women_national"}
+                and schedule_category != api_category
+            )
+            if category_conflict:
+                date_filter_counts["category_conflict"] += 1
+                logs.append(
+                    f"⛔ КОНФЛИКТ КАТЕГОРИИ: {h_ru} — {a_ru}; "
+                    f"расписание={schedule_category}, API-Football={api_category}. "
+                    "Матч пропущен, чтобы не смешивать историю команд."
+                )
+                continue
+            if schedule_category == "unknown" and api_category in {
+                "men", "women", "national", "women_national"
+            }:
+                lg = {
+                    "men": "G",
+                    "women": "W_",
+                    "national": "NT",
+                    "women_national": "W_NT",
+                }[api_category]
+                r["Div"] = lg
+                r["women"] = api_category in {"women", "women_national"}
+                r["national"] = api_category in {"national", "women_national"}
+                r["category_verified"] = True
+                if (pre_api_context.get("competition") or {}).get("name"):
+                    r["League"] = (pre_api_context.get("competition") or {}).get("name")
+            elif schedule_category in {"women", "women_national", "national"}:
+                r["women"] = schedule_category in {"women", "women_national"}
+                r["national"] = schedule_category in {"national", "women_national"}
+                r["category_verified"] = True
+
             funnel_counts["model"] += 1
 
             try:
@@ -2370,15 +2429,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if P.get("xg_used"):
                 xg_used_count += 1
 
-            fh = engine.form_str(h_en)
-            fa = engine.form_str(a_en)
+            _team_ns = (
+                "women_national::" if str(lg).startswith("W_NT")
+                else "women::" if str(lg).startswith("W_")
+                else "national::" if str(lg).startswith("NT")
+                else ""
+            )
+            fh = engine.form_str(_team_ns + h_en)
+            fa = engine.form_str(_team_ns + a_en)
             verdict, rows_, _ = build_verdict(
                 P, min_prob, D["bank"], kelly_frac,
                 h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
 
-            api_context = context_by_fixture.get(
-                fixture_row_key(h_en, a_en, d.strftime("%Y-%m-%d")), {}
-            )
+            api_context = pre_api_context
             if context_store is not None and api_context:
                 try:
                     stable_context_key = fixture_row_key(
@@ -2397,6 +2460,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 except (TypeError, ValueError, OSError) as exc:
                     logs.append(f"⚠️ Context snapshot не сохранён: {type(exc).__name__}")
             context_quality = assess_context_quality(api_context)
+            critical_conflicts = [
+                str(item) for item in (r.get("source_conflicts") or [])
+                if any(token in str(item).casefold() for token in ("category", "gender", "kickoff", "time"))
+            ]
+            if critical_conflicts:
+                context_quality = dict(context_quality)
+                context_quality["strong_value_eligible"] = False
+                context_quality["level"] = "Low"
+                context_quality["missing"] = list(context_quality.get("missing") or []) + ["source_conflict"]
+                context_quality["reason"] = (
+                    str(context_quality.get("reason") or "")
+                    + "; конфликт расписания: " + "; ".join(critical_conflicts)
+                )
             context_forecasts = context_probabilities(
                 {"H": P["p1"], "D": P["x"], "A": P["p2"]},
                 api_context,
@@ -2846,9 +2922,79 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"is_action={verdict.get('is_action')} | reason={no_best_reason}"
                 )
 
+            api_category = str(
+                api_context.get("match_category")
+                or ((api_context.get("competition") or {}).get("match_category") or "")
+            ).casefold()
+            division_known = str(lg).casefold() not in {"", "g", "general", "unknown", "other"}
+            category_verified = bool(
+                r.get("category_verified") or division_known
+                or api_context.get("category_verified")
+            )
+            match_category = (
+                "women_national" if str(lg).startswith("W_NT") or api_category == "women_national"
+                else "women" if bool(r.get("women")) or str(lg).startswith("W_") or api_category == "women"
+                else "national" if bool(r.get("national")) or str(lg).startswith("NT") or api_category == "national"
+                else "men" if category_verified else "unknown"
+            )
+            api_context_status = str(
+                api_context.get("provider_status")
+                or ("UNAVAILABLE" if api_football_key else "NOT_CONFIGURED")
+            )
+            forecast_evidence = {
+                "home_history_n": P.get("home_history_n"),
+                "away_history_n": P.get("away_history_n"),
+                "home_venue_history_n": P.get("home_venue_history_n"),
+                "away_venue_history_n": P.get("away_venue_history_n"),
+                "home_form": fh,
+                "away_form": fa,
+                "home_rest_days": P.get("home_rest_days"),
+                "away_rest_days": P.get("away_rest_days"),
+                "xg_home_samples": P.get("xg_home_samples"),
+                "xg_away_samples": P.get("xg_away_samples"),
+                "home_opponent_elo_avg": P.get("home_opponent_elo_avg"),
+                "away_opponent_elo_avg": P.get("away_opponent_elo_avg"),
+            }
+            quality_card = {
+                "div": lg,
+                "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                "match": f"{h_en} vs {a_en}",
+                "match_ru": f"{h_ru} — {a_ru}",
+                "date_iso": d.strftime("%Y-%m-%d"),
+                "date": d.strftime("%d.%m") + (f" {kickoff_time_text}" if kickoff_time_text else ""),
+                "time": kickoff_time_text,
+                "kickoff_utc": r.get("kickoff_utc") or "",
+                "women": match_category == "women",
+                "national": match_category == "national",
+                "match_category": match_category,
+                "category_verified": category_verified,
+                "source_conflicts": list(r.get("source_conflicts") or []),
+                "api_context": api_context,
+                "api_context_status": api_context_status,
+                "odds_source": odds_source,
+                "market_odds": dict(market_odds),
+                "total_market_odds": dict(total_market_odds),
+                "btts_market_odds": dict(btts_market_odds),
+                "stat_market_odds": dict(stat_market_odds),
+                "asian_handicap_market_odds": dict(asian_handicap_market_odds),
+                "games": P["games"],
+            }
+            quality_card["data_quality"] = assess_fixture_quality(
+                quality_card, now=scan_now
+            )
             cards.append({
                 "div": lg,
                 "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                "women": match_category == "women",
+                "national": match_category == "national",
+                "match_category": match_category,
+                "category_verified": category_verified,
+                "source_provider": str(r.get("source_provider") or "unknown"),
+                "source_evidence": list(r.get("_source_evidence") or []),
+                "source_conflicts": list(r.get("source_conflicts") or []),
+                "api_context_status": api_context_status,
+                "data_quality": quality_card["data_quality"],
+                "forecast_evidence": forecast_evidence,
                 "match": f"{h_en} vs {a_en}",
                 "match_ru": f"{h_ru} — {a_ru}",
                 "date": d.strftime("%d.%m") +
@@ -2875,7 +3021,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 # LLM receives observed venue-specific goal averages, not the primary model's lambdas.
                 "independent_features": {
-                    **historical_features(engine, h_en, a_en),
+                    **historical_features(engine, _team_ns + h_en, _team_ns + a_en),
                     "markets": historical_stats,
                 },
                 "xg_used": bool(P.get("xg_used")),
@@ -2933,6 +3079,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"вне окна {date_filter_counts['outside_horizon']}, "
             f"уже начались/завершились {date_filter_counts['past_kickoff']}, "
             f"сегодня без времени начала {date_filter_counts['unknown_same_day_kickoff']}, "
+            f"конфликт категории {date_filter_counts['category_conflict']}, "
             f"дата не распознана {date_filter_counts['invalid_date']}, "
             f"без названий команд {date_filter_counts['missing_teams']}."
         )
@@ -3114,6 +3261,58 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if probability < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB):
                     continue
                 if stake_value <= 0 or stake_value > available_bank:
+                    continue
+                # Conservative auto-portfolio safeguards. These limits apply
+                # only to newly generated virtual positions; they never rewrite
+                # existing/manual positions or place real bookmaker bets.
+                risk_candidate = {
+                    "match": card.get("match", ""),
+                    "match_ru": card.get("match_ru", card.get("match", "")),
+                    "fixture_id": card.get("fixture_id"),
+                    "date_iso": card.get("date_iso"),
+                    "league": card.get("league") or card.get("div") or "",
+                    "stake": stake_value,
+                    "status": "pending",
+                    "market": market_code,
+                }
+                risk_state = build_portfolio_risk_report(
+                    list(D.get("bets") or []) + new_bets + [risk_candidate],
+                    bank=max(0.0, float(D.get("bank") or 0.0)),
+                    initial_bank=float((D.get("meta") or {}).get("initial_bank") or 0.0),
+                )
+                risk_date = str(card.get("date_iso") or card.get("date") or "")[:10]
+                risk_league = str(card.get("league") or card.get("div") or "Неизвестная лига")
+                match_limit = any(
+                    item.get("limit_exceeded")
+                    and item.get("match") == str(card.get("match_ru") or card.get("match") or "")
+                    for item in risk_state["match_rows"]
+                )
+                league_limit = any(
+                    item.get("limit_exceeded") and item.get("league") == risk_league
+                    for item in risk_state["league_rows"]
+                )
+                day_limit = any(
+                    item.get("limit_exceeded") and item.get("date") == risk_date
+                    for item in risk_state["day_rows"]
+                )
+                if risk_state["loss_streak"] >= 3:
+                    logs.append(
+                        f"🛡 AUTO-PORTFOLIO pause: {card.get('match_ru', card.get('match', ''))} — "
+                        "3 или более последовательных проигрыша; автоматическое добавление приостановлено."
+                    )
+                    continue
+                if match_limit or league_limit or day_limit:
+                    reasons = []
+                    if match_limit:
+                        reasons.append("лимит на матч 3%")
+                    if league_limit:
+                        reasons.append("лимит на лигу 5%")
+                    if day_limit:
+                        reasons.append("дневной лимит 10%")
+                    logs.append(
+                        f"🛡 AUTO-PORTFOLIO заблокировано: {card.get('match_ru', card.get('match', ''))} — "
+                        + ", ".join(reasons)
+                    )
                     continue
                 new_bet = {
                     "match": card.get("match", ""),

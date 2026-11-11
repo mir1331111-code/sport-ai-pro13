@@ -18,6 +18,10 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the Streamlit Community Cloud setup, `App
 
 See [`CONTEXT_AND_MARKETS.md`](CONTEXT_AND_MARKETS.md) for API-Football setup, context confidence and Value gates, historical CSV schemas for women/national teams, referee/card handling, halftime corner splits, and Asian handicap settlement calculations.
 
+## v14 analytics terminal
+
+See [`V14_ANALYTICS_SUITE.md`](V14_ANALYTICS_SUITE.md) for DATA QUALITY, AI FORECASTS, VALUE ENGINE, AI LEARNING, independent market review, portfolio exposure limits, gender-separated model histories, and API CENTER.
+
 # Model evaluation and xG ablation
 
 Run a leakage-safe chronological evaluation on historical CSV-like records:

@@ -334,22 +334,59 @@ class ApiFootballContextProvider:
             away = row.get("AwayTeam") or row.get("away_team") or ""
             key = fixture_row_key(home, away, self._row_date(row))
             fixture = by_key.get(key)
+            row_key = fixture_row_key(home, away, self._row_date(row))
             if fixture is None:
+                result[row_key] = {
+                    "provider": "api-football",
+                    "provider_status": "CONNECTED",
+                    "fixture_match_status": "NO_MATCH",
+                    "timestamp": now.isoformat(),
+                    "referee": {"name": None, "is_confirmed": False,
+                                "status": "NO_DATA", "timestamp": now.isoformat()},
+                    "lineup": {"home": {"starting_xi": [], "confirmed": False},
+                               "away": {"starting_xi": [], "confirmed": False},
+                               "is_confirmed": False, "status": "NOT_REQUESTED",
+                               "request_status": "NOT_REQUESTED"},
+                    "injuries": [], "injuries_is_confirmed": False,
+                    "injuries_status": "NOT_REQUESTED",
+                }
                 continue
             fixture_id = self._api_fixture_id(fixture)
             if fixture_id is None:
                 continue
-            row_key = fixture_row_key(home, away, self._row_date(row))
             kickoff = self._kickoff(fixture)
             referee = str((fixture.get("fixture") or {}).get("referee") or "").strip()
+            league_obj = fixture.get("league") or {}
+            league_name = str(league_obj.get("name") or "")
+            league_lower = league_name.casefold()
+            is_women = any(token in league_lower for token in ("women", "womens", "ladies", "female"))
+            is_national = any(token in league_lower for token in ("national", "world cup", "nations league", "international", "euro"))
+            match_category = (
+                "women_national" if is_women and is_national
+                else "women" if is_women
+                else "national" if is_national
+                else "men" if league_name else "unknown"
+            )
             context = {
                 "provider": "api-football",
+                "provider_status": "CONNECTED",
+                "fixture_match_status": "MATCHED",
+                "match_category": match_category,
+                "category_verified": match_category != "unknown",
+                "competition": {
+                    "id": league_obj.get("id"),
+                    "name": league_name or None,
+                    "country": league_obj.get("country"),
+                    "round": league_obj.get("round"),
+                    "season": league_obj.get("season"),
+                },
                 "api_fixture_id": fixture_id,
                 "kickoff_at": kickoff.isoformat() if kickoff is not None else None,
                 "referee": {
                     "id": referee_entity_id(referee) if referee else None,
                     "name": referee or None,
                     "is_confirmed": bool(referee),
+                    "status": "CONFIRMED" if referee else "NO_DATA",
                     "timestamp": now.isoformat(),
                     "source_reliability": None,
                 },
@@ -357,11 +394,15 @@ class ApiFootballContextProvider:
                     "home": {"starting_xi": [], "confirmed": False},
                     "away": {"starting_xi": [], "confirmed": False},
                     "is_confirmed": False,
+                    "status": "NOT_DUE",
+                    "request_status": "NOT_DUE",
+                    "response_received": False,
                     "timestamp": None,
                     "source_reliability": None,
                 },
                 "injuries": [],
                 "injuries_is_confirmed": False,
+                "injuries_status": "NOT_REQUESTED",
                 "injuries_timestamp": None,
                 "injuries_source_reliability": None,
                 "timestamp": now.isoformat(),
@@ -409,9 +450,14 @@ class ApiFootballContextProvider:
                     # Successful response means the provider was queried, not
                     # that injury coverage is guaranteed for that competition.
                     context["injuries_is_confirmed"] = True
+                    context["injuries_status"] = "CONFIRMED" if injuries_by_fixture.get(fixture_id, []) else "NO_DATA"
                     context["injuries_timestamp"] = now.isoformat()
                 injury_batches += 1
             except ApiFootballError as exc:
+                for _, _, context, _ in batch:
+                    context["injuries_status"] = "UNAVAILABLE"
+                    context["injuries_is_confirmed"] = False
+                    context["injuries_timestamp"] = now.isoformat()
                 logs.append(f"API-Football: травмы/дисквалификации недоступны ({exc}).")
                 break
 
@@ -430,6 +476,8 @@ class ApiFootballContextProvider:
                 "fixtures/lineups", lineup_params, ttl=10 * 60
             )
             if not cache_hit and lineup_calls >= self.max_lineup_calls:
+                context["lineup"]["status"] = "NOT_REQUESTED"
+                context["lineup"]["request_status"] = "NOT_REQUESTED"
                 continue
             try:
                 if not cache_hit:
@@ -453,16 +501,27 @@ class ApiFootballContextProvider:
                 away_id = str((fixture_teams.get("away") or {}).get("id") or "")
                 home_lineup = lineup_map.get(home_id, {"starting_xi": [], "confirmed": False})
                 away_lineup = lineup_map.get(away_id, {"starting_xi": [], "confirmed": False})
+                lineup_confirmed = bool(home_lineup["confirmed"] and away_lineup["confirmed"])
                 context["lineup"] = {
                     "home": home_lineup,
                     "away": away_lineup,
-                    "is_confirmed": bool(home_lineup["confirmed"] and away_lineup["confirmed"]),
+                    "is_confirmed": lineup_confirmed,
+                    "status": "CONFIRMED" if lineup_confirmed else "NO_DATA",
+                    "request_status": "RESPONDED",
+                    "response_received": True,
                     "timestamp": now.isoformat(),
                     "source_reliability": None,
                 }
                 context["lineup"]["expected_team_ids"] = [home_id, away_id]
                 context["lineup"]["returned_team_ids"] = sorted(expected_team_ids)
+                context["lineup"]["response_received"] = True
+                context["lineup"]["home"]["timestamp"] = now.isoformat()
+                context["lineup"]["away"]["timestamp"] = now.isoformat()
             except ApiFootballError as exc:
+                context["lineup"]["status"] = "UNAVAILABLE"
+                context["lineup"]["request_status"] = "FAILED"
+                context["lineup"]["response_received"] = False
+                context["lineup"]["timestamp"] = now.isoformat()
                 logs.append(f"API-Football: стартовый состав fixture={fixture_id} недоступен ({exc}).")
 
         logs.append(

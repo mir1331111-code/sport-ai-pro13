@@ -4,6 +4,7 @@ import csv, io, re, hashlib
 from datetime import datetime, timedelta
 
 import streamlit as st
+import pandas as pd
 
 from storage import sqlite_store as db
 from storage import usage
@@ -11,6 +12,7 @@ from ui.cards import translate_match, day_label
 from config import DB_FILE
 from betting.settlement import determine_stat_outcome
 from model.forecast_ledger import MarketForecastLedger
+from model.portfolio_risk import build_portfolio_risk_report
 
 
 def _bet_date(b: dict):
@@ -345,6 +347,40 @@ def render():
     st.header("💼 Портфель")
     signal_count = _render_latest_signals(D)
     bets = [b for b in (D.get("bets") or []) if isinstance(b, dict)]
+    try:
+        bank_history = db.bank_history(limit=100000) if db.SQLITE_BOOT_OK else []
+        risk_report = build_portfolio_risk_report(
+            bets,
+            bank=float(D.get("bank") or 0.0),
+            initial_bank=float((D.get("meta") or {}).get("initial_bank") or 0.0),
+            bank_history=bank_history,
+        )
+        st.subheader("🛡 Контроль экспозиции и риска")
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Открытые позиции", risk_report["pending_count"])
+        r2.metric("Общая экспозиция", f"{risk_report['total_exposure']:.2f}")
+        r3.metric("Экспозиция / банк", f"{risk_report['bank_pct']:.1%}" if risk_report["bank_pct"] is not None else "—")
+        drawdown = risk_report["drawdown"]
+        r4.metric("Максимальная просадка", f"{drawdown['max_drawdown']:.1%}" if drawdown["max_drawdown"] is not None else "—")
+        if risk_report["warnings"]:
+            for warning in risk_report["warnings"]:
+                st.warning(warning)
+        else:
+            st.caption("Текущая экспозиция находится в пределах диагностических ориентиров.")
+        if risk_report["match_rows"]:
+            with st.expander("Экспозиция по матчам", expanded=False):
+                st.dataframe(pd.DataFrame(risk_report["match_rows"]), width="stretch", hide_index=True)
+        if risk_report["league_rows"]:
+            with st.expander("Экспозиция по лигам и датам", expanded=False):
+                risk_left, risk_right = st.columns(2)
+                risk_left.dataframe(pd.DataFrame(risk_report["league_rows"]), width="stretch", hide_index=True)
+                risk_right.dataframe(pd.DataFrame(risk_report["day_rows"]), width="stretch", hide_index=True)
+        st.caption(
+            f"Текущая серия поражений: {risk_report['loss_streak']}. "
+            + risk_report["policy_note"]
+        )
+    except Exception as exc:
+        st.warning(f"Контроль портфельного риска временно недоступен: {type(exc).__name__}")
     if not bets:
         if signal_count:
             st.info(
