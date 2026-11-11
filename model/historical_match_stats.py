@@ -147,16 +147,26 @@ class HistoricalMatchStats:
             if market == "corners":
                 half_home = _num(row.get("HTHG"))
                 half_away = _num(row.get("HTAG"))
+                half_home_corners = _num(row.get("HTHC"))
+                half_away_corners = _num(row.get("HTAC"))
+                # True second-half corner counts require both halftime corner
+                # values. Do not infer them from full-match totals.
                 if (
                     half_home is not None and half_away is not None
                     and half_home.is_integer() and half_away.is_integer()
+                    and half_home_corners is not None and half_away_corners is not None
+                    and half_home_corners.is_integer() and half_away_corners.is_integer()
+                    and half_home_corners <= h and half_away_corners <= a
                 ):
                     state = (
                         "home_trailing" if half_home < half_away
                         else "away_trailing" if half_home > half_away
                         else "level"
                     )
-                    self.corners_halftime_state[league][state].append(h + a)
+                    second_half_corners = (
+                        h + a - half_home_corners - half_away_corners
+                    )
+                    self.corners_halftime_state[league][state].append(second_half_corners)
 
         self.trained_matches[league] += 1
         return True
@@ -353,7 +363,10 @@ def walk_forward_market_validation(
 
         pending_rows = []
         for _, league, home, away, row in group:
-            forecasts = model.predict(home, away, league)
+            forecasts = model.predict(
+                home, away, league,
+                referee_id=row.get("Referee") or row.get("referee_id"),
+            )
             for market, market_lines in lines.items():
                 actual = None
                 if market == "corners":
@@ -459,7 +472,10 @@ def walk_forward_evaluate(rows, league="G", min_history=30):
         home = str(row.get("HomeTeam") or "").strip()
         away = str(row.get("AwayTeam") or "").strip()
         if home and away:
-            forecasts = model.predict(home, away, league)
+            forecasts = model.predict(
+                home, away, league,
+                referee_id=row.get("Referee") or row.get("referee_id"),
+            )
             actuals = {}
             hc, ac = _num(row.get("HC")), _num(row.get("AC"))
             if (
