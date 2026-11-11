@@ -54,6 +54,47 @@ class ContextDataTests(unittest.TestCase):
             )
             self.assertNotIn("secret-test-key", stored)
 
+
+    def test_injuries_are_batched_in_groups_of_twenty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixtures = []
+            rows = []
+            for index in range(22):
+                home = f"Home Team {index}"
+                away = f"Away Team {index}"
+                fixtures.append({
+                    "fixture": {
+                        "id": index + 100,
+                        "date": "2026-11-11T19:00:00+00:00",
+                        "referee": "Referee A",
+                    },
+                    "teams": {
+                        "home": {"id": index * 2 + 1, "name": home},
+                        "away": {"id": index * 2 + 2, "name": away},
+                    },
+                })
+                rows.append({
+                    "HomeTeam": home,
+                    "AwayTeam": away,
+                    "date_iso": "2026-11-11",
+                })
+            session = FakeSession({
+                "fixtures": {"response": fixtures, "errors": []},
+                "injuries": {"response": [], "errors": []},
+            })
+            client = ApiFootballClient("key", cache_dir=directory, session=session)
+            provider = ApiFootballContextProvider(client, max_lineup_calls=0)
+            mapping, _ = provider.enrich(
+                rows,
+                date_from="2026-11-11",
+                date_to="2026-11-11",
+                now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
+            )
+            injury_calls = [call for call in session.calls if call[0].endswith("/injuries")]
+            self.assertEqual(len(injury_calls), 2)
+            self.assertEqual(len(mapping), 22)
+            self.assertTrue(all(value["injuries_is_confirmed"] for value in mapping.values()))
+
     def test_fixture_match_requires_exact_canonical_home_away_and_date(self):
         with tempfile.TemporaryDirectory() as directory:
             session = FakeSession({
