@@ -17,13 +17,13 @@ class OnlineErrorLearnerTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def add(self, i, result, forecast_at=None, settled_at=None, league="League"):
+    def add(self, i, result, forecast_at=None, settled_at=None, league="League", model_version="v1"):
         forecast_at = forecast_at or self.start + timedelta(days=i)
         settled_at = settled_at or forecast_at + timedelta(hours=3)
         key = f"f-{i}"
         self.ledger.record_prediction(
             forecast_key=key, fixture_id=key, home_team="H", away_team="A",
-            league=league, model_version="v1",
+            league=league, model_version=model_version,
             probabilities={"H": 0.6, "D": 0.25, "A": 0.15},
             forecast_at=forecast_at)
         self.ledger.settle(key, result, settled_at=settled_at)
@@ -62,6 +62,23 @@ class OnlineErrorLearnerTests(unittest.TestCase):
         evaluation = self.learner.evaluate(as_of=as_of, league="League")
         self.assertEqual(evaluation["n"], 6)
         self.assertIsNotNone(evaluation["raw_brier"])
+
+    def test_model_version_filter_keeps_calibration_samples_separate(self):
+        for i in range(6):
+            self.add(i, "H", league="League", model_version="model-a")
+        for i in range(6, 12):
+            self.add(i, "A", league="League", model_version="model-b")
+        as_of = self.start + timedelta(days=20)
+        report = self.learner.calibrate(
+            {"H": 0.6, "D": 0.25, "A": 0.15},
+            as_of=as_of, league="League", model_version="model-a",
+        )
+        self.assertEqual(report["history_n"], 6)
+        evaluation = self.learner.evaluate(
+            as_of=as_of, league="League", model_version="model-b",
+        )
+        self.assertEqual(evaluation["n"], 6)
+        self.assertEqual(evaluation["model_version"], "model-b")
 
     def test_invalid_parameters_rejected(self):
         with self.assertRaises(ValueError):
