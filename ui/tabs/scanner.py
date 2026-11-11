@@ -2135,7 +2135,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     ):
                         refresh_now = datetime.now(app_timezone())
                         refresh_rows = []
-                        refresh_lookup = {}
                         for item in top_match_candidates:
                             refresh_card = item["card"]
                             if refresh_card.get("sstats_game_id") in (None, ""):
@@ -2156,7 +2155,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 "AwayTeam": away_name,
                                 "sstats_game_id": refresh_card.get("sstats_game_id"),
                             })
-                            refresh_lookup[refresh_key] = refresh_card
 
                         refreshed_contexts = {}
                         refresh_logs = []
@@ -2228,6 +2226,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     if exc.retry_after_seconds is not None
                                     else "лимит провайдера"
                                 )
+                            )
+                        except Exception as exc:
+                            refreshed_analyses = {}
+                            refresh_logs.append(
+                                f"Groq deep analysis error: {type(exc).__name__}"
                             )
                         for fixture_id, analysis in refreshed_analyses.items():
                             refresh_card = refresh_cards_by_id.get(fixture_id)
