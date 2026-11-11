@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from datetime import datetime, timezone
 
 
 def _present(value):
@@ -45,8 +46,20 @@ def card_quality(card: dict) -> dict:
     btts_odds = card.get("btts_market_odds") or {}
     kickoff = card.get("kickoff_utc") or card.get("date_iso")
     context_received = bool(context)
+    conflicts = set(card.get("data_conflicts") or [])
+    context_state = "confirmed" if context_received else ("empty" if card.get("api_football_fixture_id") else "not_configured")
+    observed = context.get("timestamp")
+    if context_received and observed:
+        try:
+            stamp = datetime.fromisoformat(str(observed).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds() > 6 * 3600:
+                context_state = "stale"
+        except (TypeError, ValueError, OverflowError):
+            context_state = "unavailable"
     checks = [
-        {"name": "API-Football", "state": "confirmed" if context_received else ("empty" if card.get("api_football_fixture_id") else "not_configured"),
+        {"name": "API-Football", "state": "conflict" if "api_football" in conflicts else context_state,
          "detail": "Контекст получен" if context_received else "Нет подтверждённого контекста API-Football"},
         {"name": "Состав хозяев", "state": "confirmed" if home_lineup.get("confirmed") and len(home_xi) >= 11 else ("empty" if context_received else "unavailable"),
          "detail": f"{len(home_xi)} игроков" if home_xi else "Стартовый XI не подтверждён"},
@@ -56,11 +69,11 @@ def card_quality(card: dict) -> dict:
          "detail": str(referee_name) if _present(referee_name) else "Нет подтверждения"},
         {"name": "Травмы", "state": ("confirmed" if injuries else "empty") if injuries_confirmed else "unavailable",
          "detail": "Есть записи источника" if injuries else ("Источник проверен: записей нет" if injuries_confirmed else "Источник не подтвердил покрытие; отсутствие записей не доказывает отсутствие травм")},
-        {"name": "Коэффициенты 1X2", "state": "confirmed" if odds else "empty",
+        {"name": "Коэффициенты 1X2", "state": "conflict" if "1x2_odds" in conflicts else ("confirmed" if odds else "empty"),
          "detail": f"{len(odds)} исходов" if odds else "Нет реальной линии"},
-        {"name": "Коэффициенты тотала", "state": "confirmed" if total_odds else "empty",
+        {"name": "Коэффициенты тотала", "state": "conflict" if "totals_odds" in conflicts else ("confirmed" if total_odds else "empty"),
          "detail": f"{len(total_odds)} линий" if total_odds else "Нет реальной линии"},
-        {"name": "Коэффициенты BTTS", "state": "confirmed" if btts_odds else "empty",
+        {"name": "Коэффициенты BTTS", "state": "conflict" if "btts_odds" in conflicts else ("confirmed" if btts_odds else "empty"),
          "detail": f"{len(btts_odds)} исходов" if btts_odds else "Нет реальной линии"},
     ]
     # Missing, unavailable and unconfigured fields remain in the denominator.
