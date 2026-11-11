@@ -17,7 +17,7 @@ class V14AnalyticsSuiteTests(unittest.TestCase):
         )
         self.assertEqual(
             _tsdb_league_meta("UEFA Women's EURO"),
-            ("W_", "women_national", True, True),
+            ("W_NT", "women_national", True, True),
         )
         self.assertEqual(
             _tsdb_league_meta("UEFA Europa League"),
@@ -46,8 +46,10 @@ class V14AnalyticsSuiteTests(unittest.TestCase):
         day = datetime(2026, 1, 1)
         engine.add("Shared", "Rival", 4, 0, {"Div": "D1"}, match_date=day)
         engine.add("Shared", "Rival", 0, 2, {"Div": "W_"}, match_date=day)
+        engine.add("Shared", "Rival", 1, 1, {"Div": "W_NT"}, match_date=day)
         self.assertEqual(engine.st["Shared"]["hs"], [4])
         self.assertEqual(engine.st["women::Shared"]["hs"], [0])
+        self.assertEqual(engine.st["women_national::Shared"]["hs"], [1])
         self.assertEqual(engine.hg, [4])
         self.assertEqual(engine.namespace_hg["women"], [0])
 
