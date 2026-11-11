@@ -81,6 +81,22 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertAlmostEqual(features["simple_baseline_lambda_total"], 3.0)
         self.assertGreater(features["simple_baseline_over_25"], 0.5)
 
+    def test_llm_historical_features_do_not_cross_competitions(self):
+        engine = SimpleNamespace(st={
+            ("W_E0", "Same Team"): {"hs": [4, 4, 4], "hc": [0, 0, 0]},
+            ("W_E0", "Opponent"): {"as": [0, 0, 0], "ac": [4, 4, 4]},
+            ("E0", "Same Team"): {"hs": [1, 1], "hc": [2, 2]},
+            ("E0", "Opponent"): {"as": [2, 2], "ac": [1, 1]},
+        })
+        women = historical_features(engine, "Same Team", "Opponent", league="W_E0")
+        men = historical_features(engine, "Same Team", "Opponent", league="E0")
+        self.assertEqual(women["home_scored_at_home_avg"], 4.0)
+        self.assertEqual(men["home_scored_at_home_avg"], 1.0)
+        self.assertNotEqual(
+            women["simple_baseline_lambda_total"],
+            men["simple_baseline_lambda_total"],
+        )
+
     def test_scan_records_pre_kickoff_main_and_ai_once(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
