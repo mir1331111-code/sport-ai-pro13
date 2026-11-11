@@ -2358,6 +2358,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     )
 
                 with st.expander("Проверенные исходные данные SStats", expanded=False):
+                    st.caption(
+                        f"SStats game ID: {sstats_data.get('sstats_game_id') or 'нет'} · "
+                        f"Flashscore event ID: {'найден' if sstats_data.get('event_id_resolved') else 'не найден'} · "
+                        f"начало: {sstats_data.get('kickoff_at') or 'не указано'}"
+                    )
+                    st.caption(
+                        "Наблюдения: "
+                        f"досье {sstats_data.get('observed_at') or 'время неизвестно'} · "
+                        f"составы {sstats_data.get('lineup_observed_at') or 'не подтверждены'} · "
+                        f"травмы {sstats_data.get('injuries_observed_at') or 'нет подтверждения'} · "
+                        f"судья {sstats_data.get('referee_observed_at') or 'нет подтверждения'}"
+                    )
                     lineups = sstats_data.get("lineup") or {}
                     source_cols = st.columns(2)
                     with source_cols[0]:
