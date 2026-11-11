@@ -141,8 +141,10 @@ class Engine:
 
         self.calib_logits: list = []
         self.calib_outcomes: list = []
-
+        self.calib_logits_by_group = defaultdict(list)
+        self.calib_outcomes_by_group = defaultdict(list)
         self.calibrator = PlattCalibrator()
+        self.calibrators_by_group: dict[str, PlattCalibrator] = {}
 
         self.lp = defaultdict(_new_lp)
 
@@ -208,25 +210,30 @@ class Engine:
 
         return out or "—"
 
-    def calibrate(self, p: float, ci: int = 0) -> float:
-        return self.calibrator.calibrate(p, ci)
-
-    def refit_calibrator(self) -> None:
-        """
-        Переобучаем калибратор только на уже сыгранных матчах.
-
-        В walk-forward текущий матч сначала получает prediction,
-        затем его результат добавляется в calib_*.
-        Поэтому будущие результаты не используются для текущего
-        прогноза.
-        """
-        if len(self.calib_logits) < 240:
-            return
-
-        self.calibrator.fit(
-            self.calib_logits[-6000:],
-            self.calib_outcomes[-6000:],
+    def calibrate(self, p: float, ci: int = 0, *, group: str = "men") -> float:
+        """Use a population-specific calibrator; sparse groups stay uncalibrated."""
+        calibrator = (
+            self.calibrator if group == "men"
+            else self.calibrators_by_group.get(group)
         )
+        return calibrator.calibrate(p, ci) if calibrator is not None else p
+
+    def refit_calibrator(self, group: str = "men") -> None:
+        """
+        Fit calibration only from already observed results inside one competition
+        population. Women's and unclassified competitions never update the
+        men's calibrator, or each other's calibrators.
+        """
+        if group == "men":
+            logits, outcomes = self.calib_logits, self.calib_outcomes
+            calibrator = self.calibrator
+        else:
+            logits = self.calib_logits_by_group[group]
+            outcomes = self.calib_outcomes_by_group[group]
+            calibrator = self.calibrators_by_group.setdefault(group, PlattCalibrator())
+        if len(logits) < 240:
+            return
+        calibrator.fit(logits[-6000:], outcomes[-6000:])
 
     def _p1px(
         self,
@@ -783,9 +790,9 @@ class Engine:
         # Calibration
         # ---------------------------------------------------------
 
-        c1 = self.calibrate(f1, 0)
-        cx = self.calibrate(fd, 1)
-        c2 = self.calibrate(f2, 2)
+        c1 = self.calibrate(f1, 0, group=model_group)
+        cx = self.calibrate(fd, 1, group=model_group)
+        c2 = self.calibrate(f2, 2, group=model_group)
 
         total_calibrated = c1 + cx + c2 or 1.0
 
@@ -860,24 +867,40 @@ class Engine:
         else:
             outcome = 2
 
-        self.calib_logits += [
+        group = str(item.get("model_group") or (
+            "women" if str(item.get("home") or "").startswith("women::")
+            else "unknown" if str(item.get("home") or "").startswith("unknown::")
+            else "men"
+        ))
+        logits = [
             self._logit(prediction["p1_raw"]),
             self._logit(prediction["x_raw"]),
             self._logit(prediction["p2_raw"]),
         ]
-        self.calib_outcomes += [
+        outcomes = [
             1.0 if outcome == 0 else 0.0,
             1.0 if outcome == 1 else 0.0,
             1.0 if outcome == 2 else 0.0,
         ]
-        if len(self.calib_logits) > 12000:
-            del self.calib_logits[:-12000]
-        if len(self.calib_outcomes) > 12000:
-            del self.calib_outcomes[:-12000]
-
-        self.match_count += 1
-        if self.match_count % 150 == 0:
-            self.refit_calibrator()
+        if group == "men":
+            self.calib_logits.extend(logits)
+            self.calib_outcomes.extend(outcomes)
+            if len(self.calib_logits) > 12000:
+                del self.calib_logits[:-12000]
+            if len(self.calib_outcomes) > 12000:
+                del self.calib_outcomes[:-12000]
+            self.match_count += 1
+            group_matches = self.match_count
+        else:
+            self.calib_logits_by_group[group].extend(logits)
+            self.calib_outcomes_by_group[group].extend(outcomes)
+            if len(self.calib_logits_by_group[group]) > 12000:
+                del self.calib_logits_by_group[group][:-12000]
+            if len(self.calib_outcomes_by_group[group]) > 12000:
+                del self.calib_outcomes_by_group[group][:-12000]
+            group_matches = len(self.calib_logits_by_group[group]) // 3
+        if group_matches and group_matches % 150 == 0:
+            self.refit_calibrator(group)
 
         row = dict(item.get("row") or {})
         row["Div"] = item.get("league") or "G"
