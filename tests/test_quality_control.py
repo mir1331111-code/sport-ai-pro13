@@ -59,12 +59,12 @@ class DataQualityTests(unittest.TestCase):
         self.assertIn("это не доказывает отсутствие травм", " ".join(report["notes"]))
 
     def test_unconfigured_and_unmatched_are_distinct(self):
-        no_key = assess_fixture_quality(
-            self.card, api_configured=False, now=self.now,
-        )
-        self.assertEqual(no_key["statuses"]["API-Football"], "returned")
         empty_card = dict(self.card)
         empty_card["api_context"] = {}
+        no_key = assess_fixture_quality(
+            empty_card, api_configured=False, now=self.now,
+        )
+        self.assertEqual(no_key["statuses"]["API-Football"], "not_configured")
         unmatched = assess_fixture_quality(
             empty_card, api_configured=True, now=self.now,
         )
