@@ -481,7 +481,7 @@ def render():
 
     if risk["overlap"]:
         st.markdown("**Потенциально зависимые позиции одного матча**")
-        st.dataframe(pd.DataFrame(risk["overlap"]), use_container_width=True, hide_index=True)
+        st.dataframe(risk["overlap"], use_container_width=True, hide_index=True)
         st.caption("Это предупреждение о концентрации на одном событии, а не статистически измеренная корреляция исходов.")
     concentration_rows = []
     for label, rows in (
@@ -498,7 +498,7 @@ def render():
             })
     if concentration_rows:
         st.markdown("**Крупнейшие концентрации риска**")
-        st.dataframe(pd.DataFrame(concentration_rows), use_container_width=True, hide_index=True)
+        st.dataframe(concentration_rows, use_container_width=True, hide_index=True)
 
     if st.button("📥 Экспорт CSV"):
         buf = io.StringIO()
