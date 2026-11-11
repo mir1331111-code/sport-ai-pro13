@@ -35,6 +35,31 @@ class ContextModelTests(unittest.TestCase):
         self.assertFalse(quality["strong_value_eligible"])
         self.assertIn("low_source_reliability", quality["missing"])
 
+    def test_context_training_rejects_low_reliability_or_unconfirmed_sources(self):
+        rows = [
+            {
+                "fixture_id": f"bad-{index}",
+                "kickoff_at": f"2026-01-{index + 2:02d}T12:00:00+00:00",
+                "observed_at": f"2026-01-{index + 2:02d}T10:00:00+00:00",
+                "is_confirmed": True,
+                "lineup_is_confirmed": True,
+                "referee_is_confirmed": True,
+                "source_reliability": 0.45,
+                "lineup_strength_home": 0.7,
+                "lineup_strength_away": 0.4,
+                "key_players_missing_home": 0,
+                "key_players_missing_away": 0,
+                "base_p_home": 0.55,
+                "base_p_draw": 0.25,
+                "base_p_away": 0.20,
+                "result": ("H", "D")[index % 2],
+            }
+            for index in range(4)
+        ]
+        fitted = fit_context_blender(rows, min_samples=2, epochs=2)
+        self.assertFalse(fitted["trained"])
+        self.assertEqual(fitted["n"], 0)
+
     def test_walk_forward_ablation_uses_latest_pre_kickoff_snapshot_per_fixture(self):
         from model.context_model import walk_forward_context_ablation
 
