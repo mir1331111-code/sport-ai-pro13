@@ -348,6 +348,40 @@ def render_verdict_card(c: dict, thr: float) -> str:
         except Exception:
             context_html = ""
 
+    api_context = c.get("api_context") or {}
+    context_quality = c.get("context_quality") or {}
+    context_pair = c.get("context_forecasts") or {}
+    if context_quality or api_context or context_pair:
+        base_prob = context_pair.get("Base") or {}
+        context_prob = context_pair.get("Context") or {}
+        xi = (api_context.get("lineup") or {})
+        xi_home = bool((xi.get("home") or {}).get("confirmed"))
+        xi_away = bool((xi.get("away") or {}).get("confirmed"))
+        referee = (api_context.get("referee") or {}).get("name") or "не подтверждён"
+        gate = bool(context_quality.get("strong_value_eligible"))
+        gate_text = "Strong/Value разрешены" if gate else "Strong/Value заблокированы"
+        context_html += (
+            '<div style="margin-top:10px;padding:10px 12px;border-radius:10px;'
+            'background:rgba(14,165,233,.06);border:1px solid rgba(56,189,248,.18);'
+            'color:#cbd5e1;font-size:.74rem;">'
+            '<b style="color:#7dd3fc;">BASE / CONTEXT · качество '
+            + esc(str(context_quality.get("level") or "Low")) + '</b>'
+            '<div style="margin-top:4px;">'
+            'XI хозяев: ' + ('подтверждён' if xi_home else 'нет') +
+            ' · XI гостей: ' + ('подтверждён' if xi_away else 'нет') +
+            ' · судья: ' + esc(str(referee)) +
+            '</div>'
+            '<div style="margin-top:4px;">'
+            + 'П1 ' + f"{float(base_prob.get('H') or 0):.1%}" + ' → '
+            + f"{float(context_prob.get('H') or 0):.1%}" + ' · X '
+            + f"{float(base_prob.get('D') or 0):.1%}" + ' → '
+            + f"{float(context_prob.get('D') or 0):.1%}" + ' · П2 '
+            + f"{float(base_prob.get('A') or 0):.1%}" + ' → '
+            + f"{float(context_prob.get('A') or 0):.1%}"
+            + '</div><div style="margin-top:4px;font-weight:700;">'
+            + gate_text + '</div></div>'
+        )
+
     grok_comment = c.get("grok_comment") or ""
     grok_html = ""
     if grok_comment:
