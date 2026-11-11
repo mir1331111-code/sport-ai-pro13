@@ -206,6 +206,72 @@ class ContextDataTests(unittest.TestCase):
             )
             self.assertIn(("2026-11-12", "home", "away"), mapping)
 
+    def test_successful_fixture_list_reports_unmatched_separately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = FakeSession({
+                "fixtures": {"response": [{
+                    "fixture": {"id": 765, "date": "2026-11-11T19:00:00+00:00"},
+                    "teams": {
+                        "home": {"id": 1, "name": "Different Home"},
+                        "away": {"id": 2, "name": "Different Away"},
+                    },
+                }], "errors": []},
+            })
+            client = ApiFootballClient("key", cache_dir=directory, session=session)
+            provider = ApiFootballContextProvider(client, max_lineup_calls=0)
+            mapping, _ = provider.enrich(
+                [{"HomeTeam": "Home FC", "AwayTeam": "Away FC", "date_iso": "2026-11-11"}],
+                date_from="2026-11-11", date_to="2026-11-11",
+                now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
+            )
+            result = mapping[("2026-11-11", "home", "away")]
+            self.assertEqual(result["api_status"], "no_match")
+            self.assertEqual(result["injuries_status"], "unknown")
+            self.assertEqual(result["lineup"]["status"], "unknown")
+
+    def test_fixture_endpoint_failure_reports_unavailable_not_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = FakeSession({
+                "fixtures": {"response": [], "errors": {"token": "invalid"}},
+            })
+            client = ApiFootballClient("key", cache_dir=directory, session=session)
+            provider = ApiFootballContextProvider(client, max_lineup_calls=0)
+            mapping, _ = provider.enrich(
+                [{"HomeTeam": "Home FC", "AwayTeam": "Away FC", "date_iso": "2026-11-11"}],
+                date_from="2026-11-11", date_to="2026-11-11",
+                now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
+            )
+            result = mapping[("2026-11-11", "home", "away")]
+            self.assertEqual(result["api_status"], "unavailable")
+            self.assertEqual(result["injuries_status"], "unavailable")
+            self.assertEqual(result["lineup"]["status"], "unavailable")
+
+    def test_lineup_request_skipped_due_to_budget_is_explicitly_deferred(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = {
+                "fixture": {
+                    "id": 900, "date": "2026-11-11T15:00:00+00:00",
+                    "referee": "Referee A",
+                },
+                "teams": {
+                    "home": {"id": 1, "name": "Home FC"},
+                    "away": {"id": 2, "name": "Away FC"},
+                },
+            }
+            session = FakeSession({
+                "fixtures": {"response": [fixture], "errors": []},
+                "injuries": {"response": [], "errors": []},
+            })
+            client = ApiFootballClient("key", cache_dir=directory, session=session)
+            provider = ApiFootballContextProvider(client, max_lineup_calls=0)
+            mapping, _ = provider.enrich(
+                [{"HomeTeam": "Home FC", "AwayTeam": "Away FC", "date_iso": "2026-11-11"}],
+                date_from="2026-11-11", date_to="2026-11-11",
+                now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
+            )
+            result = mapping[("2026-11-11", "home", "away")]
+            self.assertEqual(result["lineup"]["status"], "deferred")
+
     def test_fixture_match_requires_exact_canonical_home_away_and_date(self):
         with tempfile.TemporaryDirectory() as directory:
             session = FakeSession({
