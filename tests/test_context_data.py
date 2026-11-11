@@ -50,6 +50,20 @@ class ContextDataTests(unittest.TestCase):
         self.assertEqual(headers, {"x-apisports-key": "secret-test-key"})
         self.assertEqual(timeout, (5, 15))
 
+    def test_api_football_status_check_rejects_inactive_subscription(self):
+        session = FakeSession({
+            "status": {
+                "errors": [],
+                "response": [{
+                    "subscription": {"active": False},
+                    "requests": {"current": 0, "limit_day": 100},
+                }],
+            },
+        })
+        result = api_football_connection_check("known-key", session=session)
+        self.assertFalse(result["ok"])
+        self.assertIn("не активна", result["message"])
+
     def test_api_football_status_check_rejects_empty_and_provider_error(self):
         unused_session = FakeSession({})
         empty = api_football_connection_check("", session=unused_session)
