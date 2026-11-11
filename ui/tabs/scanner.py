@@ -35,6 +35,8 @@ from data.history_import import parse_historical_matches_csv
 from model.context_model import (
     assess_context_quality, context_probabilities, walk_forward_context_ablation,
 )
+from data.competition import competition_gender, model_team_identity, is_women_competition
+from model.quality_control import check_proposed_position
 from model.market_models import (
     asian_handicap_probabilities, asian_handicap_expected_value,
     adjust_corners_for_game_state,
@@ -256,6 +258,9 @@ def _portfolio_auto_recommendation(card: object) -> dict | None:
     validated against an untouched market benchmark.
     """
     if not isinstance(card, dict):
+        return None
+    # Unknown competition category is not silently treated as men's football.
+    if card.get("competition_gender") not in {"men", "women"}:
         return None
     # Legacy cached cards without a confirmed XI and referee are never
     # grandfathered into the portfolio after the context gate is introduced.
@@ -985,8 +990,25 @@ def _render_manual_odds_block(
         context_eligible = bool(
             (c.get("context_quality") or {}).get("strong_value_eligible")
         )
+        category_eligible = c.get("competition_gender") in {"men", "women"}
+        risk_guard_enabled = bool(st.session_state.get("risk_guard_enabled", True))
+        risk_result = check_proposed_position(
+            D.get("bets") or [],
+            bank=float(D.get("bank") or 0.0),
+            candidate={
+                "match": c.get("match"), "league": c.get("league"),
+                "div": c.get("div"), "date_iso": c.get("date_iso"),
+                "stake": stake,
+            },
+            max_match_pct=float(st.session_state.get("risk_limit_match", 5)) / 100,
+            max_league_pct=float(st.session_state.get("risk_limit_league", 12)) / 100,
+            max_day_pct=float(st.session_state.get("risk_limit_day", 20)) / 100,
+        )
+        risk_allowed = not risk_guard_enabled or bool(risk_result.get("allowed"))
         passed = (
-            context_eligible
+            category_eligible
+            and risk_allowed
+            and context_eligible
             and rec_verdict is not None
             and market_is_validated
             and prob >= max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB)
@@ -994,7 +1016,16 @@ def _render_manual_odds_block(
             and ev >= min_ev
             and stake > 0
         )
-        if not context_eligible:
+        if not category_eligible:
+            col_btn.warning(
+                "Добавление запрещено: пол/категория соревнования не подтверждены источником. "
+                "Прогноз остаётся справочным."
+            )
+        elif not risk_allowed:
+            col_btn.error(
+                "RISK GUARD: " + " ".join(risk_result.get("reasons") or [])
+            )
+        elif not context_eligible:
             col_btn.info(
                 "Добавление в портфель отключено: требуется подтверждённый стартовый XI "
                 "обеих команд и подтверждённый судья."
@@ -1034,7 +1065,7 @@ def _render_manual_odds_block(
                         )
                         or "unknown"
                     ),
-                    "mode": "real",
+                    "mode": "paper",
                     "date": (parse_date(c.get("date_iso", "")) or datetime.now()).strftime("%d.%m.%Y"),
                     "date_iso": c.get("date_iso"),
                     "match_time": c.get("time", ""),
@@ -2358,11 +2389,22 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             h_ru = translate_team(h_en)
             a_ru = translate_team(a_en)
             lg = r.get("Div") or "G"
+            gender = competition_gender(
+                division=lg, league=r.get("League"),
+                women_flag=r.get("women"), home=h_en, away=a_en,
+            )
+            if gender == "women" and not str(lg).startswith("W_"):
+                lg = "W_"
+            model_home = model_team_identity(h_en, gender=gender)
+            model_away = model_team_identity(a_en, gender=gender)
+            league_label = str(r.get("League") or DIV_NAMES.get(lg, "Лига"))
+            if gender == "women" and not is_women_competition(league_label):
+                league_label = league_label + " (Ж)"
 
             funnel_counts["model"] += 1
 
             try:
-                P = engine.predict(h_en, a_en, lg, match_date=d,
+                P = engine.predict(model_home, model_away, lg, match_date=d,
                                    cup=lg in ("C1", "EL", "EC"))
             except Exception:
                 funnel_counts["skip"] += 1
@@ -2370,8 +2412,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if P.get("xg_used"):
                 xg_used_count += 1
 
-            fh = engine.form_str(h_en)
-            fa = engine.form_str(a_en)
+            fh = engine.form_str(model_home)
+            fa = engine.form_str(model_away)
             verdict, rows_, _ = build_verdict(
                 P, min_prob, D["bank"], kelly_frac,
                 h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
@@ -2848,7 +2890,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
             cards.append({
                 "div": lg,
-                "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                "league": league_label,
+                "women": gender == "women",
+                "competition_gender": gender,
+                "model_home_key": model_home,
+                "model_away_key": model_away,
                 "match": f"{h_en} vs {a_en}",
                 "match_ru": f"{h_ru} — {a_ru}",
                 "date": d.strftime("%d.%m") +
@@ -2875,7 +2921,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 # LLM receives observed venue-specific goal averages, not the primary model's lambdas.
                 "independent_features": {
-                    **historical_features(engine, h_en, a_en),
+                    **historical_features(engine, model_home, model_away),
                     "markets": historical_stats,
                 },
                 "xg_used": bool(P.get("xg_used")),
@@ -3114,6 +3160,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if probability < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB):
                     continue
                 if stake_value <= 0 or stake_value > available_bank:
+                    continue
+                risk_guard_enabled = bool(st.session_state.get("risk_guard_enabled", True))
+                risk_result = check_proposed_position(
+                    list(D.get("bets") or []) + new_bets,
+                    bank=available_bank,
+                    candidate={
+                        "match": card.get("match"), "league": card.get("league"),
+                        "div": card.get("div"), "date_iso": card.get("date_iso"),
+                        "stake": stake_value,
+                    },
+                    max_match_pct=float(st.session_state.get("risk_limit_match", 5)) / 100,
+                    max_league_pct=float(st.session_state.get("risk_limit_league", 12)) / 100,
+                    max_day_pct=float(st.session_state.get("risk_limit_day", 20)) / 100,
+                )
+                if risk_guard_enabled and not risk_result.get("allowed"):
+                    logs.append(
+                        "🛡️ RISK GUARD: "
+                        + str(card.get("match_ru") or card.get("match") or "Матч")
+                        + " — " + " ".join(risk_result.get("reasons") or [])
+                    )
                     continue
                 new_bet = {
                     "match": card.get("match", ""),
