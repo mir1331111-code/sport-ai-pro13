@@ -43,9 +43,9 @@ def card_quality(card: dict) -> dict:
     checks = [
         {"name": "API-Football", "state": "confirmed" if context else ("not_configured" if not card.get("api_football_fixture_id") else "empty"),
          "detail": "Контекст получен" if context else "Нет подтверждённого контекста API-Football"},
-        {"name": "Состав хозяев", "state": "confirmed" if home_xi else "empty",
+        {"name": "Состав хозяев", "state": "confirmed" if home_lineup.get("confirmed") and len(home_xi) >= 11 else ("empty" if context else "unavailable"),
          "detail": f"{len(home_xi)} игроков" if home_xi else "Стартовый XI не подтверждён"},
-        {"name": "Состав гостей", "state": "confirmed" if away_xi else "empty",
+        {"name": "Состав гостей", "state": "confirmed" if away_lineup.get("confirmed") and len(away_xi) >= 11 else ("empty" if context else "unavailable"),
          "detail": f"{len(away_xi)} игроков" if away_xi else "Стартовый XI не подтверждён"},
         {"name": "Судья", "state": "confirmed" if _present(referee) else "empty",
          "detail": str(referee) if _present(referee) else "Нет подтверждения"},
