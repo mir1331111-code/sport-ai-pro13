@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from data.team_names import normalize_team
+from storage.context_store import referee_entity_id
 
 
 BASE_URL = "https://v3.football.api-sports.io"
@@ -317,7 +318,7 @@ class ApiFootballContextProvider:
                 "provider": "api-football",
                 "api_fixture_id": fixture_id,
                 "referee": {
-                    "id": None,
+                    "id": referee_entity_id(referee) if referee else None,
                     "name": referee or None,
                     "is_confirmed": bool(referee),
                     "timestamp": now.isoformat(),
@@ -344,13 +345,15 @@ class ApiFootballContextProvider:
         injury_matches = sorted(
             matches,
             key=lambda item: item[3] or datetime.max.replace(tzinfo=timezone.utc),
-        )[:20]
-        if injury_matches:
-            ids = "-".join(str(item[0]) for item in injury_matches)
+        )
+        injury_batches = 0
+        for batch_start in range(0, len(injury_matches), 20):
+            batch = injury_matches[batch_start:batch_start + 20]
+            ids = "-".join(str(item[0]) for item in batch)
             try:
                 payload = self.client.get("injuries", {"ids": ids}, ttl=4 * 60 * 60)
                 injuries_by_fixture: dict[int, list] = {
-                    item[0]: [] for item in injury_matches
+                    item[0]: [] for item in batch
                 }
                 for item in payload.get("response") or []:
                     if not isinstance(item, dict):
@@ -371,12 +374,16 @@ class ApiFootballContextProvider:
                             "type": str(player.get("type") or ""),
                             "reason": str(player.get("reason") or ""),
                         })
-                for fixture_id, _, context, _ in injury_matches:
+                for fixture_id, _, context, _ in batch:
                     context["injuries"] = injuries_by_fixture.get(fixture_id, [])
+                    # Successful response means the provider was queried, not
+                    # that injury coverage is guaranteed for that competition.
                     context["injuries_is_confirmed"] = True
                     context["injuries_timestamp"] = now.isoformat()
+                injury_batches += 1
             except ApiFootballError as exc:
                 logs.append(f"API-Football: травмы/дисквалификации недоступны ({exc}).")
+                break
 
         # The lineup endpoint is only worth calling near kickoff; query the
         # closest matches first and never burn the full quota on a wide horizon.
@@ -398,12 +405,7 @@ class ApiFootballContextProvider:
                     str((item.get("team") or {}).get("id") or "")
                     for item in teams if isinstance(item, dict)
                 }
-                home_team_id = str(
-                    ((next((item for item in teams if (item.get("team") or {}).get("name")
-                           == context["lineup"]["home"].get("team_name")), {}) or {}).get("team") or {}).get("id") or ""
-                )
-                # Provider response ordering is home/away, but team names are used
-                # only as labels; fixture team IDs identify the expected side.
+                # The fixture's team IDs are authoritative for home/away identity.
                 fixture_obj = next(
                     (match[1] for match in matches if match[0] == fixture_id), {}
                 )
@@ -421,14 +423,13 @@ class ApiFootballContextProvider:
                 }
                 context["lineup"]["expected_team_ids"] = [home_id, away_id]
                 context["lineup"]["returned_team_ids"] = sorted(expected_team_ids)
-                context["lineup"]["home_team_lookup_id"] = home_team_id or None
                 lineup_calls += 1
             except ApiFootballError as exc:
                 logs.append(f"API-Football: стартовый состав fixture={fixture_id} недоступен ({exc}).")
 
         logs.append(
             f"API-Football: fixtures={len(api_fixtures)}, сопоставлено={len(matches)}, "
-            f"injuries batch={'ok' if injury_matches and all(x[2]['injuries_is_confirmed'] for x in injury_matches) else 'нет'}, "
+            f"injuries batches={injury_batches}, "
             f"lineups calls={lineup_calls}, бюджет использован={self.client.budget.used_today()}."
         )
         return result, logs
