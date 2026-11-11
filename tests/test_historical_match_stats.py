@@ -141,6 +141,48 @@ class HistoricalMatchStatsTests(unittest.TestCase):
             report["markets"]["cards"]["4.5"]["n"] - 1,
         )
 
+    def test_referee_rates_blend_into_cards_with_dispersion_after_five_matches(self):
+        model = HistoricalMatchStats(min_team_games=1)
+        rows = [
+            {"HomeTeam": f"H{i}", "AwayTeam": f"A{i}", "HC": 5, "AC": 4,
+             "HY": 2 + (i % 2), "AY": 1, "HR": 0, "AR": 0,
+             "Referee": "Referee A"}
+            for i in range(6)
+        ]
+        for row in rows:
+            model.learn_step(row, "E0")
+        prediction = model.predict("New Home", "New Away", "E0", referee_id="REFEREE A")
+        referee = prediction["cards"]["referee"]
+        self.assertTrue(referee["available"])
+        self.assertEqual(referee["n"], 6)
+        self.assertGreaterEqual(referee["variance"], 0.0)
+        self.assertGreater(referee["blend_weight"], 0.0)
+        self.assertNotEqual(
+            prediction["cards"]["total"],
+            prediction["cards"]["league_home_avg"] + prediction["cards"]["league_away_avg"],
+        )
+        self.assertGreaterEqual(prediction["cards"]["total_variance"], 0.1)
+
+    def test_corners_expose_halftime_score_state_splits_without_leaking_them_into_base(self):
+        model = HistoricalMatchStats(min_team_games=1)
+        rows = [
+            {"HomeTeam": "H1", "AwayTeam": "A1", "HC": 8, "AC": 5, "HTHG": 0, "HTAG": 1,
+             "HY": 1, "AY": 1, "HR": 0, "AR": 0},
+            {"HomeTeam": "H2", "AwayTeam": "A2", "HC": 7, "AC": 4, "HTHG": 0, "HTAG": 0,
+             "HY": 1, "AY": 1, "HR": 0, "AR": 0},
+            {"HomeTeam": "H3", "AwayTeam": "A3", "HC": 9, "AC": 5, "HTHG": 1, "HTAG": 0,
+             "HY": 1, "AY": 1, "HR": 0, "AR": 0},
+        ]
+        for row in rows:
+            model.learn_step(row, "E0")
+        prediction = model.predict("New Home", "New Away", "E0")
+        splits = prediction["corners"]["game_state_splits"]
+        self.assertEqual(splits["home_trailing"]["n"], 1)
+        self.assertEqual(splits["level"]["n"], 1)
+        self.assertEqual(splits["away_trailing"]["n"], 1)
+        self.assertAlmostEqual(prediction["corners"]["total"], 13.0)
+        self.assertAlmostEqual(splits["home_trailing"]["mean"], 13.0)
+
     def test_history_stats_survive_pickle_round_trip_and_keep_defaultdicts(self):
         from model.engine import Engine
 
