@@ -163,7 +163,7 @@ except ImportError as exc:
     _SETTLEMENT_READY_FALLBACK = True
 from model.forecast_ledger import MarketForecastLedger  # noqa: E402
 from ui import theme  # noqa: E402
-from ui.tabs import scanner, portfolio, stats, calculator, backtest  # noqa: E402
+from ui.tabs import scanner, portfolio, stats, calculator, backtest, quality  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[APP] %(message)s")
 log = logging.getLogger("neurobet")
@@ -1007,18 +1007,44 @@ with st.sidebar:
             st.session_state.confirm_clear = False
             st.rerun()
 
-# ==================== TABS ====================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["🏟 Сканер", "💼 Портфель", "📈 Статистика",
-     "🧮 Калькулятор", "🧪 Бэктест"])
+# ==================== ANALYTICS TERMINAL ====================
+api_key_status = {
+    "API-Football": bool(str(api_football_key or "").strip()),
+    "SStats.net": bool(str(sstats_key or "").strip()),
+    "Highlightly": bool(str(highlightly_key or "").strip()),
+    "Football API": bool(str(footballapi_key or "").strip()),
+    "football-data.org": bool(str(fdorg_token or "").strip()),
+    "LLM provider": bool(str(llm_key or "").strip()),
+}
 
-with tab1:
+(
+    tab_scanner, tab_portfolio, tab_quality, tab_learning,
+    tab_stats, tab_model_lab, tab_calculator, tab_api,
+) = st.tabs([
+    "⚽ LIVE SCANNER",
+    "💼 PORTFOLIO",
+    "🧭 DATA QUALITY",
+    "🧠 AI LEARNING",
+    "📈 STATISTICS",
+    "🧪 MODEL LAB",
+    "🧮 CALCULATOR",
+    "🔌 API CENTER",
+])
+
+with tab_scanner:
     scanner.render(min_prob, kelly_frac, matrix_n, min_edge)
-with tab2:
+with tab_portfolio:
     portfolio.render()
-with tab3:
+with tab_quality:
+    quality.render_data_quality(D, api_keys=api_key_status)
+with tab_learning:
+    quality.render_learning_center(DB_FILE)
+with tab_stats:
     stats.render()
-with tab4:
-    calculator.render(matrix_n)
-with tab5:
+with tab_model_lab:
+    quality.render_model_lab(DB_FILE)
     backtest.render(matrix_n)
+with tab_calculator:
+    calculator.render(matrix_n)
+with tab_api:
+    quality.render_api_center(api_key_status)
