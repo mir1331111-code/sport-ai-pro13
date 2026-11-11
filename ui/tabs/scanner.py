@@ -50,13 +50,17 @@ from betting.ranking import model_favorite, rank_model_favorites, rank_score
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
 from betting.kelly import kelly, market_type
 from betting.market_math import blend_probability, proportional_devig
-from llm.analyst import LLMRateLimitError, analyze_match, has_sufficient_history
+from llm.analyst import LLMRateLimitError
+from llm.deep_analysis import (
+    MAX_TOP_MATCHES, build_match_dossier, analyze_top_matches,
+    format_top_match_opinion, merge_context_snapshots,
+    select_top_matches, top_match_shortlist_diagnostics,
+)
 from model.independent_forecasts import historical_features, record_scan_forecasts
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label, render_fixture_header)
 from ui.scanner_engine import _train_engine, _shared_engine_cache, _load_engine
 
-LLM_TOP_N = 8
 MAX_STAKE_PCT = 0.05
 AUTO_PORTFOLIO_MIN_PROB = STRONG_FORECAST_MIN_PROB  # Shared 65% gate; separate from Value proof.
 MARKET_FORECAST_DISPLAY_LIMIT = 20
@@ -161,7 +165,10 @@ def _render_context_comparison(card: dict) -> None:
                     st.markdown("**Стартовый состав хозяев**")
                     if home_players:
                         st.write(", ".join(
-                            str(player.get("name") or player.get("id") or "Игрок")
+                            str(
+                                player.get("name") or player.get("player_name") or player.get("id") or "Игрок"
+                                if isinstance(player, dict) else player
+                            )
                             for player in home_players
                         ))
                     else:
@@ -170,7 +177,10 @@ def _render_context_comparison(card: dict) -> None:
                     st.markdown("**Стартовый состав гостей**")
                     if away_players:
                         st.write(", ".join(
-                            str(player.get("name") or player.get("id") or "Игрок")
+                            str(
+                                player.get("name") or player.get("player_name") or player.get("id") or "Игрок"
+                                if isinstance(player, dict) else player
+                            )
                             for player in away_players
                         ))
                     else:
@@ -1759,6 +1769,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             family: rank_market_forecasts(market_pool, family)
             for family in ("winner", "goals", "btts", "corners", "cards")
         }
+        top_match_min_probability = max(
+            float(STRONG_FORECAST_MIN_PROB), float(min_prob)
+        )
+        top_match_diagnostics = top_match_shortlist_diagnostics(
+            market_pool, min_probability=top_match_min_probability,
+            min_team_history=5,
+        )
+        top_match_candidates = select_top_matches(
+            market_pool,
+            limit=MAX_TOP_MATCHES,
+            min_probability=top_match_min_probability,
+            min_team_history=5,
+        )
         forecast_counts = {
             family: len(items) for family, items in ranked_forecast_pool.items()
         }
@@ -1774,6 +1797,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"Угловые · прогнозы {forecast_counts['corners']} (сильных {strong_forecast_counts['corners']}) / Value {signal_counts['corners']} / цены {quote_counts['corners']}",
             f"Карточки · прогнозы {forecast_counts['cards']} (сильных {strong_forecast_counts['cards']}) / Value {signal_counts['cards']} / цены {quote_counts['cards']}",
             f"Форы · котировки {quote_counts['handicap']}",
+            f"🏆 TOP MATCHES · GROQ {len(top_match_candidates)}/{MAX_TOP_MATCHES}",
         ])
 
         def _market_recommendation(card, family):
@@ -2060,6 +2084,339 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "Пока нет отдельного out-of-sample benchmark на одинаковой выборке, рынок остаётся "
                     "информационным и не может попасть в Value-портфель."
                 )
+
+        with market_tabs[7]:
+            st.caption(
+                "Отдельный аналитический список: фаворит 1X2 от "
+                f"{top_match_min_probability:.0%}, не менее 5 домашних матчей хозяев "
+                "и 5 выездных матчей гостей, полная линия 1X2 от SStats. "
+                "Это кандидаты для подробного разбора, а не подтверждённые Value-ставки. "
+                "Groq не получает вероятности и коэффициенты основной модели."
+            )
+            st.caption(
+                "Фильтр: "
+                f"матчей {top_match_diagnostics['fixtures']} → "
+                f"сильная вероятность {top_match_diagnostics['strong_probability']} → "
+                f"достаточная история {top_match_diagnostics['enough_venue_history']} → "
+                f"полная линия SStats {top_match_diagnostics['complete_1x2_prices']} → "
+                f"кандидатов {top_match_diagnostics['eligible']}."
+            )
+            if not top_match_candidates:
+                st.info(
+                    "В этом сканировании нет матчей, прошедших все условия TOP MATCHES. "
+                    "Список не заполняется слабыми событиями искусственно."
+                )
+
+            refresh_top_dossiers = st.button(
+                "🔄 Обновить SStats-досье и повторить анализ Groq",
+                key="top_matches_refresh_sstats_groq",
+                disabled=not bool(top_match_candidates),
+                help=(
+                    "Повторно проверяет составы, травмы и судью только у выбранных "
+                    "матчей, затем отправляет Groq один пакетный запрос."
+                ),
+            )
+            if refresh_top_dossiers:
+                refresh_sstats_key = _runtime_secret(
+                    "sstats_api_key_input", "SSTATS_API_KEY", "sstats_api_key"
+                )
+                refresh_llm_key = _runtime_secret(
+                    "llm_api_key_input", "LLM_API_KEY", "llm_api_key"
+                )
+                if not refresh_sstats_key:
+                    st.error("Для обновления досье не найден ключ SStats.")
+                elif not refresh_llm_key:
+                    st.error("Для подробного анализа Groq не задан LLM key.")
+                elif usage.llm_remaining() <= 0:
+                    st.error("Дневной лимит LLM исчерпан.")
+                else:
+                    with st.spinner(
+                        f"Обновляю SStats и отправляю Groq до {len(top_match_candidates)} матчей одним пакетом…"
+                    ):
+                        refresh_now = datetime.now(app_timezone())
+                        refresh_rows = []
+                        for item in top_match_candidates:
+                            refresh_card = item["card"]
+                            if refresh_card.get("sstats_game_id") in (None, ""):
+                                continue
+                            home_name = str(refresh_card.get("home_team") or "")
+                            away_name = str(refresh_card.get("away_team") or "")
+                            date_key = str(refresh_card.get("date_iso") or "")[:10]
+                            refresh_key = fixture_row_key(
+                                home_name, away_name, date_key
+                            )
+                            refresh_rows.append({
+                                "Date": (
+                                    f"{date_key} {refresh_card.get('time') or ''}"
+                                ).strip(),
+                                "date_iso": date_key,
+                                "kickoff_utc": refresh_card.get("kickoff_utc") or "",
+                                "HomeTeam": home_name,
+                                "AwayTeam": away_name,
+                                "sstats_game_id": refresh_card.get("sstats_game_id"),
+                            })
+
+                        refreshed_contexts = {}
+                        refresh_logs = []
+                        if refresh_rows:
+                            offset = refresh_now.utcoffset()
+                            offset_hours = (
+                                int(round(offset.total_seconds() / 3600))
+                                if offset else 0
+                            )
+                            try:
+                                refreshed_contexts, refresh_logs = sstats_context_enrich(
+                                    refresh_rows,
+                                    refresh_sstats_key,
+                                    date_from=refresh_now.date().isoformat(),
+                                    date_to=(
+                                        refresh_now.date() + timedelta(days=days - 1)
+                                    ).isoformat(),
+                                    now=refresh_now,
+                                    max_injury_checks=MAX_TOP_MATCHES,
+                                    max_lineup_checks=MAX_TOP_MATCHES,
+                                    timezone_offset=offset_hours,
+                                )
+                            except Exception as exc:
+                                refresh_logs.append(
+                                    f"SStats refresh error: {type(exc).__name__}"
+                                )
+                        elif not refresh_rows:
+                            refresh_logs.append(
+                                "SStats game IDs отсутствуют; обновить досье невозможно."
+                            )
+
+                        refresh_dossiers = []
+                        refresh_cards_by_id = {}
+                        for rank, item in enumerate(top_match_candidates, start=1):
+                            refresh_card = item["card"]
+                            home_name = str(refresh_card.get("home_team") or "")
+                            away_name = str(refresh_card.get("away_team") or "")
+                            date_key = str(refresh_card.get("date_iso") or "")[:10]
+                            refresh_key = fixture_row_key(
+                                home_name, away_name, date_key
+                            )
+                            refresh_card["deep_analysis_context"] = merge_context_snapshots(
+                                refresh_card.get("deep_analysis_context")
+                                or refresh_card.get("api_context") or {},
+                                refreshed_contexts.get(refresh_key)
+                                if isinstance(refreshed_contexts.get(refresh_key), dict)
+                                else {},
+                            )
+                            dossier = build_match_dossier(refresh_card)
+                            dossier["shortlist_rank"] = rank
+                            refresh_dossiers.append(dossier)
+                            refresh_cards_by_id[dossier["fixture_id"]] = refresh_card
+
+                        try:
+                            refreshed_analyses = analyze_top_matches({
+                                "api_key": refresh_llm_key,
+                                "provider": D.get("meta", {}).get(
+                                    "llm_provider", "Groq (бесплатно, быстро)"
+                                ),
+                                "model": D.get("meta", {}).get("llm_model", ""),
+                                "candidates": refresh_dossiers,
+                            })
+                        except LLMRateLimitError as exc:
+                            refreshed_analyses = {}
+                            refresh_logs.append(
+                                "Groq rate limit: "
+                                + (
+                                    f"retry after {exc.retry_after_seconds:.0f}s"
+                                    if exc.retry_after_seconds is not None
+                                    else "лимит провайдера"
+                                )
+                            )
+                        except Exception as exc:
+                            refreshed_analyses = {}
+                            refresh_logs.append(
+                                f"Groq deep analysis error: {type(exc).__name__}"
+                            )
+                        for fixture_id, analysis in refreshed_analyses.items():
+                            refresh_card = refresh_cards_by_id.get(fixture_id)
+                            if not refresh_card:
+                                continue
+                            model_pick = max(
+                                (("П1", float(refresh_card.get("p1") or 0.0)),
+                                 ("X", float(refresh_card.get("px") or 0.0)),
+                                 ("П2", float(refresh_card.get("p2") or 0.0))),
+                                key=lambda pair: pair[1],
+                            )[0]
+                            refresh_card["deep_analysis"] = analysis
+                            refresh_card["llm_opinion"] = format_top_match_opinion(
+                                analysis, model_pick_code=model_pick
+                            )
+                            refresh_card["deep_analysis_fixture_id"] = fixture_id
+
+                        updated_data = dict(D)
+                        updated_data["cards"] = all_cards
+                        updated_report = list(D.get("report") or [])
+                        updated_report.extend(
+                            "🏆 TOP refresh: " + str(line) for line in refresh_logs
+                        )
+                        updated_report.append(
+                            f"🏆 TOP refresh: Groq получил {len(refreshed_analyses)}/"
+                            f"{len(refresh_dossiers)} досье."
+                        )
+                        updated_data["report"] = updated_report[-150:]
+                        st.session_state.data = updated_data
+                        usage.set_local_data(updated_data)
+                        st.success(
+                            f"Досье обновлены; Groq вернул {len(refreshed_analyses)} "
+                            f"из {len(refresh_dossiers)} разборов."
+                        )
+                        st.rerun()
+
+            for rank, favorite_item in enumerate(top_match_candidates, start=1):
+                card = favorite_item["card"]
+                analysis = card.get("deep_analysis") or {}
+                dossier = build_match_dossier(card)
+                sstats_data = dossier.get("sstats_context") or {}
+                match_title = str(card.get("match_ru") or card.get("match") or "Матч")
+                st.markdown(f"### #{rank} · {html.escape(match_title)}")
+                st.caption(
+                    f"{html.escape(str(card.get('league') or 'Футбол'))} · "
+                    f"{html.escape(str(card.get('date') or card.get('date_iso') or ''))} "
+                    f"{html.escape(str(card.get('time') or ''))} · "
+                    f"история команд {favorite_item['sample_games']} матчей"
+                )
+                top_cols = st.columns(3)
+                top_cols[0].metric(
+                    "Сильный прогноз основной модели",
+                    f"{favorite_item['probability']:.1%}",
+                    str(favorite_item["label"]),
+                )
+                top_cols[1].metric(
+                    "Независимый вердикт Groq",
+                    (
+                        f"{analysis.get('independent_pick')} · "
+                        f"{float((analysis.get('probabilities') or {}).get(analysis.get('independent_pick')) or 0):.1f}%"
+                        if analysis else "Не получен"
+                    ),
+                    str(analysis.get("data_quality") or "ожидается") if analysis else "проверь LLM key/лимит",
+                )
+                top_cols[2].metric(
+                    "Контекст SStats",
+                    (
+                        "Подтверждён"
+                        if (
+                            sstats_data.get("lineup", {}).get("home_confirmed")
+                            and sstats_data.get("lineup", {}).get("away_confirmed")
+                            and sstats_data.get("referee", {}).get("confirmed")
+                        )
+                        else "Частичный / неизвестен"
+                    ),
+                    "составы · травмы · судья",
+                )
+
+                if analysis:
+                    st.markdown("**Вердикт Groq**")
+                    st.write(analysis.get("match_assessment") or "Общий разбор не вернулся.")
+                    p = analysis.get("probabilities") or {}
+                    st.caption(
+                        "Независимая оценка 1X2 · "
+                        f"П1 {float(p.get('П1') or 0):.1f}% · "
+                        f"X {float(p.get('X') or 0):.1f}% · "
+                        f"П2 {float(p.get('П2') or 0):.1f}%"
+                    )
+                    assessment_cols = st.columns(2)
+                    with assessment_cols[0]:
+                        st.markdown("**Составы и влияние**")
+                        st.write(analysis.get("lineup_assessment") or "Нет отдельной оценки.")
+                        st.markdown("**Травмы и дисквалификации**")
+                        st.write(analysis.get("injury_assessment") or "Нет отдельной оценки.")
+                        st.markdown("**Форма и история**")
+                        st.write(analysis.get("form_assessment") or "Нет отдельной оценки.")
+                    with assessment_cols[1]:
+                        st.markdown("**Судья**")
+                        st.write(analysis.get("referee_assessment") or "Нет отдельной оценки.")
+                        st.markdown("**Риски**")
+                        st.write(analysis.get("risks") or "Дополнительные риски не указаны.")
+                    model_pick_code = max(
+                        (("П1", float(card.get("p1") or 0.0)),
+                         ("X", float(card.get("px") or 0.0)),
+                         ("П2", float(card.get("p2") or 0.0))),
+                        key=lambda pair: pair[1],
+                    )[0]
+                    if analysis.get("independent_pick") != model_pick_code:
+                        st.warning(
+                            f"Расхождение моделей: основная модель — {model_pick_code}, "
+                            f"Groq — {analysis.get('independent_pick')}."
+                        )
+                    else:
+                        st.success(
+                            f"Независимый выбор Groq совпал с основной моделью: {model_pick_code}."
+                        )
+                    st.caption(
+                        "Качество данных Groq ограничено фактическим покрытием SStats: "
+                        f"{analysis.get('data_quality', 'low')}."
+                    )
+                else:
+                    st.warning(
+                        "Подбор прошёл, но подробный разбор Groq не сохранён. "
+                        "Проверь наличие LLM key, дневной лимит и журнал диагностики."
+                    )
+
+                with st.expander("Проверенные исходные данные SStats", expanded=False):
+                    st.caption(
+                        f"SStats game ID: {sstats_data.get('sstats_game_id') or 'нет'} · "
+                        f"Flashscore event ID: {'найден' if sstats_data.get('event_id_resolved') else 'не найден'} · "
+                        f"начало: {sstats_data.get('kickoff_at') or 'не указано'}"
+                    )
+                    st.caption(
+                        "Наблюдения: "
+                        f"досье {sstats_data.get('observed_at') or 'время неизвестно'} · "
+                        f"составы {sstats_data.get('lineup_observed_at') or 'не подтверждены'} · "
+                        f"травмы {sstats_data.get('injuries_observed_at') or 'нет подтверждения'} · "
+                        f"судья {sstats_data.get('referee_observed_at') or 'нет подтверждения'}"
+                    )
+                    lineups = sstats_data.get("lineup") or {}
+                    source_cols = st.columns(2)
+                    with source_cols[0]:
+                        st.markdown("**Стартовый XI хозяев**")
+                        home_players = lineups.get("home_players") or []
+                        if lineups.get("home_confirmed"):
+                            st.write(", ".join(home_players) if home_players else "Подтверждённый XI без имён в ответе.")
+                        else:
+                            st.warning("Стартовый XI хозяев не подтверждён.")
+                        st.markdown("**Стартовый XI гостей**")
+                        away_players = lineups.get("away_players") or []
+                        if lineups.get("away_confirmed"):
+                            st.write(", ".join(away_players) if away_players else "Подтверждённый XI без имён в ответе.")
+                        else:
+                            st.warning("Стартовый XI гостей не подтверждён.")
+                    with source_cols[1]:
+                        st.markdown("**Судья**")
+                        referee = sstats_data.get("referee") or {}
+                        if referee.get("confirmed") and referee.get("name"):
+                            st.write(referee.get("name"))
+                            ref_stats = referee.get("historical_cards") or {}
+                            if ref_stats.get("available"):
+                                st.caption(
+                                    f"История карточек: n={ref_stats.get('n', 0)} · "
+                                    f"среднее {ref_stats.get('mean', 0):.2f} · "
+                                    f"дисперсия {ref_stats.get('variance', 0):.2f}"
+                                )
+                        else:
+                            st.warning("Назначение судьи не подтверждено.")
+                        st.markdown("**Травмы / дисквалификации**")
+                        if sstats_data.get("injury_feed_confirmed"):
+                            injuries = sstats_data.get("injuries_listed") or []
+                            if injuries:
+                                for injury in injuries:
+                                    st.caption(
+                                        f"{injury.get('team', 'Команда не указана')}: "
+                                        f"{injury.get('player', 'Игрок не указан')} · "
+                                        f"{injury.get('reason') or injury.get('status') or 'причина не указана'}"
+                                    )
+                            else:
+                                st.info(
+                                    "SStats вернул подтверждённый пустой список. "
+                                    "Это не доказывает отсутствие всех травм."
+                                )
+                        else:
+                            st.warning("Фид травм не подтверждён.")
+                st.divider()
 
         st.caption(
             "✅ Общий shortlist: " + str(len(cards_view))
@@ -2786,6 +3143,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             cards.append({
                 "div": lg,
                 "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
+                "home_team": h_en,
+                "away_team": a_en,
                 "match": f"{h_en} vs {a_en}",
                 "match_ru": f"{h_ru} — {a_ru}",
                 "date": d.strftime("%d.%m") +
@@ -2883,120 +3242,172 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов")
         logs.append(f"🎯 BET: {matches_with_best}")
 
-        # ============ LLM ============
+        # ============ TOP MATCHES · GROQ DEEP ANALYSIS ============
         llm_key = _runtime_secret("llm_api_key_input", "LLM_API_KEY", "llm_api_key")
-        llm_prov = D.get("meta", {}).get("llm_provider",
-                                          "Groq (бесплатно, быстро)")
+        llm_prov = D.get("meta", {}).get(
+            "llm_provider", "Groq (бесплатно, быстро)"
+        )
         llm_model = D.get("meta", {}).get("llm_model", "")
-
-        # Review fixtures with the most historical observations first, not only
-        # fixtures already selected by the value model. The LLM still receives no
-        # model probabilities, pick, confidence, EV, or bookmaker prices.
-        eligible_llm_cards = [
-            c for c in cards
-            if isinstance(c.get("verdict"), dict)
-            and c.get("lam_h") is not None and c.get("lam_a") is not None
-        ]
-        action_cards = [
-            c for c in eligible_llm_cards
-            if has_sufficient_history(c.get("independent_features"))
-        ]
-        skipped_low_history = len(eligible_llm_cards) - len(action_cards)
-        # De-duplicate before spending the small independent-LLM quota. Keep
-        # the strongest supported forecast row for every unique fixture.
-        action_cards = [
-            item["card"] for item in rank_model_favorites(action_cards)
-        ]
-        # Give Groq's small TPM budget to the strongest model favourites first.
-        # The actual probabilities and favourite are still excluded from the LLM prompt.
-        def _llm_priority(card):
-            favorite = model_favorite(card) or {}
-            probability = float(favorite.get("probability") or 0.0)
-            margin = float(favorite.get("probability_margin") or 0.0)
-            sample_size = int(favorite.get("sample_games") or 0)
-            stable_key = hashlib.sha256(
-                f"{card.get('date_iso','')}|{card.get('match','')}".encode("utf-8")
-            ).hexdigest()
-            return (-probability, -margin, -sample_size, stable_key)
-
-        action_cards.sort(key=_llm_priority)
         llm_done = 0
-        # Groq GPT-OSS in the deployed account reported an 8,000 TPM cap.
-        # Three independent fixture reviews per scan avoid flooding that shared
-        # budget; stop immediately on the first 429 instead of retrying every card.
-        llm_batch_limit = min(3, LLM_TOP_N) if "groq" in str(llm_prov).casefold() else LLM_TOP_N
 
+        top_match_min_probability = max(
+            float(STRONG_FORECAST_MIN_PROB), float(min_prob)
+        )
+        top_diagnostics = top_match_shortlist_diagnostics(
+            cards, min_probability=top_match_min_probability,
+            min_team_history=5,
+        )
+        top_match_items = select_top_matches(
+            cards,
+            limit=MAX_TOP_MATCHES,
+            min_probability=top_match_min_probability,
+            min_team_history=5,
+        )
         logs.append(
-            f"🤖 LLM подготовка: key={'есть' if llm_key else 'НЕТ'} | "
-            f"provider={llm_prov} | "
-            f"analysis_cards={len(action_cards)} | "
-            f"batch_limit={llm_batch_limit} | "
-            f"skipped_low_history={skipped_low_history} | "
-            f"remaining={usage.llm_remaining()}")
+            "🏆 TOP MATCHES: "
+            f"кандидатов {top_diagnostics['eligible']}; "
+            f"сильная вероятность {top_diagnostics['strong_probability']}; "
+            f"история достаточна {top_diagnostics['enough_venue_history']}; "
+            f"полная линия SStats 1X2 {top_diagnostics['complete_1x2_prices']}; "
+            f"отобрано {len(top_match_items)}/{MAX_TOP_MATCHES}."
+        )
 
-        if llm_key and usage.llm_remaining() > 0 and action_cards:
-            for i_, card in enumerate(action_cards[:llm_batch_limit]):
-                if usage.llm_remaining() <= 0:
-                    logs.append("🤖 LLM: лимит")
-                    break
-                if i_ > 0:
-                    time.sleep(2)
-                update_loader(
-                    f"🤖 Независимый ИИ-анализ [{i_+1}/{min(llm_batch_limit, len(action_cards))}]",
-                    0.90 + 0.08 * (i_+1) / max(1, llm_batch_limit), logs)
-                v_ = card.get("verdict", {})
-                # Blind AI context: the statistical model's probabilities, selected outcome,
-                # confidence, EV and market prices are deliberately not passed to the LLM.
-                # Model outcome is used only after the LLM responds, for a separate comparison.
-                ctx_llm = {
-                    "api_key": llm_key, "provider": llm_prov, "model": llm_model,
-                    "home": card.get("match_ru", "").split(" — ")[0],
-                    "away": card.get("match_ru", "").split(" — ")[-1],
-                    "league": card.get("league", ""),
-                    "date": f"{card.get('date_iso') or card.get('date', '')} {card.get('time') or ''}".strip(),
-                    "independent_features": card.get("independent_features") or {},
-                    "fh": card.get("fh", "—"), "fa": card.get("fa", "—"),
-                    # Main-model label is derived locally after the blind LLM response.
-                    "model_pick_code": max(
-                        (("П1", float(card.get("p1") or 0)),
-                         ("X", float(card.get("px") or 0)),
-                         ("П2", float(card.get("p2") or 0))),
-                        key=lambda item: item[1],
-                    )[0],
-                }
+        top_dossiers = []
+        top_card_by_id = {}
+        if top_match_items:
+            # Re-check SStats context specifically for the seven selected matches.
+            # This gives priority candidates their own injury/lineup/referee lookups
+            # even when the general scan hit its broader provider-call caps.
+            priority_rows = []
+            for item in top_match_items:
+                card = item["card"]
+                if card.get("sstats_game_id") in (None, ""):
+                    continue
+                priority_rows.append({
+                    "Date": f"{card.get('date_iso') or ''} {card.get('time') or ''}".strip(),
+                    "date_iso": card.get("date_iso"),
+                    "kickoff_utc": card.get("kickoff_utc") or "",
+                    "HomeTeam": card.get("home_team") or "",
+                    "AwayTeam": card.get("away_team") or "",
+                    "sstats_game_id": card.get("sstats_game_id"),
+                })
+
+            priority_contexts = {}
+            if sstats_key and priority_rows:
                 try:
-                    opinion = analyze_match(ctx_llm)
+                    priority_contexts, priority_logs = sstats_context_enrich(
+                        priority_rows,
+                        sstats_key,
+                        date_from=today_date.isoformat(),
+                        date_to=(today_date + timedelta(days=days - 1)).isoformat(),
+                        now=scan_now,
+                        max_injury_checks=MAX_TOP_MATCHES,
+                        max_lineup_checks=MAX_TOP_MATCHES,
+                        timezone_offset=(
+                            int(round(scan_now.utcoffset().total_seconds() / 3600))
+                            if scan_now.utcoffset() else 0
+                        ),
+                    )
+                    logs.extend(
+                        "🏆 TOP SStats: " + str(line) for line in priority_logs
+                    )
+                except Exception as exc:
+                    logs.append(
+                        f"⚠️ TOP SStats context: {type(exc).__name__}; "
+                        "Groq увидит только уже сохранённые подтверждённые данные."
+                    )
+
+            for rank, item in enumerate(top_match_items, start=1):
+                card = item["card"]
+                home_name = str(card.get("home_team") or "")
+                away_name = str(card.get("away_team") or "")
+                date_key = str(card.get("date_iso") or "")[:10]
+                context_key = fixture_row_key(home_name, away_name, date_key)
+                refreshed_context = priority_contexts.get(context_key)
+                card["deep_analysis_context"] = merge_context_snapshots(
+                    card.get("api_context") or {},
+                    refreshed_context if isinstance(refreshed_context, dict) else {},
+                )
+                dossier = build_match_dossier(card)
+                dossier["shortlist_rank"] = rank
+                top_dossiers.append(dossier)
+                top_card_by_id[dossier["fixture_id"]] = {
+                    "card": card,
+                    "favorite": item,
+                }
+
+            if not llm_key:
+                logs.append(
+                    "🏆 TOP MATCHES: кандидаты найдены, но Groq не вызван — "
+                    "LLM key не задан."
+                )
+            elif usage.llm_remaining() <= 0:
+                logs.append(
+                    "🏆 TOP MATCHES: кандидаты найдены, но дневной лимит LLM исчерпан."
+                )
+            elif top_dossiers:
+                update_loader(
+                    f"🏆 Groq Deep Analysis · {len(top_dossiers)} матчей одним пакетом",
+                    0.94, logs,
+                )
+                try:
+                    top_analyses = analyze_top_matches({
+                        "api_key": llm_key,
+                        "provider": llm_prov,
+                        "model": llm_model,
+                        "candidates": top_dossiers,
+                    })
                 except LLMRateLimitError as exc:
+                    top_analyses = {}
                     retry_after = exc.retry_after_seconds
                     logs.append(
-                        "⛔ Groq ограничил запросы по токенам в минуту. "
-                        "Остальные LLM-вызовы остановлены, чтобы не усугублять лимит. "
+                        "⛔ Groq ограничил пакетный TOP MATCHES анализ. "
                         + (
-                            f"Повторить новый скан примерно через {retry_after:.0f} сек."
+                            f"Повторить скан примерно через {retry_after:.0f} сек."
                             if retry_after is not None
-                            else "Попробуйте новый скан после сброса лимита провайдера."
+                            else "Повторите скан после сброса лимита провайдера."
                         )
                     )
-                    break
                 except Exception as exc:
-                    opinion = None
+                    top_analyses = {}
                     logs.append(
-                        f"🤖 LLM ошибка [{i_+1}]: {type(exc).__name__}: {str(exc)[:160]}"
+                        f"⚠️ Groq TOP MATCHES: {type(exc).__name__}: {str(exc)[:140]}"
                     )
-                if opinion:
-                    card["llm_opinion"] = opinion
+
+                for fixture_id, analysis in top_analyses.items():
+                    target = top_card_by_id.get(fixture_id)
+                    if not target:
+                        continue
+                    card = target["card"]
+                    model_pick_code = max(
+                        (("П1", float(card.get("p1") or 0.0)),
+                         ("X", float(card.get("px") or 0.0)),
+                         ("П2", float(card.get("p2") or 0.0))),
+                        key=lambda pair: pair[1],
+                    )[0]
+                    card["deep_analysis"] = analysis
+                    card["llm_opinion"] = format_top_match_opinion(
+                        analysis, model_pick_code=model_pick_code
+                    )
+                    card["deep_analysis_fixture_id"] = fixture_id
                     llm_done += 1
-                    logs.append(f"🤖 OK [{i_+1}] multimarket: {opinion[:100]}")
-                else:
-                    logs.append(f"🤖 FAIL [{i_+1}]: ответ не получен")
-            logs.append(f"🤖 LLM итог: {llm_done} мнений")
-        elif not llm_key:
-            logs.append("🤖 LLM: ключ не задан")
-        elif not action_cards:
+
+                logs.append(
+                    f"🏆 Groq Deep Analysis: {llm_done}/{len(top_dossiers)} "
+                    "досье получено одним пакетным запросом."
+                )
+                for dossier in top_dossiers:
+                    card = top_card_by_id[dossier["fixture_id"]]["card"]
+                    if not card.get("deep_analysis"):
+                        logs.append(
+                            f"ℹ️ Groq не вернул валидный разбор: "
+                            f"{dossier['match']['home']} — {dossier['match']['away']}."
+                        )
+        else:
             logs.append(
-                "🤖 LLM: независимые вероятности не рассчитаны — "
-                f"недостаточно фактической истории (пропущено {skipped_low_history} матчей; "
-                "нужно минимум 5 домашних матчей хозяев и 5 выездных матчей гостей)."
+                "🏆 TOP MATCHES: нет матчей, одновременно прошедших порог вероятности "
+                f"{top_match_min_probability:.0%}, историю команд ≥5 домашних/выездных матчей "
+                "и наличие полной линии SStats 1X2. Слабые матчи не добавлялись для заполнения списка."
             )
 
         # Persist both forecasters before the fixture starts. The ledger keeps the
