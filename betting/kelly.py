@@ -72,7 +72,8 @@ def kelly(
     if fraction <= 0:
         return 0.0
 
-    return round(bank * fraction, 2)
+    # Round down so display precision can never push the stake above a hard cap.
+    return math.floor(bank * fraction * 100.0 + 1e-9) / 100.0
 
 
 def edge(prob: float, odds: float) -> float:
