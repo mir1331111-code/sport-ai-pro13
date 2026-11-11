@@ -38,58 +38,6 @@ from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
-try:
-    from data.context_data import api_football_connection_check  # noqa: E402
-except ImportError:  # Compatibility with a host that still has the previous module revision.
-    import requests  # noqa: E402
-
-    def api_football_connection_check(api_key, session=None):
-        """Fallback status check so an older deployed context module cannot crash app startup."""
-        key = str(api_key or "").strip()
-        if not key:
-            return {"ok": False, "message": "Введите API-Football key в левой панели."}
-        client = session or requests.Session()
-        try:
-            response = client.get(
-                "https://v3.football.api-sports.io/status",
-                headers={"x-apisports-key": key},
-                timeout=(5, 15),
-            )
-        except requests.RequestException as exc:
-            return {"ok": False, "message": f"Не удалось подключиться к API-Football ({type(exc).__name__})."}
-        except Exception as exc:
-            return {"ok": False, "message": f"Проверка API-Football завершилась ошибкой ({type(exc).__name__})."}
-        if response.status_code in (401, 403):
-            return {"ok": False, "message": "API-Football отклонил ключ. Проверьте его в личном кабинете провайдера."}
-        if response.status_code == 429:
-            return {"ok": False, "message": "API-Football временно ограничил частоту запросов. Повторите позже."}
-        try:
-            response.raise_for_status()
-            payload = response.json()
-        except Exception:
-            return {"ok": False, "message": "API-Football вернул некорректный HTTP-ответ."}
-        if not isinstance(payload, dict) or payload.get("errors"):
-            return {"ok": False, "message": "API-Football не подтвердил ключ. Проверьте доступ и подписку."}
-        data = payload.get("response")
-        if isinstance(data, list):
-            data = data[0] if data else None
-        if not isinstance(data, dict) or not data:
-            return {"ok": False, "message": "API-Football ответил без сведений о статусе аккаунта."}
-        subscription = data.get("subscription")
-        if isinstance(subscription, dict) and subscription.get("active") is False:
-            return {"ok": False, "message": "Ключ распознан, но подписка API-Football не активна."}
-        usage = data.get("requests") if isinstance(data.get("requests"), dict) else {}
-        def _int_or_none(value):
-            try:
-                return int(value) if value is not None else None
-            except (TypeError, ValueError):
-                return None
-        return {
-            "ok": True,
-            "message": "API-Football принял ключ. Подключение подтверждено.",
-            "requests_current": _int_or_none(usage.get("current")),
-            "requests_limit": _int_or_none(usage.get("limit_day")),
-        }
 from data.sources import (
     parse_date, fdorg_match_result, highlightly_connection_check,
     sstats_account_check, sstats_match_statistics, sstats_find_match_id,
@@ -231,7 +179,7 @@ STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 20
 SECRET_KEYS = (
     "fdorg_token", "highlightly_api_key", "sstats_api_key",
-    "footballapi_key", "api_football_key", "llm_api_key",
+    "footballapi_key", "llm_api_key",
 )
 
 
@@ -407,7 +355,7 @@ D.setdefault("meta", {})
 # Credentials live outside portfolio data and backup/sync files.
 _saved_ui_secrets = load_local_secrets()
 # API credentials are session/env/secrets-only, never persisted in local state.
-_secret_keys = ("fdorg_token", "odds_api_key", "api_football_key", "therundown_api_key", "rundown_key",
+_secret_keys = ("fdorg_token", "odds_api_key", "therundown_api_key", "rundown_key",
                 "highlightly_api_key", "llm_api_key")
 _secrets_removed = False
 for _key in _secret_keys:
@@ -866,29 +814,8 @@ with st.sidebar:
         type="password", key="footballapi_key_input",
         help="Даёт xG обеих команд для завершённых матчей текущего сезона Премьер-лиги. Бесплатный тариф: 50 запросов в день.")
 
-    api_football_key = st.text_input(
-        "API-Football key (составы · травмы · дисквалификации · судьи)",
-        value=_api_key_default("api_football_key", "API_FOOTBALL_KEY", "api_football_key"),
-        type="password", key="api_football_key_input",
-        help="Вводится здесь, в панели API-ключей. Сохраняется в приватном локальном хранилище вместе с остальными ключами и автоматически используется сканером."
-    )
-    st.caption(
-        "Ключ вводится только здесь. Локальная копия хранится отдельно от портфеля и бэкапов; "
-        "Streamlit Community Cloud не гарантирует сохранность файлов после reboot/redeploy."
-    )
-    if st.button("🔎 Проверить API-Football", key="check_api_football",
-                 use_container_width=True):
-        with st.spinner("Проверяю ключ через API-Football /status…"):
-            _api_football_check = api_football_connection_check(api_football_key)
-        if _api_football_check.get("ok"):
-            st.success(_api_football_check.get("message", "API-Football подключён."))
-            _current = _api_football_check.get("requests_current")
-            _limit = _api_football_check.get("requests_limit")
-            if _current is not None and _limit is not None:
-                st.caption(f"По данным API-Football: использовано {_current} из {_limit} запросов за день.")
-            st.caption("Проверка /status не расходует дневную квоту API-Football.")
-        else:
-            st.error(_api_football_check.get("message", "Не удалось проверить API-Football."))
+    st.caption("Расписание, коэффициенты и доступные данные о составах/травмах/судьях запрашиваются через SStats. Отдельный API-Football ключ не нужен.")
+
     if st.button("🔎 Проверить подключение xG Football API", key="check_footballapi_xg",
                  use_container_width=True):
         with st.spinner("Проверяю ключ и дневную квоту Football API…"):
@@ -945,7 +872,6 @@ with st.sidebar:
         "highlightly_api_key": ("highlightly_api_key_input", ("HIGHLIGHTLY_API_KEY",), ("HIGHLIGHTLY_API_KEY", "highlightly_api_key")),
         "sstats_api_key": ("sstats_api_key_input", ("SSTATS_API_KEY",), ("SSTATS_API_KEY", "sstats_api_key")),
         "footballapi_key": ("footballapi_key_input", ("FOOTBALLAPI_KEY",), ("FOOTBALLAPI_KEY", "footballapi_key")),
-        "api_football_key": ("api_football_key_input", ("API_FOOTBALL_KEY",), ("API_FOOTBALL_KEY", "api_football_key")),
         "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
     }
     _user_entered_keys = {}
@@ -957,8 +883,6 @@ with st.sidebar:
     _keys_saved = save_local_secrets(_user_entered_keys)
     if not _keys_saved:
         st.caption("⚠️ Не удалось сохранить ключи на диске. Проверьте права записи хостинга.")
-    elif "api_football_key" in _user_entered_keys:
-        st.caption("✅ API-Football key сохранён в локальном хранилище этого сервера. На Community Cloud сохранность после перезапуска не гарантируется.")
     if llm_prov != D["meta"].get("llm_provider"):
         D["meta"]["llm_provider"] = llm_prov
         usage.set_local_data(D)
