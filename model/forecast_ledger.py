@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS forecasts (
  entry_odds_json TEXT,
  odds_source TEXT,
  xg_used INTEGER CHECK(xg_used IS NULL OR xg_used IN (0,1)),
+ feature_snapshot_json TEXT,
  result TEXT CHECK(result IS NULL OR result IN ('H','D','A')),
  home_score INTEGER,
  away_score INTEGER,
@@ -103,6 +104,10 @@ class ForecastLedger:
                 conn.execute(
                     "ALTER TABLE forecasts ADD COLUMN xg_used INTEGER "
                     "CHECK(xg_used IS NULL OR xg_used IN (0,1))"
+                )
+            if "feature_snapshot_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE forecasts ADD COLUMN feature_snapshot_json TEXT"
                 )
 
     def _connect(self) -> sqlite3.Connection:
