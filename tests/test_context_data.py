@@ -3,12 +3,14 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from data.context_data import ApiFootballBudget, ApiFootballClient, ApiFootballContextProvider, ApiFootballError
+from data.context_data import (ApiFootballBudget, ApiFootballClient, ApiFootballContextProvider,
+                                ApiFootballError, api_football_connection_check)
 
 
 class FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self.payload = payload
+        self.status_code = status_code
     def raise_for_status(self):
         return None
     def json(self):
@@ -26,6 +28,41 @@ class FakeSession:
 
 
 class ContextDataTests(unittest.TestCase):
+    def test_api_football_status_check_validates_key_without_match_quota_usage(self):
+        session = FakeSession({
+            "status": {
+                "errors": [],
+                "response": [{
+                    "account": {"firstname": "Test"},
+                    "subscription": {"active": True},
+                    "requests": {"current": 7, "limit_day": 100},
+                }],
+            },
+        })
+        result = api_football_connection_check("secret-test-key", session=session)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["requests_current"], 7)
+        self.assertEqual(result["requests_limit"], 100)
+        self.assertEqual(len(session.calls), 1)
+        url, params, headers, timeout = session.calls[0]
+        self.assertEqual(url, "https://v3.football.api-sports.io/status")
+        self.assertIsNone(params)
+        self.assertEqual(headers, {"x-apisports-key": "secret-test-key"})
+        self.assertEqual(timeout, (5, 15))
+
+    def test_api_football_status_check_rejects_empty_and_provider_error(self):
+        unused_session = FakeSession({})
+        empty = api_football_connection_check("", session=unused_session)
+        self.assertFalse(empty["ok"])
+        self.assertEqual(unused_session.calls, [])
+
+        error_session = FakeSession({
+            "status": {"errors": {"token": "invalid"}, "response": []},
+        })
+        rejected = api_football_connection_check("bad-key", session=error_session)
+        self.assertFalse(rejected["ok"])
+        self.assertNotIn("bad-key", rejected["message"])
+
     def test_budget_reserves_quota_and_resets_by_utc_date(self):
         with tempfile.TemporaryDirectory() as directory:
             clock_value = [datetime(2026, 11, 11, tzinfo=timezone.utc)]
