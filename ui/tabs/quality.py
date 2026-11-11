@@ -7,7 +7,10 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from model.data_quality import STATUS_LABELS, evaluate_fixture_quality, summarize_quality
+from model.data_quality import (
+    STATUS_LABELS, competition_category_known, evaluate_fixture_quality,
+    summarize_quality,
+)
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger
 from model.error_learner import OnlineErrorLearner
 import math
@@ -113,27 +116,27 @@ def render_data_quality(data: dict, *, api_keys: dict[str, bool] | None = None) 
         })
     st.subheader("Проверка матчей последнего сканирования")
     st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
-    with st.expander("Подробности по источникам и статусам", expanded=True):
-        for card, quality in quality_rows:
-            title = str(card.get("match_ru") or card.get("match") or "Матч")
-            with st.expander(f"{title} · {quality['score']}/100"):
-                st.progress(quality["score"] / 100)
-                source_rows = []
-                for source_name, info in quality["sources"].items():
-                    source_rows.append({
-                        "Проверка": source_name,
-                        "Состояние": _status_label(info["status"]),
-                        "Детали": info["detail"],
-                    })
-                st.dataframe(pd.DataFrame(source_rows), use_container_width=True, hide_index=True)
-                if quality["women"]:
-                    st.warning("Женское соревнование: прогноз использует отдельное пространство истории. Проверьте, что лига и команды подтверждены источником.")
-                elif str(card.get("league") or "").strip().casefold() in {"", "soccer", "football"}:
-                    st.warning("Название соревнования слишком общее. Категория турнира требует подтверждения.")
-                if quality["history_status"] != "confirmed":
-                    st.warning("Недостаточно домашних/выездных наблюдений для сильной исторической поддержки.")
-                if quality["api_status"] == "unmatched":
-                    st.warning("API ответил, но не сопоставил точный матч. Составы и судья не считаются подтверждёнными.")
+    st.subheader("Подробности по источникам и статусам")
+    for card, quality in quality_rows:
+        title = str(card.get("match_ru") or card.get("match") or "Матч")
+        with st.expander(f"{title} · {quality['score']}/100"):
+            st.progress(quality["score"] / 100)
+            source_rows = []
+            for source_name, info in quality["sources"].items():
+                source_rows.append({
+                    "Проверка": source_name,
+                    "Состояние": _status_label(info["status"]),
+                    "Детали": info["detail"],
+                })
+            st.dataframe(pd.DataFrame(source_rows), use_container_width=True, hide_index=True)
+            if quality["women"]:
+                st.warning("Женское соревнование: прогноз использует отдельное пространство истории. Проверьте, что лига и команды подтверждены источником.")
+            elif not competition_category_known(card):
+                st.warning("Категория соревнования не подтверждена. Прогноз и Value по такому событию должны быть заблокированы.")
+            if quality["history_status"] != "confirmed":
+                st.warning("Недостаточно домашних/выездных наблюдений для сильной исторической поддержки.")
+            if quality["api_status"] == "unmatched":
+                st.warning("API ответил, но не сопоставил точный матч. Составы и судья не считаются подтверждёнными.")
 
     st.markdown(
         "**Статусы означают:** «Подтверждено» — источник вернул соответствующие данные; "
