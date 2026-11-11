@@ -250,7 +250,16 @@ def evaluate_fixture_quality(
         score += 5.0
     score = max(0, min(100, round(score)))
 
+    schedule_providers = [
+        str(item) for item in (card.get("fixture_sources") or [])
+        if str(item or "").strip()
+    ]
     sources = {
+        "Источники расписания": {
+            "status": "confirmed" if schedule_providers else "unknown",
+            "detail": ", ".join(schedule_providers) if schedule_providers
+            else "Происхождение строки расписания не записано",
+        },
         "API-Football": {
             "status": api_status,
             "detail": (
