@@ -231,11 +231,12 @@ class Engine:
         return out or "—"
 
     def calibrate(self, p: float, ci: int = 0, namespace: str = "") -> float:
-        calibrator = (
-            self.namespace_calibrators.get(namespace, self.calibrator)
-            if namespace else self.calibrator
-        )
-        return calibrator.calibrate(p, ci)
+        if namespace:
+            # Never borrow the men's calibrator for a women's or national-team
+            # fixture. Until that namespace has enough outcomes, use raw P.
+            calibrator = self.namespace_calibrators.get(namespace)
+            return calibrator.calibrate(p, ci) if calibrator is not None else float(p)
+        return self.calibrator.calibrate(p, ci)
 
     def refit_calibrator(self) -> None:
         """
