@@ -123,6 +123,7 @@ def size_bet(
     date_iso: object,
     market: object,
     pick: object,
+    division: object = "",
     now: datetime | None = None,
 ) -> tuple[float, dict[str, float | str]]:
     """Return a quarter-Kelly stake bounded by market, match, day and cash limits."""
