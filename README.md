@@ -144,3 +144,7 @@ Important separation:
 
 The scanner's manual 1X2 view also now requires a complete P1/X/P2 line attributed to the same named bookmaker before it labels the market line coherent.
 
+
+## NEURO BET PRO v14 Analytics Terminal
+
+The v14 main page includes the multi-screen analytics terminal, per-match DATA QUALITY states, pre-kickoff feature snapshots, separate men's/women's/unknown model histories and calibration, conservative paper-portfolio risk guards, and independent market diagnostics. See [ANALYTICS_TERMINAL.md](ANALYTICS_TERMINAL.md) for score definitions, limitations and risk rules.
