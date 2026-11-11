@@ -986,6 +986,19 @@ def _render_manual_odds_block(
             stake = 0.0
             market_fair_probability = None
 
+        context_eligible = bool(
+            (c.get("context_quality") or {}).get("strong_value_eligible")
+        )
+        risk_info = {}
+        if rec_verdict is not None and market_is_validated and manual_odd >= MIN_BET_ODDS:
+            stake, risk_info = size_bet(
+                probability=prob, odds=manual_odd, bank=D.get("bank"),
+                bets=D.get("bets") or [], fixture_id=c.get("fixture_id"),
+                match=c.get("match"), date_iso=c.get("date_iso"),
+                market=market_type(pick), pick=pick,
+                now=datetime.now(app_timezone()),
+            )
+
         with col_metrics.expander("Детали (по желанию)", expanded=False):
             st.write(f"Вероятность модели: {prob * 100:.1f}%")
             st.write(f"Вероятность из коэффициента до снятия маржи: {market_implied * 100:.1f}%")
@@ -1000,18 +1013,6 @@ def _render_manual_odds_block(
             elif manual_odd < MIN_BET_ODDS:
                 st.caption(f"Не проходит минимальный коэффициент {MIN_BET_ODDS:.2f}.")
 
-        context_eligible = bool(
-            (c.get("context_quality") or {}).get("strong_value_eligible")
-        )
-        risk_info = {}
-        if rec_verdict is not None and market_is_validated and manual_odd >= MIN_BET_ODDS:
-            stake, risk_info = size_bet(
-                probability=prob, odds=manual_odd, bank=D.get("bank"),
-                bets=D.get("bets") or [], fixture_id=c.get("fixture_id"),
-                match=c.get("match"), date_iso=c.get("date_iso"),
-                market=market_type(pick), pick=pick,
-                now=datetime.now(app_timezone()),
-            )
         passed = (
             manual_odd >= MIN_BET_ODDS
             and context_eligible
@@ -3536,7 +3537,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "date_iso": card.get("date_iso"),
                         "match_time": card.get("time", ""),
                         "kickoff_utc": card.get("kickoff_utc") or None,
-                        "date_time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "date_time": datetime.now(app_timezone()).strftime("%Y-%m-%d %H:%M"),
                         "fixture_id": card.get("fixture_id"),
                         "sstats_game_id": card.get("sstats_game_id"),
                         "market_forecast_key": (
@@ -3587,9 +3588,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         elif not auto_add:
             logs.append("ℹ️ AUTO-PORTFOLIO выключен переключателем; ставки автоматически не добавлялись.")
 
-        # All supported markets share the same single-best-pick selection above.
-        # Separate OU/BTTS loops are intentionally removed to prevent multiple
-        # correlated bets from one fixture and to keep one best market per match.
+        # Automated staking remains limited to markets that passed their own
+        # out-of-sample bookmaker benchmark (currently 1X2 and validated O/U 2.5).
+        # Other markets stay visible as forecasts; size_bet enforces combined
+        # market, fixture and daily exposure across every added selection.
 
         D2 = dict(D)
         D2["cards"] = cards
