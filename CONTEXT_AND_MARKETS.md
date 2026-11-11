@@ -69,3 +69,9 @@ Handicap prices remain informational. The market is not included in the Value se
 ## Value protection
 
 Nothing in this feature promotes BTTS, corners, cards or Asian handicaps into the portfolio. Existing 1X2 and full-match O/U 2.5 bookmaker validation thresholds remain in place. A 65% raw probability is not a hit-rate claim and is not sufficient by itself for Value.
+
+## v14 competition isolation and forecast-learning snapshots
+
+The fixture pipeline now classifies explicit women's competitions before generic national/Euro markers and preserves the category when provider rows are merged. The scanner defaults to men's football and offers all-category and women's-only modes. Generic Soccer labels remain unknown, not silently men's. Women's and unknown team identities use separate namespaces and do not update the men's team form, H2H, Elo, goal/xG priors or Platt calibrator. Unknown-category fixtures remain informational and cannot enter the Value selector or virtual portfolio.
+
+Each new immutable pre-kickoff forecast stores a JSON feature snapshot with the competition category, xG, XI, referee and injury-feed states, API fixture-match state and quote presence. Older forecasts are not backfilled from later observations. See [ANALYTICS_TERMINAL.md](ANALYTICS_TERMINAL.md) for the data-quality score, source-state semantics, market restrictions and portfolio-risk rules.
