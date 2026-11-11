@@ -146,10 +146,16 @@ class HistoricalMatchStatsTests(unittest.TestCase):
         model = HistoricalMatchStats(min_team_games=1)
         rows = [
             {"HomeTeam": f"H{i}", "AwayTeam": f"A{i}", "HC": 5, "AC": 4,
-             "HY": 2 + (i % 2), "AY": 1, "HR": 0, "AR": 0,
+             "HY": 4, "AY": 2, "HR": 0, "AR": 0,
              "Referee": "Referee A"}
             for i in range(6)
         ]
+        rows.extend(
+            {"HomeTeam": f"BH{i}", "AwayTeam": f"BA{i}", "HC": 5, "AC": 4,
+             "HY": 1, "AY": 1, "HR": 0, "AR": 0,
+             "Referee": "Referee B"}
+            for i in range(6)
+        )
         for row in rows:
             model.learn_step(row, "E0")
         prediction = model.predict("New Home", "New Away", "E0", referee_id="REFEREE A")
