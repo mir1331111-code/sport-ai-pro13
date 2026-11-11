@@ -9,6 +9,8 @@ import streamlit as st
 
 from model.data_quality import STATUS_LABELS, evaluate_fixture_quality, summarize_quality
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger
+from model.error_learner import OnlineErrorLearner
+import math
 
 
 def _pct(value: Any, digits: int = 1) -> str:
@@ -171,6 +173,53 @@ def render_learning_center(db_path: str) -> None:
             st.success(f"Накоплено {settled} завершённых прогнозов. Используйте временной holdout и сравнение с базовой моделью перед изменением параметров.")
 
         if latest_version:
+            # Expanding-window diagnostic learns only from results settled
+            # before each historical forecast and never mixes model versions.
+            error_report = OnlineErrorLearner(ledger).evaluate(
+                as_of=datetime.now(timezone.utc),
+                model_version=latest_version,
+            )
+            st.subheader("Анализ прошлых ошибок · expanding window")
+            e1, e2, e3, e4, e5 = st.columns(5)
+            e1.metric("Прогнозов в тесте", error_report["n"])
+            e2.metric("Brier · raw", _number(error_report["raw_brier"]))
+            e3.metric("Brier · calibrated", _number(error_report["calibrated_brier"]))
+            e4.metric("Log Loss · raw", _number(error_report["raw_log_loss"]))
+            e5.metric("Log Loss · calibrated", _number(error_report["calibrated_log_loss"]))
+            st.caption(
+                "Каждый прогноз калибруется только по более ранним матчам, "
+                "результат которых уже был известен на тот момент. Это исследовательский "
+                "walk-forward отчёт, не разрешение включить коррекцию в live-модель."
+            )
+            settled_rows = ledger.rows(
+                settled_only=True, model_version=latest_version,
+            )[-20:]
+            recent_errors = []
+            for row in reversed(settled_rows):
+                probabilities = row.get("probabilities") or {}
+                result = row.get("result")
+                if result not in {"H", "D", "A"}:
+                    continue
+                actual_probability = max(
+                    float(probabilities.get(result) or 0.0), 1e-15,
+                )
+                brier = sum(
+                    (float(probabilities.get(key) or 0.0) - float(key == result)) ** 2
+                    for key in ("H", "D", "A")
+                )
+                recent_errors.append({
+                    "Прогноз": str(row.get("forecast_at") or "")[:16],
+                    "Матч": f"{row.get('home_team') or ''} — {row.get('away_team') or ''}",
+                    "P1": _pct(probabilities.get("H")),
+                    "X": _pct(probabilities.get("D")),
+                    "P2": _pct(probabilities.get("A")),
+                    "Факт": result,
+                    "Brier": brier,
+                    "Log Loss": -math.log(actual_probability),
+                })
+            if recent_errors:
+                st.subheader("Последние 20 закрытых прогнозов")
+                st.dataframe(pd.DataFrame(recent_errors), use_container_width=True, hide_index=True)
             calibration = ledger.reliability_bins(model_version=latest_version)
             st.subheader("Калибровка вероятностей 1X2")
             if calibration.get("rows"):
