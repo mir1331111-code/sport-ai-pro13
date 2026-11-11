@@ -56,20 +56,13 @@ def render_data_quality(data: dict, *, api_keys: dict[str, bool] | None = None) 
     if not cards:
         st.info("Пока нет карточек последнего сканирования. Выполните скан, чтобы увидеть диагностику матчей.")
         return
-    api_enabled = bool((api_keys or {}).get("API-Football"))
+    # The per-card API state reflects what was known at scan time. A key entered
+    # after an old scan is not retroactive evidence that that fixture was queried.
     quality_rows = [
-        (card, evaluate_fixture_quality(
-            card,
-            api_configured=api_enabled or bool(card.get("api_football_configured")),
-            now=datetime.now(timezone.utc),
-        ))
+        (card, evaluate_fixture_quality(card, now=datetime.now(timezone.utc)))
         for card in cards
     ]
-    summary = summarize_quality(
-        cards,
-        api_configured=api_enabled or any(card.get("api_football_configured") for card in cards),
-        now=datetime.now(timezone.utc),
-    )
+    summary = summarize_quality(cards, now=datetime.now(timezone.utc))
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Матчей проверено", summary["fixtures"])
     c2.metric("Средняя полнота данных", f"{summary['mean_score']:.0f}/100")
