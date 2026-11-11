@@ -36,6 +36,7 @@ from model.context_model import (
     assess_context_quality, context_probabilities, walk_forward_context_ablation,
 )
 from model.data_quality import assess_fixture_quality
+from model.portfolio_risk import build_portfolio_risk_report
 from model.market_models import (
     asian_handicap_probabilities, asian_handicap_expected_value,
     adjust_corners_for_game_state,
@@ -3207,6 +3208,58 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if probability < max(float(min_prob), AUTO_PORTFOLIO_MIN_PROB):
                     continue
                 if stake_value <= 0 or stake_value > available_bank:
+                    continue
+                # Conservative auto-portfolio safeguards. These limits apply
+                # only to newly generated virtual positions; they never rewrite
+                # existing/manual positions or place real bookmaker bets.
+                risk_candidate = {
+                    "match": card.get("match", ""),
+                    "match_ru": card.get("match_ru", card.get("match", "")),
+                    "fixture_id": card.get("fixture_id"),
+                    "date_iso": card.get("date_iso"),
+                    "league": card.get("league") or card.get("div") or "",
+                    "stake": stake_value,
+                    "status": "pending",
+                    "market": market_code,
+                }
+                risk_state = build_portfolio_risk_report(
+                    list(D.get("bets") or []) + new_bets + [risk_candidate],
+                    bank=max(0.0, float(D.get("bank") or 0.0)),
+                    initial_bank=float((D.get("meta") or {}).get("initial_bank") or 0.0),
+                )
+                risk_date = str(card.get("date_iso") or card.get("date") or "")[:10]
+                risk_league = str(card.get("league") or card.get("div") or "Неизвестная лига")
+                match_limit = any(
+                    item.get("limit_exceeded")
+                    and item.get("match") == str(card.get("match_ru") or card.get("match") or "")
+                    for item in risk_state["match_rows"]
+                )
+                league_limit = any(
+                    item.get("limit_exceeded") and item.get("league") == risk_league
+                    for item in risk_state["league_rows"]
+                )
+                day_limit = any(
+                    item.get("limit_exceeded") and item.get("date") == risk_date
+                    for item in risk_state["day_rows"]
+                )
+                if risk_state["loss_streak"] >= 3:
+                    logs.append(
+                        f"🛡 AUTO-PORTFOLIO pause: {card.get('match_ru', card.get('match', ''))} — "
+                        "3 или более последовательных проигрыша; автоматическое добавление приостановлено."
+                    )
+                    continue
+                if match_limit or league_limit or day_limit:
+                    reasons = []
+                    if match_limit:
+                        reasons.append("лимит на матч 3%")
+                    if league_limit:
+                        reasons.append("лимит на лигу 5%")
+                    if day_limit:
+                        reasons.append("дневной лимит 10%")
+                    logs.append(
+                        f"🛡 AUTO-PORTFOLIO заблокировано: {card.get('match_ru', card.get('match', ''))} — "
+                        + ", ".join(reasons)
+                    )
                     continue
                 new_bet = {
                     "match": card.get("match", ""),
