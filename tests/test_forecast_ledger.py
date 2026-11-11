@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone, timedelta
 
-from model.forecast_ledger import ForecastLedger, SCHEMA
+from model.forecast_ledger import ForecastLedger, MarketForecastLedger, SCHEMA
 
 
 class ForecastLedgerTests(unittest.TestCase):
@@ -72,6 +72,44 @@ class ForecastLedgerTests(unittest.TestCase):
         bin_60 = next(row for row in home_bins if row["bin_index"] == 6)
         self.assertAlmostEqual(bin_60["mean_probability"], 0.6)
         self.assertEqual(bin_60["observed_frequency"], 1.0)
+
+    def test_market_metrics_deduplicate_old_scan_reruns_but_keep_other_families(self):
+        path = self.tmp.name + "/market-forecast.sqlite"
+        market_ledger = MarketForecastLedger(path)
+        fixture_id = "ind:2026-04-01:duplicate"
+        kickoff = self.t0 + timedelta(hours=4)
+        first_time = self.t0
+        later_time = self.t0 + timedelta(minutes=15)
+
+        def add(family, stamp, selection, odds, probability):
+            key = (
+                f"{fixture_id}|main-model-v1|market|{family}|{stamp.isoformat()}"
+            )
+            market_ledger.record_recommendation(
+                forecast_key=key, fixture_id=fixture_id,
+                home_team="Home", away_team="Away",
+                model_version="main-model-v1", market="STAT",
+                selection=selection, probability=probability,
+                entry_odds=odds, forecast_at=stamp, kickoff_at=kickoff,
+                odds_source="test-book",
+            )
+            return key
+
+        first_key = add("corners", first_time, "Corners Over 9.5", 1.9, 0.6)
+        duplicate_key = add("corners", later_time, "Corners Over 9.5", 2.0, 0.62)
+        other_family_key = add("cards", later_time, "Cards Over 3.5", 1.8, 0.55)
+        market_ledger.settle(first_key, "won")
+        market_ledger.settle(duplicate_key, "lost")
+        market_ledger.settle(other_family_key, "lost")
+
+        report = market_ledger.metrics()
+        self.assertEqual(len(market_ledger.rows()), 3)  # Raw audit rows are preserved.
+        self.assertEqual(report["raw_rows"], 3)
+        self.assertEqual(report["duplicate_rows_excluded"], 1)
+        self.assertEqual(report["overall"]["n"], 2)
+        self.assertEqual(report["overall"]["settled"], 2)
+        self.assertEqual(report["overall"]["wins"], 1)
+        self.assertEqual(report["overall"]["losses"], 1)
 
     def test_old_ledger_schema_is_migrated_without_guessing_xg(self):
         path = self.tmp.name + "/old-schema.sqlite"
