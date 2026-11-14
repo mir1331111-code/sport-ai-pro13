@@ -14,6 +14,9 @@ _XG_KEYS = {
     "xg_home", "xg_away", "xg", "xga", "home_expected_goals",
     "away_expected_goals",
 }
+_XG_METADATA_KEYS = {
+    "xg_source", "xg_kind", "xg_model_version", "xg_training_sides",
+}
 
 
 def _get(row, *names):
@@ -64,16 +67,115 @@ def _parse_date(value):
     return None
 
 
+def _xg_origin(row):
+    """Classify historical xG provenance.
+
+    Explicit modelled-proxy metadata wins. Unlabelled legacy xG pairs retain
+    the Engine's existing treatment as provider xG for compatibility.
+    """
+    if not isinstance(row, dict) or _row_xg_pair(row)[0] is None:
+        return None
+    source = str(row.get("xg_source") or "").casefold()
+    kind = str(row.get("xg_kind") or "").casefold()
+    if kind == "modelled_proxy" or "shot_model" in source or "shot_aggregate" in source:
+        return "proxy"
+    return "provider"
+
+
 def _without_xg(row):
-    """Copy a historical row without xG fields for a matched ablation arm."""
+    """Copy a historical row without any xG values or provenance."""
     if not isinstance(row, dict):
         return {}
-    return {key: value for key, value in row.items()
-            if str(key).strip().casefold() not in _XG_KEYS}
+    return {
+        key: value for key, value in row.items()
+        if str(key).strip().casefold() not in _XG_KEYS | _XG_METADATA_KEYS
+    }
+
+
+def _without_provider_xg(row):
+    """Retain only modelled-proxy xG; remove provider and unknown pairs."""
+    if not isinstance(row, dict):
+        return {}
+    return _without_xg(row) if _xg_origin(row) == "provider" else dict(row)
+
+
+def _without_proxy_xg(row):
+    """Retain provider xG and remove aggregate-shot modelled proxies."""
+    if not isinstance(row, dict):
+        return {}
+    return _without_xg(row) if _xg_origin(row) == "proxy" else dict(row)
+
+
+class _ClusteredRecords(list):
+    """Append forecast records with the current calendar-day cluster attached."""
+
+    def __init__(self):
+        super().__init__()
+        self.cluster = None
+
+    def set_cluster(self, cluster):
+        self.cluster = str(cluster) if cluster is not None else None
+
+    def append(self, record):
+        if isinstance(record, tuple) and len(record) == 2:
+            record = (record[0], record[1], self.cluster)
+        super().append(record)
+
+
+def _record_group(record, index):
+    if isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None:
+        return record[2]
+    return ("fixture", int(index))
+
+
+def _cluster_bootstrap_mean_samples(values, groups, bootstrap_samples, seed):
+    """Bootstrap whole matchdays, preserving every fixture within a sampled day."""
+    matrix = np.asarray(values, dtype=float)
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(-1, 1)
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        return [[] for _ in range(matrix.shape[1] if matrix.ndim == 2 else 0)]
+
+    sample_count = max(0, int(bootstrap_samples))
+    metric_count = matrix.shape[1]
+    samples = [[] for _ in range(metric_count)]
+    if sample_count == 0:
+        return samples
+    if len(groups) != matrix.shape[0]:
+        raise ValueError("group labels must align with bootstrap rows")
+
+    cluster_indices = {}
+    for index, group in enumerate(groups):
+        cluster_indices.setdefault(group, []).append(index)
+    clusters = list(cluster_indices.values())
+    if not clusters:
+        return samples
+
+    rng = np.random.default_rng(int(seed))
+    cluster_count = len(clusters)
+    for _ in range(sample_count):
+        selected = rng.integers(0, cluster_count, size=cluster_count)
+        row_indices = np.concatenate([clusters[int(i)] for i in selected])
+        means = matrix[row_indices].mean(axis=0)
+        for metric_index in range(metric_count):
+            samples[metric_index].append(float(means[metric_index]))
+    return samples
+
+
+def _intervals_from_samples(samples, names):
+    intervals = {}
+    for index, name in enumerate(names):
+        values = sorted(samples[index]) if index < len(samples) else []
+        intervals[name] = (
+            {"low": values[int(.025 * (len(values) - 1))],
+             "high": values[int(.975 * (len(values) - 1))]}
+            if values else {"low": None, "high": None}
+        )
+    return intervals
 
 
 def _record_scores(record):
-    probabilities, outcome = record
+    probabilities, outcome = record[:2]
     classes = ("H", "D", "A")
     brier = sum((probabilities[k] - float(k == outcome)) ** 2 for k in classes)
     loss = -math.log(max(probabilities[outcome], 1e-15))
@@ -88,25 +190,27 @@ def _record_scores(record):
 
 def _metrics(records, *, bootstrap_samples=1000, seed=1729):
     if not records:
-        return {"n": 0, "brier": None, "log_loss": None, "rps_hda_order": None,
-                "accuracy": None, "confidence_intervals_95": {}}
-    scores = [_record_scores(record) for record in records]
-    n = len(scores)
+        return {
+            "n": 0, "brier": None, "log_loss": None, "rps_hda_order": None,
+            "accuracy": None, "confidence_intervals_95": {},
+            "bootstrap_unit": "matchday", "cluster_count": 0,
+        }
+    scores = np.asarray([_record_scores(record) for record in records], dtype=float)
+    groups = [_record_group(record, index) for index, record in enumerate(records)]
+    explicit_groups = any(
+        isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None
+        for record in records
+    )
     names = ("brier", "log_loss", "rps_hda_order", "accuracy")
-    means = [sum(row[i] for row in scores) / n for i in range(4)]
-    rng = random.Random(seed)
-    samples = {name: [] for name in names}
-    for _ in range(max(0, int(bootstrap_samples))):
-        picked = [scores[rng.randrange(n)] for _ in range(n)]
-        for i, name in enumerate(names):
-            samples[name].append(sum(row[i] for row in picked) / n)
-    intervals = {}
-    for name in names:
-        values = sorted(samples[name])
-        intervals[name] = ({"low": values[int(.025 * (len(values)-1))],
-                            "high": values[int(.975 * (len(values)-1))]}
-                           if values else {"low": None, "high": None})
-    return {"n": n, **dict(zip(names, means)), "confidence_intervals_95": intervals}
+    means = scores.mean(axis=0).tolist()
+    samples = _cluster_bootstrap_mean_samples(scores, groups, bootstrap_samples, seed)
+    return {
+        "n": len(records),
+        **dict(zip(names, means)),
+        "confidence_intervals_95": _intervals_from_samples(samples, names),
+        "bootstrap_unit": "matchday" if explicit_groups else "fixture_fallback",
+        "cluster_count": len(set(groups)),
+    }
 
 
 def _market_probs(row, method="proportional"):
@@ -157,28 +261,29 @@ def _market_probs(row, method="proportional"):
 
 
 def _paired_differences(left_records, right_records, *, bootstrap_samples=1000, seed=2718):
-    """Paired left-minus-right score differences on the same fixtures."""
+    """Paired score differences with matchday-clustered uncertainty."""
     if not left_records or len(left_records) != len(right_records):
         return {"n": 0, "differences": {}, "confidence_intervals_95": {}}
     left = np.asarray([_record_scores(r) for r in left_records], dtype=float)
     right = np.asarray([_record_scores(r) for r in right_records], dtype=float)
+    groups = [_record_group(record, index) for index, record in enumerate(left_records)]
+    right_groups = [_record_group(record, index) for index, record in enumerate(right_records)]
+    if groups != right_groups:
+        return {
+            "n": 0, "differences": {}, "confidence_intervals_95": {},
+            "error": "paired records do not share identical matchday clusters",
+        }
     diffs = left - right
     names = ("brier", "log_loss", "rps_hda_order", "accuracy")
     means = diffs.mean(axis=0).tolist()
-    samples = _bootstrap_mean_samples(diffs, bootstrap_samples, seed)
-    intervals = {}
-    for index, name in enumerate(names):
-        values = sorted(samples[index])
-        intervals[name] = (
-            {"low": values[int(.025 * (len(values)-1))],
-             "high": values[int(.975 * (len(values)-1))]}
-            if values else {"low": None, "high": None}
-        )
+    samples = _cluster_bootstrap_mean_samples(diffs, groups, bootstrap_samples, seed)
     return {
         "n": len(diffs),
         "differences": dict(zip(names, means)),
-        "confidence_intervals_95": intervals,
-        "note": "Negative values favor left model for proper scoring rules; positive accuracy difference favors left.",
+        "confidence_intervals_95": _intervals_from_samples(samples, names),
+        "bootstrap_unit": "matchday",
+        "cluster_count": len(set(groups)),
+        "note": "Negative values favor left model for proper scoring rules; positive accuracy difference favors left. Confidence intervals resample paired calendar-day clusters.",
     }
 
 
@@ -237,28 +342,35 @@ def _bootstrap_mean_samples(values, bootstrap_samples, seed):
 
 
 def _binary_metrics(records, *, bootstrap_samples=1000, seed=31415):
-    """Brier/log-loss and fixture-bootstrap intervals for binary markets."""
+    """Binary Brier/log-loss with matchday-clustered confidence intervals."""
     if not records:
-        return {"n": 0, "brier": None, "log_loss": None, "confidence_intervals_95": {}}
+        return {
+            "n": 0, "brier": None, "log_loss": None,
+            "confidence_intervals_95": {}, "bootstrap_unit": "matchday",
+            "cluster_count": 0,
+        }
     scores = []
-    for probabilities, outcome in records:
+    groups = []
+    explicit_groups = False
+    for index, record in enumerate(records):
+        probabilities, outcome = record[:2]
         p = max(1e-15, min(1.0 - 1e-15, float(probabilities["over"])))
         y = float(outcome == "over")
-        # Standard binary Brier score: (p - y)^2.
-        scores.append(((p-y)**2,
-                       -(y * math.log(p) + (1-y) * math.log(1-p))))
-    n = len(scores)
-    names = ("brier", "log_loss")
+        scores.append(((p-y)**2, -(y * math.log(p) + (1-y) * math.log(1-p))))
+        groups.append(_record_group(record, index))
+        explicit_groups = explicit_groups or (
+            isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None
+        )
     matrix = np.asarray(scores, dtype=float)
+    names = ("brier", "log_loss")
     means = matrix.mean(axis=0).tolist()
-    samples = _bootstrap_mean_samples(matrix, bootstrap_samples, seed)
-    intervals = {}
-    for index, name in enumerate(names):
-        values = sorted(samples[index])
-        intervals[name] = ({"low": values[int(.025*(len(values)-1))],
-                            "high": values[int(.975*(len(values)-1))]}
-                           if values else {"low": None, "high": None})
-    return {"n": n, **dict(zip(names, means)), "confidence_intervals_95": intervals}
+    samples = _cluster_bootstrap_mean_samples(matrix, groups, bootstrap_samples, seed)
+    return {
+        "n": len(scores), **dict(zip(names, means)),
+        "confidence_intervals_95": _intervals_from_samples(samples, names),
+        "bootstrap_unit": "matchday" if explicit_groups else "fixture_fallback",
+        "cluster_count": len(set(groups)),
+    }
 
 
 def _total_market_probs(row):
@@ -283,16 +395,23 @@ def _total_market_probs(row):
 
 
 def _binary_paired_differences(candidate_records, market_records, *, bootstrap_samples=1000, seed=31415):
-    """Paired model-minus-market Brier/log-loss differences on identical fixtures."""
+    """Paired model-minus-market differences with matchday-clustered intervals."""
     if not candidate_records or len(candidate_records) != len(market_records):
         return {"n": 0, "differences": {}, "confidence_intervals_95": {}}
     differences = []
-    for candidate, market in zip(candidate_records, market_records):
-        cp, cy = candidate
-        mp, my = market
+    groups = []
+    for index, (candidate, market) in enumerate(zip(candidate_records, market_records)):
+        cp, cy = candidate[:2]
+        mp, my = market[:2]
         if cy != my:
             return {"n": 0, "differences": {}, "confidence_intervals_95": {},
                     "error": "candidate and market records are not paired by outcome"}
+        candidate_group = _record_group(candidate, index)
+        market_group = _record_group(market, index)
+        if candidate_group != market_group:
+            return {"n": 0, "differences": {}, "confidence_intervals_95": {},
+                    "error": "candidate and market records do not share matchday clusters"}
+        groups.append(candidate_group)
         y = float(cy == "over")
         cprob = max(1e-15, min(1.0 - 1e-15, float(cp["over"])))
         mprob = max(1e-15, min(1.0 - 1e-15, float(mp["over"])))
@@ -300,20 +419,17 @@ def _binary_paired_differences(candidate_records, market_records, *, bootstrap_s
         closs = -(y*math.log(cprob) + (1-y)*math.log(1-cprob))
         mloss = -(y*math.log(mprob) + (1-y)*math.log(1-mprob))
         differences.append((cbrier-mbrier, closs-mloss))
+    matrix = np.asarray(differences, dtype=float)
     n = len(differences)
     names = ("brier", "log_loss")
-    matrix = np.asarray(differences, dtype=float)
     means = matrix.mean(axis=0).tolist()
-    samples = _bootstrap_mean_samples(matrix, bootstrap_samples, seed)
-    intervals = {}
-    for index, name in enumerate(names):
-        values = sorted(samples[index])
-        intervals[name] = ({"low": values[int(.025*(len(values)-1))],
-                            "high": values[int(.975*(len(values)-1))]}
-                           if values else {"low": None, "high": None})
-    return {"n": n, "differences": dict(zip(names, means)),
-            "confidence_intervals_95": intervals,
-            "note": "Negative differences favor the model; intervals resample paired fixtures."}
+    samples = _cluster_bootstrap_mean_samples(matrix, groups, bootstrap_samples, seed)
+    return {
+        "n": n, "differences": dict(zip(names, means)),
+        "confidence_intervals_95": _intervals_from_samples(samples, names),
+        "bootstrap_unit": "matchday", "cluster_count": len(set(groups)),
+        "note": "Negative differences favor the model; intervals resample paired calendar-day clusters.",
+    }
 
 
 def totals_market_is_validated(report, *, min_n=500):
@@ -397,7 +513,7 @@ def walk_forward_compare(
     xg_provider_rows = 0
     xg_proxy_rows = 0
 
-    # Separate binary evaluation    # Separate binary evaluation for each common goals line. This measures
+    # Separate binary evaluation for each common goals line. This measures
     # forecast quality, not merely whether the 1X2 model predicts the winner.
     goals_line_records = {line: _ClusteredRecords() for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)}
     goals_line_baseline_records = {line: _ClusteredRecords() for line in goals_line_records}
