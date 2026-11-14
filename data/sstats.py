@@ -978,12 +978,12 @@ def _sstats_div_code(league_name: str) -> str:
 
     if women:
         women_mappings = (
-            (("women's super league", "womens super league", "fa wsl"), "W_E0"),
+            (("women's super league", "womens super league", "fa wsl", "wsl"), "W_E0"),
             (("liga f", "primera division femenina"), "W_SP1"),
             (("d1 feminine", "division 1 feminine"), "W_F1"),
-            (("frauen bundesliga", "frauen-bundesliga"), "W_D1"),
-            (("serie a women", "serie a femminile"), "W_I1"),
-            (("women's champions league", "womens champions league"), "W_C1"),
+            (("frauen bundesliga", "frauen-bundesliga", "frauen-bl"), "W_D1"),
+            (("serie a women", "serie a femminile", "serie a fem"), "W_I1"),
+            (("women's champions league", "womens champions league", "uwcl"), "W_C1"),
         )
         for tokens, code in women_mappings:
             if any(token in name for token in tokens):
