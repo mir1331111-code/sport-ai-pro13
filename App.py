@@ -1132,9 +1132,9 @@ with st.sidebar:
             st.error(str(_remote_state.get("message") or "Ошибка резервного копирования."))
 
         st.caption(
-            "Для автоматического хранения создай Secret Gist (не Public) и добавь в "
-            "Streamlit → Manage app → Settings → Secrets: GIST_ID, GITHUB_TOKEN, "
-            "NEURO_BACKUP_KEY. Ключ шифрования не добавляй в GitHub или репозиторий."
+            "Для автоматического хранения портфеля и SQLite создай Secret Gist (не Public) "
+            "и добавь в Streamlit → Manage app → Settings → Secrets: GIST_ID, GITHUB_TOKEN, "
+            "NEURO_BACKUP_KEY. Оба файла шифруются этим ключом; не добавляй его в GitHub."
         )
         if st.button("🔐 Сгенерировать ключ шифрования", key="generate_neuro_backup_key"):
             st.session_state["_new_neuro_backup_key"] = generate_backup_key()
@@ -1142,7 +1142,7 @@ with st.sidebar:
             st.code(st.session_state["_new_neuro_backup_key"])
             st.caption(
                 "Скопируй ключ в Streamlit Secrets как NEURO_BACKUP_KEY. "
-                "Потеря этого ключа сделает зашифрованную копию невосстановимой."
+                "Он шифрует и портфель, и SQLite; потеря ключа сделает обе удалённые копии невосстановимыми."
             )
 
         _b1, _b2 = st.columns(2)
@@ -1240,9 +1240,9 @@ with st.sidebar:
                 )
 
         st.caption(
-            "Secret Gist — это непубличная ссылка, а не приватный диск. "
-            "SQLite перед отправкой шифруется отдельным ключом; сам Streamlit app "
-            "также следует ограничить в Share/Manage access."
+            "Secret Gist — это непубличная ссылка, а не приватный диск: любой с URL может его открыть. "
+            "Портфель и SQLite шифруются NEURO_BACKUP_KEY; сам Streamlit app также следует "
+            "ограничить в Share/Manage access."
         )
 
     _backup = json.dumps(_strip_secrets(D), ensure_ascii=False, indent=2, default=str)
