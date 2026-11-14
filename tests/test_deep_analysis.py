@@ -359,7 +359,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
                     "fixture_id": dossier["fixture_id"],
                     "independent_pick": "П1",
                     "probabilities": {"П1": 100, "X": 100, "П2": 100},
-                    "goal_markets": null, "corner_markets": null, "card_markets": null,
+                    "goal_markets": None, "corner_markets": None, "card_markets": None,
                     "lineup_assessment": "x", "injury_assessment": "x",
                     "referee_assessment": "x", "form_assessment": "x",
                     "match_assessment": "x", "risks": "x", "data_quality": "high",
@@ -368,7 +368,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
                     "fixture_id": "unknown-fixture",
                     "independent_pick": "П1",
                     "probabilities": {"П1": 50, "X": 30, "П2": 20},
-                    "goal_markets": null, "corner_markets": null, "card_markets": null,
+                    "goal_markets": None, "corner_markets": None, "card_markets": None,
                     "lineup_assessment": "x", "injury_assessment": "x",
                     "referee_assessment": "x", "form_assessment": "x",
                     "match_assessment": "x", "risks": "x", "data_quality": "low",
@@ -478,7 +478,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         }
         formatted = format_top_match_opinion(analysis, model_pick_code="П1")
         self.assertIn("РАСХОЖДЕНИЕ", formatted)
-        self.assertIn("ТБ 2.5 56%", formatted)
+        self.assertIn("ТБ 2.5 56.0%", formatted)
         parsed = parse_llm_probabilities(formatted)
         self.assertEqual(parsed, {"H": 0.30, "D": 0.45, "A": 0.25})
 
