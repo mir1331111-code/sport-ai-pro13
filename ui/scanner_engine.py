@@ -5,7 +5,7 @@ the scanner UI imports the three established private entry points below.
 """
 from __future__ import annotations
 
-import hashlib
+import copy
 import os
 import threading
 from datetime import datetime
@@ -13,8 +13,9 @@ from datetime import datetime
 import streamlit as st
 
 from config import (
-    APP_VERSION, DIV_NAMES, DIV_TO_TSDB, DISK_CACHE_DIR,
+    APP_VERSION, DATA_VERSION, DIV_NAMES, DIV_TO_TSDB, DISK_CACHE_DIR,
 )
+from model.engine_cache import engine_cache_fingerprint
 from data.sources import load_seasonal, season_str, parse_date
 from model.engine import Engine, _norm
 from model.shot_xg import enrich_history_with_shot_xg
@@ -23,10 +24,8 @@ from model.training import (
     prepare_completed_training_rows, train_engine_chronologically,
 )
 
-def _train_engine(
-    matrix_n, logs, update_loader, footballapi_key="",
-    footballapi_xg_rows=None, custom_historical_rows=None,
-):
+def _load_seasonal_history(logs, update_loader):
+    """Load one deterministic snapshot of the configured seasonal training feed."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     history_years = list(range(cur_year - 4, cur_year + 1))
@@ -34,29 +33,51 @@ def _train_engine(
                      "D2", "F2", "N1", "B1", "P1", "T1", "R1"]
     supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
     train_divs = list(dict.fromkeys(priority_divs + supported_divs))
+    history = {}
+    for i, division in enumerate(train_divs):
+        pct = 0.04 + (i + 1) / max(1, len(train_divs)) * 0.14
+        update_loader(
+            f"Проверка истории [{i+1}/{len(train_divs)}] — {DIV_NAMES.get(division, division)}",
+            pct, logs,
+        )
+        seasons = []
+        for year in history_years:
+            rows = load_seasonal(division, season_str(year))
+            rows = sorted(
+                rows,
+                key=lambda row: parse_date(row.get("Date", "")) or datetime.min,
+            )
+            seasons.append(rows)
+            if rows:
+                logs.append(f"  {season_str(year)}: {len(rows)} матчей")
+        history[division] = seasons
+        league_rows = [row for season_rows in seasons for row in season_rows]
+        logs.append(
+            f"OK {DIV_NAMES.get(division, division)}: {len(league_rows)} матчей "
+            f"за {len(history_years)} сезонов"
+        )
+    return {
+        "history_years": history_years,
+        "train_divs": train_divs,
+        "history": history,
+    }
+
+
+def _train_engine(
+    matrix_n, logs, update_loader, footballapi_key="",
+    footballapi_xg_rows=None, custom_historical_rows=None,
+    seasonal_snapshot=None,
+):
+    if seasonal_snapshot is None:
+        seasonal_snapshot = _load_seasonal_history(logs, update_loader)
+    history_years = list(seasonal_snapshot["history_years"])
+    train_divs = list(seasonal_snapshot["train_divs"])
+    history = copy.deepcopy(seasonal_snapshot["history"])
     engine = Engine(matrix_n=matrix_n)
     from model.historical_match_stats import (
         HistoricalMatchStats, walk_forward_market_validation,
     )
     engine.match_stats = HistoricalMatchStats()
-    history = {}
-    for i, dv in enumerate(train_divs):
-        pct = 0.1 + (i + 1) / len(train_divs) * 0.4
-        update_loader(
-            f"История [{i+1}/{len(train_divs)}] — {DIV_NAMES.get(dv, dv)}",
-            pct, logs)
-        seasons = []
-        for year in history_years:
-            rows = load_seasonal(dv, season_str(year))
-            rows = sorted(rows, key=lambda row: parse_date(row.get("Date", "")) or datetime.min)
-            seasons.append(rows)
-            if rows:
-                logs.append(f"  {season_str(year)}: {len(rows)} матчей")
-        history[dv] = seasons
-        league_rows = [row for season_rows in seasons for row in season_rows]
-        # Per-division walk-forward was redundant: the unified market validation
-        # below evaluates the selected multi-league sample once and is cached.
-        logs.append(f"OK {DIV_NAMES.get(dv, dv)}: {len(league_rows)} матчей за {len(history_years)} сезонов")
 
     # Optional user-supplied histories extend base training to competitions
     # not covered by football-data.co.uk (women's leagues, national teams, etc.).
@@ -408,24 +429,24 @@ def _load_engine(
     from config import DISK_CACHE_DIR
     from model.cache_locks import get_keyed_lock
 
-    xg_cache_tag = "xg_on" if str(footballapi_key or "").strip() else "xg_off"
-    xg_ids = sorted({
-        str(row.get("xg_match_id") or (
-            f"{row.get('Date','')}|{row.get('HomeTeam','')}|{row.get('AwayTeam','')}"
-        ))
-        for row in (footballapi_xg_rows or [])
-        if isinstance(row, dict)
-    })
-    xg_data_tag = hashlib.sha256("|".join(xg_ids).encode("utf-8")).hexdigest()[:12] if xg_ids else "empty"
-    custom_payload = json.dumps(
-        list(custom_historical_rows or []),
-        ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    # Load the historical inputs once, before cache lookup, so cache reuse is
+    # conditional on the actual data currently returned by the source cache.
+    seasonal_snapshot = _load_seasonal_history(logs, update_loader)
+    xg_enabled = bool(str(footballapi_key or "").strip())
+    cache_key = engine_cache_fingerprint(
+        app_version=APP_VERSION,
+        data_version=DATA_VERSION,
+        matrix_n=matrix_n,
+        xg_enabled=xg_enabled,
+        seasonal_history=seasonal_snapshot["history"],
+        history_years=seasonal_snapshot["history_years"],
+        divisions=seasonal_snapshot["train_divs"],
+        footballapi_xg_rows=footballapi_xg_rows,
+        custom_historical_rows=custom_historical_rows,
     )
-    custom_data_tag = hashlib.sha256(custom_payload.encode("utf-8")).hexdigest()[:12] if custom_historical_rows else "none"
-    cache_key = f"{APP_VERSION}:{int(matrix_n)}:{xg_cache_tag}:{xg_data_tag}:{custom_data_tag}"
-    session_key = f"_trained_engine_{APP_VERSION}_{int(matrix_n)}_{xg_cache_tag}_{xg_data_tag}_{custom_data_tag}"
+    session_key = f"_trained_engine_{cache_key}"
 
-    update_loader("🔎 Проверяю кэш обученной модели...", 0.20, logs)
+    update_loader("🔎 Проверяю кэш модели по отпечатку истории и xG...", 0.20, logs)
     try:
         session_engine = st.session_state.get(session_key)
         if (session_engine is not None
@@ -510,10 +531,7 @@ def _load_engine(
             )
             return cached
 
-        p = os.path.join(
-            DISK_CACHE_DIR,
-            f"engine_{APP_VERSION}_{matrix_n}_{xg_cache_tag}_{xg_data_tag}_{custom_data_tag}.pkl.gz",
-        )
+        p = os.path.join(DISK_CACHE_DIR, f"{cache_key}.pkl.gz")
         update_loader("💾 Проверяю сохранённую модель на диске...", 0.22, logs)
         if os.path.exists(p):
             try:
@@ -525,6 +543,7 @@ def _load_engine(
                 if (
                     isinstance(data, dict)
                     and data.get("fp") == APP_VERSION
+                    and data.get("cache_key") == cache_key
                     and hasattr(cached_engine, "match_stats")
                     and getattr(cached_engine, "trained_n", 0) > 0
                 ):
@@ -551,12 +570,13 @@ def _load_engine(
             footballapi_key=footballapi_key,
             footballapi_xg_rows=footballapi_xg_rows,
             custom_historical_rows=custom_historical_rows,
+            seasonal_snapshot=seasonal_snapshot,
         )
         update_loader("💾 Сохраняю обученную модель...", 0.99, logs)
         try:
             os.makedirs(DISK_CACHE_DIR, exist_ok=True)
             packed = gzip.compress(
-                pickle.dumps({"fp": APP_VERSION, "engine": engine}),
+                pickle.dumps({"fp": APP_VERSION, "cache_key": cache_key, "engine": engine}),
                 compresslevel=1,
             )
             temporary_path = p + ".tmp"
