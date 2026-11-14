@@ -268,6 +268,43 @@ def _train_engine(
                 "Непроверенные рынки закрыты для рекомендаций."
             )
 
+    xg_ablation_report = (
+        totals_backtest.get("xg_ablation") if isinstance(totals_backtest, dict) else None
+    ) or {}
+    engine.xg_ablation_report = xg_ablation_report
+
+    if xg_ablation_report:
+        xg_arms = xg_ablation_report.get("arms") or {}
+        xg_usage = xg_ablation_report.get("usage") or {}
+        xg_source_rows = xg_ablation_report.get("source_rows") or {}
+        logs.append(
+            "📊 xG абляция на одинаковых матчах: "
+            f"provider-строк={xg_source_rows.get('provider', 0)}, "
+            f"proxy-строк={xg_source_rows.get('modelled_proxy', 0)}; "
+            "95% CI рассчитаны bootstrap по календарным игровым дням."
+        )
+        for arm in ("goals_only", "provider_xg_only", "proxy_xg_only", "mixed_provider_preferred"):
+            report = xg_arms.get(arm) or {}
+            usage = xg_usage.get(arm) or {}
+            logs.append(
+                f"xG arm {arm}: n={report.get('n', 0)}, "
+                f"Brier={report.get('brier')}, LogLoss={report.get('log_loss')}, "
+                f"xG использован в {usage.get('forecasts_using_xg', 0)} прогнозах "
+                f"(provider={usage.get('provider_xg_used', 0)}, proxy={usage.get('proxy_xg_used', 0)})."
+            )
+        paired = xg_ablation_report.get("paired_differences") or {}
+        for comparison in ("provider_vs_goals_only", "proxy_vs_goals_only", "mixed_vs_goals_only"):
+            report = paired.get(comparison) or {}
+            diff = report.get("differences") or {}
+            ci = report.get("confidence_intervals_95") or {}
+            logs.append(
+                f"xG A/B {comparison}: n={report.get('n', 0)}, "
+                f"ΔBrier={diff.get('brier')}, "
+                f"CI={((ci.get('brier') or {}).get('low'))}…{((ci.get('brier') or {}).get('high'))}, "
+                f"ΔLogLoss={diff.get('log_loss')}, "
+                f"CI={((ci.get('log_loss') or {}).get('low'))}…{((ci.get('log_loss') or {}).get('high'))}."
+            )
+
     if totals_backtest:
         # Value requires an out-of-sample improvement over a de-vigged
         # bookmaker benchmark, not merely a high model probability.
@@ -309,6 +346,8 @@ def _train_engine(
             f"ΔBrier={winner_diff.get('brier')}, ΔLogLoss={winner_diff.get('log_loss')}, "
             f"CI Brier={winner_ci.get('brier', {}).get('low')}…{winner_ci.get('brier', {}).get('high')}, "
             f"CI LogLoss={winner_ci.get('log_loss', {}).get('low')}…{winner_ci.get('log_loss', {}).get('high')}; "
+            f"bootstrap={engine.winner_market_validation_report.get('bootstrap_unit', 'unknown')}, "
+            f"clusters={engine.winner_market_validation_report.get('cluster_count', 0)}; "
             f"Value-допуск={'да' if engine.winner_market_validation else 'нет'}"
         )
         if total_diff:
