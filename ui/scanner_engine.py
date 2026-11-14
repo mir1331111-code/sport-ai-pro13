@@ -126,7 +126,7 @@ def _train_engine(
             )
             if all(key):
                 index[key] = row
-        enriched = already_present = unmatched = 0
+        enriched = already_present = replaced_proxy = unmatched = 0
         for xg_row in xg_rows:
             date_value = parse_date(xg_row.get("Date") or "")
             if not date_value:
@@ -145,15 +145,25 @@ def _train_engine(
                 unmatched += 1
                 continue
             if existing.get("HxG") not in (None, "") and existing.get("AxG") not in (None, ""):
-                already_present += 1
-                continue
+                if str(existing.get("xg_kind") or "").casefold() == "modelled_proxy":
+                    for field in ("HxG", "AxG", "xg_source", "xg_kind",
+                                  "xg_model_version", "xg_training_sides"):
+                        existing.pop(field, None)
+                    replaced_proxy += 1
+                else:
+                    already_present += 1
+                    continue
             existing["HxG"] = xg_row["HxG"]
             existing["AxG"] = xg_row["AxG"]
             existing["xg_source"] = xg_row.get("xg_source", "footballapi.org")
+            existing.pop("xg_kind", None)
+            existing.pop("xg_model_version", None)
+            existing.pop("xg_training_sides", None)
             enriched += 1
         logs.append(
-            f"✅ Football API xG: обогащено={enriched}, уже были={already_present}, "
-            f"не сопоставлено={unmatched}; дубликаты исторических матчей не создавались."
+            f"✅ Football API xG: обогащено={enriched} (включая замену proxy={replaced_proxy}), "
+            f"уже были={already_present}, не сопоставлено={unmatched}; "
+            f"дубликаты исторических матчей не создавались."
         )
     elif not footballapi_key:
         logs.append(
