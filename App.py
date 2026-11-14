@@ -39,7 +39,7 @@ from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
 from data.sources import (
-    parse_date, fdorg_match_result, highlightly_connection_check,
+    parse_date, fdorg_match_result,
     sstats_account_check, sstats_match_statistics, sstats_find_match_id,
     footballapi_xg_connection_check,
 )  # noqa: E402
@@ -781,12 +781,6 @@ with st.sidebar:
         "football-data.org token",
         value=_api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token"),
         type="password", key="fdorg_token_input")
-    highlightly_key = st.text_input(
-        "Highlightly API key (коэффициенты; нужен платный тариф)",
-        value=_api_key_default("highlightly_api_key", "HIGHLIGHTLY_API_KEY", "highlightly_api_key"),
-        type="password", key="highlightly_api_key_input",
-        help="Реальные prematch odds из Highlightly. На Free/Basic endpoint коэффициентов недоступен.")
-
     sstats_key = st.text_input(
         "SStats.net API key (бесплатные футбольные коэффициенты)",
         value=_api_key_default("sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"),
@@ -799,7 +793,7 @@ with st.sidebar:
         type="password", key="footballapi_key_input",
         help="Даёт xG обеих команд для завершённых матчей текущего сезона Премьер-лиги. Бесплатный тариф: 50 запросов в день.")
 
-    st.caption("Расписание, коэффициенты и доступные данные о составах/травмах/судьях запрашиваются через SStats. Отдельный API-Football ключ не нужен.")
+    st.caption("SStats — единственный источник списка матчей и букмекерских коэффициентов. Контекст (составы, травмы и судьи) запрашивается у SStats там, где API подтверждает эти данные.")
 
     if st.button("🔎 Проверить подключение xG Football API", key="check_footballapi_xg",
                  use_container_width=True):
@@ -827,18 +821,6 @@ with st.sidebar:
         else:
             st.error(_sstats_check.get("message", "Не удалось подключиться к SStats.net."))
 
-    if st.button("🔎 Проверить доступ к коэффициентам", key="check_highlightly_odds",
-                 use_container_width=True):
-        with st.spinner("Проверяю ключ и endpoint Highlightly /odds…"):
-            _highlightly_check = highlightly_connection_check(highlightly_key)
-        if _highlightly_check.get("ok"):
-            st.success(_highlightly_check.get("message", "Highlightly /odds доступен."))
-            st.caption(f"API host: {_highlightly_check.get('base', 'автовыбор')}")
-        elif _highlightly_check.get("matches_ok"):
-            st.warning(_highlightly_check.get("message", "Ключ работает, но доступ к коэффициентам не подтверждён."))
-        else:
-            st.error(_highlightly_check.get("message", "Не удалось проверить Highlightly."))
-
     st.markdown(
         "<div style='font-size:.72rem;color:#8b93a7;margin-top:14px;"
         "margin-bottom:6px;'>🤖 LLM-аналитик</div>",
@@ -854,7 +836,6 @@ with st.sidebar:
     # Save only UI-entered keys, separate from portfolio data and its Gist sync.
     _widget_key_map = {
         "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
-        "highlightly_api_key": ("highlightly_api_key_input", ("HIGHLIGHTLY_API_KEY",), ("HIGHLIGHTLY_API_KEY", "highlightly_api_key")),
         "sstats_api_key": ("sstats_api_key_input", ("SSTATS_API_KEY",), ("SSTATS_API_KEY", "sstats_api_key")),
         "footballapi_key": ("footballapi_key_input", ("FOOTBALLAPI_KEY",), ("FOOTBALLAPI_KEY", "footballapi_key")),
         "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
