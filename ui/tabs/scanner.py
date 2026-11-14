@@ -3133,11 +3133,22 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         logs.append(
             "🏆 TOP MATCHES · независимый shortlist: "
             f"история команд ≥5: {top_diagnostics['enough_venue_history']}; "
+            f"недостаточная история: {top_diagnostics['insufficient_venue_history']}; "
+            f"без исторических средних: {top_diagnostics['missing_goal_features']}; "
             f"xG-история: {top_diagnostics['with_xg_history']}; "
             f"угловые: {top_diagnostics['with_corners_history']}; "
             f"карточки: {top_diagnostics['with_cards_history']}; "
             f"отобрано {len(top_match_items)}/{MAX_TOP_MATCHES}."
         )
+        coverage = top_diagnostics.get("division_coverage") or []
+        if coverage:
+            coverage_text = " · ".join(
+                f"{item['league']} [{item['code']}]: "
+                f"{item['eligible']}/{item['fixtures']} shortlist, "
+                f"макс. дом/выезд {item['max_home_sample']}/{item['max_away_sample']}"
+                for item in coverage[:10]
+            )
+            logs.append("📚 TOP MATCHES · история по лигам: " + coverage_text)
 
         top_dossiers = []
         top_card_by_id = {}
