@@ -886,7 +886,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
 
 def _sstats_div_code(league_name: str) -> str:
     """Map SStats competitions without collapsing unknown tournaments into G."""
-    name = re.sub(r"\\s+", " ", str(league_name or "").casefold()).strip()
+    name = re.sub(r"\s+", " ", str(league_name or "").casefold()).strip()
     if not name:
         return "SSTATS_UNKNOWN"
 
@@ -904,7 +904,6 @@ def _sstats_div_code(league_name: str) -> str:
         "national", "international", "nations league", "world cup", "world cup qualification",
         "euro", "africa cup", "african cup", "afcon", "copa america",
         "asian cup", "asian games", "friendly", "qualifier", "qualification",
-        "uefa", "fifa",
     ))
     if international or age:
         if "nations league" in name:
@@ -960,6 +959,9 @@ def _sstats_div_code(league_name: str) -> str:
         (("primeira liga", "portugal primeira"), "P1"),
         (("jupiler pro league", "belgian pro league"), "B1"),
         (("super lig", "turkey super lig"), "T1"),
+        (("uefa champions league", "champions league"), "C1"),
+        (("uefa europa league", "europa league"), "EL"),
+        (("uefa conference league", "conference league"), "EC"),
         (("usl", "united soccer league"), "US_USL"),
         (("mls", "major league soccer"), "US_MLS"),
     )
