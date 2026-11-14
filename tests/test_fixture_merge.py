@@ -1,7 +1,7 @@
 import unittest
 
-from data.fixture_merge import (enforce_sstats_odds_only, fixture_key,
-                                is_sstats_market_source, merge_fixture_sources)
+from data.fixture_merge import (enforce_sstats_market_card, enforce_sstats_odds_only,
+                                fixture_key, is_sstats_market_source, merge_fixture_sources)
 
 
 class FixtureMergeTests(unittest.TestCase):
@@ -80,6 +80,50 @@ class FixtureMergeTests(unittest.TestCase):
         self.assertEqual(rows[0]["market_odds"], sstats[0]["market_odds"])
 
 
+
+
+    def test_saved_cards_reject_legacy_non_sstats_quotes_and_actions(self):
+        cleaned = enforce_sstats_market_card({
+            "odds_source": "highlightly",
+            "market_odds": {"П1": 2.1, "X": 3.2, "П2": 3.6},
+            "bookmaker_by_pick": {"П1": "LegacyBook"},
+            "total_odds_source": "manual_import",
+            "total_market_odds": {"ТБ 2.5": 1.9},
+            "btts_odds_source": "sstats",
+            "btts_market_odds": {"BTTS Да": 1.8, "BTTS Нет": 2.0},
+            "extra_market_source": "highlightly",
+            "stat_market_odds": {"Угл ТБ 9.5": 1.9},
+            "asian_handicap_market_odds": {"Ф1 -1.0": 1.9},
+            "best": ("1X2", "П1", 2.1),
+            "best_by_market": {"winner": {"pick": "П1"}},
+            "best_odds_source": "highlightly",
+            "verdict": {"real_odds": True, "value_passed": True, "is_bet": True, "odd": 2.1},
+        })
+        self.assertEqual(cleaned["market_odds"], {})
+        self.assertEqual(cleaned["bookmaker_by_pick"], {})
+        self.assertEqual(cleaned["total_market_odds"], {})
+        self.assertEqual(cleaned["stat_market_odds"], {})
+        self.assertEqual(cleaned["asian_handicap_market_odds"], {})
+        self.assertEqual(cleaned["btts_market_odds"], {"BTTS Да": 1.8, "BTTS Нет": 2.0})
+        self.assertIsNone(cleaned["best"])
+        self.assertFalse(cleaned["verdict"]["real_odds"])
+        self.assertFalse(cleaned["verdict"]["value_passed"])
+
+    def test_saved_cards_keep_only_explicit_sstats_market_quotes(self):
+        cleaned = enforce_sstats_market_card({
+            "odds_source": "sstats",
+            "market_odds": {"П1": 2.1, "X": 3.2, "П2": 3.6},
+            "total_odds_source": "no_market",
+            "total_market_odds": {"ТБ 2.5": 1.9},
+            "btts_odds_source": "sstats",
+            "btts_market_odds": {"BTTS Да": 1.8, "BTTS Нет": 2.0},
+            "extra_market_source": "no_market",
+            "stat_market_odds": {"Угл ТБ 9.5": 1.9},
+        })
+        self.assertEqual(cleaned["market_odds"]["П1"], 2.1)
+        self.assertEqual(cleaned["btts_market_odds"]["BTTS Да"], 1.8)
+        self.assertEqual(cleaned["total_market_odds"], {})
+        self.assertEqual(cleaned["stat_market_odds"], {})
 
     def test_only_explicit_sstats_provenance_is_accepted_for_quotes(self):
         self.assertTrue(is_sstats_market_source("sstats"))
