@@ -725,6 +725,27 @@ def sstats_account_check(api_key: str) -> dict:
     }
 
 
+def _sstats_division_for_game(
+    game: dict, league_obj: dict, league_name: str,
+) -> str:
+    """Resolve a league using its country when SStats supplies it separately."""
+    country_value = (
+        league_obj.get("country")
+        or league_obj.get("countryName")
+        or game.get("country")
+        or game.get("countryName")
+        or (game.get("season") or {}).get("country")
+    )
+    if isinstance(country_value, dict):
+        country = str(country_value.get("name") or country_value.get("title") or "").strip()
+    else:
+        country = str(country_value or "").strip()
+    label = str(league_name or "").strip()
+    if country and country.casefold() not in label.casefold():
+        label = f"{country} {label}".strip()
+    return _sstats_div_code(label)
+
+
 def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
     """Load upcoming fixtures and compact 1X2 odds; totals require corroborated bookmaker quotes."""
     key = str(api_key or "").strip()
@@ -816,7 +837,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             or game.get("league")
             or "SStats"
         ).strip()
-        div = _sstats_div_code(league_name)
+        div = _sstats_division_for_game(game, league_obj, league_name)
         normalized = _sstats_parse_markets(game.get("odds") or [])
         compact_1x2 = {
             key: normalized[key]
