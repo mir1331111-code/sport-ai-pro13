@@ -1,6 +1,6 @@
 import unittest
 
-from data.sstats import _sstats_div_code
+from data.sstats import _sstats_div_code, _sstats_division_for_game
 
 
 class SStatsDivisionMappingTests(unittest.TestCase):
@@ -41,6 +41,28 @@ class SStatsDivisionMappingTests(unittest.TestCase):
     def test_brazilian_serie_b_is_not_mixed_into_serie_a_history(self):
         self.assertNotEqual(_sstats_div_code("Brasileirão Série B"), "BR1")
         self.assertEqual(_sstats_div_code("Brazilian Serie A"), "BR1")
+
+    def test_country_context_disambiguates_identical_league_names(self):
+        self.assertEqual(
+            _sstats_division_for_game({}, {"country": "Brazil"}, "Serie A"),
+            "BR1",
+        )
+        self.assertEqual(
+            _sstats_division_for_game({}, {"country": {"name": "Austria"}}, "Bundesliga"),
+            "AT1",
+        )
+        self.assertEqual(
+            _sstats_division_for_game({}, {"countryName": "Germany"}, "Bundesliga"),
+            "D1",
+        )
+        self.assertEqual(
+            _sstats_division_for_game({}, {"country": "Italy"}, "Serie A"),
+            "I1",
+        )
+        self.assertNotEqual(
+            _sstats_division_for_game({}, {"country": "South Africa"}, "Premier League"),
+            "E0",
+        )
 
     def test_womens_and_international_competitions_keep_separate_namespaces(self):
         self.assertEqual(_sstats_div_code("Women's Super League"), "W_E0")
