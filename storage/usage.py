@@ -336,6 +336,12 @@ def get_local_data() -> dict:
     remote = _gist_read()
     if remote:
         _update(lambda all_: all_.__setitem__("data", remote))
+        # Migrate a legacy plaintext Gist to the encrypted envelope on first
+        # recovery. For an already-encrypted Gist this simply refreshes the
+        # encrypted snapshot. A missing/invalid key is refused by _gist_write,
+        # but the recovered local copy remains available to the running app.
+        if _gist_write(remote):
+            log.info("Recovered portfolio data was saved back to Gist in encrypted format.")
         return remote
     return {}
 
