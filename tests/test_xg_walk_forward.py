@@ -58,7 +58,7 @@ class WalkForwardTests(unittest.TestCase):
             rows.append(row)
 
         report = walk_forward_compare(
-            rows, bootstrap_samples=30, market_bootstrap_samples=0,
+            rows, bootstrap_samples=0, market_bootstrap_samples=30,
             totals_bootstrap_samples=0,
         )
         audit = report["xg_ablation"]
