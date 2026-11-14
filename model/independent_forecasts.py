@@ -29,16 +29,51 @@ def _mean(values: list[Any]) -> float | None:
     return sum(clean) / len(clean) if clean else None
 
 
+def _matching_team_state(teams: Any, team: str, division: str) -> dict[str, Any]:
+    """Resolve a team's stored state by normalized name, without crossing leagues."""
+    from model.engine import _norm, _team_state_key
+
+    if not hasattr(teams, "get") or not hasattr(teams, "items"):
+        return {}
+    wanted = _norm(team)
+    if not wanted:
+        return {}
+
+    direct = teams.get(_team_state_key(division, team), {})
+    candidates = [direct] if isinstance(direct, dict) else []
+    for key, state in teams.items():
+        if not isinstance(state, dict):
+            continue
+        if isinstance(key, tuple) and len(key) == 2:
+            state_division, state_team = key
+        else:
+            state_division, state_team = "G", key
+        if str(state_division or "G").strip().upper() != division:
+            continue
+        if _norm(state_team) == wanted and all(state is not item for item in candidates):
+            candidates.append(state)
+
+    if not candidates:
+        return {}
+    # A defaultdict may have created an empty exact-name entry during prediction.
+    # Prefer the matching spelling that actually contains the most history.
+    return max(
+        candidates,
+        key=lambda state: sum(
+            len(state.get(field) or [])
+            for field in ("hs", "hc", "as", "ac", "hs_xg", "as_xg", "hs_pxg", "as_pxg")
+        ),
+    )
+
+
 def historical_features(
     engine: Any, home: str, away: str, limit: int = 8, league: str = "G",
 ) -> dict[str, Any]:
-    """Build independent observed-goal features from the same competition only."""
+    """Build independent observed-goal features from normalized names in this competition."""
     teams = getattr(engine, "st", {})
     division = str(league or "G").strip().upper() or "G"
-    home_key = home if division == "G" else (division, home)
-    away_key = away if division == "G" else (division, away)
-    home_stats = teams.get(home_key, {}) if hasattr(teams, "get") else {}
-    away_stats = teams.get(away_key, {}) if hasattr(teams, "get") else {}
+    home_stats = _matching_team_state(teams, home, division)
+    away_stats = _matching_team_state(teams, away, division)
     hs = list(home_stats.get("hs") or [])[-limit:]
     hc = list(home_stats.get("hc") or [])[-limit:]
     ass = list(away_stats.get("as") or [])[-limit:]
@@ -75,12 +110,10 @@ def historical_xg_features(
     Provider xG and the local aggregate-shot proxy stay in separate fields.
     Only dated observations strictly before the target calendar day are used.
     """
-    from model.engine import _team_state_key
-
     teams = getattr(engine, "st", {})
     division = str(league or "G").strip().upper() or "G"
-    home_state = teams.get(_team_state_key(division, home), {}) if hasattr(teams, "get") else {}
-    away_state = teams.get(_team_state_key(division, away), {}) if hasattr(teams, "get") else {}
+    home_state = _matching_team_state(teams, home, division)
+    away_state = _matching_team_state(teams, away, division)
     cutoff = match_date.date() if isinstance(match_date, datetime) else match_date
 
     def dated_mean(state: dict, value_key: str, date_key: str) -> tuple[float | None, int]:
