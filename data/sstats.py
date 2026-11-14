@@ -898,7 +898,10 @@ def _sstats_div_code(league_name: str) -> str:
 
     # Gender and age are resolved before competition labels. This keeps women's
     # and youth international football out of men's senior calibration/history.
-    women = any(token in name for token in ("women", "womens", "ladies", "female", "feminine"))
+    women = any(token in name for token in (
+        "women", "womens", "ladies", "female", "feminine",
+        "femenina", "femminile", "frauen",
+    ))
     age = next(
         (age for age in ("u21", "u-21", "under 21", "u19", "u-19", "under 19",
                          "u23", "u-23", "under 23", "u20", "u-20", "u18", "u-18",
@@ -1027,7 +1030,7 @@ def _sstats_div_code(league_name: str) -> str:
         (("uefa europa league",), "EL"),
         (("uefa conference league",), "EC"),
         (("usl", "united soccer league"), "US_USL"),
-        (("mls", "major league soccer"), "US_MLS"),
+        (("mls", "major league soccer"), "MLS1"),
     )
     for tokens, code in mappings:
         if any(token in name for token in tokens):
