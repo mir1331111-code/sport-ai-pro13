@@ -14,6 +14,9 @@ _XG_KEYS = {
     "xg_home", "xg_away", "xg", "xga", "home_expected_goals",
     "away_expected_goals",
 }
+_XG_METADATA_KEYS = {
+    "xg_source", "xg_kind", "xg_model_version", "xg_training_sides",
+}
 
 
 def _get(row, *names):
@@ -64,16 +67,118 @@ def _parse_date(value):
     return None
 
 
+def _xg_origin(row):
+    """Classify historical xG provenance.
+
+    Explicit modelled-proxy metadata wins. Unlabelled legacy xG pairs retain
+    the Engine's existing treatment as provider xG for compatibility.
+    """
+    if not isinstance(row, dict):
+        return None
+    home_xg, away_xg = _row_xg_pair(row)
+    if home_xg is None or away_xg is None:
+        return None
+    source = str(row.get("xg_source") or "").casefold()
+    kind = str(row.get("xg_kind") or "").casefold()
+    if kind == "modelled_proxy" or "shot_model" in source or "shot_aggregate" in source:
+        return "proxy"
+    return "provider"
+
+
 def _without_xg(row):
-    """Copy a historical row without xG fields for a matched ablation arm."""
+    """Copy a historical row without any xG values or provenance."""
     if not isinstance(row, dict):
         return {}
-    return {key: value for key, value in row.items()
-            if str(key).strip().casefold() not in _XG_KEYS}
+    return {
+        key: value for key, value in row.items()
+        if str(key).strip().casefold() not in _XG_KEYS | _XG_METADATA_KEYS
+    }
+
+
+def _without_provider_xg(row):
+    """Retain only modelled-proxy xG; remove provider and unknown pairs."""
+    if not isinstance(row, dict):
+        return {}
+    return _without_xg(row) if _xg_origin(row) == "provider" else dict(row)
+
+
+def _without_proxy_xg(row):
+    """Retain provider xG and remove aggregate-shot modelled proxies."""
+    if not isinstance(row, dict):
+        return {}
+    return _without_xg(row) if _xg_origin(row) == "proxy" else dict(row)
+
+
+class _ClusteredRecords(list):
+    """Append forecast records with the current calendar-day cluster attached."""
+
+    def __init__(self):
+        super().__init__()
+        self.cluster = None
+
+    def set_cluster(self, cluster):
+        self.cluster = str(cluster) if cluster is not None else None
+
+    def append(self, record):
+        if isinstance(record, tuple) and len(record) == 2:
+            record = (record[0], record[1], self.cluster)
+        super().append(record)
+
+
+def _record_group(record, index):
+    if isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None:
+        return record[2]
+    return ("fixture", int(index))
+
+
+def _cluster_bootstrap_mean_samples(values, groups, bootstrap_samples, seed):
+    """Bootstrap whole matchdays, preserving every fixture within a sampled day."""
+    matrix = np.asarray(values, dtype=float)
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(-1, 1)
+    if matrix.ndim != 2 or matrix.shape[0] == 0:
+        return [[] for _ in range(matrix.shape[1] if matrix.ndim == 2 else 0)]
+
+    sample_count = max(0, int(bootstrap_samples))
+    metric_count = matrix.shape[1]
+    samples = [[] for _ in range(metric_count)]
+    if sample_count == 0:
+        return samples
+    if len(groups) != matrix.shape[0]:
+        raise ValueError("group labels must align with bootstrap rows")
+
+    cluster_indices = {}
+    for index, group in enumerate(groups):
+        cluster_indices.setdefault(group, []).append(index)
+    clusters = list(cluster_indices.values())
+    if not clusters:
+        return samples
+
+    rng = np.random.default_rng(int(seed))
+    cluster_count = len(clusters)
+    for _ in range(sample_count):
+        selected = rng.integers(0, cluster_count, size=cluster_count)
+        row_indices = np.concatenate([clusters[int(i)] for i in selected])
+        means = matrix[row_indices].mean(axis=0)
+        for metric_index in range(metric_count):
+            samples[metric_index].append(float(means[metric_index]))
+    return samples
+
+
+def _intervals_from_samples(samples, names):
+    intervals = {}
+    for index, name in enumerate(names):
+        values = sorted(samples[index]) if index < len(samples) else []
+        intervals[name] = (
+            {"low": values[int(.025 * (len(values) - 1))],
+             "high": values[int(.975 * (len(values) - 1))]}
+            if values else {"low": None, "high": None}
+        )
+    return intervals
 
 
 def _record_scores(record):
-    probabilities, outcome = record
+    probabilities, outcome = record[:2]
     classes = ("H", "D", "A")
     brier = sum((probabilities[k] - float(k == outcome)) ** 2 for k in classes)
     loss = -math.log(max(probabilities[outcome], 1e-15))
@@ -88,25 +193,27 @@ def _record_scores(record):
 
 def _metrics(records, *, bootstrap_samples=1000, seed=1729):
     if not records:
-        return {"n": 0, "brier": None, "log_loss": None, "rps_hda_order": None,
-                "accuracy": None, "confidence_intervals_95": {}}
-    scores = [_record_scores(record) for record in records]
-    n = len(scores)
+        return {
+            "n": 0, "brier": None, "log_loss": None, "rps_hda_order": None,
+            "accuracy": None, "confidence_intervals_95": {},
+            "bootstrap_unit": "matchday", "cluster_count": 0,
+        }
+    scores = np.asarray([_record_scores(record) for record in records], dtype=float)
+    groups = [_record_group(record, index) for index, record in enumerate(records)]
+    explicit_groups = any(
+        isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None
+        for record in records
+    )
     names = ("brier", "log_loss", "rps_hda_order", "accuracy")
-    means = [sum(row[i] for row in scores) / n for i in range(4)]
-    rng = random.Random(seed)
-    samples = {name: [] for name in names}
-    for _ in range(max(0, int(bootstrap_samples))):
-        picked = [scores[rng.randrange(n)] for _ in range(n)]
-        for i, name in enumerate(names):
-            samples[name].append(sum(row[i] for row in picked) / n)
-    intervals = {}
-    for name in names:
-        values = sorted(samples[name])
-        intervals[name] = ({"low": values[int(.025 * (len(values)-1))],
-                            "high": values[int(.975 * (len(values)-1))]}
-                           if values else {"low": None, "high": None})
-    return {"n": n, **dict(zip(names, means)), "confidence_intervals_95": intervals}
+    means = scores.mean(axis=0).tolist()
+    samples = _cluster_bootstrap_mean_samples(scores, groups, bootstrap_samples, seed)
+    return {
+        "n": len(records),
+        **dict(zip(names, means)),
+        "confidence_intervals_95": _intervals_from_samples(samples, names),
+        "bootstrap_unit": "matchday" if explicit_groups else "fixture_fallback",
+        "cluster_count": len(set(groups)),
+    }
 
 
 def _market_probs(row, method="proportional"):
@@ -157,28 +264,33 @@ def _market_probs(row, method="proportional"):
 
 
 def _paired_differences(left_records, right_records, *, bootstrap_samples=1000, seed=2718):
-    """Paired left-minus-right score differences on the same fixtures."""
+    """Paired score differences with matchday-clustered uncertainty."""
     if not left_records or len(left_records) != len(right_records):
         return {"n": 0, "differences": {}, "confidence_intervals_95": {}}
     left = np.asarray([_record_scores(r) for r in left_records], dtype=float)
     right = np.asarray([_record_scores(r) for r in right_records], dtype=float)
+    groups = [_record_group(record, index) for index, record in enumerate(left_records)]
+    right_groups = [_record_group(record, index) for index, record in enumerate(right_records)]
+    if groups != right_groups:
+        return {
+            "n": 0, "differences": {}, "confidence_intervals_95": {},
+            "error": "paired records do not share identical matchday clusters",
+        }
     diffs = left - right
+    explicit_groups = all(
+        isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None
+        for record in left_records
+    )
     names = ("brier", "log_loss", "rps_hda_order", "accuracy")
     means = diffs.mean(axis=0).tolist()
-    samples = _bootstrap_mean_samples(diffs, bootstrap_samples, seed)
-    intervals = {}
-    for index, name in enumerate(names):
-        values = sorted(samples[index])
-        intervals[name] = (
-            {"low": values[int(.025 * (len(values)-1))],
-             "high": values[int(.975 * (len(values)-1))]}
-            if values else {"low": None, "high": None}
-        )
+    samples = _cluster_bootstrap_mean_samples(diffs, groups, bootstrap_samples, seed)
     return {
         "n": len(diffs),
         "differences": dict(zip(names, means)),
-        "confidence_intervals_95": intervals,
-        "note": "Negative values favor left model for proper scoring rules; positive accuracy difference favors left.",
+        "confidence_intervals_95": _intervals_from_samples(samples, names),
+        "bootstrap_unit": "matchday" if explicit_groups else "fixture_fallback",
+        "cluster_count": len(set(groups)),
+        "note": "Negative values favor left model for proper scoring rules; positive accuracy difference favors left. Confidence intervals resample paired calendar-day clusters when group labels are supplied.",
     }
 
 
@@ -237,28 +349,35 @@ def _bootstrap_mean_samples(values, bootstrap_samples, seed):
 
 
 def _binary_metrics(records, *, bootstrap_samples=1000, seed=31415):
-    """Brier/log-loss and fixture-bootstrap intervals for binary markets."""
+    """Binary Brier/log-loss with matchday-clustered confidence intervals."""
     if not records:
-        return {"n": 0, "brier": None, "log_loss": None, "confidence_intervals_95": {}}
+        return {
+            "n": 0, "brier": None, "log_loss": None,
+            "confidence_intervals_95": {}, "bootstrap_unit": "matchday",
+            "cluster_count": 0,
+        }
     scores = []
-    for probabilities, outcome in records:
+    groups = []
+    explicit_groups = False
+    for index, record in enumerate(records):
+        probabilities, outcome = record[:2]
         p = max(1e-15, min(1.0 - 1e-15, float(probabilities["over"])))
         y = float(outcome == "over")
-        # Standard binary Brier score: (p - y)^2.
-        scores.append(((p-y)**2,
-                       -(y * math.log(p) + (1-y) * math.log(1-p))))
-    n = len(scores)
-    names = ("brier", "log_loss")
+        scores.append(((p-y)**2, -(y * math.log(p) + (1-y) * math.log(1-p))))
+        groups.append(_record_group(record, index))
+        explicit_groups = explicit_groups or (
+            isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None
+        )
     matrix = np.asarray(scores, dtype=float)
+    names = ("brier", "log_loss")
     means = matrix.mean(axis=0).tolist()
-    samples = _bootstrap_mean_samples(matrix, bootstrap_samples, seed)
-    intervals = {}
-    for index, name in enumerate(names):
-        values = sorted(samples[index])
-        intervals[name] = ({"low": values[int(.025*(len(values)-1))],
-                            "high": values[int(.975*(len(values)-1))]}
-                           if values else {"low": None, "high": None})
-    return {"n": n, **dict(zip(names, means)), "confidence_intervals_95": intervals}
+    samples = _cluster_bootstrap_mean_samples(matrix, groups, bootstrap_samples, seed)
+    return {
+        "n": len(scores), **dict(zip(names, means)),
+        "confidence_intervals_95": _intervals_from_samples(samples, names),
+        "bootstrap_unit": "matchday" if explicit_groups else "fixture_fallback",
+        "cluster_count": len(set(groups)),
+    }
 
 
 def _total_market_probs(row):
@@ -283,16 +402,23 @@ def _total_market_probs(row):
 
 
 def _binary_paired_differences(candidate_records, market_records, *, bootstrap_samples=1000, seed=31415):
-    """Paired model-minus-market Brier/log-loss differences on identical fixtures."""
+    """Paired model-minus-market differences with matchday-clustered intervals."""
     if not candidate_records or len(candidate_records) != len(market_records):
         return {"n": 0, "differences": {}, "confidence_intervals_95": {}}
     differences = []
-    for candidate, market in zip(candidate_records, market_records):
-        cp, cy = candidate
-        mp, my = market
+    groups = []
+    for index, (candidate, market) in enumerate(zip(candidate_records, market_records)):
+        cp, cy = candidate[:2]
+        mp, my = market[:2]
         if cy != my:
             return {"n": 0, "differences": {}, "confidence_intervals_95": {},
                     "error": "candidate and market records are not paired by outcome"}
+        candidate_group = _record_group(candidate, index)
+        market_group = _record_group(market, index)
+        if candidate_group != market_group:
+            return {"n": 0, "differences": {}, "confidence_intervals_95": {},
+                    "error": "candidate and market records do not share matchday clusters"}
+        groups.append(candidate_group)
         y = float(cy == "over")
         cprob = max(1e-15, min(1.0 - 1e-15, float(cp["over"])))
         mprob = max(1e-15, min(1.0 - 1e-15, float(mp["over"])))
@@ -300,25 +426,34 @@ def _binary_paired_differences(candidate_records, market_records, *, bootstrap_s
         closs = -(y*math.log(cprob) + (1-y)*math.log(1-cprob))
         mloss = -(y*math.log(mprob) + (1-y)*math.log(1-mprob))
         differences.append((cbrier-mbrier, closs-mloss))
-    n = len(differences)
-    names = ("brier", "log_loss")
     matrix = np.asarray(differences, dtype=float)
+    n = len(differences)
+    explicit_groups = all(
+        isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None
+        for record in candidate_records
+    )
+    names = ("brier", "log_loss")
     means = matrix.mean(axis=0).tolist()
-    samples = _bootstrap_mean_samples(matrix, bootstrap_samples, seed)
-    intervals = {}
-    for index, name in enumerate(names):
-        values = sorted(samples[index])
-        intervals[name] = ({"low": values[int(.025*(len(values)-1))],
-                            "high": values[int(.975*(len(values)-1))]}
-                           if values else {"low": None, "high": None})
-    return {"n": n, "differences": dict(zip(names, means)),
-            "confidence_intervals_95": intervals,
-            "note": "Negative differences favor the model; intervals resample paired fixtures."}
+    samples = _cluster_bootstrap_mean_samples(matrix, groups, bootstrap_samples, seed)
+    return {
+        "n": n, "differences": dict(zip(names, means)),
+        "confidence_intervals_95": _intervals_from_samples(samples, names),
+        "bootstrap_unit": "matchday" if explicit_groups else "fixture_fallback",
+        "cluster_count": len(set(groups)),
+        "note": "Negative differences favor the model; intervals resample paired calendar-day clusters when group labels are supplied.",
+    }
 
 
-def totals_market_is_validated(report, *, min_n=500):
-    """Conservative gate: enough paired data and both 95% CIs below zero."""
+def totals_market_is_validated(report, *, min_n=500, min_clusters=30):
+    """Require enough fixtures, independent matchdays and both 95% CIs below zero."""
     if not isinstance(report, dict) or int(report.get("n", 0) or 0) < int(min_n):
+        return False
+    # A large fixture count concentrated on very few matchdays does not
+    # provide the same independent evidence as a broad chronological sample.
+    try:
+        if int(report.get("cluster_count", 0) or 0) < int(min_clusters):
+            return False
+    except (TypeError, ValueError):
         return False
     intervals = report.get("confidence_intervals_95") or {}
     differences = report.get("differences") or {}
@@ -364,32 +499,46 @@ def walk_forward_compare(
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     temporal_goals = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    provider_xg_only = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    proxy_xg_only = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     # Feature ablations use the same temporal weights, league rho, xG input,
     # fixture order and calibration process. Each arm has its own chronological
     # state; only the named feature is disabled.
     candidate_no_h2h = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     candidate_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     candidate_no_h2h_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
-    for model in (candidate, temporal_goals, candidate_no_h2h,
-                  candidate_no_rest, candidate_no_h2h_no_rest):
+    for model in (candidate, temporal_goals, provider_xg_only, proxy_xg_only,
+                  candidate_no_h2h, candidate_no_rest, candidate_no_h2h_no_rest):
         model.half_life_days = float(half_life_days)
     candidate_no_rest.rest_days_adjustment = False
     candidate_no_h2h_no_rest.rest_days_adjustment = False
-    records = {
-        "baseline": [], "candidate": [], "temporal_goals_only": [],
-        "candidate_without_h2h": [], "candidate_without_rest_days": [],
-        "candidate_without_h2h_or_rest_days": [],
-        "market": [], "candidate_on_market": [],
-        "goals_over25": [], "goals_over25_market": [],
-        "goals_over25_candidate_on_market": [],
-    }
+
+    record_names = (
+        "baseline", "candidate", "temporal_goals_only",
+        "candidate_without_h2h", "candidate_without_rest_days",
+        "candidate_without_h2h_or_rest_days",
+        "market", "candidate_on_market",
+        "market_power", "candidate_on_market_power",
+        "market_shin", "candidate_on_market_shin",
+        "goals_over25", "goals_over25_market",
+        "goals_over25_candidate_on_market",
+    )
+    records = {name: _ClusteredRecords() for name in record_names}
+    xg_arm_names = ("goals_only", "provider_xg_only", "proxy_xg_only", "mixed_provider_preferred")
+    xg_arm_records = {name: _ClusteredRecords() for name in xg_arm_names}
+    xg_arm_usage = {name: 0 for name in xg_arm_names}
+    xg_arm_proxy_usage = {name: 0 for name in xg_arm_names}
+    xg_arm_provider_usage = {name: 0 for name in xg_arm_names}
+    xg_provider_rows = 0
+    xg_proxy_rows = 0
+
     # Separate binary evaluation for each common goals line. This measures
     # forecast quality, not merely whether the 1X2 model predicts the winner.
-    goals_line_records = {line: [] for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)}
-    goals_line_baseline_records = {line: [] for line in goals_line_records}
-    goals_line_candidate_on_baseline_records = {line: [] for line in goals_line_records}
-    btts_records = []
-    btts_baseline_records = []
+    goals_line_records = {line: _ClusteredRecords() for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)}
+    goals_line_baseline_records = {line: _ClusteredRecords() for line in goals_line_records}
+    goals_line_candidate_on_baseline_records = {line: _ClusteredRecords() for line in goals_line_records}
+    btts_records = _ClusteredRecords()
+    btts_baseline_records = _ClusteredRecords()
     btts_history = {}
     goals_history = {}
     market_sources = {}
@@ -403,17 +552,36 @@ def walk_forward_compare(
         while cursor < len(prepared) and prepared[cursor][0] == stamp:
             group.append(prepared[cursor])
             cursor += 1
+        # Every fixture on this date belongs to the same uncertainty cluster.
+        cluster_id = stamp.isoformat()
+        for record_list in (
+            *records.values(), *xg_arm_records.values(),
+            *goals_line_records.values(), *goals_line_baseline_records.values(),
+            *goals_line_candidate_on_baseline_records.values(),
+            btts_records, btts_baseline_records,
+        ):
+            record_list.set_cluster(cluster_id)
+
         pending = []
         for _, league, home, away, hg, ag, row in group:
             row_copy = dict(row) if isinstance(row, dict) else {}
             row_copy["Div"] = league
             no_xg_row = _without_xg(row_copy)
-            if _row_xg_pair(row_copy)[0] is not None:
+            provider_xg_row = _without_proxy_xg(row_copy)
+            proxy_xg_row = _without_provider_xg(row_copy)
+            xg_origin = _xg_origin(row_copy)
+            if xg_origin == "provider":
                 xg_eligible_rows += 1
+                xg_provider_rows += 1
+            elif xg_origin == "proxy":
+                xg_eligible_rows += 1
+                xg_proxy_rows += 1
 
             pred_base = baseline.predict(home, away, league, match_date=stamp.isoformat())
             pred_candidate = candidate.predict(home, away, league, match_date=stamp.isoformat())
             pred_temporal_goals = temporal_goals.predict(home, away, league, match_date=stamp.isoformat())
+            pred_provider_xg = provider_xg_only.predict(home, away, league, match_date=stamp.isoformat())
+            pred_proxy_xg = proxy_xg_only.predict(home, away, league, match_date=stamp.isoformat())
             pred_without_h2h = candidate_no_h2h.predict(
                 home, away, league, match_date=stamp.isoformat(), apply_h2h=False,
             )
@@ -468,6 +636,21 @@ def walk_forward_compare(
                 records["goals_over25_candidate_on_market"].append(({"over": over_prob, "under": 1.0 - over_prob}, total_outcome))
                 total_market_sources[total_market_source] = total_market_sources.get(total_market_source, 0) + 1
             outcome = "H" if hg > ag else "A" if hg < ag else "D"
+            arm_predictions = {
+                "goals_only": pred_temporal_goals,
+                "provider_xg_only": pred_provider_xg,
+                "proxy_xg_only": pred_proxy_xg,
+                "mixed_provider_preferred": pred_candidate,
+            }
+            for arm_name, arm_prediction in arm_predictions.items():
+                xg_arm_records[arm_name].append((_probs(arm_prediction), outcome))
+                if arm_prediction.get("xg_used"):
+                    xg_arm_usage[arm_name] += 1
+                    if arm_prediction.get("xg_modelled_used"):
+                        xg_arm_proxy_usage[arm_name] += 1
+                    else:
+                        xg_arm_provider_usage[arm_name] += 1
+
             records["baseline"].append((_probs(pred_base), outcome))
             records["candidate"].append((_probs(pred_candidate), outcome))
             records["temporal_goals_only"].append((_probs(pred_temporal_goals), outcome))
@@ -482,18 +665,22 @@ def walk_forward_compare(
             for method in ("power", "shin"):
                 method_probs, _ = _market_probs(row_copy, method)
                 if method_probs:
-                    records.setdefault("market_" + method, []).append((method_probs, outcome))
-                    records.setdefault("candidate_on_market_" + method, []).append((_probs(pred_candidate), outcome))
+                    records["market_" + method].append((method_probs, outcome))
+                    records["candidate_on_market_" + method].append((_probs(pred_candidate), outcome))
             pending.append((
-                home, away, hg, ag, row_copy, no_xg_row, stamp,
+                home, away, hg, ag, row_copy, no_xg_row,
+                provider_xg_row, proxy_xg_row, stamp,
                 pred_base, pred_candidate, pred_temporal_goals,
+                pred_provider_xg, pred_proxy_xg,
                 pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
                 outcome,
             ))
 
         # Ingest outcomes only after every forecast for this date has been made.
-        for (home, away, hg, ag, row_copy, no_xg_row, match_stamp,
+        for (home, away, hg, ag, row_copy, no_xg_row,
+             provider_xg_row, proxy_xg_row, match_stamp,
              pred_base, pred_candidate, pred_temporal_goals,
+             pred_provider_xg, pred_proxy_xg,
              pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
              outcome) in pending:
             # Train the calibrator only after every forecast for this date exists.
@@ -502,6 +689,8 @@ def walk_forward_compare(
             for model, prediction in (
                 (baseline, pred_base), (candidate, pred_candidate),
                 (temporal_goals, pred_temporal_goals),
+                (provider_xg_only, pred_provider_xg),
+                (proxy_xg_only, pred_proxy_xg),
                 (candidate_no_h2h, pred_without_h2h),
                 (candidate_no_rest, pred_without_rest),
                 (candidate_no_h2h_no_rest, pred_without_h2h_rest),
@@ -514,6 +703,8 @@ def walk_forward_compare(
             baseline.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            provider_xg_only.add(home, away, hg, ag, provider_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            proxy_xg_only.add(home, away, hg, ag, proxy_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate_no_h2h.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate_no_rest.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate_no_h2h_no_rest.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
@@ -527,6 +718,7 @@ def walk_forward_compare(
                for name, value in records.items() if not name.startswith("goals_over25")}
     totals_bs = bootstrap_samples if totals_bootstrap_samples is None else max(0, int(totals_bootstrap_samples))
     market_bs = bootstrap_samples if market_bootstrap_samples is None else max(0, int(market_bootstrap_samples))
+    xg_bs = market_bs
     goals_over25_metrics = _binary_metrics(records["goals_over25"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_market_metrics = _binary_metrics(records["goals_over25_market"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_candidate_market_metrics = _binary_metrics(records["goals_over25_candidate_on_market"], bootstrap_samples=totals_bs, seed=31415)
@@ -573,6 +765,36 @@ def walk_forward_compare(
     )
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
+    xg_arm_metrics = {
+        name: _metrics(value, bootstrap_samples=xg_bs, seed=61000 + index)
+        for index, (name, value) in enumerate(xg_arm_records.items())
+    }
+    xg_arm_pairs = {
+        "provider_vs_goals_only": _paired_differences(
+            xg_arm_records["provider_xg_only"], xg_arm_records["goals_only"],
+            bootstrap_samples=xg_bs, seed=61101,
+        ),
+        "proxy_vs_goals_only": _paired_differences(
+            xg_arm_records["proxy_xg_only"], xg_arm_records["goals_only"],
+            bootstrap_samples=xg_bs, seed=61102,
+        ),
+        "mixed_vs_goals_only": _paired_differences(
+            xg_arm_records["mixed_provider_preferred"], xg_arm_records["goals_only"],
+            bootstrap_samples=xg_bs, seed=61103,
+        ),
+        "provider_vs_proxy": _paired_differences(
+            xg_arm_records["provider_xg_only"], xg_arm_records["proxy_xg_only"],
+            bootstrap_samples=xg_bs, seed=61104,
+        ),
+        "mixed_vs_provider": _paired_differences(
+            xg_arm_records["mixed_provider_preferred"], xg_arm_records["provider_xg_only"],
+            bootstrap_samples=xg_bs, seed=61105,
+        ),
+        "mixed_vs_proxy": _paired_differences(
+            xg_arm_records["mixed_provider_preferred"], xg_arm_records["proxy_xg_only"],
+            bootstrap_samples=xg_bs, seed=61106,
+        ),
+    }
     delta = lambda left, right, key: (
         left[key] - right[key] if left[key] is not None and right[key] is not None else None
     )
@@ -596,7 +818,7 @@ def walk_forward_compare(
         "interpretation": (
             "All arms use identical fixtures, dates, temporal weighting, league rho and xG data. "
             "Negative full-minus-ablation Brier/log-loss means the enabled feature improves the "
-            "proper scoring rule; confidence intervals are paired fixture bootstrap intervals."
+            "proper scoring rule; confidence intervals resample paired calendar-day clusters."
         ),
     }
 
@@ -604,8 +826,34 @@ def walk_forward_compare(
         "n": len(prepared),
         "skipped": skipped,
         "xg_rows_available": xg_eligible_rows,
+        "xg_provider_rows_available": xg_provider_rows,
+        "xg_proxy_rows_available": xg_proxy_rows,
         "xg_forecasts_used": xg_forecasts,
         "xg_usage_share": xg_forecasts / len(prepared) if prepared else None,
+        "xg_ablation": {
+            "arms": xg_arm_metrics,
+            "paired_differences": xg_arm_pairs,
+            "usage": {
+                name: {
+                    "forecasts_using_xg": xg_arm_usage[name],
+                    "provider_xg_used": xg_arm_provider_usage[name],
+                    "proxy_xg_used": xg_arm_proxy_usage[name],
+                    "share": xg_arm_usage[name] / len(prepared) if prepared else None,
+                }
+                for name in xg_arm_names
+            },
+            "source_rows": {
+                "provider": xg_provider_rows,
+                "modelled_proxy": xg_proxy_rows,
+            },
+            "interpretation": (
+                "Four arms are predicted on the same chronological fixtures: goals-only, "
+                "provider-xG-only, aggregate-shot-proxy-only, and mixed (provider preferred, "
+                "proxy fallback). All confidence intervals resample whole calendar-day clusters. "
+                "A modelled proxy is not genuine shot-level xG. No arm is promoted from this "
+                "diagnostic without a separate untouched chronological holdout."
+            ),
+        },
         "feature_ablation": feature_ablation,
         "baseline": base_metrics,
         "candidate": candidate_metrics,
@@ -643,9 +891,9 @@ def walk_forward_compare(
             for key in ("brier", "log_loss", "accuracy")
         },
         "interpretation": (
-            "Market benchmark uses complete 1X2 odds triplets; proportional, power and Shin de-vig methods are reported. Bootstrap intervals are fixture-resampled 95% intervals. RPS is labelled H/D/A class-order diagnostic because 1X2 is not naturally ordinal. "
+            "Market benchmark uses complete 1X2 odds triplets; proportional, power and Shin de-vig methods are reported. Confidence intervals use calendar-day cluster bootstrap. RPS is labelled H/D/A class-order diagnostic because 1X2 is not naturally ordinal. "
             "Compare candidate_on_market_rows against market; both metrics use exactly the same fixtures. "
-            "xG effect is isolated by comparing candidate against temporal_goals_only on identical fixtures. "
+            "The xG report separately compares goals-only, provider-only, proxy-only and mixed arms on identical fixtures. "
             "Lower Brier/log_loss and higher accuracy are better. Do not claim a gain unless it persists "
             "on a separate untouched chronological holdout with adequate xG coverage."
         ),

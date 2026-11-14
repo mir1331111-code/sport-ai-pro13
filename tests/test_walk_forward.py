@@ -1,7 +1,11 @@
 import unittest
 from datetime import date, timedelta
 
-from model.walk_forward import walk_forward_compare
+from model.walk_forward import (
+    _ClusteredRecords, _metrics, _paired_differences,
+    _binary_metrics, _binary_paired_differences,
+    totals_market_is_validated, walk_forward_compare,
+)
 
 
 class WalkForwardTests(unittest.TestCase):
@@ -29,6 +33,80 @@ class WalkForwardTests(unittest.TestCase):
             self.assertEqual(line_report["n"], 24)
             self.assertIsNotNone(line_report["metrics"]["brier"])
             self.assertIsNotNone(line_report["metrics"]["log_loss"])
+
+    def test_metrics_resample_calendar_day_clusters_not_individual_fixtures(self):
+        records = _ClusteredRecords()
+        records.set_cluster("2024-01-01")
+        records.append(({"H": 0.80, "D": 0.10, "A": 0.10}, "H"))
+        records.append(({"H": 0.10, "D": 0.10, "A": 0.80}, "H"))
+        records.set_cluster("2024-01-02")
+        records.append(({"H": 0.10, "D": 0.80, "A": 0.10}, "D"))
+        records.append(({"H": 0.10, "D": 0.10, "A": 0.80}, "D"))
+
+        report = _metrics(records, bootstrap_samples=100, seed=123)
+        self.assertEqual(report["n"], 4)
+        self.assertEqual(report["bootstrap_unit"], "matchday")
+        self.assertEqual(report["cluster_count"], 2)
+        self.assertLessEqual(report["confidence_intervals_95"]["brier"]["low"],
+                             report["confidence_intervals_95"]["brier"]["high"])
+
+    def test_paired_and_binary_metrics_keep_matchday_cluster_alignment(self):
+        left = _ClusteredRecords()
+        right = _ClusteredRecords()
+        binary_left = _ClusteredRecords()
+        binary_right = _ClusteredRecords()
+        for day in ("2024-02-01", "2024-02-02", "2024-02-03"):
+            for index in range(2):
+                left.set_cluster(day)
+                right.set_cluster(day)
+                binary_left.set_cluster(day)
+                binary_right.set_cluster(day)
+                outcome = ("H", "D", "A")[index]
+                base = {"H": 0.60, "D": 0.25, "A": 0.15}
+                improved = {"H": 0.70, "D": 0.20, "A": 0.10}
+                left.append((improved, outcome))
+                right.append((base, outcome))
+                binary_left.append(({"over": 0.65, "under": 0.35}, "over"))
+                binary_right.append(({"over": 0.50, "under": 0.50}, "over"))
+
+        paired = _paired_differences(left, right, bootstrap_samples=80, seed=7)
+        binary = _binary_metrics(binary_left, bootstrap_samples=80, seed=7)
+        binary_paired = _binary_paired_differences(
+            binary_left, binary_right, bootstrap_samples=80, seed=7,
+        )
+        self.assertEqual(paired["n"], 6)
+        self.assertEqual(paired["cluster_count"], 3)
+        self.assertEqual(binary["cluster_count"], 3)
+        self.assertEqual(binary_paired["cluster_count"], 3)
+        self.assertEqual(paired["bootstrap_unit"], "matchday")
+        self.assertEqual(binary_paired["bootstrap_unit"], "matchday")
+
+    def test_paired_metrics_reject_misaligned_day_clusters(self):
+        left = _ClusteredRecords()
+        right = _ClusteredRecords()
+        left.set_cluster("2024-03-01")
+        right.set_cluster("2024-03-02")
+        left.append(({"H": 0.6, "D": 0.2, "A": 0.2}, "H"))
+        right.append(({"H": 0.5, "D": 0.3, "A": 0.2}, "H"))
+        report = _paired_differences(left, right, bootstrap_samples=10)
+        self.assertEqual(report["n"], 0)
+        self.assertIn("matchday", report["error"])
+
+    def test_market_validation_requires_thirty_independent_matchdays(self):
+        report = {
+            "n": 800,
+            "cluster_count": 29,
+            "differences": {"brier": -0.02, "log_loss": -0.03},
+            "confidence_intervals_95": {
+                "brier": {"low": -0.03, "high": -0.01},
+                "log_loss": {"low": -0.04, "high": -0.02},
+            },
+        }
+        self.assertFalse(totals_market_is_validated(report, min_n=500))
+        report["cluster_count"] = 30
+        self.assertTrue(totals_market_is_validated(report, min_n=500))
+        report.pop("cluster_count")
+        self.assertFalse(totals_market_is_validated(report, min_n=500))
 
     def test_skips_rows_without_valid_dates_or_scores(self):
         result = walk_forward_compare([
