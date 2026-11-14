@@ -84,7 +84,12 @@ class UsageGistVisibilityTests(unittest.TestCase):
             })
 
         self.assertTrue(result)
-        self.assertIn('"initial_bank": 1000', captured["payload"])
+        request_payload = json.loads(captured["payload"])
+        saved_json = request_payload["files"]["neuro_local.json"]["content"]
+        saved_data = json.loads(saved_json)
+        self.assertEqual(saved_data["meta"]["initial_bank"], 1000)
+        for secret_name in secrets:
+            self.assertNotIn(secret_name, saved_data["meta"])
         for sentinel in secrets.values():
             self.assertNotIn(sentinel, captured["payload"])
 
