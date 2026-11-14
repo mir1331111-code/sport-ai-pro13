@@ -67,26 +67,132 @@ def _complete_1x2_prices(card: dict) -> bool:
     )
 
 
+def _candidate_identity(card: dict) -> str:
+    fixture_id = str(card.get("fixture_id") or "").strip()
+    if fixture_id:
+        return fixture_id
+    home, away = _split_teams(card)
+    return "|".join((
+        str(card.get("date_iso") or "")[:10],
+        home.casefold(), away.casefold(),
+    ))
+
+
+def _candidate_evidence(card: dict) -> tuple:
+    features = card.get("independent_features") or {}
+    features = features if isinstance(features, dict) else {}
+    home_n = int(_number(features.get("home_home_sample")) or 0)
+    away_n = int(_number(features.get("away_away_sample")) or 0)
+    markets = features.get("markets") or {}
+    markets = markets if isinstance(markets, dict) else {}
+    market_count = sum(
+        1 for name in ("corners", "cards")
+        if isinstance(markets.get(name), dict)
+        and int(_number(markets[name].get("history_matches")) or 0) >= 5
+    )
+    xg_history = features.get("xg_history") or {}
+    xg_samples = 0
+    if isinstance(xg_history, dict):
+        for source in ("provider", "proxy"):
+            block = xg_history.get(source) or {}
+            if isinstance(block, dict):
+                xg_samples += sum(
+                    int(_number(block.get(key)) or 0)
+                    for key in (
+                        "home_xg_samples", "home_xga_samples",
+                        "away_xg_samples", "away_xga_samples",
+                    )
+                )
+    context = card.get("deep_analysis_context") or card.get("api_context") or {}
+    if not isinstance(context, dict):
+        context = {}
+    lineup = context.get("lineup") or {}
+    lineup_count = sum(
+        bool((lineup.get(side) or {}).get("confirmed"))
+        for side in ("home", "away")
+        if isinstance(lineup.get(side), dict)
+    ) if isinstance(lineup, dict) else 0
+    referee = context.get("referee") or {}
+    referee_confirmed = int(
+        isinstance(referee, dict) and bool(referee.get("is_confirmed") and referee.get("name"))
+    )
+    return (
+        min(home_n, away_n),
+        home_n + away_n,
+        market_count,
+        xg_samples,
+        lineup_count + referee_confirmed,
+    )
+
+
 def top_match_shortlist_diagnostics(
     cards: object,
     *,
-    min_probability: float = MIN_TOP_PROBABILITY,
     min_team_history: int = MIN_TOP_TEAM_HISTORY,
 ) -> dict[str, int]:
-    """Count why a fixture is or is not eligible for the top research shortlist."""
+    """Count evidence-ready fixtures independently of model probability or odds."""
     rows = [card for card in cards if isinstance(card, dict)] if isinstance(cards, list) else []
-    diagnostics = {
+    result = {
         "fixtures": len(rows),
-        "strong_probability": 0,
         "enough_venue_history": 0,
-        "complete_1x2_prices": 0,
+        "with_goal_market_history": 0,
+        "with_corners_history": 0,
+        "with_cards_history": 0,
+        "with_xg_history": 0,
         "eligible": 0,
     }
     for card in rows:
-        favorite = model_favorite(card)
-        if favorite is None or favorite["probability"] < float(min_probability):
+        features = card.get("independent_features") or {}
+        if not has_sufficient_history(features):
             continue
-        diagnostics["strong_probability"] += 1
+        home_n = int(_number(features.get("home_home_sample")) or 0)
+        away_n = int(_number(features.get("away_away_sample")) or 0)
+        if min(home_n, away_n) < int(min_team_history):
+            continue
+        result["enough_venue_history"] += 1
+        markets = features.get("markets") or {}
+        if isinstance(markets, dict):
+            goal_rows = min(home_n, away_n)
+            if goal_rows >= int(min_team_history):
+                result["with_goal_market_history"] += 1
+            for market in ("corners", "cards"):
+                item = markets.get(market)
+                if isinstance(item, dict) and int(_number(item.get("history_matches")) or 0) >= 5:
+                    result[f"with_{market}_history"] += 1
+        xg = features.get("xg_history") or {}
+        if isinstance(xg, dict) and any(
+            int(_number((xg.get(source) or {}).get(key)) or 0) >= 5
+            for source in ("provider", "proxy")
+            for key in ("home_xg_samples", "away_xg_samples")
+            if isinstance(xg.get(source), dict)
+        ):
+            result["with_xg_history"] += 1
+        result["eligible"] += 1
+    return result
+
+
+def select_top_matches(
+    cards: object,
+    *,
+    limit: int = MAX_TOP_MATCHES,
+    min_team_history: int = MIN_TOP_TEAM_HISTORY,
+) -> list[dict]:
+    """Select the best-documented matches, not just the statistical model's favourites.
+
+    Selection uses venue-specific history, xG coverage and independently observed
+    corners/cards data. It does not require a SStats odds line or a 65% model pick.
+    """
+    try:
+        max_items = min(MAX_TOP_MATCHES, max(0, int(limit)))
+    except (TypeError, ValueError):
+        max_items = MAX_TOP_MATCHES
+    if max_items <= 0 or not isinstance(cards, list):
+        return []
+
+    unique: dict[str, dict] = {}
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
         features = card.get("independent_features") or {}
         if not has_sufficient_history(features):
             continue
@@ -97,62 +203,34 @@ def top_match_shortlist_diagnostics(
             continue
         if min(home_n, away_n) < int(min_team_history):
             continue
-        diagnostics["enough_venue_history"] += 1
-        if not _complete_1x2_prices(card):
-            continue
-        diagnostics["complete_1x2_prices"] += 1
-        diagnostics["eligible"] += 1
-    return diagnostics
+        identity = _candidate_identity(card)
+        previous = unique.get(identity)
+        if previous is None or _candidate_evidence(card) > _candidate_evidence(previous):
+            unique[identity] = card
 
-
-def select_top_matches(
-    cards: object,
-    *,
-    limit: int = MAX_TOP_MATCHES,
-    min_probability: float = MIN_TOP_PROBABILITY,
-    min_team_history: int = MIN_TOP_TEAM_HISTORY,
-) -> list[dict]:
-    """Return up to seven unique, strong, priced 1X2 candidates for Groq review.
-
-    Candidates must have a model favourite at/above the configured strong
-    probability threshold, at least five same-venue historical matches for
-    both teams, and a complete real 1X2 price set. This does not make a Value
-    bet and never relaxes the portfolio's separate market/context gates.
-    """
-    try:
-        max_items = min(MAX_TOP_MATCHES, max(0, int(limit)))
-    except (TypeError, ValueError):
-        max_items = MAX_TOP_MATCHES
-    if max_items <= 0 or not isinstance(cards, list):
-        return []
-
-    # Venue-specific samples are checked below. Do not let the generic
-    # aggregate card.games value reject a match whose home/away samples are valid.
-    ranked = rank_model_favorites(cards, min_sample_games=0)
-    selected = []
-    for item in ranked:
-        card = item.get("card")
-        if not isinstance(card, dict):
-            continue
-        if float(item.get("probability") or 0.0) < float(min_probability):
-            continue
+    ranked = sorted(
+        unique.values(),
+        key=lambda card: (
+            _candidate_evidence(card),
+            str(card.get("date_iso") or ""),
+            _candidate_identity(card),
+        ),
+        reverse=True,
+    )
+    result = []
+    for card in ranked[:max_items]:
         features = card.get("independent_features") or {}
-        if not has_sufficient_history(features):
-            continue
-        try:
-            if min(
-                int(features.get("home_home_sample") or 0),
-                int(features.get("away_away_sample") or 0),
-            ) < int(min_team_history):
-                continue
-        except (TypeError, ValueError):
-            continue
-        if not _complete_1x2_prices(card):
-            continue
-        selected.append(item)
-        if len(selected) >= max_items:
-            break
-    return selected
+        home_n = int(features.get("home_home_sample") or 0)
+        away_n = int(features.get("away_away_sample") or 0)
+        result.append({
+            "card": card,
+            "sample_games": min(home_n, away_n),
+            "home_sample_games": home_n,
+            "away_sample_games": away_n,
+            "evidence_score": _candidate_evidence(card),
+            "label": "максимум доступной истории",
+        })
+    return result
 
 
 def _split_teams(card: dict) -> tuple[str, str]:
@@ -222,6 +300,31 @@ def _market_history_block(item: object) -> dict:
     return result
 
 
+def _xg_history_block(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {"available": False}
+    result = {"available": False}
+    fields = (
+        "home_xg_for_avg", "home_xga_avg", "away_xg_for_avg", "away_xga_avg",
+        "home_xg_samples", "home_xga_samples", "away_xg_samples", "away_xga_samples",
+    )
+    for source in ("provider", "proxy"):
+        raw = value.get(source)
+        if not isinstance(raw, dict):
+            result[source] = {"available": False}
+            continue
+        clean = {}
+        for field in fields:
+            number = _number(raw.get(field))
+            if number is not None:
+                clean[field] = int(number) if field.endswith("_samples") else round(number, 3)
+        clean["available"] = bool(clean)
+        result[source] = clean
+        result["available"] = result["available"] or clean["available"]
+    result["source_priority"] = "provider_then_proxy"
+    return result
+
+
 def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
     """Build a compact source-only dossier; model probabilities and odds are excluded."""
     if not isinstance(card, dict):
@@ -286,6 +389,8 @@ def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
     for field in (
         "home_scored_at_home_avg", "home_conceded_at_home_avg",
         "away_scored_away_avg", "away_conceded_away_avg",
+        "simple_baseline_lambda_home", "simple_baseline_lambda_away",
+        "simple_baseline_lambda_total", "simple_baseline_over_25",
     ):
         value = _number(features.get(field))
         if value is not None:
@@ -314,6 +419,10 @@ def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
         },
         "xg": {
             "used_by_primary_model": bool(card.get("xg_used")),
+            "primary_model_source": str(card.get("xg_source") or "not_used"),
+            "primary_model_proxy": bool(card.get("xg_modelled_used")),
+            "provider_history": _xg_history_block(features.get("xg_history")).get("provider"),
+            "proxy_history": _xg_history_block(features.get("xg_history")).get("proxy"),
         },
         "sstats_context": {
             "provider": str(context.get("provider") or "sstats"),
@@ -349,22 +458,26 @@ def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
 
 
 _DEEP_ANALYSIS_SYSTEM_PROMPT = """Ты — независимый предматчевый футбольный аналитик NEURO BET PRO.
-Тебе передают до семи матчей и только фактическое досье источника SStats и исторические выборки.
-Для каждого матча дай самостоятельную оценку 1X2 и короткий разбор:
-- стартовые составы: анализируй влияние только игроков, перечисленных в подтверждённом стартовом XI; если XI не подтверждён, прямо напиши, что состав не опубликован/не подтверждён;
-- травмы/дисквалификации: упоминай только переданные записи; пустой или неподтверждённый фид НЕ доказывает отсутствие травм;
-- судья: анализируй только назначенного и подтверждённого арбитра; если его нет, прямо укажи, что назначение не подтверждено;
-- форма, история голов, угловые и карточки: используй только переданные выборки и их размеры; не подменяй отсутствующую историю средними другой лиги;
-- общий разбор: выдели факторы за/против, неопределённость и то, что ещё следует проверить.
-Строго запрещено придумывать фамилии игроков, травмы, дисквалификации, имя судьи, тактику, мотивацию, погоду или события. Не делай вывод, что травм нет, если источник просто не перечислил их.
-Не получай и не угадывай bookmaker odds, EV, Edge, Kelly, модельные вероятности или выбор основной модели: их нет во входе. Не называй вывод ставкой и не обещай проходимость.
-Верни только JSON с массивом analyses. Для каждого входного fixture_id верни один объект; не меняй ID. Проценты 1X2 должны быть числами от 0 до 100 и в сумме давать около 100. Все поля текстовых оценок — краткие, до двух предложений. Если фактов нет, честно укажи это в соответствующем поле."""
+Тебе передают до семи матчей и только фактическое досье: историю голов, venue-specific xG/xGA (если есть), историю угловых/карточек и подтверждённый контекст SStats.
+Для каждого матча дай самостоятельную оценку 1X2 и отдельные прогнозы рынков:
+- П1/X/П2: вероятности от 0 до 100, сумма ровно 100; independent_pick обязан совпадать с максимальной вероятностью.
+- Голы: ожидаемые голы хозяев/гостей, ТБ 1.5/2.5/3.5/4.5 и обе забьют. Используй goal history и доступную provider xG. Provider xG имеет приоритет; proxy — только отдельно помеченная оценка по агрегированным ударам, не настоящий shot-level xG.
+- Угловые: ожидаемые угловые хозяев/гостей и ТБ 8.5/9.5/10.5/11.5. Используй только переданную историю угловых.
+- Карточки: ожидаемые карточки хозяев/гостей и ТБ 2.5/3.5/4.5/5.5. Используй только переданную историю карточек.
+Если для рынка нет достаточной фактической выборки, верни null для всей группы рынка. Не переноси средние одного рынка на другой. Вероятности Over должны быть монотонными: чем выше линия, тем ниже или равна вероятность.
+- составы: оценивай влияние только игроков из подтверждённого стартового XI; неподтверждённый состав обозначай как неизвестный;
+- травмы/дисквалификации: используй только переданные записи. Пустой или неподтверждённый фид не доказывает отсутствие травм;
+- судья: анализируй только подтверждённое назначение и переданную статистику;
+- форма/общий разбор: выдели факторы за и против, неопределённость и то, что проверить перед матчем.
+Строго запрещено придумывать фамилии, травмы, дисквалификации, имя судьи, тактику, мотивацию, погоду или новости. Не делай вывод, что травм нет, если источник просто не перечислил их.
+Не получай и не угадывай букмекерские коэффициенты, EV, Edge, Kelly, модельные вероятности или выбор основной модели: их нет во входном досье. Не называй вывод ставкой и не обещай проходимость.
+Верни только JSON с массивом analyses. Для каждого входного fixture_id верни один объект; не меняй ID. Текстовые оценки — краткие, до двух предложений. Если фактов нет, честно обозначь это."""
 
 
 _DEEP_ANALYSIS_RESPONSE_FORMAT = {
     "type": "json_schema",
     "json_schema": {
-        "name": "top_match_deep_analysis",
+        "name": "top_match_independent_multimarket_analysis",
         "strict": True,
         "schema": {
             "type": "object",
@@ -386,22 +499,59 @@ _DEEP_ANALYSIS_RESPONSE_FORMAT = {
                                 "required": ["П1", "X", "П2"],
                                 "additionalProperties": False,
                             },
+                            "goal_markets": {
+                                "type": ["object", "null"],
+                                "properties": {
+                                    "expected_home_goals": {"type": "number"},
+                                    "expected_away_goals": {"type": "number"},
+                                    "over_1_5": {"type": "number"},
+                                    "over_2_5": {"type": "number"},
+                                    "over_3_5": {"type": "number"},
+                                    "over_4_5": {"type": "number"},
+                                    "btts_yes": {"type": "number"},
+                                },
+                                "required": ["expected_home_goals", "expected_away_goals", "over_1_5", "over_2_5", "over_3_5", "over_4_5", "btts_yes"],
+                                "additionalProperties": False,
+                            },
+                            "corner_markets": {
+                                "type": ["object", "null"],
+                                "properties": {
+                                    "expected_home_corners": {"type": "number"},
+                                    "expected_away_corners": {"type": "number"},
+                                    "over_8_5": {"type": "number"},
+                                    "over_9_5": {"type": "number"},
+                                    "over_10_5": {"type": "number"},
+                                    "over_11_5": {"type": "number"},
+                                },
+                                "required": ["expected_home_corners", "expected_away_corners", "over_8_5", "over_9_5", "over_10_5", "over_11_5"],
+                                "additionalProperties": False,
+                            },
+                            "card_markets": {
+                                "type": ["object", "null"],
+                                "properties": {
+                                    "expected_home_cards": {"type": "number"},
+                                    "expected_away_cards": {"type": "number"},
+                                    "over_2_5": {"type": "number"},
+                                    "over_3_5": {"type": "number"},
+                                    "over_4_5": {"type": "number"},
+                                    "over_5_5": {"type": "number"},
+                                },
+                                "required": ["expected_home_cards", "expected_away_cards", "over_2_5", "over_3_5", "over_4_5", "over_5_5"],
+                                "additionalProperties": False,
+                            },
                             "lineup_assessment": {"type": "string"},
                             "injury_assessment": {"type": "string"},
                             "referee_assessment": {"type": "string"},
                             "form_assessment": {"type": "string"},
                             "match_assessment": {"type": "string"},
                             "risks": {"type": "string"},
-                            "data_quality": {
-                                "type": "string",
-                                "enum": ["low", "medium", "high"],
-                            },
+                            "data_quality": {"type": "string", "enum": ["low", "medium", "high"]},
                         },
                         "required": [
                             "fixture_id", "independent_pick", "probabilities",
-                            "lineup_assessment", "injury_assessment",
-                            "referee_assessment", "form_assessment",
-                            "match_assessment", "risks", "data_quality",
+                            "goal_markets", "corner_markets", "card_markets",
+                            "lineup_assessment", "injury_assessment", "referee_assessment",
+                            "form_assessment", "match_assessment", "risks", "data_quality",
                         ],
                         "additionalProperties": False,
                     },
@@ -487,6 +637,38 @@ def _short_text(value: object, max_length: int = 360) -> str:
     return text[:max_length]
 
 
+
+def _normalize_market_group(
+    raw: object,
+    *,
+    expected_fields: tuple[str, ...],
+    percentage_fields: tuple[str, ...],
+    expected_max: float,
+    monotonic_fields: tuple[str, ...],
+) -> dict | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    clean = {}
+    for field in expected_fields:
+        value = _number(raw.get(field))
+        if value is None:
+            return None
+        if field in percentage_fields:
+            if not 0.0 <= value <= 100.0:
+                return None
+            clean[field] = round(value, 1)
+        else:
+            if not 0.0 <= value <= expected_max:
+                return None
+            clean[field] = round(value, 2)
+    ordered = [clean[field] for field in monotonic_fields]
+    if any(ordered[i] + 0.1 < ordered[i + 1] for i in range(len(ordered) - 1)):
+        return None
+    return clean
+
+
 def _normalize_analysis(raw: object, known: dict[str, dict]) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -519,10 +701,44 @@ def _normalize_analysis(raw: object, known: dict[str, dict]) -> dict | None:
     effective_rank = min(requested, quality_rank.get(cap, 0))
     quality = ("low", "medium", "high")[effective_rank]
 
+    goal_markets = _normalize_market_group(
+        raw.get("goal_markets"),
+        expected_fields=(
+            "expected_home_goals", "expected_away_goals",
+            "over_1_5", "over_2_5", "over_3_5", "over_4_5", "btts_yes",
+        ),
+        percentage_fields=("over_1_5", "over_2_5", "over_3_5", "over_4_5", "btts_yes"),
+        expected_max=8.0,
+        monotonic_fields=("over_1_5", "over_2_5", "over_3_5", "over_4_5"),
+    )
+    corner_markets = _normalize_market_group(
+        raw.get("corner_markets"),
+        expected_fields=(
+            "expected_home_corners", "expected_away_corners",
+            "over_8_5", "over_9_5", "over_10_5", "over_11_5",
+        ),
+        percentage_fields=("over_8_5", "over_9_5", "over_10_5", "over_11_5"),
+        expected_max=30.0,
+        monotonic_fields=("over_8_5", "over_9_5", "over_10_5", "over_11_5"),
+    )
+    card_markets = _normalize_market_group(
+        raw.get("card_markets"),
+        expected_fields=(
+            "expected_home_cards", "expected_away_cards",
+            "over_2_5", "over_3_5", "over_4_5", "over_5_5",
+        ),
+        percentage_fields=("over_2_5", "over_3_5", "over_4_5", "over_5_5"),
+        expected_max=20.0,
+        monotonic_fields=("over_2_5", "over_3_5", "over_4_5", "over_5_5"),
+    )
+
     return {
         "fixture_id": fixture_id,
         "independent_pick": pick,
         "probabilities": normalized,
+        "goal_markets": goal_markets,
+        "corner_markets": corner_markets,
+        "card_markets": card_markets,
         "lineup_assessment": _short_text(raw.get("lineup_assessment")),
         "injury_assessment": _short_text(raw.get("injury_assessment")),
         "referee_assessment": _short_text(raw.get("referee_assessment")),
@@ -569,7 +785,7 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
     digest = hashlib.sha256(
         json.dumps(cache_context, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
-    cache_key = f"groq_top_match_dossier_v1_{digest}"
+    cache_key = f"independent_multimarket_batch_v2_{digest}"
     cached = cache_get(cache_key, DEEP_ANALYSIS_CACHE_TTL)
     if isinstance(cached, dict):
         return {
@@ -587,6 +803,7 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         + json.dumps({"matches": dossiers}, ensure_ascii=False, separators=(",", ":"))
     )
     is_groq = "groq" in str(base).casefold()
+    is_xai = "api.x.ai" in str(base).casefold()
     is_gpt_oss = is_groq and model.casefold().startswith("openai/gpt-oss")
     if is_gpt_oss:
         messages = [{
@@ -604,17 +821,22 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         "messages": messages,
         "temperature": 0.2,
     }
-    if is_groq:
-        body["max_completion_tokens"] = 4096
-    else:
-        body["max_tokens"] = 3072
     if is_gpt_oss:
+        body["max_completion_tokens"] = 6144
         body.update({
             "reasoning_effort": "low",
             "reasoning_format": "hidden",
             "response_format": _DEEP_ANALYSIS_RESPONSE_FORMAT,
         })
+    elif is_groq:
+        body["max_completion_tokens"] = 6144
+        body["response_format"] = {"type": "json_object"}
+    elif is_xai:
+        # xAI documents strict JSON Schema outputs on the OpenAI-compatible API.
+        body["max_tokens"] = 6144
+        body["response_format"] = _DEEP_ANALYSIS_RESPONSE_FORMAT
     else:
+        body["max_tokens"] = 6144
         body["response_format"] = {"type": "json_object"}
 
     url = f"{base}/chat/completions"
@@ -682,7 +904,7 @@ def format_top_match_opinion(
     analysis: dict,
     model_pick_code: str = "",
 ) -> str:
-    """Keep the existing immutable forecast ledger compatible with batch Groq output."""
+    """Keep 1X2 parsing stable while retaining independent multi-market estimates."""
     probabilities = analysis.get("probabilities") or {}
     pick = str(analysis.get("independent_pick") or "X")
     labels = {"П1": "победа хозяев (П1)", "X": "ничья (X)", "П2": "победа гостей (П2)"}
@@ -695,6 +917,44 @@ def format_top_match_opinion(
         f"Качество исходных данных: {quality_labels.get(str(analysis.get('data_quality')), 'низкое')}. "
         f"{_short_text(analysis.get('match_assessment'), 500)}"
     )
+    for section_key, title, fields in (
+        ("goal_markets", "Голы", (
+            ("expected_home_goals", "ожид. голы хозяев"),
+            ("expected_away_goals", "ожид. голы гостей"),
+            ("over_1_5", "ТБ 1.5"),
+            ("over_2_5", "ТБ 2.5"),
+            ("over_3_5", "ТБ 3.5"),
+            ("over_4_5", "ТБ 4.5"),
+            ("btts_yes", "ОЗ Да"),
+        )),
+        ("corner_markets", "Угловые", (
+            ("expected_home_corners", "хозяева"),
+            ("expected_away_corners", "гости"),
+            ("over_8_5", "ТБ 8.5"),
+            ("over_9_5", "ТБ 9.5"),
+            ("over_10_5", "ТБ 10.5"),
+            ("over_11_5", "ТБ 11.5"),
+        )),
+        ("card_markets", "Карточки", (
+            ("expected_home_cards", "хозяева"),
+            ("expected_away_cards", "гости"),
+            ("over_2_5", "ТБ 2.5"),
+            ("over_3_5", "ТБ 3.5"),
+            ("over_4_5", "ТБ 4.5"),
+            ("over_5_5", "ТБ 5.5"),
+        )),
+    ):
+        group = analysis.get(section_key)
+        if isinstance(group, dict):
+            rendered = []
+            for key, label in fields:
+                value = group.get(key)
+                if value is None:
+                    continue
+                suffix = "%" if key.startswith("over_") or key == "btts_yes" else ""
+                rendered.append(f"{label} {float(value):.1f}{suffix}")
+            if rendered:
+                result += f" {title}: " + ", ".join(rendered) + "."
     risks = _short_text(analysis.get("risks"), 300)
     if risks:
         result += f" Риски: {risks}"

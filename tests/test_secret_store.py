@@ -15,6 +15,7 @@ class LocalSecretStoreTests(unittest.TestCase):
                 "api_football_key": "api-football-secret",
                 "odds_api_key": "  odds-secret  ",
                 "llm_api_key": "llm-secret",
+                "xai_api_key": "xai-secret",
                 "sstats_api_key": "sstats-secret",
                 "bank": "should-not-save",
                 "unknown": "also-not-save",
@@ -23,6 +24,7 @@ class LocalSecretStoreTests(unittest.TestCase):
                 "api_football_key": "api-football-secret",
                 "odds_api_key": "odds-secret",
                 "llm_api_key": "llm-secret",
+                "xai_api_key": "xai-secret",
                 "sstats_api_key": "sstats-secret",
             })
             raw = json.loads(path.read_text(encoding="utf-8"))

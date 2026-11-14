@@ -181,7 +181,7 @@ STALE_AFTER = timedelta(hours=48)
 MAX_PER_RUN = 20
 SECRET_KEYS = (
     "fdorg_token", "highlightly_api_key", "sstats_api_key",
-    "footballapi_key", "llm_api_key",
+    "footballapi_key", "llm_api_key", "xai_api_key",
 )
 
 
@@ -192,7 +192,7 @@ def _configured_secret(*keys):
             value = st.secrets.get(key, "")
             if value:
                 return str(value).strip()
-        for section_name in ("api", "apis", "secrets", "highlightly", "sstats", "footballapi", "football_api"):
+        for section_name in ("api", "apis", "secrets", "highlightly", "sstats", "footballapi", "football_api", "xai"):
             section = st.secrets.get(section_name, {})
             if hasattr(section, "get"):
                 for key in keys:
@@ -358,7 +358,7 @@ D.setdefault("meta", {})
 _saved_ui_secrets = load_local_secrets()
 # API credentials are session/env/secrets-only, never persisted in local state.
 _secret_keys = ("fdorg_token", "odds_api_key", "therundown_api_key", "rundown_key",
-                "highlightly_api_key", "llm_api_key")
+                "highlightly_api_key", "llm_api_key", "xai_api_key")
 _secrets_removed = False
 for _key in _secret_keys:
     if D["meta"].pop(_key, None) is not None:
@@ -938,16 +938,28 @@ with st.sidebar:
     cur = D["meta"].get("llm_provider", prov_keys[0])
     llm_prov = st.selectbox("Провайдер", prov_keys,
                             index=prov_keys.index(cur) if cur in prov_keys else 0)
+    llm_key_config = LLM_PROVIDERS.get(llm_prov, {})
+    llm_key_env = str(llm_key_config.get("key_env") or "LLM_API_KEY")
+    llm_key_storage = str(llm_key_config.get("key_storage") or "llm_api_key")
+    llm_key_session = str(llm_key_config.get("key_session") or "llm_api_key_input")
+    llm_key_label = "XAI_API_KEY · Grok" if llm_key_env == "XAI_API_KEY" else "LLM API key"
+    llm_key_default = _api_key_default(
+        llm_key_storage, llm_key_env, llm_key_env, llm_key_storage,
+    )
+    # Compatibility with deployments that previously stored a Grok key as LLM_API_KEY.
+    if llm_key_env == "XAI_API_KEY" and not llm_key_default:
+        llm_key_default = _api_key_default("llm_api_key", "LLM_API_KEY", "llm_api_key")
     llm_key = st.text_input(
-        "LLM key",
-        value=_api_key_default("llm_api_key", "LLM_API_KEY", "llm_api_key"),
-        type="password", key="llm_api_key_input")
+        llm_key_label,
+        value=llm_key_default,
+        type="password", key=llm_key_session)
     # Save only UI-entered keys, separate from portfolio data and its Gist sync.
     _widget_key_map = {
         "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
         "sstats_api_key": ("sstats_api_key_input", ("SSTATS_API_KEY",), ("SSTATS_API_KEY", "sstats_api_key")),
         "footballapi_key": ("footballapi_key_input", ("FOOTBALLAPI_KEY",), ("FOOTBALLAPI_KEY", "footballapi_key")),
         "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
+        "xai_api_key": ("xai_api_key_input", ("XAI_API_KEY",), ("XAI_API_KEY", "xai_api_key")),
     }
     _user_entered_keys = {}
     for _storage_key, (_widget_key, _env_names, _secret_names) in _widget_key_map.items():
@@ -955,7 +967,9 @@ with st.sidebar:
         _configured = _configured_key_value(_env_names, _secret_names)
         if _current and _current != _configured:
             _user_entered_keys[_storage_key] = _current
-    _keys_saved = save_local_secrets(_user_entered_keys)
+    # Preserve credentials for providers not selected in this rerun.
+    _keys_to_save = {**_saved_ui_secrets, **_user_entered_keys}
+    _keys_saved = save_local_secrets(_keys_to_save)
     if not _keys_saved:
         st.caption("⚠️ Не удалось сохранить ключи на диске. Проверьте права записи хостинга.")
     if llm_prov != D["meta"].get("llm_provider"):

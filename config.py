@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "14.4.5"
+APP_VERSION = "14.4.6"
 DATA_VERSION = 18
 
 # The favorites panel targets seven forecasts when the schedule contains them.
@@ -56,8 +56,11 @@ LLM_PROVIDERS = {
     },
     "Grok (x.ai)": {
         "base": "https://api.x.ai/v1",
-        "model": "grok-beta",
+        "model": "grok-4.7",
         "key_url": "https://console.x.ai",
+        "key_env": "XAI_API_KEY",
+        "key_storage": "xai_api_key",
+        "key_session": "xai_api_key_input",
     },
     "OpenRouter (Llama 3.3)": {
         "base": "https://openrouter.ai/api/v1",
@@ -80,6 +83,16 @@ LLM_PROVIDERS = {
         "key_url": "https://dashscope.console.aliyun.com/apiKey",
     },
 }
+
+def llm_provider_key_config(provider: str) -> dict[str, str]:
+    """Return the credential source for the selected LLM provider."""
+    config = LLM_PROVIDERS.get(str(provider or ""), {})
+    return {
+        "env": str(config.get("key_env") or "LLM_API_KEY"),
+        "storage": str(config.get("key_storage") or "llm_api_key"),
+        "session": str(config.get("key_session") or "llm_api_key_input"),
+    }
+
 
 DIV_TO_TSDB = {
     "E0": "4328", "E1": "4329", "D1": "4331", "D2": "4389",
