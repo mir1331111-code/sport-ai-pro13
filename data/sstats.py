@@ -9,7 +9,7 @@ import hashlib
 import math
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -33,21 +33,25 @@ def _norm_name(value: str) -> str:
 
 
 def _parse_provider_date(value) -> Optional[datetime]:
-    """Parse the same local date/time formats accepted by data.sources.parse_date."""
+    """Parse SStats timestamps without dropping their UTC offset."""
     if value is None:
         return None
     source = str(value).strip()
     if not source:
         return None
+    try:
+        # fromisoformat preserves +00:00 / Z, which is essential when converting
+        # the provider kickoff to the app's configured timezone.
+        return datetime.fromisoformat(source.replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        pass
     for fmt in (
         "%d/%m/%Y %H:%M", "%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d",
-        "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
     ):
         try:
-            text = source[:19] if "%z" in fmt or "T" in fmt else source
-            return datetime.strptime(text, fmt)
-        except Exception:
+            return datetime.strptime(source, fmt)
+        except (TypeError, ValueError, OverflowError):
             continue
     return None
 
@@ -730,7 +734,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
     now, timezone_offset = _sstats_timezone()
     horizon = max(1, min(30, int(days or 3)))
     cache_key = (
-        f"sstats_upcoming_v4_{now.date().isoformat()}_{horizon}_"
+        f"sstats_upcoming_v5_{now.date().isoformat()}_{horizon}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 900)
@@ -779,9 +783,30 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
         kickoff = _parse_provider_date(raw_date)
         if not kickoff:
             continue
-        if not (now.replace(tzinfo=None) - timedelta(minutes=5) <= kickoff.replace(tzinfo=None)
-                < now.replace(tzinfo=None) + timedelta(days=horizon)):
+        # Games/list may return either a local wall-clock time (because TimeZone
+        # was requested) or an ISO timestamp with an explicit offset. Compare
+        # both in the app timezone; stripping the offset used to hide evening
+        # international fixtures when UTC and local calendar dates differed.
+        if now.tzinfo is not None:
+            kickoff_local = (
+                kickoff.replace(tzinfo=now.tzinfo)
+                if kickoff.tzinfo is None
+                else kickoff.astimezone(now.tzinfo)
+            )
+        else:
+            kickoff_local = kickoff.replace(tzinfo=None)
+        now_local = now
+        if not (
+            now_local - timedelta(minutes=5)
+            <= kickoff_local
+            < now_local + timedelta(days=horizon)
+        ):
             continue
+        kickoff_utc = (
+            kickoff_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            if kickoff_local.tzinfo is not None
+            else ""
+        )
 
         league_obj = (game.get("season") or {}).get("league") or {}
         league_name = str(
@@ -797,15 +822,11 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             for key in ("П1", "X", "П2")
             if normalized.get(key) is not None
         }
-        start_time = raw_date[11:16] if len(raw_date) >= 16 else ""
+        start_time = kickoff_local.strftime("%H:%M")
         row = {
-            "Date": raw_date[:19],
+            "Date": kickoff_local.strftime("%Y-%m-%d %H:%M:%S"),
             "Time": start_time,
-            "kickoff_utc": (
-                raw_date
-                if re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", raw_date, re.I)
-                else ""
-            ),
+            "kickoff_utc": kickoff_utc,
             "HomeTeam": home,
             "AwayTeam": away,
             "Div": div,
@@ -864,13 +885,69 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
 
 
 def _sstats_div_code(league_name: str) -> str:
-    """Map common SStats league labels to the model's historical division codes."""
-    name = str(league_name or "").casefold()
+    """Map SStats competitions without collapsing unknown tournaments into G."""
+    name = re.sub(r"\\s+", " ", str(league_name or "").casefold()).strip()
+    if not name:
+        return "SSTATS_UNKNOWN"
+
+    # Gender and age are resolved before competition labels. This keeps women's
+    # and youth international football out of men's senior calibration/history.
+    women = any(token in name for token in ("women", "womens", "ladies", "female", "feminine"))
+    age = next(
+        (age for age in ("u21", "u-21", "under 21", "u19", "u-19", "under 19",
+                         "u23", "u-23", "under 23", "u20", "u-20", "u18", "u-18",
+                         "u17", "u-17")
+         if age in name),
+        "",
+    )
+    international = any(token in name for token in (
+        "national", "international", "nations league", "world cup", "world cup qualification",
+        "euro", "africa cup", "african cup", "afcon", "copa america",
+        "asian cup", "asian games", "friendly", "qualifier", "qualification",
+        "uefa", "fifa",
+    ))
+    if international or age:
+        if "nations league" in name:
+            competition = "UNL"
+        elif "afcon" in name or "africa cup" in name or "african cup" in name:
+            competition = "AFCON"
+        elif "copa america" in name:
+            competition = "COPA"
+        elif "asian cup" in name:
+            competition = "ASIAN"
+        elif "world cup" in name:
+            competition = "WCQ" if any(x in name for x in ("qualif", "qualification")) else "WC"
+        elif "euro" in name:
+            competition = "EURO"
+        elif "friendly" in name:
+            competition = "FR"
+        elif any(x in name for x in ("qualifier", "qualification")):
+            competition = "QUAL"
+        else:
+            competition = "INTL_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:7].upper()
+        age_code = re.sub(r"[^0-9]", "", age)
+        prefix = "W_NT" if women else "NT"
+        return f"{prefix}_{'U' + age_code + '_' if age_code else ''}{competition}"[:24]
+
+    if women:
+        women_mappings = (
+            (("women's super league", "womens super league", "fa wsl"), "W_E0"),
+            (("liga f", "primera division femenina"), "W_SP1"),
+            (("d1 feminine", "division 1 feminine"), "W_F1"),
+            (("frauen bundesliga", "frauen-bundesliga"), "W_D1"),
+            (("serie a women", "serie a femminile"), "W_I1"),
+            (("women's champions league", "womens champions league"), "W_C1"),
+        )
+        for tokens, code in women_mappings:
+            if any(token in name for token in tokens):
+                return code
+        return "W_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10].upper()
+
     mappings = (
-        (("premier league", "premier league of england", "england premier"), "E0"),
-        (("championship", "england championship"), "E1"),
-        (("league one", "england league one"), "E2"),
-        (("league two", "england league two"), "E3"),
+        (("premier league", "premier league of england", "england premier", "epl"), "E0"),
+        (("efl championship", "english championship", "sky bet championship"), "E1"),
+        (("league one", "england league one", "efl league one"), "E2"),
+        (("league two", "england league two", "efl league two"), "E3"),
         (("la liga", "primera division", "spain primera"), "SP1"),
         (("segunda division", "la liga 2", "spain segunda"), "SP2"),
         (("serie a", "italy serie a"), "I1"),
@@ -883,11 +960,16 @@ def _sstats_div_code(league_name: str) -> str:
         (("primeira liga", "portugal primeira"), "P1"),
         (("jupiler pro league", "belgian pro league"), "B1"),
         (("super lig", "turkey super lig"), "T1"),
+        (("usl", "united soccer league"), "US_USL"),
+        (("mls", "major league soccer"), "US_MLS"),
     )
     for tokens, code in mappings:
         if any(token in name for token in tokens):
             return code
-    return "G"
+
+    # Stable per-competition namespace: no unknown league may fall back to the
+    # shared "G" bucket and contaminate another competition's team samples.
+    return "S_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10].upper()
 
 
 def sstats_find_match_id(
