@@ -30,8 +30,10 @@ class _RawResponse(_Response):
 
 class UsageGistVisibilityTests(unittest.TestCase):
     def test_portfolio_write_refuses_public_gist_before_patch(self):
+        cipher = Fernet(Fernet.generate_key())
         with (
             patch.object(usage, "_gist_config", return_value=("gist-id", "token")),
+            patch.object(usage, "_portfolio_fernet", return_value=cipher),
             patch.object(
                 usage.urllib.request, "urlopen",
                 return_value=_Response({"public": True, "files": {}}),
@@ -132,7 +134,7 @@ class UsageGistVisibilityTests(unittest.TestCase):
         for secret_name in secrets:
             self.assertNotIn(secret_name, saved_data["meta"])
         for sentinel in secrets.values():
-            self.assertNotIn(captured["payload"], sentinel)
+            self.assertNotIn(sentinel, captured["payload"])
 
     def test_encrypted_portfolio_gist_round_trips_with_shared_backup_key(self):
         cipher = Fernet(Fernet.generate_key())
@@ -169,7 +171,8 @@ class UsageGistVisibilityTests(unittest.TestCase):
         ):
             result = usage._gist_write({"bank": 1000, "bets": []})
         self.assertFalse(result)
-        self.assertEqual(open_url.call_count, 1)
+        # Without a cipher key, refuse locally before making any remote request.
+        self.assertEqual(open_url.call_count, 0)
 
     def test_read_keeps_public_legacy_backup_available_but_logs_warning(self):
         legacy = {"data": {"bank": 1000, "bets": []}}
