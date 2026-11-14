@@ -92,6 +92,25 @@ def _fernet(key: str) -> Fernet:
         raise ValueError("NEURO_BACKUP_KEY is not a valid Fernet key") from exc
 
 
+def _assert_backup_does_not_regress(
+    previous: dict[str, int], current: dict[str, int],
+) -> None:
+    """Never replace an older remote backup with a database missing prior rows."""
+    missing = {
+        table: (int(previous_count), int(current.get(table, 0)))
+        for table, previous_count in previous.items()
+        if int(current.get(table, 0)) < int(previous_count)
+    }
+    if missing:
+        detail = ", ".join(
+            f"{table} {old}->{new}" for table, (old, new) in sorted(missing.items())
+        )
+        raise ValueError(
+            "Local SQLite contains fewer rows than the verified remote backup; "
+            "remote data was preserved (" + detail + ")"
+        )
+
+
 def _snapshot_sqlite(db_path: str | os.PathLike) -> bytes:
     source = Path(db_path)
     if not source.is_file():
@@ -345,13 +364,19 @@ def backup_database_to_gist(
         raw_sha = hashlib.sha256(raw).hexdigest()
         gist = _get_gist(gist_id, token)
         old_manifest = _manifest_from_gist(gist, token)
-        if old_manifest and old_manifest.get("raw_sha256") == raw_sha:
-            return {
-                "ok": True, "state": "current",
-                "message": "Encrypted remote SQLite backup is current",
-                "backup_at": old_manifest.get("created_at"),
-                "bytes": len(raw),
-            }
+        if old_manifest:
+            previous_raw, verified_old_manifest, previous_counts = _decode_remote_snapshot(
+                gist, token, key,
+            )
+            if hashlib.sha256(previous_raw).hexdigest() == raw_sha:
+                return {
+                    "ok": True, "state": "current",
+                    "message": "Encrypted remote SQLite backup is current",
+                    "backup_at": verified_old_manifest.get("created_at"),
+                    "bytes": len(raw),
+                    "tables": counts,
+                }
+            _assert_backup_does_not_regress(previous_counts, counts)
 
         encrypted = _fernet(key).encrypt(gzip.compress(raw, compresslevel=6))
         if len(encrypted) > MAX_ENCRYPTED_BYTES:
