@@ -951,8 +951,10 @@ def _sstats_div_code(league_name: str) -> str:
         (("segunda division", "la liga 2", "spain segunda"), "SP2"),
         (("serie a", "italy serie a"), "I1"),
         (("serie b", "italy serie b"), "I2"),
-        (("bundesliga", "germany bundesliga"), "D1"),
+        # The second tier contains the generic "bundesliga" token, so it
+        # must be matched before the top-flight label.
         (("2. bundesliga", "2 bundesliga"), "D2"),
+        (("bundesliga", "germany bundesliga"), "D1"),
         (("ligue 1", "france ligue 1"), "F1"),
         (("ligue 2", "france ligue 2"), "F2"),
         (("eredivisie", "netherlands eredivisie"), "N1"),
