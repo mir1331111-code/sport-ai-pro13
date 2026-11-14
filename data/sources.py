@@ -492,127 +492,127 @@ def load_seasonal(div: str, season: str) -> list:
 
 # ============ THESPORTSDB ============
 def _tsdb_league_meta(league_name: str):
-    """Определяет (div, kind, women, national) по названию лиги.
-
-    Порядок проверки:
-      1) Сборные / U-возрасты   → NT_*
-      2) Женские                → W_*
-      3) НЕ-английские чемпионшипы (USL, SPL, A-League, J-League...) → CLUB_*
-      4) Клубные лиги из mapping
-    """
+    """Classify TSDB competitions by competition, gender and youth level."""
     if not league_name:
-        return ("G", "club", False, False)
-    ln = league_name.lower()
-
-    # --- 1. СБОРНЫЕ / U-ВОЗРАСТЫ (приоритет над всем)
-    national = any(n in ln for n in (
-        "u21", "u19", "u23", "u20", "u18", "u17",
-        "national", "international", "world cup", "euro",
-        "nations league", "friendly", "fifa", "uefa nations",
-        "copa america", "africa cup", "afc asian",
+        return ("TSDB_UNKNOWN", "club", False, False)
+    ln = str(league_name).casefold().strip()
+    age = next(
+        (value for value in ("u21", "u-21", "under 21", "u19", "u-19", "under 19",
+                             "u23", "u-23", "under 23", "u20", "u-20",
+                             "u18", "u-18", "u17", "u-17") if value in ln),
+        "",
+    )
+    age_code = re.sub(r"[^0-9]", "", age)
+    women = any(token in ln for token in ("women", "womens", "ladies", "female", "женск"))
+    national = bool(age) or any(token in ln for token in (
+        "national", "international", "world cup", "euro", "nations league",
+        "friendly", "fifa", "copa america", "africa cup", "afcon",
+        "afc asian", "qualifier", "qualification",
     ))
-    if national:
-        if "u21" in ln:
-            div = "NT_U21"
-        elif "u19" in ln:
-            div = "NT_U19"
-        elif "u23" in ln:
-            div = "NT_U23"
-        elif "world cup" in ln:
-            div = "NT_WC"
-        elif "euro" in ln:
-            div = "NT_EURO"
-        elif "nations league" in ln:
-            div = "NT_UNL"
-        elif "friendly" in ln:
-            div = "NT_FR"
-        else:
-            div = "NT"
-        return (div, "national", False, True)
 
-    # --- 2. ЖЕНСКИЕ
-    women = any(w in ln for w in (
-        "women", "womens", "ladies", "female", "женск"
-    ))
     if women:
-        return ("W_", "women", True, False)
+        if national:
+            if "nations league" in ln:
+                competition = "UNL"
+            elif "world cup" in ln:
+                competition = "WCQ" if any(x in ln for x in ("qualif", "qualification")) else "WC"
+            elif "euro" in ln:
+                competition = "EURO"
+            elif "friendly" in ln:
+                competition = "FR"
+            elif "africa cup" in ln or "afcon" in ln:
+                competition = "AFCON"
+            else:
+                competition = hashlib.sha1(ln.encode("utf-8")).hexdigest()[:8].upper()
+            div = f"W_NT_{'U' + age_code + '_' if age_code else ''}{competition}"[:24]
+            return (div, "women_national", True, True)
+        women_mappings = (
+            (("women's super league", "womens super league", "fa wsl"), "W_E0"),
+            (("liga f", "primera division femenina"), "W_SP1"),
+            (("d1 feminine", "division 1 feminine"), "W_F1"),
+            (("frauen bundesliga", "frauen-bundesliga"), "W_D1"),
+            (("serie a women", "serie a femminile"), "W_I1"),
+            (("women's champions league", "womens champions league"), "W_C1"),
+        )
+        for tokens, code in women_mappings:
+            if any(token in ln for token in tokens):
+                return (code, "women", True, False)
+        div = "W_" + hashlib.sha1(ln.encode("utf-8")).hexdigest()[:10].upper()
+        return (div, "women", True, False)
 
-    # --- 3. НЕ-АНГЛИЙСКИЕ "ЧЕМПИОНШИПЫ" И ДРУГИЕ ЛИГИ (важно: ДО mapping!)
-    # США
+    if national:
+        if age_code:
+            competition = "U" + age_code
+        elif "nations league" in ln:
+            competition = "UNL"
+        elif "world cup" in ln:
+            competition = "WCQ" if any(x in ln for x in ("qualif", "qualification")) else "WC"
+        elif "euro" in ln:
+            competition = "EURO"
+        elif "friendly" in ln:
+            competition = "FR"
+        elif "copa america" in ln:
+            competition = "COPA"
+        elif "africa cup" in ln or "afcon" in ln:
+            competition = "AFCON"
+        elif "asian" in ln:
+            competition = "ASIAN"
+        else:
+            competition = hashlib.sha1(ln.encode("utf-8")).hexdigest()[:10].upper()
+        return (f"NT_{competition}"[:24], "national", False, True)
+
+    # Non-English "Championship" leagues must be classified before generic mappings.
     if "usl" in ln or "united soccer league" in ln:
-        if "league one" in ln:
-            return ("US_L1", "club", False, False)
-        return ("US_USL", "club", False, False)
+        return ("US_L1" if "league one" in ln else "US_USL", "club", False, False)
     if "mls" in ln or "major league soccer" in ln or "usa major" in ln:
         return ("US_MLS", "club", False, False)
-    # Шотландия
     if "scottish" in ln or "scotland" in ln:
         return ("SC_", "club", False, False)
-    # Австралия
     if "a-league" in ln or "a league" in ln or "australia" in ln:
         return ("AU_", "club", False, False)
-    # Япония
     if "j1" in ln or "j-league" in ln or "jleague" in ln or "japan" in ln:
         return ("JP_", "club", False, False)
-    # Корея
     if "k league" in ln or "k-league" in ln or "korea" in ln:
         return ("KR_", "club", False, False)
-    # Китай
     if "chinese super" in ln or "china" in ln:
         return ("CN_", "club", False, False)
-    # Мексика
     if "liga mx" in ln or "mexico" in ln:
         return ("MX_", "club", False, False)
-    # Бразилия
     if "brasileir" in ln or "brazil" in ln:
         return ("BR_", "club", False, False)
-    # Аргентина
     if "argentina" in ln or "primera division arg" in ln:
         return ("AR_", "club", False, False)
 
-    # --- 4. АНГЛИЙСКИЕ / ЕВРОПЕЙСКИЕ ЛИГИ (после USL!)
     mapping = [
-        # Англия — ВАЖНО: точное совпадение "english championship"/"efl championship"
         (("english premier league", "epl"), "E0"),
-        (("efl championship", "english championship",
-          "sky bet championship"), "E1"),
+        (("efl championship", "english championship", "sky bet championship"), "E1"),
         (("efl league one", "english league one", "sky bet league one"), "E2"),
         (("efl league two", "english league two", "sky bet league two"), "E3"),
-        # Испания
         (("spanish la liga", "la liga", "laliga"), "SP1"),
         (("spanish segunda", "segunda division", "laliga 2"), "SP2"),
-        # Италия
         (("italian serie a", "serie a"), "I1"),
         (("italian serie b", "serie b"), "I2"),
-        # Германия
         (("german bundesliga", "bundesliga"), "D1"),
         (("2. bundesliga", "german 2"), "D2"),
         (("3. liga", "german 3"), "D3"),
-        # Франция
         (("french ligue 1", "ligue 1"), "F1"),
         (("french ligue 2", "ligue 2"), "F2"),
-        # Нидерланды
         (("dutch eredivisie", "eredivisie"), "N1"),
-        # Бельгия
         (("belgian pro league", "belgian first division"), "B1"),
-        # Португалия
         (("portuguese primeira", "primeira liga"), "P1"),
-        # Турция
         (("turkish super", "super lig"), "T1"),
-        # Греция
         (("greek super", "super league greece", "super league 1"), "G1"),
-        # Россия
         (("russian premier", "russian football"), "R1"),
-        # Еврокубки
         (("uefa champions", "champions league"), "C1"),
         (("uefa europa", "europa league"), "EL"),
         (("uefa conference", "conference league"), "EC"),
     ]
     for keys, code in mapping:
-        if any(k in ln for k in keys):
+        if any(key in ln for key in keys):
             return (code, "club", False, False)
 
-    return ("G", "club", False, False)
+    div = "TS_" + hashlib.sha1(ln.encode("utf-8")).hexdigest()[:10].upper()
+    return (div, "club", False, False)
 
 
 def _tsdb_venue_metadata(venue_id: str, logs=None) -> dict:
