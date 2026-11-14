@@ -440,37 +440,29 @@ def _render_independent_ai():
         "результат учитывается после подтверждённого статуса FT."
     )
 
-    import time
-    now_ts = time.time()
-    last_check = float(st.session_state.get("_independent_ai_last_check", 0) or 0)
-    if now_ts - last_check >= 600:
+    # The app-level synchronizer handles automatic checks for both portfolio bets
+    # and forecast ledgers. Keep this tab's button as a ledger-only manual retry.
+    if st.button("🔄 Дополнительно проверить журнал прогнозов", use_container_width=False):
         try:
-            with st.spinner("Сверяю уже завершившиеся матчи с источниками результатов…"):
-                settle_status = settle_due_forecasts(db_path=DB_FILE, max_fixtures=8)
-            st.session_state["_independent_ai_settlement_status"] = settle_status
-            st.session_state["_independent_ai_last_check"] = now_ts
-        except Exception as exc:
-            st.session_state["_independent_ai_settlement_status"] = {
-                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
-            }
-            st.session_state["_independent_ai_last_check"] = now_ts
-
-    if st.button("🔄 Проверить результаты завершённых матчей ИИ", use_container_width=False):
-        try:
+            import time
             with st.spinner("Запрашиваю подтверждённые результаты…"):
                 settle_status = settle_due_forecasts(db_path=DB_FILE, max_fixtures=30)
-            st.session_state["_independent_ai_settlement_status"] = settle_status
-            st.session_state["_independent_ai_last_check"] = time.time()
+            settle_status["checked_at"] = datetime.now(timezone.utc).isoformat()
+            st.session_state["_forecast_ledger_sync_status"] = settle_status
+            st.session_state["_last_forecast_ledger_sync_ts"] = time.time()
         except Exception as exc:
-            st.error(f"Не удалось обновить результаты: {type(exc).__name__}: {str(exc)[:160]}")
+            st.session_state["_forecast_ledger_sync_status"] = {
+                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
+            }
 
-    settle_status = st.session_state.get("_independent_ai_settlement_status") or {}
+    settle_status = st.session_state.get("_forecast_ledger_sync_status") or {}
     if settle_status.get("error"):
-        st.warning("Автоматическая проверка результатов временно недоступна: " + str(settle_status["error"]))
+        st.warning("Автоматическая сверка временно недоступна: " + str(settle_status["error"]))
     elif settle_status:
         st.caption(
-            f"Последняя сверка: проверено матчей {settle_status.get('fixtures_checked', 0)}, "
-            f"добавлено завершённых прогнозов {settle_status.get('forecasts_settled', 0)}, "
+            f"Последняя общая сверка: проверено матчей {settle_status.get('fixtures_checked', 0)}, "
+            f"обновлено прогнозов модели/ИИ {settle_status.get('forecasts_settled', 0)}, "
+            f"закрыто рыночных рекомендаций {settle_status.get('market_forecasts_settled', 0)}, "
             f"ошибок источников {settle_status.get('errors', 0)}."
         )
 
