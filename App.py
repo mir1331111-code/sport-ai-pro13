@@ -721,15 +721,6 @@ def _sync_forecast_results(force: bool = False):
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "mode": "manual" if force else "automatic",
         }
-    try:
-        backup_status = backup_database_to_gist(DB_FILE)
-        status["sqlite_backup"] = backup_status.get("state")
-        status["sqlite_backup_ok"] = bool(backup_status.get("ok"))
-        if not backup_status.get("ok") and backup_status.get("state") != "not_configured":
-            status["sqlite_backup_error"] = backup_status.get("message")
-    except Exception as backup_exc:
-        status["sqlite_backup_ok"] = False
-        status["sqlite_backup_error"] = type(backup_exc).__name__
     st.session_state["_forecast_ledger_sync_status"] = status
     return status
 
