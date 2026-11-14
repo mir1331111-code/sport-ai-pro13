@@ -8,6 +8,7 @@ import streamlit as st
 from data.scores import completed_matches_for_day
 from data.fixture_time import app_timezone
 from storage import sqlite_store as db
+from storage.user_datasets import export_user_datasets
 from config import DB_FILE
 from model.independent_forecasts import (
     comparison_report, settle_due_forecasts, parse_llm_probabilities,
@@ -202,6 +203,10 @@ def _render_forecast_journal(D):
                     "source_database": "application forecast ledger (sensitive credentials excluded)",
                     "summary": {
                         "decision_snapshots": len(db.fetch_decision_snapshots(limit=100000)),
+                        "user_datasets": len(export_user_datasets()),
+                        "user_dataset_rows": sum(
+                            len(item.get("rows") or []) for item in export_user_datasets()
+                        ),
                         "paper_bets": len(db.fetch_bets(limit=100000)),
                         "bank_history": len(db.bank_history(limit=100000)),
                         "main_forecasts": len(main_rows),
@@ -227,6 +232,7 @@ def _render_forecast_journal(D):
                     "paper_bets": db.fetch_bets(limit=100000),
                     "bank_history": db.bank_history(limit=100000),
                     "decision_snapshots": db.fetch_decision_snapshots(limit=100000),
+                    "user_datasets": export_user_datasets(),
                     "notes": {
                         "h2h_rest_days_ablation": (
                             "Not stored as live ledger variants. Historical walk-forward "
