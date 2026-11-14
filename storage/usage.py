@@ -205,6 +205,11 @@ def _gist_read() -> dict:
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
+        if payload.get("public") is True:
+            log.error(
+                "Configured Gist is PUBLIC. Legacy neuro_local.json can be read for "
+                "recovery, but create a Secret Gist and update GIST_ID immediately."
+            )
         content = ((payload.get("files") or {}).get("neuro_local.json") or {}).get("content", "")
         data = json.loads(content) if content else {}
         return data if isinstance(data, dict) else {}
@@ -227,14 +232,35 @@ def _gist_write(data: dict) -> bool:
     }}}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     try:
+        # Gist "secret" means unlisted, not private. Refuse to keep writing
+        # portfolio/bank data into a publicly visible Gist. Read remains allowed
+        # above so an existing backup can still be downloaded and migrated.
+        check_req = urllib.request.Request(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(check_req, timeout=8) as resp:
+            metadata = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(metadata, dict) or metadata.get("public") is not False:
+            log.error(
+                "Gist write refused: configured Gist is public or visibility is unknown. "
+                "Create a Secret Gist and update GIST_ID."
+            )
+            return False
+
         req = urllib.request.Request(
             f"https://api.github.com/gists/{gist_id}", data=body, method="PATCH",
             headers={"Authorization": f"Bearer {token}",
                      "Accept": "application/vnd.github+json",
                      "Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=8):
-            return True
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            updated = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(updated, dict) or updated.get("public") is not False:
+            log.error("Gist write verification failed: Gist is not confirmed non-public.")
+            return False
+        return True
     except Exception as exc:
         log.warning("Gist write failed: %s", type(exc).__name__)
         return False
