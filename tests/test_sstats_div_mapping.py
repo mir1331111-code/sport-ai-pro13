@@ -44,11 +44,22 @@ class SStatsDivisionMappingTests(unittest.TestCase):
 
     def test_womens_and_international_competitions_keep_separate_namespaces(self):
         self.assertEqual(_sstats_div_code("Women's Super League"), "W_E0")
+        self.assertEqual(_sstats_div_code("WSL"), "W_E0")
+        self.assertEqual(_sstats_div_code("Liga F"), "W_SP1")
         self.assertEqual(_sstats_div_code("Frauen-Bundesliga"), "W_D1")
+        self.assertEqual(_sstats_div_code("Frauen-BL"), "W_D1")
         self.assertEqual(_sstats_div_code("Primera Division Femenina"), "W_SP1")
+        self.assertEqual(_sstats_div_code("Serie A Fem"), "W_I1")
+        self.assertEqual(_sstats_div_code("UWCL"), "W_C1")
         self.assertEqual(_sstats_div_code("UEFA Europa League"), "EL")
         self.assertEqual(_sstats_div_code("UEFA Champions League"), "C1")
-        self.assertTrue(_sstats_div_code("UEFA Nations League").startswith("NT_"))
+        self.assertEqual(_sstats_div_code("UEFA Nations League"), "NT_UNL")
+        self.assertEqual(_sstats_div_code("UEFA Euro Qualifying"), "NT_EQ")
+        self.assertEqual(_sstats_div_code("World Cup Qualification Europe"), "NT_WCE")
+        self.assertEqual(_sstats_div_code("World Cup Qualifiers CONMEBOL"), "NT_WCC")
+        self.assertEqual(_sstats_div_code("World Cup Qualification Asia"), "NT_WCA")
+        self.assertEqual(_sstats_div_code("World Cup Qualifiers CAF"), "NT_WCF")
+        self.assertEqual(_sstats_div_code("World Cup Qualification CONCACAF"), "NT_WCN")
         self.assertTrue(_sstats_div_code("FIFA Club World Cup").startswith("S_"))
 
 
