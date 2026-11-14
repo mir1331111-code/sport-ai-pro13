@@ -951,8 +951,10 @@ def _sstats_div_code(league_name: str) -> str:
         (("segunda division", "la liga 2", "spain segunda"), "SP2"),
         (("serie a", "italy serie a"), "I1"),
         (("serie b", "italy serie b"), "I2"),
-        (("bundesliga", "germany bundesliga"), "D1"),
+        # The second tier contains the generic "bundesliga" token, so it
+        # must be matched before the top-flight label.
         (("2. bundesliga", "2 bundesliga"), "D2"),
+        (("bundesliga", "germany bundesliga"), "D1"),
         (("ligue 1", "france ligue 1"), "F1"),
         (("ligue 2", "france ligue 2"), "F2"),
         (("eredivisie", "netherlands eredivisie"), "N1"),
@@ -1162,7 +1164,7 @@ def _sstats_context_cache_get(endpoint: str, api_key: str, params=None, *, ttl: 
     params_tag = hashlib.sha256(
         repr(sorted((str(k), str(v)) for k, v in query.items())).encode("utf-8")
     ).hexdigest()[:12]
-    cache_key = f"sstats_context_v1_{str(endpoint).strip('/').replace('/', '_')}_{key_tag}_{params_tag}"
+    cache_key = f"sstats_context_v2_{str(endpoint).strip('/').replace('/', '_')}_{key_tag}_{params_tag}"
     cached = cache_get(cache_key, ttl)
     if isinstance(cached, dict):
         return cached
@@ -1389,25 +1391,73 @@ def _sstats_context_injuries(payload):
 
 
 def _sstats_ls_event_key(event: dict):
+    """Extract the ordered teams, match date and string event ID from Ls/List."""
     if not isinstance(event, dict):
         return None, ""
     info = event.get("matchInfo") if isinstance(event.get("matchInfo"), dict) else {}
     game = event.get("game") if isinstance(event.get("game"), dict) else {}
-    merged = {**game, **info, **event}
-    home = merged.get("homeTeam") or merged.get("home") or merged.get("home_team") or ""
-    away = merged.get("awayTeam") or merged.get("away") or merged.get("away_team") or ""
+    nested_event = event.get("event") if isinstance(event.get("event"), dict) else {}
+    merged = {**game, **nested_event, **event, **info}
+    teams = merged.get("teams") if isinstance(merged.get("teams"), dict) else {}
+
+    home = (
+        merged.get("homeTeam") or merged.get("home") or merged.get("home_team")
+        or teams.get("home") or teams.get("homeTeam") or ""
+    )
+    away = (
+        merged.get("awayTeam") or merged.get("away") or merged.get("away_team")
+        or teams.get("away") or teams.get("awayTeam") or ""
+    )
+
+    # Some Ls responses expose participants[] instead of homeTeam/awayTeam.
+    participants = merged.get("participants")
+    if (not home or not away) and isinstance(participants, list):
+        for participant in participants:
+            if not isinstance(participant, dict):
+                continue
+            role = " ".join(str(participant.get(field) or "") for field in (
+                "side", "position", "homeAway", "venueRole", "participantType", "role",
+            )).casefold()
+            is_home = any(token in role for token in ("home", "host", "local"))
+            is_away = any(token in role for token in ("away", "visitor"))
+            if is_home and not home:
+                home = participant.get("team") or participant
+            elif is_away and not away:
+                away = participant.get("team") or participant
+
     home_name = _sstats_context_name(home)
     away_name = _sstats_context_name(away)
-    raw_date = str(
-        merged.get("date") or merged.get("startTime") or merged.get("kickoff")
-        or merged.get("dateTime") or merged.get("matchDate") or ""
+    raw_date_value = next(
+        (merged.get(field) for field in (
+            "date", "startTime", "kickoff", "dateTime", "matchDate", "startDate",
+        ) if merged.get(field) not in (None, "")),
+        "",
     )
+    if isinstance(raw_date_value, (int, float)):
+        try:
+            timestamp = float(raw_date_value)
+            if timestamp > 10_000_000_000:
+                timestamp /= 1000.0
+            raw_date = datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            raw_date = ""
+    else:
+        raw_date = str(raw_date_value or "").strip()
     date_key = raw_date[:10]
+
+    # Ls/GameInfo and Ls/GameLineups require the Flashscore string event ID.
+    # A numeric SStats game ID must never be sent to those endpoints by mistake.
     external_id = ""
-    for field in ("id", "eventId", "event_id", "matchId", "flashscoreId", "flashScoreId"):
-        candidate = merged.get(field)
-        if candidate not in (None, ""):
-            external_id = str(candidate).strip()
+    for source in (info, nested_event, event, game):
+        for field in (
+            "eventId", "event_id", "flashscoreId", "flashScoreId",
+            "stringId", "matchId", "id",
+        ):
+            candidate = source.get(field)
+            if isinstance(candidate, str) and candidate.strip():
+                external_id = candidate.strip()
+                break
+        if external_id:
             break
     referee = _sstats_context_find_value(
         merged, {"referee", "refereename", "mainreferee", "refereefullname"}
@@ -1417,6 +1467,37 @@ def _sstats_ls_event_key(event: dict):
     return (
         date_key, _norm_name(home_name), _norm_name(away_name)
     ), external_id
+
+
+def _sstats_ls_event_keys(event: dict, timezone_offset: int = 0):
+    """Return exact home/away team keys for both source and local/UTC dates."""
+    match_key, external_id = _sstats_ls_event_key(event)
+    if not match_key:
+        return [], external_id
+    days = {match_key[0]}
+    info = event.get("matchInfo") if isinstance(event.get("matchInfo"), dict) else {}
+    game = event.get("game") if isinstance(event.get("game"), dict) else {}
+    nested_event = event.get("event") if isinstance(event.get("event"), dict) else {}
+    merged = {**game, **nested_event, **event, **info}
+    raw_date = next(
+        (merged.get(field) for field in (
+            "date", "startTime", "kickoff", "dateTime", "matchDate", "startDate",
+        ) if merged.get(field) not in (None, "")),
+        "",
+    )
+    parsed = _parse_provider_date(raw_date)
+    local_tz = timezone(timedelta(hours=int(timezone_offset)))
+    if parsed is not None:
+        if parsed.tzinfo is None:
+            days.add(parsed.date().isoformat())
+            days.add(parsed.replace(tzinfo=local_tz).astimezone(timezone.utc).date().isoformat())
+        else:
+            days.add(parsed.astimezone(timezone.utc).date().isoformat())
+            days.add(parsed.astimezone(local_tz).date().isoformat())
+    return [
+        (day, match_key[1], match_key[2])
+        for day in sorted(days)
+    ], external_id
 
 
 def sstats_context_enrich(
@@ -1454,29 +1535,43 @@ def sstats_context_enrich(
         return {}, ["SStats context: нет матчей с SStats game ID."]
 
     ls_by_key = {}
+    ls_event_count = 0
+    ls_events_with_string_id = 0
     try:
+        # The Ls endpoint is a separate Flashscore feed. Its supported filters
+        # are not the Games/list date/time filters; keep this request to the
+        # documented Upcoming + Limit parameters and match locally below.
         ls_payload = _sstats_context_cache_get(
             "Ls/List", key,
-            {
-                "From": date_from, "To": date_to, "Upcoming": "true",
-                "Limit": 1000, "Offset": 0, "TimeZone": timezone_offset,
-            },
+            {"Upcoming": "true", "Limit": 1000},
             ttl=1800,
         )
         ls_records = _sstats_context_data(ls_payload)
         if isinstance(ls_records, dict):
             ls_records = next(
-                (ls_records.get(field) for field in ("games", "matches", "events", "items", "results")
-                 if isinstance(ls_records.get(field), list)),
+                (ls_records.get(field) for field in (
+                    "games", "matches", "events", "items", "results", "list", "fixtures",
+                ) if isinstance(ls_records.get(field), list)),
                 [],
             )
         if isinstance(ls_records, list):
+            ls_event_count = len(ls_records)
             for event in ls_records:
-                match_key, external_id = _sstats_ls_event_key(event)
-                if match_key and external_id:
-                    ls_by_key[match_key] = (external_id, _sstats_context_find_value(
+                event_keys, external_id = _sstats_ls_event_keys(
+                    event, timezone_offset=timezone_offset
+                )
+                if event_keys and external_id:
+                    ls_events_with_string_id += 1
+                    referee_name = _sstats_context_find_value(
                         event, {"referee", "refereename", "mainreferee", "refereefullname"}
-                    ))
+                    )
+                    for match_key in event_keys:
+                        ls_by_key.setdefault(match_key, (external_id, referee_name))
+        else:
+            logs.append(
+                "⚠️ SStats Ls/List: ответ не содержит ожидаемый список событий; "
+                "составы и судьи оставлены неизвестными."
+            )
     except Exception as exc:
         logs.append(f"⚠️ SStats Ls/List: {type(exc).__name__}; XI/судьи могут быть недоступны.")
 
@@ -1512,6 +1607,7 @@ def sstats_context_enrich(
 
     context_by_fixture = {}
     injury_checked = injury_found = info_checked = lineup_checked = lineup_confirmed = referee_confirmed = 0
+    linked_fixtures = 0
 
     for row in valid_rows:
         home = str(row.get("HomeTeam") or "")
@@ -1520,6 +1616,7 @@ def sstats_context_enrich(
         fixture_key_value = (date_key, _norm_name(home), _norm_name(away))
         ls_match = ls_by_key.get(fixture_key_value)
         ls_id = ls_match[0] if ls_match else ""
+        linked_fixtures += int(bool(ls_id))
         referee = ls_match[1] if ls_match else ""
         context = {
             "provider": "sstats",
@@ -1613,15 +1710,16 @@ def sstats_context_enrich(
 
     logs.append(
         "SStats context: "
-        f"Ls/List matched={len(ls_by_key)}/{len(valid_rows)}; "
+        f"Ls/List events={ls_event_count}, with string ID={ls_events_with_string_id}, "
+        f"linked fixtures={linked_fixtures}/{len(valid_rows)}; "
         f"injuries checked={injury_checked}, entries={injury_found}; "
         f"GameInfo={info_checked}; lineups checked={lineup_checked}, "
         f"confirmed XI={lineup_confirmed}; confirmed referees={referee_confirmed}."
     )
-    if not ls_by_key:
+    if linked_fixtures == 0:
         logs.append(
-            "ℹ️ SStats Ls/List не сопоставил string ID; составы и судьи оставлены неизвестными, "
-            "без подстановки данных из другого матча."
+            "ℹ️ SStats Ls/List не связал ни один Games/list матч с Flashscore string ID; "
+            "составы и судьи оставлены неизвестными, без подстановки данных из другого матча."
         )
     return context_by_fixture, logs
 

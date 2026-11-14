@@ -79,3 +79,49 @@ def merge_fixture_sources(*sources) -> list:
                 if current.get(name) in (None, "", {}, []) and value not in (None, "", {}, []):
                     current[name] = value
     return [merged[key] for key in order]
+
+
+_SSTATS_ODDS_FIELDS = (
+    "market_odds",
+    "total_market_odds",
+    "btts_market_odds",
+    "stat_market_odds",
+    "asian_handicap_market_odds",
+    "bookmaker_by_pick",
+    "odds",
+)
+
+
+def enforce_sstats_odds_only(rows) -> list:
+    """Keep bookmaker prices only on fixtures owned by SStats.
+
+    Schedule fallback feeds may supply their own price-like fields. They are
+    deliberately stripped here: the live scanner's bookmaker source is SStats,
+    not whichever schedule adapter happened to return a row.
+    """
+    result = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        clean = dict(row)
+        fixture_id = str(clean.get("fixture_id") or "").strip().casefold()
+        game_id = clean.get("sstats_game_id")
+        is_sstats_fixture = (
+            game_id not in (None, "")
+            and (
+                str(clean.get("source") or "").strip().casefold() == "sstats"
+                or fixture_id.startswith("sstats:")
+            )
+        )
+        if not is_sstats_fixture:
+            for field in _SSTATS_ODDS_FIELDS:
+                if field in clean:
+                    clean[field] = {}
+            for field in (
+                "odds_source", "total_odds_source", "btts_odds_source",
+                "extra_market_source",
+            ):
+                if field in clean:
+                    clean[field] = "no_market"
+        result.append(clean)
+    return result

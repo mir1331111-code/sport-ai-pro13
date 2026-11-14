@@ -1,6 +1,7 @@
 import unittest
 
-from data.fixture_merge import fixture_key, merge_fixture_sources
+from data.fixture_merge import (enforce_sstats_odds_only, fixture_key,
+                                merge_fixture_sources)
 
 
 class FixtureMergeTests(unittest.TestCase):
@@ -77,6 +78,32 @@ class FixtureMergeTests(unittest.TestCase):
         self.assertEqual(rows[0]["fixture_id"], "sstats:12345")
         self.assertEqual(rows[0]["sstats_game_id"], 12345)
         self.assertEqual(rows[0]["market_odds"], sstats[0]["market_odds"])
+
+
+    def test_only_sstats_owned_fixtures_keep_bookmaker_prices(self):
+        rows = enforce_sstats_odds_only([
+            {
+                "Date": "2026-11-11", "HomeTeam": "A", "AwayTeam": "B",
+                "fixture_id": "espn-1", "source": "espn",
+                "market_odds": {"П1": 2.1},
+                "total_market_odds": {"ТБ 2.5": 1.9},
+                "bookmaker_by_pick": {"П1": "Example"},
+                "odds_source": "espn",
+            },
+            {
+                "Date": "2026-11-11", "HomeTeam": "C", "AwayTeam": "D",
+                "fixture_id": "sstats:123", "source": "sstats",
+                "sstats_game_id": 123,
+                "market_odds": {"П1": 2.2},
+                "odds_source": "sstats",
+            },
+        ])
+        self.assertEqual(rows[0]["market_odds"], {})
+        self.assertEqual(rows[0]["total_market_odds"], {})
+        self.assertEqual(rows[0]["bookmaker_by_pick"], {})
+        self.assertEqual(rows[0]["odds_source"], "no_market")
+        self.assertEqual(rows[1]["market_odds"], {"П1": 2.2})
+        self.assertEqual(rows[1]["odds_source"], "sstats")
 
     def test_fixture_key_normalizes_accents_and_club_suffixes(self):
         self.assertEqual(
