@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time as _time
@@ -254,7 +255,8 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
     if not token or d is None or _time.time() < _FDORG_COOLDOWN_UNTIL[0]:
         return []
     # v6 refreshes cached UTC calendar dates into app-local fixture dates.
-    ck = f"fdorg_rng_v6_{d:%Y-%m-%d}"
+    token_tag = hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
+    ck = f"fdorg_rng_v7_{token_tag}_{d:%Y-%m-%d}"
     cached = cache_get(ck, _ttl(date_iso))
     if isinstance(cached, list):
         return cached
@@ -337,8 +339,11 @@ def _closest(cands: list, date_iso: str) -> Optional[dict]:
     return best
 
 
-def _find_fdorg(home: str, away: str, date_iso: str) -> Optional[dict]:
-    cands = [e for e in _fdorg_range(date_iso)
+def _find_fdorg(
+    home: str, away: str, date_iso: str, token: str | None = None,
+) -> Optional[dict]:
+    """Match a date-scoped football-data.org result with the caller's token."""
+    cands = [e for e in _fdorg_range(date_iso, token=token)
              if _same_team(home, e["home"]) and _same_team(away, e["away"])]
     e = _closest(cands, date_iso)
     if not e:
@@ -439,24 +444,42 @@ def _find_olb(home: str, away: str, date_iso: str) -> Optional[dict]:
 
 
 # ============ ПУБЛИЧНАЯ ФУНКЦИЯ ============
-def find_match_score(home: str, away: str, date_iso: str) -> Optional[dict]:
-    """ESPN → football-data.org → OpenLigaDB.
-    status: FT | AET (доп. время — не закрывается автоматически)."""
+def find_match_score(
+    home: str, away: str, date_iso: str, *,
+    token: str | None = None,
+    providers: tuple[str, ...] | list[str] | None = None,
+) -> Optional[dict]:
+    """Find a regulation-time score with explicit provider order and token.
+
+    The default remains ESPN → football-data.org → OpenLigaDB.
+    """
     if not home or not away or not date_iso:
         return None
-    for name, fn in (("espn", _find_espn),
-                     ("fdorg", _find_fdorg),
-                     ("olb", _find_olb)):
-        try:
-            r = fn(home, away, date_iso)
-        except Exception as e:
-            log.warning("%s fail: %s", name, e)
+    handlers = {
+        "espn": lambda: _find_espn(home, away, date_iso),
+        "fdorg": lambda: _find_fdorg(home, away, date_iso, token=token),
+        "olb": lambda: _find_olb(home, away, date_iso),
+    }
+    order = tuple(
+        str(name).strip().casefold()
+        for name in (providers or ("espn", "fdorg", "olb"))
+    )
+    for name in order:
+        fn = handlers.get(name)
+        if fn is None:
             continue
-        if r:
-            log.info("FOUND %s: %s vs %s = %s:%s (%s)",
-                     r["source"], home, away,
-                     r["home"], r["away"], r["status"])
-            return r
+        try:
+            result = fn()
+        except Exception as exc:
+            log.warning("%s fail: %s", name, type(exc).__name__)
+            continue
+        if result:
+            log.info(
+                "FOUND %s: %s vs %s = %s:%s (%s)",
+                result.get("source", name), home, away,
+                result["home"], result["away"], result.get("status"),
+            )
+            return result
     log.info("NOT FOUND: %s vs %s @ %s", home, away, date_iso)
     return None
 
