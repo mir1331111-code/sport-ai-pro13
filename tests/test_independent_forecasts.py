@@ -8,6 +8,7 @@ from model.forecast_ledger import ForecastLedger, MarketForecastLedger
 from model.independent_forecasts import (
     compare_forecast_rows,
     historical_features,
+    historical_xg_features,
     parse_llm_probabilities,
     record_scan_forecasts,
     settle_due_forecasts,
@@ -80,6 +81,32 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertAlmostEqual(features["simple_baseline_lambda_away"], 1.25)
         self.assertAlmostEqual(features["simple_baseline_lambda_total"], 3.0)
         self.assertGreater(features["simple_baseline_over_25"], 0.5)
+
+    def test_llm_historical_features_match_normalized_names_in_same_competition(self):
+        engine = SimpleNamespace(st={
+            ("E0", "Home"): {
+                "hs": [1, 2, 3, 2, 1], "hc": [0, 1, 1, 0, 0],
+                "hs_xg": [1.1, 1.2, 1.4, 1.3, 1.0],
+                "hs_xga": [0.5, 0.7, 0.8, 0.6, 0.4],
+            },
+            ("E0", "Away"): {
+                "as": [1, 0, 1, 2, 1], "ac": [2, 1, 1, 0, 2],
+                "as_xg": [1.0, 0.9, 1.1, 1.3, 1.2],
+                "as_xga": [1.8, 1.4, 1.1, 0.8, 1.6],
+            },
+            ("W_E0", "Home"): {"hs": [4, 4, 4], "hc": [0, 0, 0]},
+            ("W_E0", "Away"): {"as": [0, 0, 0], "ac": [4, 4, 4]},
+        })
+        features = historical_features(
+            engine, "Home FC", "Away SC", league="E0",
+        )
+        self.assertEqual(features["home_home_sample"], 5)
+        self.assertEqual(features["away_away_sample"], 5)
+        self.assertAlmostEqual(features["home_scored_at_home_avg"], 1.8)
+        xg = historical_xg_features(engine, "Home FC", "Away SC", league="E0")
+        self.assertEqual(xg["provider"]["home_xg_samples"], 5)
+        self.assertEqual(xg["provider"]["away_xg_samples"], 5)
+        self.assertAlmostEqual(xg["provider"]["home_xg_for_avg"], 1.2)
 
     def test_llm_historical_features_do_not_cross_competitions(self):
         engine = SimpleNamespace(st={
