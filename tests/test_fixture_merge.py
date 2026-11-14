@@ -1,7 +1,7 @@
 import unittest
 
 from data.fixture_merge import (enforce_sstats_odds_only, fixture_key,
-                                merge_fixture_sources)
+                                is_sstats_market_source, merge_fixture_sources)
 
 
 class FixtureMergeTests(unittest.TestCase):
@@ -79,6 +79,13 @@ class FixtureMergeTests(unittest.TestCase):
         self.assertEqual(rows[0]["sstats_game_id"], 12345)
         self.assertEqual(rows[0]["market_odds"], sstats[0]["market_odds"])
 
+
+
+    def test_only_explicit_sstats_provenance_is_accepted_for_quotes(self):
+        self.assertTrue(is_sstats_market_source("sstats"))
+        self.assertTrue(is_sstats_market_source(" SStats "))
+        for source in ("", None, "unknown", "highlightly", "manual_import", "football-data"):
+            self.assertFalse(is_sstats_market_source(source))
 
     def test_only_sstats_owned_fixtures_keep_bookmaker_prices(self):
         rows = enforce_sstats_odds_only([
