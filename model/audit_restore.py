@@ -14,6 +14,7 @@ from typing import Any
 
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger
 from storage import sqlite_store
+from storage.user_datasets import save_user_dataset
 
 
 MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
@@ -167,6 +168,7 @@ def restore_audit_export_bytes(
     paper_bets = _require_list(payload, "paper_bets")
     bank_history = _require_list(payload, "bank_history")
     decision_snapshots = _require_list(payload, "decision_snapshots")
+    user_datasets = _require_list(payload, "user_datasets")
 
     target = Path(db_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -221,6 +223,21 @@ def restore_audit_export_bytes(
                 decision_count = _insert_rows(
                     conn, "decision_snapshots", DECISION_FIELDS, decision_snapshots,
                 )
+
+        restored_datasets = []
+        for item in user_datasets:
+            if set(item) - {"dataset_key", "rows"}:
+                raise ValueError("audit user dataset contains unsupported fields")
+            if not isinstance(item.get("rows"), list):
+                raise ValueError("audit user dataset rows must be an array")
+            saved_dataset = save_user_dataset(
+                str(item.get("dataset_key") or ""),
+                item["rows"],
+                db_path=str(temporary),
+            )
+            restored_datasets.append(saved_dataset)
+
+        with sqlite3.connect(str(temporary), timeout=15) as conn:
             check = conn.execute("PRAGMA integrity_check").fetchone()
             if not check or str(check[0]).casefold() != "ok":
                 raise ValueError("restored audit SQLite failed integrity_check")
@@ -240,6 +257,8 @@ def restore_audit_export_bytes(
             "paper_bets": bet_count,
             "bank_history": bank_count,
             "decision_snapshots": decision_count,
+            "user_datasets": len(restored_datasets),
+            "user_dataset_rows": sum(item["row_count"] for item in restored_datasets),
         }
     finally:
         temporary.unlink(missing_ok=True)
