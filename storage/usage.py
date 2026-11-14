@@ -194,6 +194,19 @@ def _gist_config() -> tuple[str, str]:
     return _secret("GIST_ID"), _secret("GITHUB_TOKEN")
 
 
+def _portfolio_fernet():
+    """Return the shared backup cipher; never write a new unencrypted portfolio Gist."""
+    key = _secret("NEURO_BACKUP_KEY")
+    if not key:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(key.encode("ascii"))
+    except Exception as exc:
+        log.error("Invalid NEURO_BACKUP_KEY for portfolio backup: %s", type(exc).__name__)
+        return None
+
+
 def _gist_read() -> dict:
     gist_id, token = _gist_config()
     if not gist_id or not token:
@@ -225,6 +238,26 @@ def _gist_read() -> dict:
             with urllib.request.urlopen(raw_req, timeout=12) as raw_resp:
                 content = raw_resp.read().decode("utf-8")
         data = json.loads(content) if content else {}
+        if isinstance(data, dict) and data.get("format") == "neuro-local-fernet-v1":
+            cipher = _portfolio_fernet()
+            if cipher is None:
+                log.error(
+                    "Encrypted portfolio Gist cannot be read: configure the original "
+                    "NEURO_BACKUP_KEY in Streamlit Secrets."
+                )
+                return {}
+            try:
+                plaintext = cipher.decrypt(
+                    str(data.get("ciphertext") or "").encode("ascii")
+                )
+                data = json.loads(plaintext.decode("utf-8"))
+            except Exception as exc:
+                log.error(
+                    "Encrypted portfolio Gist could not be decrypted (%s); "
+                    "the remote copy was left untouched.",
+                    type(exc).__name__,
+                )
+                return {}
         return data if isinstance(data, dict) else {}
     except Exception as exc:
         log.warning("Gist read failed: %s", type(exc).__name__)
@@ -244,8 +277,21 @@ def _gist_write(data: dict) -> bool:
     ):
         safe_meta.pop(key, None)
     safe["meta"] = safe_meta
+    cipher = _portfolio_fernet()
+    if cipher is None:
+        log.error(
+            "Portfolio Gist write refused: configure a valid NEURO_BACKUP_KEY. "
+            "No unencrypted portfolio copy was uploaded."
+        )
+        return False
+    plaintext = json.dumps(safe, ensure_ascii=False, default=str).encode("utf-8")
+    encrypted = cipher.encrypt(plaintext).decode("ascii")
+    envelope = {
+        "format": "neuro-local-fernet-v1",
+        "ciphertext": encrypted,
+    }
     payload = {"files": {"neuro_local.json": {
-        "content": json.dumps(safe, ensure_ascii=False, default=str)
+        "content": json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
     }}}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     try:
