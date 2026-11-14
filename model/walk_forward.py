@@ -699,6 +699,7 @@ def walk_forward_compare(
                for name, value in records.items() if not name.startswith("goals_over25")}
     totals_bs = bootstrap_samples if totals_bootstrap_samples is None else max(0, int(totals_bootstrap_samples))
     market_bs = bootstrap_samples if market_bootstrap_samples is None else max(0, int(market_bootstrap_samples))
+    xg_bs = market_bs
     goals_over25_metrics = _binary_metrics(records["goals_over25"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_market_metrics = _binary_metrics(records["goals_over25_market"], bootstrap_samples=totals_bs, seed=31415)
     goals_over25_candidate_market_metrics = _binary_metrics(records["goals_over25_candidate_on_market"], bootstrap_samples=totals_bs, seed=31415)
@@ -746,33 +747,33 @@ def walk_forward_compare(
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
     xg_arm_metrics = {
-        name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=61000 + index)
+        name: _metrics(value, bootstrap_samples=xg_bs, seed=61000 + index)
         for index, (name, value) in enumerate(xg_arm_records.items())
     }
     xg_arm_pairs = {
         "provider_vs_goals_only": _paired_differences(
             xg_arm_records["provider_xg_only"], xg_arm_records["goals_only"],
-            bootstrap_samples=bootstrap_samples, seed=61101,
+            bootstrap_samples=xg_bs, seed=61101,
         ),
         "proxy_vs_goals_only": _paired_differences(
             xg_arm_records["proxy_xg_only"], xg_arm_records["goals_only"],
-            bootstrap_samples=bootstrap_samples, seed=61102,
+            bootstrap_samples=xg_bs, seed=61102,
         ),
         "mixed_vs_goals_only": _paired_differences(
             xg_arm_records["mixed_provider_preferred"], xg_arm_records["goals_only"],
-            bootstrap_samples=bootstrap_samples, seed=61103,
+            bootstrap_samples=xg_bs, seed=61103,
         ),
         "provider_vs_proxy": _paired_differences(
             xg_arm_records["provider_xg_only"], xg_arm_records["proxy_xg_only"],
-            bootstrap_samples=bootstrap_samples, seed=61104,
+            bootstrap_samples=xg_bs, seed=61104,
         ),
         "mixed_vs_provider": _paired_differences(
             xg_arm_records["mixed_provider_preferred"], xg_arm_records["provider_xg_only"],
-            bootstrap_samples=bootstrap_samples, seed=61105,
+            bootstrap_samples=xg_bs, seed=61105,
         ),
         "mixed_vs_proxy": _paired_differences(
             xg_arm_records["mixed_provider_preferred"], xg_arm_records["proxy_xg_only"],
-            bootstrap_samples=bootstrap_samples, seed=61106,
+            bootstrap_samples=xg_bs, seed=61106,
         ),
     }
     delta = lambda left, right, key: (
