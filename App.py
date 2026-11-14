@@ -162,6 +162,7 @@ except ImportError as exc:
     settlement_ready = _settlement_ready_compat
     _SETTLEMENT_READY_FALLBACK = True
 from model.forecast_ledger import MarketForecastLedger  # noqa: E402
+from model.independent_forecasts import settle_due_forecasts  # noqa: E402
 from ui import theme  # noqa: E402
 from ui.tabs import scanner, portfolio, stats, calculator, backtest, analytics, dashboard  # noqa: E402
 
@@ -173,6 +174,7 @@ if _SETTLEMENT_READY_FALLBACK:
 # ==================== КОНСТАНТЫ ====================
 DEFAULT_BANK = 10000.0
 AUTO_SETTLE_EVERY_SEC = AUTO_SETTLE_THROTTLE_SEC
+FORECAST_AUTO_SYNC_EVERY_SEC = 600
 SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)
 RETRY_EVERY = timedelta(minutes=60)
 STALE_AFTER = timedelta(hours=48)
@@ -679,6 +681,34 @@ def _apply_settle_result(D2, closed, tried, event):
         db.invalidate_caches()
 
 
+def _sync_forecast_results(force: bool = False):
+    """Synchronize prediction and market audit ledgers during active app use."""
+    now_ts = time.time()
+    last_check = float(st.session_state.get("_last_forecast_ledger_sync_ts", 0) or 0)
+    if not force and now_ts - last_check < FORECAST_AUTO_SYNC_EVERY_SEC:
+        return None
+    # Save the attempt time even on failure so a transient outage does not hammer providers.
+    st.session_state["_last_forecast_ledger_sync_ts"] = now_ts
+    try:
+        with st.spinner("Автоматически сверяю прогнозы с завершёнными матчами…"):
+            status = settle_due_forecasts(
+                db_path=DB_FILE, max_fixtures=30 if force else 8,
+            )
+        status["checked_at"] = datetime.now(timezone.utc).isoformat()
+        status["mode"] = "manual" if force else "automatic"
+    except Exception as exc:
+        status = {
+            "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+            "fixtures_checked": 0, "forecasts_settled": 0,
+            "market_fixtures_checked": 0, "market_forecasts_settled": 0,
+            "errors": 1,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "manual" if force else "automatic",
+        }
+    st.session_state["_forecast_ledger_sync_status"] = status
+    return status
+
+
 _now_ts = time.time()
 if _now_ts - st.session_state.get("_last_auto_settle_ts", 0) > AUTO_SETTLE_EVERY_SEC:
     st.session_state["_last_auto_settle_ts"] = _now_ts
@@ -688,6 +718,20 @@ if _now_ts - st.session_state.get("_last_auto_settle_ts", 0) > AUTO_SETTLE_EVERY
     D = D2
     if n > 0:
         st.toast(f"🔄 Авто-закрыто {n} ставок", icon="✅")
+
+# Automatic prediction-ledger reconciliation is independent of virtual-bet
+# settlement and runs on app reruns at a bounded ten-minute cadence.
+_forecast_sync = _sync_forecast_results()
+if _forecast_sync and (
+    _forecast_sync.get("forecasts_settled", 0)
+    or _forecast_sync.get("market_forecasts_settled", 0)
+):
+    st.toast(
+        "📊 Подтверждены результаты "
+        f"прогнозов: {_forecast_sync.get('forecasts_settled', 0)} · "
+        f"рыночных рекомендаций: {_forecast_sync.get('market_forecasts_settled', 0)}",
+        icon="✅",
+    )
 
 _bets = [b for b in D.get("bets", []) if isinstance(b, dict)]
 pending_count = sum(1 for b in _bets if b.get("status") == "pending")
@@ -904,16 +948,31 @@ with st.sidebar:
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
                 unsafe_allow_html=True)
 
-    if st.button("🔃 Проверить результаты", use_container_width=True,
-                 help="Форсировать авто-сеттл прямо сейчас (игнорирует паузу между попытками)"):
-        with st.spinner("Проверяю результаты матчей…"):
+    if st.button("🔃 Проверить все результаты", use_container_width=True,
+                 help="Принудительно сверяет виртуальные ставки, прогнозы модели/ИИ и рыночный журнал"):
+        with st.spinner("Проверяю портфель и все журналы прогнозов…"):
             D2, n, tried = _auto_settle(D, force=True)
+            forecast_sync = _sync_forecast_results(force=True)
         _apply_settle_result(D2, n, tried, "manual_check")
-        if n > 0:
-            st.success(f"✅ Закрыто {n} ставок")
-        else:
-            st.info("Нет завершённых матчей для закрытия")
+        forecast_sync = forecast_sync or {}
+        st.success(
+            f"Закрыто ставок: {n} · подтверждено прогнозов модели/ИИ: "
+            f"{forecast_sync.get('forecasts_settled', 0)} · "
+            f"закрыто рыночных рекомендаций: {forecast_sync.get('market_forecasts_settled', 0)}"
+        )
         st.rerun()
+
+    _sync_status = st.session_state.get("_forecast_ledger_sync_status") or {}
+    if _sync_status.get("error"):
+        st.caption("Сверка прогнозов: ошибка — " + str(_sync_status["error"]))
+    elif _sync_status:
+        st.caption(
+            "Последняя сверка журналов: "
+            f"матчей проверено {_sync_status.get('fixtures_checked', 0)} · "
+            f"прогнозов закрыто {_sync_status.get('forecasts_settled', 0)} · "
+            f"рыночных рекомендаций закрыто {_sync_status.get('market_forecasts_settled', 0)} · "
+            f"ошибок {_sync_status.get('errors', 0)}"
+        )
 
     if stale_count and st.button(f"↩️ Вернуть стейки по устаревшим ({stale_count})",
                                  use_container_width=True,
