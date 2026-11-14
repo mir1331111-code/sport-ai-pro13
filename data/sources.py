@@ -831,7 +831,10 @@ def espn_matches(days: int, logs=None) -> list:
                 # Prefer the stable existing ESPN competition mapping for major
                 # club leagues; use shared gender/age-aware classification for
                 # internationals and competitions absent from that small table.
-                div_code = _ESPN_DIVS.get(slug, mapped_div)
+                div_code = (
+                    mapped_div if (mapped_women or mapped_national)
+                    else _ESPN_DIVS.get(slug, mapped_div)
+                )
                 rows.append({
                     "Div": div_code,
                     "League": league, "competition": slug,
