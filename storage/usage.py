@@ -210,7 +210,20 @@ def _gist_read() -> dict:
                 "Configured Gist is PUBLIC. Legacy neuro_local.json can be read for "
                 "recovery, but create a Secret Gist and update GIST_ID immediately."
             )
-        content = ((payload.get("files") or {}).get("neuro_local.json") or {}).get("content", "")
+        file_entry = (payload.get("files") or {}).get("neuro_local.json") or {}
+        content = file_entry.get("content", "")
+        if file_entry.get("truncated"):
+            raw_url = str(file_entry.get("raw_url") or "")
+            if not raw_url.startswith("https://gist.githubusercontent.com/"):
+                log.error("Gist neuro_local.json is truncated and has no trusted raw_url")
+                return {}
+            raw_req = urllib.request.Request(
+                raw_url,
+                headers={"Authorization": f"Bearer {token}",
+                         "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(raw_req, timeout=12) as raw_resp:
+                content = raw_resp.read().decode("utf-8")
         data = json.loads(content) if content else {}
         return data if isinstance(data, dict) else {}
     except Exception as exc:
