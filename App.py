@@ -41,6 +41,7 @@ from storage.secret_store import load_local_secrets, save_local_secrets  # noqa:
 from storage.remote_backup import (
     backup_database_to_gist, create_sqlite_backup_bytes,
     generate_backup_key, remote_backup_status, restore_database_if_empty,
+    restore_sqlite_backup_bytes,
 )  # noqa: E402
 from data.sources import (
     parse_date, fdorg_match_result,
@@ -1185,6 +1186,40 @@ with st.sidebar:
                 key="download_neuro_sqlite_backup",
                 use_container_width=True,
             )
+
+        _sqlite_upload = st.file_uploader(
+            "Восстановить SQLite из .sqlite.gz (только в пустую базу)",
+            type=["gz"], key="restore_neuro_sqlite_upload",
+        )
+        if _sqlite_upload is not None and st.button(
+            "Восстановить пустой журнал SQLite",
+            key="restore_neuro_sqlite_button",
+        ):
+            try:
+                _restored_sqlite = restore_sqlite_backup_bytes(
+                    _sqlite_upload.getvalue(), DB_FILE, overwrite=False,
+                )
+                db.db_init()
+                db.invalidate_caches()
+                st.session_state["_sqlite_restore_status"] = {
+                    "restored": True, "state": "restored",
+                    "message": "SQLite восстановлена из локального бэкапа.",
+                }
+                st.success(
+                    "SQLite восстановлена. Таблиц с данными: "
+                    + str(len(_restored_sqlite.get("tables") or {}))
+                )
+            except Exception as _restore_sqlite_exc:
+                st.error(
+                    "Восстановление SQLite отменено: "
+                    + str(_restore_sqlite_exc)[:180]
+                )
+
+        st.caption(
+            "Secret Gist — это непубличная ссылка, а не приватный диск. "
+            "SQLite перед отправкой шифруется отдельным ключом; сам Streamlit app "
+            "также следует ограничить в Share/Manage access."
+        )
 
     _backup = json.dumps(_strip_secrets(D), ensure_ascii=False, indent=2, default=str)
     st.download_button("📥 Скачать", _backup,
