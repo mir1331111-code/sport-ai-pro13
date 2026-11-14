@@ -57,7 +57,7 @@ class ValidationCacheTests(unittest.TestCase):
         self.assertEqual(validation_cache_key(rows), validation_cache_key(same))
         self.assertTrue(
             validation_cache_key(rows, model_version="13.12.0").startswith(
-                "neuro_market_validation_v6_matchday_bootstrap_13.12.0_"
+                "neuro_market_validation_v7_xg_league_season_matchday_13.12.0_"
             )
         )
         self.assertNotEqual(
