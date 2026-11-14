@@ -1271,11 +1271,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         if context_csv_file is not None:
             try:
                 context_payload = parse_context_csv(context_csv_file.getvalue())
-                st.session_state["_historical_context_rows"] = context_payload["rows"]
                 if context_payload["rows"]:
                     saved_context = user_datasets.save_user_dataset(
                         "historical_context_rows", context_payload["rows"],
                     )
+                    st.session_state["_historical_context_rows"] = context_payload["rows"]
                     persistence_note = (
                         f"; сохранено в SQLite: {saved_context['row_count']} строк"
                     )
@@ -1290,8 +1290,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     st.caption("Причины отклонения: " + "; ".join(
                         str(item.get("reason")) for item in context_payload["rejected"][:5]
                     ))
-            except (UnicodeDecodeError, ValueError) as exc:
-                st.error(f"Не удалось прочитать контекстный CSV: {exc}")
+            except Exception as exc:
+                st.error(
+                    "Контекстный CSV не удалось проверить или сохранить: "
+                    + f"{type(exc).__name__}: {str(exc)[:160]}"
+                )
         saved_context_rows = st.session_state.get("_historical_context_rows") or []
         if saved_context_rows:
             st.caption(
@@ -1330,11 +1333,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 history_payload = parse_historical_matches_csv(
                     historical_match_file.getvalue()
                 )
-                st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
                 if history_payload["rows"]:
                     saved_history = user_datasets.save_user_dataset(
                         "custom_historical_match_rows", history_payload["rows"],
                     )
+                    st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
                     persistence_note = (
                         f"; сохранено в SQLite: {saved_history['row_count']} матчей"
                     )
@@ -1350,8 +1353,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     + ". Эти соревнования обучают Base-модель отдельно и пока не проходят "
                     "Value-валидацию крупных лиг."
                 )
-            except (UnicodeDecodeError, ValueError) as exc:
-                st.error(f"Не удалось прочитать исторический CSV: {exc}")
+            except Exception as exc:
+                st.error(
+                    "Архив исторических матчей не удалось проверить или сохранить: "
+                    + f"{type(exc).__name__}: {str(exc)[:160]}"
+                )
         custom_historical_rows = st.session_state.get("_custom_historical_match_rows") or []
         if custom_historical_rows:
             st.caption(
