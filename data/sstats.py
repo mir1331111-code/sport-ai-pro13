@@ -729,12 +729,16 @@ def _sstats_division_for_game(
     game: dict, league_obj: dict, league_name: str,
 ) -> str:
     """Resolve a league using its country when SStats supplies it separately."""
+    game = game if isinstance(game, dict) else {}
+    league_obj = league_obj if isinstance(league_obj, dict) else {}
+    season_obj = game.get("season")
+    season_obj = season_obj if isinstance(season_obj, dict) else {}
     country_value = (
         league_obj.get("country")
         or league_obj.get("countryName")
         or game.get("country")
         or game.get("countryName")
-        or (game.get("season") or {}).get("country")
+        or season_obj.get("country")
     )
     if isinstance(country_value, dict):
         country = str(country_value.get("name") or country_value.get("title") or "").strip()
