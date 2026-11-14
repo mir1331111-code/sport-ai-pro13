@@ -67,6 +67,18 @@ def _parse_date(value):
     return None
 
 
+def _season_label(row, stamp):
+    """Return an explicit source season or a clearly labelled July-June fallback."""
+    value = _get(
+        row, "Season", "season", "season_id", "season_name",
+        "season_label", "competition_season",
+    )
+    if value is not None and str(value).strip():
+        return str(value).strip(), "source_field"
+    season_start = stamp.year if stamp.month >= 7 else stamp.year - 1
+    return f"{season_start}/{(season_start + 1) % 100:02d}", "derived_jul_jun"
+
+
 def _xg_origin(row):
     """Classify historical xG provenance.
 
@@ -444,6 +456,69 @@ def _binary_paired_differences(candidate_records, market_records, *, bootstrap_s
     }
 
 
+def _xg_stratum_report(records_by_arm, *, bootstrap_samples=250, seed=71000):
+    """Summarize one league/season subset using paired matchday clusters."""
+    arm_names = (
+        "goals_only", "provider_xg_only", "proxy_xg_only",
+        "mixed_provider_preferred",
+    )
+    comparisons = (
+        ("provider_vs_goals_only", "provider_xg_only", "goals_only"),
+        ("proxy_vs_goals_only", "proxy_xg_only", "goals_only"),
+        ("mixed_vs_goals_only", "mixed_provider_preferred", "goals_only"),
+        ("provider_vs_proxy", "provider_xg_only", "proxy_xg_only"),
+        ("mixed_vs_provider", "mixed_provider_preferred", "provider_xg_only"),
+        ("mixed_vs_proxy", "mixed_provider_preferred", "proxy_xg_only"),
+    )
+    arm_metrics = {
+        name: _metrics(
+            records_by_arm.get(name) or [],
+            bootstrap_samples=bootstrap_samples,
+            seed=seed + index,
+        )
+        for index, name in enumerate(arm_names)
+    }
+    paired = {
+        label: _paired_differences(
+            records_by_arm.get(left) or [],
+            records_by_arm.get(right) or [],
+            bootstrap_samples=bootstrap_samples,
+            seed=seed + 100 + index,
+        )
+        for index, (label, left, right) in enumerate(comparisons)
+    }
+    reference = records_by_arm.get("goals_only") or []
+    cluster_count = len({
+        _record_group(record, index) for index, record in enumerate(reference)
+    })
+    n = len(reference)
+    return {
+        "n": n,
+        "cluster_count": cluster_count,
+        "bootstrap_unit": (
+            "matchday" if n and all(
+                isinstance(record, (tuple, list)) and len(record) >= 3
+                and record[2] is not None for record in reference
+            ) else "fixture_fallback"
+        ),
+        "inference_eligible": n >= 100 and cluster_count >= 30,
+        "minimum_inference_sample": {"fixtures": 100, "matchday_clusters": 30},
+        "arms": arm_metrics,
+        "paired_differences": paired,
+    }
+
+
+def _summarize_xg_strata(strata, *, bootstrap_samples=250, seed=71000):
+    """Deterministic summaries for each named stratum."""
+    result = {}
+    for index, key in enumerate(sorted(strata, key=str)):
+        result[str(key)] = _xg_stratum_report(
+            strata[key], bootstrap_samples=bootstrap_samples,
+            seed=seed + index * 1000,
+        )
+    return result
+
+
 def totals_market_is_validated(report, *, min_n=500, min_clusters=30):
     """Require enough fixtures, independent matchdays and both 95% CIs below zero."""
     if not isinstance(report, dict) or int(report.get("n", 0) or 0) < int(min_n):
@@ -529,6 +604,12 @@ def walk_forward_compare(
     xg_arm_usage = {name: 0 for name in xg_arm_names}
     xg_arm_proxy_usage = {name: 0 for name in xg_arm_names}
     xg_arm_provider_usage = {name: 0 for name in xg_arm_names}
+    xg_strata_records = {
+        "by_league": {},
+        "by_season": {},
+        "by_league_season": {},
+    }
+    season_basis_counts = {}
     xg_provider_rows = 0
     xg_proxy_rows = 0
 
@@ -566,6 +647,8 @@ def walk_forward_compare(
         for _, league, home, away, hg, ag, row in group:
             row_copy = dict(row) if isinstance(row, dict) else {}
             row_copy["Div"] = league
+            season, season_basis = _season_label(row_copy, stamp)
+            season_basis_counts[season_basis] = season_basis_counts.get(season_basis, 0) + 1
             no_xg_row = _without_xg(row_copy)
             provider_xg_row = _without_proxy_xg(row_copy)
             proxy_xg_row = _without_provider_xg(row_copy)
@@ -643,13 +726,34 @@ def walk_forward_compare(
                 "mixed_provider_preferred": pred_candidate,
             }
             for arm_name, arm_prediction in arm_predictions.items():
-                xg_arm_records[arm_name].append((_probs(arm_prediction), outcome))
+                xg_record = (_probs(arm_prediction), outcome)
+                xg_arm_records[arm_name].append(xg_record)
                 if arm_prediction.get("xg_used"):
                     xg_arm_usage[arm_name] += 1
                     if arm_prediction.get("xg_modelled_used"):
                         xg_arm_proxy_usage[arm_name] += 1
                     else:
                         xg_arm_provider_usage[arm_name] += 1
+
+                for scope, stratum_key in (
+                    ("by_league", league),
+                    ("by_season", season),
+                ):
+                    bucket = xg_strata_records[scope].setdefault(
+                        stratum_key,
+                        {name: _ClusteredRecords() for name in xg_arm_names},
+                    )
+                    bucket[arm_name].set_cluster(cluster_id)
+                    bucket[arm_name].append(xg_record)
+
+                league_seasons = xg_strata_records["by_league_season"].setdefault(
+                    league, {}
+                )
+                bucket = league_seasons.setdefault(
+                    season, {name: _ClusteredRecords() for name in xg_arm_names}
+                )
+                bucket[arm_name].set_cluster(cluster_id)
+                bucket[arm_name].append(xg_record)
 
             records["baseline"].append((_probs(pred_base), outcome))
             records["candidate"].append((_probs(pred_candidate), outcome))
@@ -795,6 +899,40 @@ def walk_forward_compare(
             bootstrap_samples=xg_bs, seed=61106,
         ),
     }
+    # Stratified CIs use at most 250 resamples to bound work across many
+    # league-season cells. Small cells remain descriptive, never promotion gates.
+    xg_strata_bs = min(xg_bs, 250)
+    xg_stratified_report = {
+        "by_league": _summarize_xg_strata(
+            xg_strata_records["by_league"],
+            bootstrap_samples=xg_strata_bs, seed=72000,
+        ),
+        "by_season": _summarize_xg_strata(
+            xg_strata_records["by_season"],
+            bootstrap_samples=xg_strata_bs, seed=73000,
+        ),
+        "by_league_season": {
+            league: _summarize_xg_strata(
+                seasons, bootstrap_samples=xg_strata_bs,
+                seed=74000 + index * 100000,
+            )
+            for index, (league, seasons) in enumerate(
+                sorted(xg_strata_records["by_league_season"].items())
+            )
+        },
+        "bootstrap_samples": xg_strata_bs,
+        "season_assignment": (
+            "Explicit source Season/season fields take precedence. If absent, "
+            "season labels are inferred from a July-June boundary; check "
+            "season_basis_counts for inferred rows, especially for calendar-year leagues."
+        ),
+        "season_basis_counts": season_basis_counts,
+        "inference_policy": (
+            "A stratum is inference-eligible only at >=100 fixtures and >=30 "
+            "matchday clusters. These are diagnostic comparisons only and do not "
+            "change model weights, validation gates, or market eligibility."
+        ),
+    }
     delta = lambda left, right, key: (
         left[key] - right[key] if left[key] is not None and right[key] is not None else None
     )
@@ -833,6 +971,7 @@ def walk_forward_compare(
         "xg_ablation": {
             "arms": xg_arm_metrics,
             "paired_differences": xg_arm_pairs,
+            "stratified": xg_stratified_report,
             "usage": {
                 name: {
                     "forecasts_using_xg": xg_arm_usage[name],
