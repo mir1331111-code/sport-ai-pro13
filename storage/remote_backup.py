@@ -335,12 +335,23 @@ def restore_database_if_empty(db_path: str | os.PathLike = DB_FILE) -> dict[str,
     try:
         gist = _get_gist(gist_id, token)
         return _restore_from_gist(gist, token, key, db_path)
+    except PermissionError:
+        message = (
+            "SQLite restore refused: Gist is public or its visibility is unknown. "
+            "Create a non-public Secret Gist and update GIST_ID."
+        )
+    except InvalidToken:
+        message = (
+            "SQLite restore refused: NEURO_BACKUP_KEY does not decrypt the existing backup. "
+            "Use the exact key that was used when it was created."
+        )
     except Exception as exc:
-        log.warning("SQLite remote restore failed: %s", type(exc).__name__)
-        return {
-            "restored": False, "state": "restore_error",
-            "message": f"Remote SQLite restore failed: {type(exc).__name__}",
-        }
+        message = f"Remote SQLite restore failed: {str(exc)[:180] or type(exc).__name__}"
+    log.warning("SQLite remote restore failed: %s", type(exc).__name__ if "exc" in locals() else "PermissionError")
+    return {
+        "restored": False, "state": "restore_error",
+        "message": message,
+    }
 
 
 def backup_database_to_gist(
@@ -434,12 +445,20 @@ def backup_database_to_gist(
             "message": "Encrypted SQLite backup uploaded and verified",
             "backup_at": created_at, "bytes": len(raw), "parts": len(chunks),
         }
+    except PermissionError:
+        message = (
+            "SQLite backup refused: Gist is public or its visibility is unknown. "
+            "Create a non-public Secret Gist and update GIST_ID."
+        )
+    except InvalidToken:
+        message = (
+            "SQLite backup refused: NEURO_BACKUP_KEY cannot decrypt the existing remote copy. "
+            "The old copy was preserved; use the original key."
+        )
     except Exception as exc:
-        log.warning("SQLite remote backup failed: %s", type(exc).__name__)
-        return {
-            "ok": False, "state": "backup_error",
-            "message": f"Remote SQLite backup failed: {type(exc).__name__}",
-        }
+        message = f"Remote SQLite backup failed: {str(exc)[:180] or type(exc).__name__}"
+    log.warning("SQLite remote backup failed: %s", type(exc).__name__ if "exc" in locals() else "PermissionError")
+    return {"ok": False, "state": "backup_error", "message": message}
 
 
 def remote_backup_status() -> dict[str, Any]:
@@ -472,9 +491,17 @@ def remote_backup_status() -> dict[str, Any]:
             "parts": manifest.get("parts"),
             "tables": counts,
         }
+    except PermissionError:
+        message = (
+            "Gist is public or its visibility is unknown. Create a non-public Secret Gist "
+            "and update GIST_ID before storing portfolio or SQLite data."
+        )
+    except InvalidToken:
+        message = (
+            "NEURO_BACKUP_KEY does not decrypt the existing remote copy. "
+            "Use the original key; do not overwrite the current Gist."
+        )
     except Exception as exc:
-        log.warning("Remote backup status check failed: %s", type(exc).__name__)
-        return {
-            "ok": False, "state": "status_error",
-            "message": f"Remote backup status unavailable: {type(exc).__name__}",
-        }
+        message = f"Remote backup status unavailable: {str(exc)[:180] or type(exc).__name__}"
+    log.warning("Remote backup status check failed: %s", type(exc).__name__ if "exc" in locals() else "PermissionError")
+    return {"ok": False, "state": "status_error", "message": message}
