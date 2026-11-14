@@ -1,6 +1,7 @@
 """Restore a downloaded forecast audit ZIP into an empty SQLite database."""
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
@@ -146,7 +147,7 @@ def restore_audit_export_bytes(
         raise ValueError("audit archive exceeds the upload safety limit")
 
     try:
-        with zipfile.ZipFile(archive_bytes, "r") as archive:
+        with zipfile.ZipFile(io.BytesIO(archive_bytes), "r") as archive:
             try:
                 info = archive.getinfo("audit.json")
             except KeyError as exc:
