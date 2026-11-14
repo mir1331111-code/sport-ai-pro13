@@ -148,6 +148,7 @@ def _render_forecast_journal(D):
             f"{market_settled} закрыто · {market_pending} ожидают. "
             f"Из них статистические рынки (угловые/карточки) ожидают SStats: {stat_market_pending}."
         )
+        if rows:
             calibration = ForecastLedger(DB_FILE).reliability_bins(
                 model_version_prefix="main-model-", bins=10,
             )
