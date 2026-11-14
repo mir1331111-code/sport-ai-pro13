@@ -949,6 +949,9 @@ def _sstats_div_code(league_name: str) -> str:
     # "Premier League", "Serie A" and "Bundesliga". SStats uses different
     # display names from football-data.co.uk; mapping to the trained division
     # is required for venue history and xG features to be found.
+    if name == "premier league":
+        return "E0"
+
     mappings = (
         (("brazilian serie a", "brasileirao serie a", "brasileiro serie a",
           "campeonato brasileiro serie a", "brasil serie a", "brazil serie a"), "BR1"),
@@ -973,7 +976,7 @@ def _sstats_div_code(league_name: str) -> str:
         (("russian premier league", "russia premier league",
           "rossiyskaya premier liga", "rpl"), "R1"),
         (("major league soccer", "mls", "usa mls", "united states mls"), "MLS1"),
-        (("premier league", "premier league of england", "england premier", "epl"), "E0"),
+        (("english premier league", "premier league of england", "england premier", "epl"), "E0"),
         (("efl championship", "english championship", "sky bet championship"), "E1"),
         (("league one", "england league one", "efl league one"), "E2"),
         (("league two", "england league two", "efl league two"), "E3"),
