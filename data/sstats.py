@@ -9,6 +9,7 @@ import hashlib
 import math
 import os
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -886,7 +887,12 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
 
 def _sstats_div_code(league_name: str) -> str:
     """Map SStats competitions without collapsing unknown tournaments into G."""
-    name = re.sub(r"\s+", " ", str(league_name or "").casefold()).strip()
+    raw_name = str(league_name or "").casefold()
+    name = "".join(
+        char for char in unicodedata.normalize("NFKD", raw_name)
+        if not unicodedata.combining(char)
+    )
+    name = re.sub(r"\s+", " ", name).strip()
     if not name:
         return "SSTATS_UNKNOWN"
 
