@@ -1352,8 +1352,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         if low_history_favorites:
             st.caption(
                 f"В список включено матчей с историей менее {favorite_history_floor} игр "
-                f"хотя бы у одной команды: {low_history_favorites}. Они остаются forecast-only "
-                "и не считаются сильными прогнозами или Value-рекомендациями."
+                f"хотя бы у одной команды: {low_history_favorites}. В этом блоке они помечены "
+                "как прогнозы с ограниченной историей и не считаются Strong; отдельные Value-проверки не менялись."
             )
         if len(favorite_matches) < MIN_RECOMMENDED_MATCHES:
             st.caption(
@@ -1378,12 +1378,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 favorite_probability = float(favorite_item["probability"])
                 favorite_margin = float(favorite_item["probability_margin"])
                 favorite_sample = int(favorite_item["sample_games"])
+                favorite_history_sufficient = bool(
+                    favorite_item.get("history_sufficient", False)
+                )
                 favorite_strength_label = (
                     "ОГРАНИЧЕННАЯ ИСТОРИЯ · НЕ СИЛЬНЫЙ СИГНАЛ"
-                    if not favorite_item.get("history_sufficient", False)
+                    if not favorite_history_sufficient
                     else f"СИЛЬНЫЙ ПРОГНОЗ ≥{STRONG_FORECAST_MIN_PROB:.0%}"
                     if favorite_probability >= STRONG_FORECAST_MIN_PROB
                     else f"НИЖЕ ПОРОГА СИЛЬНОГО ПРОГНОЗА {STRONG_FORECAST_MIN_PROB:.0%}"
+                )
+                favorite_strength_title = (
+                    favorite_item["strength"] if favorite_history_sufficient
+                    else "МАЛО ИСТОРИИ"
                 )
                 with favorite_columns[(favorite_rank - 1) % 2]:
                     st.markdown(
@@ -1391,7 +1398,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "border-radius:12px;background:linear-gradient(120deg,rgba(22,42,54,.9),rgba(15,24,32,.94))'>"
                         f"<div style='display:flex;justify-content:space-between;gap:8px;color:#9eb1bd;font-size:11px'>"
                         f"<span>#{favorite_rank} · {html.escape(favorite_league)}</span>"
-                        f"<span>{html.escape(favorite_item['strength'])}</span></div>"
+                        f"<span>{html.escape(favorite_strength_title)}</span></div>"
                         f"<div style='font-weight:750;font-size:16px;color:#f0f5f7;margin:7px 0 4px'>"
                         f"{html.escape(favorite_match)}</div>"
                         f"<div style='color:#8fd8bd;font-weight:800;font-size:19px'>"
