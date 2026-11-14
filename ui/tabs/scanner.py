@@ -22,10 +22,10 @@ from config import (
 from storage import usage
 from storage import sqlite_store as db
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
-                          parse_date, tsdb_matches, espn_matches, highlightly_odds_fixture,
+                          parse_date, tsdb_matches, espn_matches,
                           sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
                           footballapi_xg_history)
-from data.fixture_merge import merge_fixture_sources
+from data.fixture_merge import enforce_sstats_odds_only, merge_fixture_sources
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from data.context_data import (
     fixture_row_key,
@@ -1151,36 +1151,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                      use_container_width=True,
                      disabled=st.session_state.get("_scan_in_progress", False))
 
-    with st.expander("📥 Импорт коэффициентов", expanded=False):
-        st.markdown(
-            "Вставь котировки, полученные вручную или из разрешённого API. "
-            "Они сопоставляются с найденными матчами по командам и дате. "
-            "Импорт не размещает ставки у букмекера."
-        )
-        odds_file = st.file_uploader(
-            "Загрузить файл коэффициентов (.csv или .json)",
-            type=["csv", "json"],
-            key="scanner_odds_file",
-            help="Принимает обычный CSV и Football-Data: Date, HomeTeam, AwayTeam, AvgH/AvgD/AvgA, B365H/B365D/B365A, PSH/PSD/PSA. Даты dd/mm/yy распознаются автоматически.",
-        )
-        download_odds = st.button(
-            "🌐 Скачать и применить доступные коэффициенты",
-            key="scanner_fetch_football_data",
-            help="Загружает актуальный CSV Football-Data при нажатии. Покрытие ограничено доступными лигами и матчами источника.",
-            use_container_width=True,
-        )
-        st.download_button(
-            "⬇️ Скачать шаблон CSV",
-            data="date,home,away,П1,X,П2,source\\n,,,,,,\\n",
-            file_name="neuro_bet_odds_template.csv",
-            mime="text/csv",
-            use_container_width=False,
-        )
-        odds_json = st.text_area(
-            "Или вставь JSON",
-            key="scanner_manual_odds_json",
-            height=100,
-            placeholder='[{"date":"2026-10-26","home":"Santa Clara","away":"Benfica","П1":9.0,"X":5.0,"П2":1.3,"ТБ 2.5":1.9,"ТМ 2.5":1.9,"BTTS Да":1.8,"BTTS Нет":2.0,"source":"manual"}]',
+    with st.expander("📚 Данные контекста и исторические архивы", expanded=False):
+        st.caption(
+            "Коэффициенты автоматического сканирования поступают только из SStats. "
+            "Резервные расписания не поставляют котировки."
         )
 
         st.markdown("**Контекст матча · SStats + исторический CSV**")
@@ -1283,204 +1257,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 st.success("Контекстная модель прошла порог абляции и может использоваться при наличии всех live-признаков.")
             else:
                 st.warning("Context не активирован: не хватает 500 парных матчей или нет улучшения одновременно по Brier и Log Loss.")
-        try:
-            parsed_quotes = []
-            import_source_label = "JSON"
-            if odds_file is not None or download_odds or st.session_state.get("_scanner_downloaded_odds_csv"):
-                if download_odds:
-                    @st.cache_data(ttl=4 * 24 * 60 * 60, show_spinner=False)
-                    def _fetch_public_fixture_csv():
-                        response = requests.get(
-                            "https://www.football-data.co.uk/fixtures.csv",
-                            timeout=(5, 20),
-                            headers={"User-Agent": "Sport-AI-Pro13/1.0 (user-triggered fixture import)"},
-                        )
-                        response.raise_for_status()
-                        if len(response.content) > 8_000_000:
-                            raise ValueError("Файл источника неожиданно большой; импорт остановлен.")
-                        text_body = response.content.decode("utf-8-sig", errors="replace")
-                        # Never treat an HTML landing page / anti-bot response as a CSV.
-                        sample = text_body.lstrip()[:500].casefold()
-                        if sample.startswith("<!doctype html") or sample.startswith("<html") or "<head>" in sample:
-                            raise ValueError(
-                                "Источник вернул HTML-страницу вместо CSV. Проверьте доступность "
-                                "https://www.football-data.co.uk/fixtures.csv и попробуйте позже."
-                            )
-                        if not text_body.strip():
-                            raise ValueError("Источник вернул пустой файл.")
-                        return text_body
-                    try:
-                        raw_file = _fetch_public_fixture_csv()
-                        st.session_state["_scanner_downloaded_odds_csv"] = raw_file
-                    except Exception as exc:
-                        st.error(f"Не удалось скачать коэффициенты: {exc}")
-                        raw_file = ""
-                    import_source_label = "Football-Data (CSV, кэш до 4 дней)"
-                elif odds_file is not None and odds_file.name.lower().endswith(".json"):
-                    raw_file = odds_file.getvalue().decode("utf-8-sig", errors="replace")
-                    parsed_quotes = json.loads(raw_file)
-                    import_source_label = odds_file.name
-                elif odds_file is not None:
-                    raw_file = odds_file.getvalue().decode("utf-8-sig", errors="replace")
-                    import_source_label = odds_file.name
-                else:
-                    raw_file = st.session_state.get("_scanner_downloaded_odds_csv", "")
-                    import_source_label = "Football-Data (CSV, сохранён в сессии)"
-                if odds_file is not None and odds_file.name.lower().endswith(".json"):
-                    pass
-                elif raw_file:
-                    # Accept generic odds CSVs plus Football-Data.co.uk fixtures/results
-                    # exports (Date/HomeTeam/AwayTeam/B365H/B365D/B365A, AvgH/AvgD/AvgA, PSH/PSD/PSA).
-                    # Parse explicitly instead of relying on DictReader.fieldnames timing.
-                    # Some feeds prepend blank lines or use semicolons despite a CSV extension.
-                    csv_text = raw_file.lstrip("\ufeff")
-                    nonempty_lines = [line for line in csv_text.splitlines() if line.strip()]
-                    try:
-                        dialect = csv.Sniffer().sniff("\n".join(nonempty_lines[:20]), delimiters=",;\t|")
-                    except csv.Error:
-                        dialect = csv.excel
-                    csv_reader = csv.reader(nonempty_lines, dialect=dialect)
-                    parsed_table = list(csv_reader)
-                    csv_headers = [str(h).strip().lstrip("\ufeff") for h in parsed_table[0]] if parsed_table else []
-                    csv_rows = []
-                    if csv_headers:
-                        for values in parsed_table[1:]:
-                            # Ignore fully blank lines and preserve short/long rows safely.
-                            if not values or not any(str(v).strip() for v in values):
-                                continue
-                            row = {header: values[i] if i < len(values) else "" for i, header in enumerate(csv_headers) if header}
-                            if len(values) > len(csv_headers):
-                                row["_extra_columns"] = values[len(csv_headers):]
-                            csv_rows.append(row)
-                    csv_rows_seen = len(csv_rows)
-                    def _clean_date(value):
-                        value = str(value or "").strip()
-                        if not value:
-                            return ""
-                        value = value[:19].replace("Z", "")
-                        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y", "%d/%m/%y", "%m/%d/%Y", "%m/%d/%y"):
-                            try:
-                                return datetime.strptime(value[:len(datetime.now().strftime(fmt))], fmt).strftime("%Y-%m-%d")
-                            except ValueError:
-                                continue
-                        return value[:10] if len(value) >= 10 and value[4:5] == "-" else ""
-                    for row in csv_rows:
-                        lower = {str(k or "").strip().lstrip("\ufeff").casefold(): v for k, v in row.items()}
-                        def _csv_value(*names):
-                            for name in names:
-                                value = lower.get(name.casefold())
-                                if value is not None and str(value).strip():
-                                    return str(value).strip()
-                            return ""
-                        # Prefer market-average prices; fall back to a named bookmaker.
-                        home_price = _csv_value("П1", "1", "home_odds", "home_win", "odds_home", "odds1", "oddsh", "avgh", "b365h", "psh", "maxh", "bwh")
-                        draw_price = _csv_value("X", "draw", "draw_odds", "odds_draw", "oddsx", "oddsd", "avgd", "b365d", "psd", "maxd", "bwd")
-                        away_price = _csv_value("П2", "2", "away_odds", "away_win", "odds_away", "odds2", "oddsa", "avga", "b365a", "psa", "maxa", "bwa")
-                        parsed_quotes.append({
-                            "date": _clean_date(_csv_value("date", "match_date", "commence_time", "datetime", "kickoff", "matchdate")),
-                            "home": _csv_value("home", "home_team", "hometeam", "host", "team1"),
-                            "away": _csv_value("away", "away_team", "awayteam", "visitor", "team2"),
-                            "П1": home_price,
-                            "X": draw_price,
-                            "П2": away_price,
-                            "ТБ 0.5": _csv_value("ТБ 0.5", "over 0.5", "over0.5", "o0.5"),
-                            "ТМ 0.5": _csv_value("ТМ 0.5", "under 0.5", "under0.5", "u0.5"),
-                            "ТБ 1.5": _csv_value("ТБ 1.5", "over 1.5", "over1.5", "o1.5"),
-                            "ТМ 1.5": _csv_value("ТМ 1.5", "under 1.5", "under1.5", "u1.5"),
-                            "ТБ 2.5": _csv_value("ТБ 2.5", "over 2.5", "over2.5", "o2.5"),
-                            "ТМ 2.5": _csv_value("ТМ 2.5", "under 2.5", "under2.5", "u2.5"),
-                            "ТБ 3.5": _csv_value("ТБ 3.5", "over 3.5", "over3.5", "o3.5"),
-                            "ТМ 3.5": _csv_value("ТМ 3.5", "under 3.5", "under3.5", "u3.5"),
-                            "BTTS Да": _csv_value("BTTS Да", "btts yes", "both teams to score yes"),
-                            "BTTS Нет": _csv_value("BTTS Нет", "btts no", "both teams to score no"),
-                            "Угл ТБ 9.5": _csv_value("Угл ТБ 9.5", "corners over 9.5"),
-                            "Угл ТМ 9.5": _csv_value("Угл ТМ 9.5", "corners under 9.5"),
-                            "source": _csv_value("source", "bookmaker") or import_source_label,
-                        })
-                    import_source_label = import_source_label or (odds_file.name if odds_file is not None else "CSV import")
-            elif odds_json.strip():
-                parsed_quotes = json.loads(odds_json)
-            else:
-                parsed_quotes = []
-
-            if isinstance(parsed_quotes, dict):
-                parsed_quotes = [parsed_quotes]
-            if not isinstance(parsed_quotes, list):
-                raise ValueError("Нужен JSON-объект, список объектов или CSV-файл.")
-            normalized_quotes = []
-            for quote in parsed_quotes:
-                if not isinstance(quote, dict):
-                    continue
-                quote_date = str(quote.get("date") or quote.get("commence_time") or "").strip()[:10]
-                home_quote = str(quote.get("home") or quote.get("home_team") or "").strip()
-                away_quote = str(quote.get("away") or quote.get("away_team") or "").strip()
-                raw_prices = quote.get("odds") if isinstance(quote.get("odds"), dict) else quote
-                aliases = {
-                    "П1": ("П1", "1", "home_odds", "home_win", "odds_home"),
-                    "X": ("X", "draw", "draw_odds", "odds_draw"),
-                    "П2": ("П2", "2", "away_odds", "away_win", "odds_away"),
-                    "ТБ 0.5": ("ТБ 0.5", "over_0_5", "over0.5"),
-                    "ТМ 0.5": ("ТМ 0.5", "under_0_5", "under0.5"),
-                    "ТБ 1.5": ("ТБ 1.5", "over_1_5", "over1.5"),
-                    "ТМ 1.5": ("ТМ 1.5", "under_1_5", "under1.5"),
-                    "ТБ 2.5": ("ТБ 2.5", "over_2_5", "over2.5"),
-                    "ТМ 2.5": ("ТМ 2.5", "under_2_5", "under2.5"),
-                    "ТБ 3.5": ("ТБ 3.5", "over_3_5", "over3.5"),
-                    "ТМ 3.5": ("ТМ 3.5", "under_3_5", "under3.5"),
-                    "BTTS Да": ("BTTS Да", "btts_yes", "btts yes"),
-                    "BTTS Нет": ("BTTS Нет", "btts_no", "btts no"),
-                    "Угл ТБ 9.5": ("Угл ТБ 9.5", "corners_over_9_5"),
-                    "Угл ТМ 9.5": ("Угл ТМ 9.5", "corners_under_9_5"),
-                }
-                prices = {}
-                for market, keys in aliases.items():
-                    value = next((raw_prices[k] for k in keys if raw_prices.get(k) not in (None, "")), None)
-                    try:
-                        prices[market] = float(str(value).replace(",", ".")) if value is not None else 0.0
-                    except (TypeError, ValueError):
-                        prices[market] = 0.0
-                try:
-                    datetime.strptime(quote_date, "%Y-%m-%d")
-                except ValueError:
-                    continue
-                valid_prices = {key: price for key, price in prices.items() if 1.01 < price <= 100}
-                if not home_quote or not away_quote or not valid_prices:
-                    continue
-                normalized_quotes.append({
-                    "date": quote_date, "home": home_quote, "away": away_quote,
-                    "odds": valid_prices, "source": str(quote.get("source") or quote.get("bookmaker") or "manual_import"),
-                })
-            st.session_state["_scanner_manual_odds_quotes"] = normalized_quotes
-            if normalized_quotes:
-                st.success(f"Готово: {len(normalized_quotes)} набор(а) коэффициентов из {import_source_label}.")
-                st.caption("Нажми «Запустить скан», чтобы сопоставить котировки с матчами.")
-            elif odds_file is not None or odds_json.strip() or download_odds:
-                st.warning("Источник не вернул подходящие коэффициенты или файл не содержит валидных записей для импорта.")
-                if "csv_headers" in locals():
-                    with st.expander("Диагностика импорта CSV", expanded=True):
-                        st.write(f"Строк данных в CSV: {csv_rows_seen}; заголовков: {len(csv_headers)}.")
-                        st.code(", ".join(csv_headers) if csv_headers else "Заголовки CSV не обнаружены")
-                        st.caption("Начало ответа источника (для диагностики):")
-                        st.code(str(raw_file[:500]) if raw_file else "Пустой ответ")
-                        if csv_rows:
-                            st.caption("Первая строка после разбора:")
-                            st.write({str(k): str(v)[:120] for k, v in list(csv_rows[0].items())[:12]})
-                        if csv_headers:
-                            normalized_headers = {str(h).strip().casefold() for h in csv_headers}
-                            odds_groups = {
-                                "П1": {"п1", "1", "home_odds", "home_win", "odds_home", "odds1", "oddsh", "avgh", "b365h", "psh", "maxh", "bwh"},
-                                "X": {"x", "draw", "draw_odds", "odds_draw", "oddsx", "oddsd", "avgd", "b365d", "psd", "maxd", "bwd"},
-                                "П2": {"п2", "2", "away_odds", "away_win", "odds_away", "odds2", "oddsa", "avga", "b365a", "psa", "maxa", "bwa"},
-                            }
-                            missing_groups = [label for label, aliases in odds_groups.items() if not normalized_headers.intersection(aliases)]
-                            if missing_groups:
-                                st.info("В CSV не найдены колонки коэффициентов: " + ", ".join(missing_groups) + ". Возможно, источник отдал только список матчей без котировок.")
-                        st.caption("Пришли скриншот этого блока — по заголовкам будет видно, что именно вернул источник.")
-            elif "_scanner_manual_odds_quotes" not in st.session_state:
-                st.session_state["_scanner_manual_odds_quotes"] = []
-        except (json.JSONDecodeError, ValueError, TypeError) as exc:
-            st.error(f"Импорт не прочитан: {exc}")
-
     with st.expander("⚙️ Настройки сканера", expanded=False):
         st.caption("Дополнительные параметры скрыты, чтобы не перегружать основной экран.")
         source_col, portfolio_col = st.columns(2)
@@ -2509,36 +2285,22 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         sstats_is_primary = bool(sstats_rows)
         if sstats_is_primary:
+            # SStats is the one authoritative match feed whenever it returns
+            # fixtures. Other schedule providers are not queried in parallel.
             fixture_sources.extend(sstats_rows)
             logs.append(
-                f"✅ SStats — основной источник расписания и коэффициентов: "
-                f"{len(sstats_rows)} матчей."
+                f"✅ SStats — единственный источник расписания и коэффициентов: "
+                f"{len(sstats_rows)} матчей; резервные расписания пропущены."
             )
-            # SStats may not cover every national-team, youth and women's event.
-            # Keep its fixture IDs/odds authoritative, but supplement the schedule
-            # with independent public feeds so an unrelated SStats fixture cannot
-            # hide international games from the same day's scan.
-            try:
-                tsdb_rows = tsdb_matches(days, logs)
-                source_counts["TheSportsDB"] = len(tsdb_rows)
-            except Exception as exc:
-                logs.append(f"⚠️ TheSportsDB supplementary fixtures: {type(exc).__name__}")
-            try:
-                espn_rows = espn_matches(days, logs)
-                source_counts["ESPN"] = len(espn_rows)
-            except Exception as exc:
-                logs.append(f"⚠️ ESPN supplementary fixtures: {type(exc).__name__}")
-            fixture_sources.extend(tsdb_rows)
-            fixture_sources.extend(espn_rows)
         else:
             if sstats_key:
                 logs.append(
-                    "⚠️ SStats не вернул матчи; включаю резервные источники расписания."
+                    "⚠️ SStats не вернул матчи; включаю резервные источники только для расписания."
                 )
             else:
                 logs.append(
                     "ℹ️ SSTATS_API_KEY не настроен — SStats пропущен; "
-                    "включаю резервные источники расписания."
+                    "включаю резервные источники только для расписания."
                 )
             try:
                 tsdb_rows = tsdb_matches(days, logs)
@@ -2570,10 +2332,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         except Exception:
             # Keep scanner usable even if cross-provider deduplication fails.
             rows = _safe_filter(fixture_sources)
+        rows = enforce_sstats_odds_only(rows)
 
-        # SStats rows remain first in the merge, preserving their game IDs and
-        # real bookmaker prices. TSDB/ESPN supplement only missing fixtures and
-        # fill logos/competition metadata where available; they never invent odds.
+        # SStats rows carry their own game IDs and bookmaker prices. When SStats
+        # is unavailable, public feeds are schedule-only and every price-like
+        # field is stripped before the scanner can evaluate a market.
 
         logs.append(
             f"🔀 Объединение расписаний: получено {len(fixture_sources)} строк, "
@@ -2637,7 +2400,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         cards = []
         matches_with_best = 0
         xg_used_count = 0
-        highlightly_key = _runtime_secret("highlightly_api_key_input", "HIGHLIGHTLY_API_KEY", "highlightly_api_key")
         # The compact SStats fixture feed provides 1X2 and main totals in one request.
         # Full bookmaker markets are requested only for a limited shortlist to respect
         # the provider's free API quota.
@@ -2649,11 +2411,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
                           "model_only": 0, "estimated": 0, "real": 0}
-        if not highlightly_key:
-            logs.append(
-                "ℹ️ SStats — основной источник котировок. Если нужного рынка нет в ответе API, "
-                "можно загрузить собственные коэффициенты через CSV/JSON."
-            )
+        logs.append(
+            "🎯 Источник букмекерских коэффициентов: только SStats Games/list и Odds/{gameId}; "
+            "коэффициенты других провайдеров и импортированные файлы в скане не используются."
+        )
 
         date_filter_counts = {
             "invalid_date": 0, "outside_horizon": 0, "past_kickoff": 0,
@@ -2890,97 +2651,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 btts_odds_source = "sstats"
                             if detailed.get("stat_market_odds"):
                                 extra_market_source = "sstats"
-
-                    # Imported CSV/JSON quote: match by normalized teams and date.
-                    if not all(key in market_odds for key in ("П1", "X", "П2")):
-                        def _team_key(value):
-                            # Ignore punctuation, accents and common club prefixes.
-                            import unicodedata
-                            raw = unicodedata.normalize("NFKD", str(value or ""))
-                            raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
-                            key = "".join(ch.lower() for ch in raw if ch.isalnum())
-                            for prefix in ("clubde", "cd", "fc", "sc", "cf", "sporting"):
-                                if key.startswith(prefix) and len(key) > len(prefix) + 3:
-                                    key = key[len(prefix):]
-                            return key
-
-                        fixture_home_key, fixture_away_key = _team_key(h_en), _team_key(a_en)
-                        fixture_date = d.strftime("%Y-%m-%d")
-                        for quote in st.session_state.get("_scanner_manual_odds_quotes", []):
-                            quote_home_key = _team_key(quote.get("home"))
-                            quote_away_key = _team_key(quote.get("away"))
-                            # Exact normalized match first; allow a clear containment
-                            # match for harmless prefixes such as "CD Santa Clara".
-                            home_match = (
-                                fixture_home_key == quote_home_key
-                                or (min(len(fixture_home_key), len(quote_home_key)) >= 5
-                                    and (fixture_home_key in quote_home_key or quote_home_key in fixture_home_key))
-                            )
-                            away_match = (
-                                fixture_away_key == quote_away_key
-                                or (min(len(fixture_away_key), len(quote_away_key)) >= 5
-                                    and (fixture_away_key in quote_away_key or quote_away_key in fixture_away_key))
-                            )
-                            quote_date = str(quote.get("date") or "")
-                            try:
-                                date_delta = abs((datetime.strptime(quote_date, "%Y-%m-%d").date()
-                                                  - d.date()).days)
-                            except ValueError:
-                                date_delta = 999
-                            if date_delta <= 1 and home_match and away_match:
-                                imported = dict(quote.get("odds") or {})
-                                valid_imported = {}
-                                for key, raw_value in imported.items():
-                                    try:
-                                        value = float(raw_value)
-                                        if 1.01 < value <= 100:
-                                            valid_imported[str(key)] = value
-                                    except (TypeError, ValueError):
-                                        continue
-                                if valid_imported:
-                                    # Imported prices do not inherit bookmaker identity
-                                    # from an older SStats/Highlightly quote on the same
-                                    # pick. Without an explicit book in the import, the
-                                    # two-way line must stay informational.
-                                    for imported_pick in valid_imported:
-                                        bookmaker_by_pick.pop(imported_pick, None)
-                                    if all(key in valid_imported for key in ("П1", "X", "П2")):
-                                        market_odds = {key: valid_imported[key] for key in ("П1", "X", "П2")}
-                                        odds_source = str(quote.get("source") or "manual_import")
-                                    imported_totals = {
-                                        k: v for k, v in valid_imported.items()
-                                        if k.startswith(("ТБ ", "ТМ "))
-                                    }
-                                    imported_btts = {
-                                        k: v for k, v in valid_imported.items()
-                                        if k.startswith("BTTS ")
-                                    }
-                                    imported_stats = {
-                                        k: v for k, v in valid_imported.items()
-                                        if k.startswith(("Угл ", "Карты "))
-                                    }
-                                    if imported_totals:
-                                        for old_selection in list(total_market_odds):
-                                            bookmaker_by_pick.pop(old_selection, None)
-                                        total_market_odds = imported_totals
-                                        total_market_book_count = {}
-                                        total_market_confirmed = {}
-                                        total_odds_source = "manual_import"
-                                    if imported_btts:
-                                        for old_selection in list(btts_market_odds):
-                                            bookmaker_by_pick.pop(old_selection, None)
-                                        btts_market_odds = imported_btts
-                                        btts_odds_source = "manual_import"
-                                    if imported_stats:
-                                        for old_selection in list(stat_market_odds):
-                                            bookmaker_by_pick.pop(old_selection, None)
-                                        stat_market_odds = imported_stats
-                                        extra_market_source = "manual_import"
-                                    logs.append(
-                                        f"📥 Импорт коэффициентов ({quote.get('source') or 'manual_import'}, дата ±{date_delta} дн.): "
-                                        f"{h_en} — {a_en} | рынки: {', '.join(valid_imported.keys())}"
-                                    )
-                                    break
 
                     # If no provider has a verified line, leave odds empty.
 
