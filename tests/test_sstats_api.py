@@ -15,6 +15,33 @@ class _Response:
 
 
 class SStatsTests(unittest.TestCase):
+
+    def test_division_mapping_handles_second_bundesliga_before_first_division(self):
+        self.assertEqual(sstats._sstats_div_code("2. Bundesliga"), "D2")
+        self.assertEqual(sstats._sstats_div_code("2 Bundesliga"), "D2")
+        self.assertEqual(sstats._sstats_div_code("Bundesliga"), "D1")
+
+    def test_ls_event_keys_preserve_string_id_and_match_adjacent_utc_local_dates(self):
+        event = {
+            "id": 12345,
+            "eventId": "flashscore-string-id",
+            "date": "2026-11-12T00:30:00+01:00",
+            "teams": {
+                "home": {"name": "Home FC"},
+                "away": {"name": "Away FC"},
+            },
+        }
+        keys, event_id = sstats._sstats_ls_event_keys(event, timezone_offset=0)
+        self.assertEqual(event_id, "flashscore-string-id")
+        self.assertIn(
+            ("2026-11-11", sstats._norm_name("Home FC"), sstats._norm_name("Away FC")),
+            keys,
+        )
+        self.assertIn(
+            ("2026-11-12", sstats._norm_name("Home FC"), sstats._norm_name("Away FC")),
+            keys,
+        )
+
     def test_public_sstats_functions_remain_reexported_from_sources(self):
         from data import sources
         self.assertIs(sources.sstats_upcoming_matches, sstats.sstats_upcoming_matches)
@@ -326,6 +353,11 @@ class SStatsTests(unittest.TestCase):
             [call.args[0] for call in request_mock.call_args_list],
             ["Ls/List", "Games/injuries", "Ls/GameInfo", "Ls/GameLineups"],
         )
+        self.assertEqual(
+            request_mock.call_args_list[0].kwargs["params"],
+            {"Upcoming": "true", "Limit": 1000},
+        )
+        self.assertTrue(any("linked fixtures=1/1" in line for line in logs))
         self.assertNotIn("private-key", repr(mapping))
         self.assertTrue(any("confirmed XI=1" in line for line in logs))
 
