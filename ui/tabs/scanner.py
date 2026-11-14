@@ -2997,11 +2997,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"({best[0]} · {best_odds_source})"
                 )
             else:
-                no_best_reason = (
-                    "ни один доступный исход не прошёл проверку модели для конкретной линии, "
-                    "полную линию одного букмекера, вероятность, Edge >= 5%, "
-                    "EV >= 5% и положительный Kelly"
-                )
+                if not context_quality.get("strong_value_eligible"):
+                    no_best_reason = (
+                        "контекстный фильтр Strong/Value: нет подтверждённого стартового XI "
+                        "обеих команд и/или назначенного судьи; ставки заблокированы"
+                    )
+                else:
+                    no_best_reason = (
+                        "ни один доступный исход не прошёл проверку для конкретной линии, "
+                        "полную линию одного букмекера, минимальную вероятность, "
+                        "Edge >= 5%, EV >= 5% и положительный Kelly"
+                    )
                 logs.append(
                     f"❌ NO BEST: {h_ru} — {a_ru} | "
                     f"is_action={verdict.get('is_action')} | reason={no_best_reason}"
@@ -3117,8 +3123,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
         logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов")
         logs.append(f"🎯 BET: {matches_with_best}")
+        context_ready = sum(
+            bool((card.get("context_quality") or {}).get("strong_value_eligible"))
+            for card in cards
+        )
+        lineup_ready = sum(
+            bool((card.get("context_quality") or {}).get("lineup_confirmed"))
+            for card in cards
+        )
+        referee_ready = sum(
+            bool((card.get("context_quality") or {}).get("referee_confirmed"))
+            for card in cards
+        )
+        logs.append(
+            f"🔐 Контекст Strong/Value: допущено {context_ready}/{len(cards)}; "
+            f"подтверждённые XI {lineup_ready}/{len(cards)}, "
+            f"судьи {referee_ready}/{len(cards)}. "
+            "Без подтверждённых XI обеих команд и судьи Value-кандидаты блокируются."
+        )
 
-        # ============ TOP MATCHES · GROQ DEEP ANALYSIS ============
+        # ============ TOP MATCHES · INDEPENDENT AI ANALYSIS ============
         llm_prov = D.get("meta", {}).get(
             "llm_provider", "Groq (бесплатно, быстро)"
         )
