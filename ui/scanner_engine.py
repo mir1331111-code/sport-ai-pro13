@@ -305,6 +305,39 @@ def _train_engine(
                 f"CI={((ci.get('log_loss') or {}).get('low'))}…{((ci.get('log_loss') or {}).get('high'))}."
             )
 
+        stratified = xg_ablation_report.get("stratified") or {}
+        league_seasons = stratified.get("by_league_season") or {}
+        for league in sorted(league_seasons):
+            for season, report in sorted(league_seasons[league].items()):
+                if int(report.get("n", 0) or 0) < 30:
+                    continue
+                comparisons = report.get("paired_differences") or {}
+                parts = []
+                for comparison in (
+                    "provider_vs_goals_only", "proxy_vs_goals_only",
+                    "mixed_vs_goals_only",
+                ):
+                    paired_report = comparisons.get(comparison) or {}
+                    differences = paired_report.get("differences") or {}
+                    parts.append(
+                        f"{comparison}: ΔBrier={differences.get('brier')}, "
+                        f"ΔLogLoss={differences.get('log_loss')}"
+                    )
+                confidence_tag = (
+                    "инференциальная выборка"
+                    if report.get("inference_eligible") else "описательная выборка"
+                )
+                logs.append(
+                    f"xG лига/сезон {league} {season}: n={report.get('n')}, "
+                    f"игровых дней={report.get('cluster_count')}, {confidence_tag}; "
+                    + "; ".join(parts)
+                )
+        if stratified:
+            logs.append(
+                "ℹ️ Сезоны: явное поле источника имеет приоритет; иначе используется "
+                "оценка июль–июнь. Для лиг с календарным сезоном проверьте источник поля Season."
+            )
+
     if totals_backtest:
         # Value requires an out-of-sample improvement over a de-vigged
         # bookmaker benchmark, not merely a high model probability.
