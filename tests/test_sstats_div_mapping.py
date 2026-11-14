@@ -44,6 +44,8 @@ class SStatsDivisionMappingTests(unittest.TestCase):
 
     def test_womens_and_international_competitions_keep_separate_namespaces(self):
         self.assertEqual(_sstats_div_code("Women's Super League"), "W_E0")
+        self.assertEqual(_sstats_div_code("Frauen-Bundesliga"), "W_D1")
+        self.assertEqual(_sstats_div_code("Primera Division Femenina"), "W_SP1")
         self.assertTrue(_sstats_div_code("UEFA Nations League").startswith("NT_"))
 
 
