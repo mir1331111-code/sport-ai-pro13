@@ -1,16 +1,8 @@
-"""data/sources.py — Fixture feeds + Highlightly odds + logos (v4).
+"""Fixture feeds, legacy odds parsers and team logos.
 
-Совместим с App.py v13:
-  * parse_date, fdorg_match_result    — для авто-сеттла
-  * fdorg_matches, tsdb_matches       — для сканера
-  * load_seasonal, season_str         — для обучения модели
-  * highlightly_odds_fixture           — единственный источник реальных кэфов
-
-Что изменено в v4:
-  * USL Championship (США) больше не мапится на English Championship (E1).
-    Раньше "championship" в названии лиги = E1 — это ломало USL-матчи.
-  * Добавлены USA-лиги: USL Championship, USL League One, MLS.
-  * Дополнительно распознаются шотландский, австралийский, японский чемпионаты.
+The live scanner uses SStats as its only bookmaker-odds provider. Historical
+Highlightly/other odds adapters remain for backward-compatible parsing and tests,
+but they are not imported by the automatic scanner.
 """
 from __future__ import annotations
 import csv, io, re, logging, os, hashlib, math
