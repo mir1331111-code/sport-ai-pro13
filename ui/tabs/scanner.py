@@ -1445,7 +1445,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     if model_prob is not None else ""
                 )
                 xg_chip = (
-                    "<span class='pick-chip'>xG учтён</span>"
+                    "<span class='pick-chip'>xG proxy учтён</span>"
+                    if card.get("xg_modelled_used") else
+                    "<span class='pick-chip'>xG провайдера учтён</span>"
                     if card.get("xg_used") else
                     "<span class='pick-chip'>без xG</span>"
                 )
@@ -2932,6 +2934,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "markets": historical_stats,
                 },
                 "xg_used": bool(P.get("xg_used")),
+                "xg_modelled_used": bool(P.get("xg_modelled_used")),
+                "xg_source": P.get("xg_source"),
+                "xg_weight": float(P.get("xg_weight") or 0.0),
+                "xg_modelled_home_samples": int(P.get("xg_modelled_home_samples") or 0),
+                "xg_modelled_away_samples": int(P.get("xg_modelled_away_samples") or 0),
+                "xg_modelled_league_samples": int(P.get("xg_modelled_league_samples") or 0),
                 "total_market_validation_report": getattr(engine, "total_market_validation_report", {}),
                 "p1": P["p1"], "px": P["x"], "p2": P["p2"],
                 "over": P["over"], "btts": P["btts"],
