@@ -20,9 +20,10 @@ MAX_ROWS_PER_TABLE = 1_000_000
 
 FORECAST_FIELDS = (
     "id", "forecast_key", "fixture_id", "kickoff_at", "forecast_at",
-    "model_version", "home_team", "away_team", "league", "odds_source",
+    "model_version", "home_team", "away_team", "league",
+    "probabilities_json", "entry_odds_json", "odds_source",
     "xg_used", "result", "home_score", "away_score",
-    "closing_odds_source", "settled_at", "created_at",
+    "closing_odds_json", "closing_odds_source", "settled_at", "created_at",
 )
 MARKET_FIELDS = (
     "id", "forecast_key", "fixture_id", "kickoff_at", "forecast_at",
@@ -156,7 +157,8 @@ def restore_audit_export_bytes(
     except (zipfile.BadZipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("audit archive is invalid or corrupted") from exc
 
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+    # Archives emitted before the schema marker was introduced are format v1.
+    if not isinstance(payload, dict) or payload.get("schema_version", 1) != 1:
         raise ValueError("unsupported audit archive schema version")
 
     forecasts = _require_list(payload, "forecasts")
@@ -172,22 +174,37 @@ def restore_audit_export_bytes(
             "local SQLite database contains user rows; audit restore refused"
         )
 
-    temporary = Path(tempfile.mkstemp(
+    temporary_fd, temporary_name = tempfile.mkstemp(
         prefix=target.name + ".audit-restore-",
         suffix=".sqlite",
         dir=str(target.parent),
-    )[1])
+    )
+    os.close(temporary_fd)
+    temporary = Path(temporary_name)
     try:
         _ensure_sqlite_schema(temporary)
         ForecastLedger(temporary)
         MarketForecastLedger(temporary)
 
+        forecast_rows = []
+        for row in forecasts:
+            clean = dict(row)
+            for field in ("probabilities", "entry_odds", "closing_odds"):
+                json_column = field + "_json"
+                if field in clean:
+                    clean[json_column] = clean.pop(field)
+                elif json_column not in clean:
+                    if field == "probabilities":
+                        raise ValueError("forecast row is missing its probability distribution")
+                    clean[json_column] = None
+            forecast_rows.append(clean)
+
         with sqlite3.connect(str(temporary), timeout=15) as conn:
             conn.execute("PRAGMA foreign_keys=ON")
             with conn:
                 forecast_count = _insert_rows(
-                    conn, "forecasts", FORECAST_FIELDS, forecasts,
-                    json_fields=("probabilities", "entry_odds", "closing_odds"),
+                    conn, "forecasts", FORECAST_FIELDS, forecast_rows,
+                    json_fields=("probabilities_json", "entry_odds_json", "closing_odds_json"),
                 )
                 market_count = _insert_rows(
                     conn, "market_forecasts", MARKET_FIELDS, market_forecasts,
