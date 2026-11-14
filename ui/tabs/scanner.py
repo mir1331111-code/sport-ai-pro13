@@ -2539,13 +2539,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         cards = []
         matches_with_best = 0
         xg_used_count = 0
-        # The compact SStats fixture feed provides 1X2 and main totals in one request.
-        # Full bookmaker markets are requested only for a limited shortlist to respect
-        # the provider's free API quota.
+        # Games/list compact 1X2 can be empty even when Odds/{gameId} has a
+        # complete bookmaker line. Fetch details for the whole normal daily slate
+        # (107-140 matches in recent scans), with an environment/Secrets override.
         sstats_detail_calls = 0
-        # Bound per-fixture requests to avoid exhausting the provider's API quota.
-        # Compact odds from Games/list remain available for every fixture.
-        SSTATS_DETAIL_MAX_PER_SCAN = 100
+        SSTATS_DETAIL_MAX_PER_SCAN = _runtime_int(
+            "sstats_detail_max_per_scan",
+            "SSTATS_DETAIL_MAX_PER_SCAN",
+            default=150,
+            minimum=1,
+        )
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
