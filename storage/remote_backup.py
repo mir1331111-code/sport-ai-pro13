@@ -236,11 +236,14 @@ def _manifest_from_gist(gist: dict, token: str) -> dict[str, Any] | None:
     return manifest
 
 
-def _restore_from_gist(gist: dict, token: str, key: str, db_path: str | os.PathLike) -> dict[str, Any]:
+def _decode_remote_snapshot(
+    gist: dict, token: str, key: str,
+) -> tuple[bytes, dict[str, Any], dict[str, int]]:
+    """Download, decrypt and fully validate a remote SQLite snapshot without writing it."""
     files = gist.get("files") or {}
     manifest = _manifest_from_gist(gist, token)
     if manifest is None:
-        return {"restored": False, "state": "no_remote_backup", "message": "Remote SQLite backup does not exist"}
+        raise FileNotFoundError("Remote SQLite backup does not exist")
     fernet = _fernet(key)
     parts = []
     for index in range(int(manifest["parts"])):
@@ -248,7 +251,7 @@ def _restore_from_gist(gist: dict, token: str, key: str, db_path: str | os.PathL
         parts.append(_read_text_file(files, filename, token))
     encrypted = "".join(parts).encode("ascii")
     if hashlib.sha256(encrypted).hexdigest() != manifest.get("encrypted_sha256"):
-        raise ValueError("Remote SQLite backup checksum mismatch")
+        raise ValueError("Remote SQLite backup encrypted checksum mismatch")
     compressed = fernet.decrypt(encrypted)
     raw = gzip.decompress(compressed)
     raw_bytes = int(manifest.get("raw_bytes") or 0)
@@ -258,6 +261,19 @@ def _restore_from_gist(gist: dict, token: str, key: str, db_path: str | os.PathL
     if raw_sha != manifest.get("raw_sha256"):
         raise ValueError("Remote SQLite backup integrity hash mismatch")
     counts = _validate_sqlite_bytes(raw)
+    expected_tables = manifest.get("tables") or {}
+    if expected_tables and counts != {
+        str(name): int(count) for name, count in expected_tables.items()
+    }:
+        raise ValueError("Remote SQLite backup table counts do not match its manifest")
+    return raw, manifest, counts
+
+
+def _restore_from_gist(gist: dict, token: str, key: str, db_path: str | os.PathLike) -> dict[str, Any]:
+    try:
+        raw, manifest, counts = _decode_remote_snapshot(gist, token, key)
+    except FileNotFoundError:
+        return {"restored": False, "state": "no_remote_backup", "message": "Remote SQLite backup does not exist"}
 
     target = Path(db_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -379,9 +395,15 @@ def backup_database_to_gist(
         verified = response.json()
         if verified.get("public") is not False:
             raise PermissionError("GitHub Gist visibility changed; backup refused")
-        verified_manifest = _manifest_from_gist(verified, token)
-        if not verified_manifest or verified_manifest.get("raw_sha256") != raw_sha:
-            raise RuntimeError("Remote SQLite backup verification failed")
+        verified_raw, verified_manifest, verified_counts = _decode_remote_snapshot(
+            verified, token, key,
+        )
+        if (
+            verified_manifest.get("raw_sha256") != raw_sha
+            or hashlib.sha256(verified_raw).hexdigest() != raw_sha
+            or verified_counts != counts
+        ):
+            raise RuntimeError("Remote SQLite backup decrypt/integrity verification failed")
         return {
             "ok": True, "state": "uploaded",
             "message": "Encrypted SQLite backup uploaded and verified",
@@ -410,18 +432,20 @@ def remote_backup_status() -> dict[str, Any]:
         }
     try:
         gist = _get_gist(gist_id, token)
-        manifest = _manifest_from_gist(gist, token)
-        if manifest is None:
+        try:
+            raw, manifest, counts = _decode_remote_snapshot(gist, token, key)
+        except FileNotFoundError:
             return {
                 "ok": False, "state": "no_remote_backup",
                 "message": "Secret Gist is connected; SQLite backup has not been uploaded yet",
             }
         return {
             "ok": True, "state": "current",
-            "message": "Encrypted SQLite backup is available in a secret Gist",
+            "message": "Encrypted SQLite backup decrypted and passed SQLite integrity_check",
             "backup_at": manifest.get("created_at"),
-            "bytes": manifest.get("raw_bytes"),
+            "bytes": len(raw),
             "parts": manifest.get("parts"),
+            "tables": counts,
         }
     except Exception as exc:
         log.warning("Remote backup status check failed: %s", type(exc).__name__)
