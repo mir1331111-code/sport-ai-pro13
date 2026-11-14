@@ -951,13 +951,36 @@ def _sstats_div_code(league_name: str) -> str:
                 return code
         return "W_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10].upper()
 
+    # Exact, unqualified league labels retain their conventional home
+    # competition. Qualified names are handled below so a Brazilian Serie B
+    # or Austrian Bundesliga cannot be mistaken for an Italian/German league.
+    bare_names = {
+        "premier league": "E0",
+        "serie a": "I1",
+        "serie b": "I2",
+        "bundesliga": "D1",
+        "ligue 1": "F1",
+        "ligue 2": "F2",
+        "la liga": "SP1",
+        "primera division": "SP1",
+        "segunda division": "SP2",
+        "eredivisie": "N1",
+        "primeira liga": "P1",
+        "jupiler pro league": "B1",
+        "super lig": "T1",
+        "champions league": "C1",
+        "europa league": "EL",
+        "conference league": "EC",
+        "major league soccer": "MLS1",
+        "mls": "MLS1",
+    }
+    if name in bare_names:
+        return bare_names[name]
+
     # Country-specific competitions must precede generic labels such as
     # "Premier League", "Serie A" and "Bundesliga". SStats uses different
     # display names from football-data.co.uk; mapping to the trained division
     # is required for venue history and xG features to be found.
-    if name == "premier league":
-        return "E0"
-
     mappings = (
         (("brazilian serie a", "brasileirao serie a", "brasileiro serie a",
           "campeonato brasileiro serie a", "brasil serie a", "brazil serie a"), "BR1"),
@@ -981,28 +1004,28 @@ def _sstats_div_code(league_name: str) -> str:
           "super league greece", "stoiximan super league"), "G1"),
         (("russian premier league", "russia premier league",
           "rossiyskaya premier liga", "rpl"), "R1"),
-        (("major league soccer", "mls", "usa mls", "united states mls"), "MLS1"),
+        (("major league soccer", "usa mls", "united states mls"), "MLS1"),
         (("english premier league", "premier league of england", "england premier", "epl"), "E0"),
         (("efl championship", "english championship", "sky bet championship"), "E1"),
         (("league one", "england league one", "efl league one"), "E2"),
         (("league two", "england league two", "efl league two"), "E3"),
-        (("la liga", "primera division", "spain primera"), "SP1"),
-        (("segunda division", "la liga 2", "spain segunda"), "SP2"),
-        (("italy serie a", "italian serie a", "serie a italy", "serie a"), "I1"),
-        (("italy serie b", "italian serie b", "serie b italy", "serie b"), "I2"),
+        (("la liga spain", "spain primera", "spain primera division"), "SP1"),
+        (("la liga 2", "spain segunda", "spain segunda division"), "SP2"),
+        (("italy serie a", "italian serie a", "serie a italy"), "I1"),
+        (("italy serie b", "italian serie b", "serie b italy"), "I2"),
         # The second tier contains the generic "bundesliga" token, so it
         # must be matched before the top-flight label.
         (("2. bundesliga", "2 bundesliga"), "D2"),
-        (("bundesliga", "germany bundesliga"), "D1"),
-        (("ligue 1", "france ligue 1"), "F1"),
-        (("ligue 2", "france ligue 2"), "F2"),
-        (("eredivisie", "netherlands eredivisie"), "N1"),
-        (("primeira liga", "portugal primeira"), "P1"),
-        (("jupiler pro league", "belgian pro league"), "B1"),
-        (("super lig", "turkey super lig"), "T1"),
-        (("uefa champions league", "champions league"), "C1"),
-        (("uefa europa league", "europa league"), "EL"),
-        (("uefa conference league", "conference league"), "EC"),
+        (("germany bundesliga", "german bundesliga"), "D1"),
+        (("france ligue 1", "french ligue 1"), "F1"),
+        (("france ligue 2", "french ligue 2"), "F2"),
+        (("netherlands eredivisie",), "N1"),
+        (("portugal primeira liga", "portugal primeira"), "P1"),
+        (("belgian pro league",), "B1"),
+        (("turkey super lig", "turkish super lig"), "T1"),
+        (("uefa champions league",), "C1"),
+        (("uefa europa league",), "EL"),
+        (("uefa conference league",), "EC"),
         (("usl", "united soccer league"), "US_USL"),
         (("mls", "major league soccer"), "US_MLS"),
     )
