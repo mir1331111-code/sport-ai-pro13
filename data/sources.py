@@ -506,7 +506,7 @@ def _tsdb_league_meta(league_name: str):
     women = any(token in ln for token in ("women", "womens", "ladies", "female", "женск"))
     national = bool(age) or any(token in ln for token in (
         "national", "international", "world cup", "euro", "nations league",
-        "friendly", "fifa", "copa america", "africa cup", "afcon",
+        "friendl", "fifa", "copa america", "africa cup", "afcon",
         "afc asian", "qualifier", "qualification",
     ))
 
@@ -518,7 +518,7 @@ def _tsdb_league_meta(league_name: str):
                 competition = "WCQ" if any(x in ln for x in ("qualif", "qualification")) else "WC"
             elif "euro" in ln:
                 competition = "EURO"
-            elif "friendly" in ln:
+            elif "friendl" in ln:
                 competition = "FR"
             elif "africa cup" in ln or "afcon" in ln:
                 competition = "AFCON"
@@ -549,7 +549,7 @@ def _tsdb_league_meta(league_name: str):
             competition = "WCQ" if any(x in ln for x in ("qualif", "qualification")) else "WC"
         elif "euro" in ln:
             competition = "EURO"
-        elif "friendly" in ln:
+        elif "friendl" in ln:
             competition = "FR"
         elif "copa america" in ln:
             competition = "COPA"
