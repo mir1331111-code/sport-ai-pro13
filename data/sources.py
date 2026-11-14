@@ -778,7 +778,7 @@ def espn_matches(days: int, logs=None) -> list:
     for i in range(max(1, min(int(days), 14))):
         d = start + timedelta(days=i)
         dstr = d.strftime("%Y%m%d")
-        ck = f"espn_soccer_v3_{dstr}"
+        ck = f"espn_soccer_v4_{dstr}"
         cached = cache_get(ck, 900)
         if cached is not None:
             if isinstance(cached, list):
