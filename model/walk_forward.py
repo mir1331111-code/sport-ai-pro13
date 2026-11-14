@@ -364,32 +364,46 @@ def walk_forward_compare(
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     temporal_goals = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    provider_xg_only = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    proxy_xg_only = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     # Feature ablations use the same temporal weights, league rho, xG input,
     # fixture order and calibration process. Each arm has its own chronological
     # state; only the named feature is disabled.
     candidate_no_h2h = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     candidate_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     candidate_no_h2h_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
-    for model in (candidate, temporal_goals, candidate_no_h2h,
-                  candidate_no_rest, candidate_no_h2h_no_rest):
+    for model in (candidate, temporal_goals, provider_xg_only, proxy_xg_only,
+                  candidate_no_h2h, candidate_no_rest, candidate_no_h2h_no_rest):
         model.half_life_days = float(half_life_days)
     candidate_no_rest.rest_days_adjustment = False
     candidate_no_h2h_no_rest.rest_days_adjustment = False
-    records = {
-        "baseline": [], "candidate": [], "temporal_goals_only": [],
-        "candidate_without_h2h": [], "candidate_without_rest_days": [],
-        "candidate_without_h2h_or_rest_days": [],
-        "market": [], "candidate_on_market": [],
-        "goals_over25": [], "goals_over25_market": [],
-        "goals_over25_candidate_on_market": [],
-    }
-    # Separate binary evaluation for each common goals line. This measures
+
+    record_names = (
+        "baseline", "candidate", "temporal_goals_only",
+        "candidate_without_h2h", "candidate_without_rest_days",
+        "candidate_without_h2h_or_rest_days",
+        "market", "candidate_on_market",
+        "market_power", "candidate_on_market_power",
+        "market_shin", "candidate_on_market_shin",
+        "goals_over25", "goals_over25_market",
+        "goals_over25_candidate_on_market",
+    )
+    records = {name: _ClusteredRecords() for name in record_names}
+    xg_arm_names = ("goals_only", "provider_xg_only", "proxy_xg_only", "mixed_provider_preferred")
+    xg_arm_records = {name: _ClusteredRecords() for name in xg_arm_names}
+    xg_arm_usage = {name: 0 for name in xg_arm_names}
+    xg_arm_proxy_usage = {name: 0 for name in xg_arm_names}
+    xg_arm_provider_usage = {name: 0 for name in xg_arm_names}
+    xg_provider_rows = 0
+    xg_proxy_rows = 0
+
+    # Separate binary evaluation    # Separate binary evaluation for each common goals line. This measures
     # forecast quality, not merely whether the 1X2 model predicts the winner.
-    goals_line_records = {line: [] for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)}
-    goals_line_baseline_records = {line: [] for line in goals_line_records}
-    goals_line_candidate_on_baseline_records = {line: [] for line in goals_line_records}
-    btts_records = []
-    btts_baseline_records = []
+    goals_line_records = {line: _ClusteredRecords() for line in (0.5, 1.5, 2.5, 3.5, 4.5, 5.5)}
+    goals_line_baseline_records = {line: _ClusteredRecords() for line in goals_line_records}
+    goals_line_candidate_on_baseline_records = {line: _ClusteredRecords() for line in goals_line_records}
+    btts_records = _ClusteredRecords()
+    btts_baseline_records = _ClusteredRecords()
     btts_history = {}
     goals_history = {}
     market_sources = {}
@@ -403,17 +417,36 @@ def walk_forward_compare(
         while cursor < len(prepared) and prepared[cursor][0] == stamp:
             group.append(prepared[cursor])
             cursor += 1
+        # Every fixture on this date belongs to the same uncertainty cluster.
+        cluster_id = stamp.isoformat()
+        for record_list in (
+            *records.values(), *xg_arm_records.values(),
+            *goals_line_records.values(), *goals_line_baseline_records.values(),
+            *goals_line_candidate_on_baseline_records.values(),
+            btts_records, btts_baseline_records,
+        ):
+            record_list.set_cluster(cluster_id)
+
         pending = []
         for _, league, home, away, hg, ag, row in group:
             row_copy = dict(row) if isinstance(row, dict) else {}
             row_copy["Div"] = league
             no_xg_row = _without_xg(row_copy)
-            if _row_xg_pair(row_copy)[0] is not None:
+            provider_xg_row = _without_proxy_xg(row_copy)
+            proxy_xg_row = _without_provider_xg(row_copy)
+            xg_origin = _xg_origin(row_copy)
+            if xg_origin == "provider":
                 xg_eligible_rows += 1
+                xg_provider_rows += 1
+            elif xg_origin == "proxy":
+                xg_eligible_rows += 1
+                xg_proxy_rows += 1
 
             pred_base = baseline.predict(home, away, league, match_date=stamp.isoformat())
             pred_candidate = candidate.predict(home, away, league, match_date=stamp.isoformat())
             pred_temporal_goals = temporal_goals.predict(home, away, league, match_date=stamp.isoformat())
+            pred_provider_xg = provider_xg_only.predict(home, away, league, match_date=stamp.isoformat())
+            pred_proxy_xg = proxy_xg_only.predict(home, away, league, match_date=stamp.isoformat())
             pred_without_h2h = candidate_no_h2h.predict(
                 home, away, league, match_date=stamp.isoformat(), apply_h2h=False,
             )
@@ -468,6 +501,21 @@ def walk_forward_compare(
                 records["goals_over25_candidate_on_market"].append(({"over": over_prob, "under": 1.0 - over_prob}, total_outcome))
                 total_market_sources[total_market_source] = total_market_sources.get(total_market_source, 0) + 1
             outcome = "H" if hg > ag else "A" if hg < ag else "D"
+            arm_predictions = {
+                "goals_only": pred_temporal_goals,
+                "provider_xg_only": pred_provider_xg,
+                "proxy_xg_only": pred_proxy_xg,
+                "mixed_provider_preferred": pred_candidate,
+            }
+            for arm_name, arm_prediction in arm_predictions.items():
+                xg_arm_records[arm_name].append((_probs(arm_prediction), outcome))
+                if arm_prediction.get("xg_used"):
+                    xg_arm_usage[arm_name] += 1
+                    if arm_prediction.get("xg_modelled_used"):
+                        xg_arm_proxy_usage[arm_name] += 1
+                    else:
+                        xg_arm_provider_usage[arm_name] += 1
+
             records["baseline"].append((_probs(pred_base), outcome))
             records["candidate"].append((_probs(pred_candidate), outcome))
             records["temporal_goals_only"].append((_probs(pred_temporal_goals), outcome))
@@ -482,18 +530,22 @@ def walk_forward_compare(
             for method in ("power", "shin"):
                 method_probs, _ = _market_probs(row_copy, method)
                 if method_probs:
-                    records.setdefault("market_" + method, []).append((method_probs, outcome))
-                    records.setdefault("candidate_on_market_" + method, []).append((_probs(pred_candidate), outcome))
+                    records["market_" + method].append((method_probs, outcome))
+                    records["candidate_on_market_" + method].append((_probs(pred_candidate), outcome))
             pending.append((
-                home, away, hg, ag, row_copy, no_xg_row, stamp,
+                home, away, hg, ag, row_copy, no_xg_row,
+                provider_xg_row, proxy_xg_row, stamp,
                 pred_base, pred_candidate, pred_temporal_goals,
+                pred_provider_xg, pred_proxy_xg,
                 pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
                 outcome,
             ))
 
         # Ingest outcomes only after every forecast for this date has been made.
-        for (home, away, hg, ag, row_copy, no_xg_row, match_stamp,
+        for (home, away, hg, ag, row_copy, no_xg_row,
+             provider_xg_row, proxy_xg_row, match_stamp,
              pred_base, pred_candidate, pred_temporal_goals,
+             pred_provider_xg, pred_proxy_xg,
              pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
              outcome) in pending:
             # Train the calibrator only after every forecast for this date exists.
@@ -502,6 +554,8 @@ def walk_forward_compare(
             for model, prediction in (
                 (baseline, pred_base), (candidate, pred_candidate),
                 (temporal_goals, pred_temporal_goals),
+                (provider_xg_only, pred_provider_xg),
+                (proxy_xg_only, pred_proxy_xg),
                 (candidate_no_h2h, pred_without_h2h),
                 (candidate_no_rest, pred_without_rest),
                 (candidate_no_h2h_no_rest, pred_without_h2h_rest),
@@ -514,6 +568,8 @@ def walk_forward_compare(
             baseline.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            provider_xg_only.add(home, away, hg, ag, provider_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            proxy_xg_only.add(home, away, hg, ag, proxy_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate_no_h2h.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate_no_rest.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate_no_h2h_no_rest.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
@@ -573,6 +629,36 @@ def walk_forward_compare(
     )
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
+    xg_arm_metrics = {
+        name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=61000 + index)
+        for index, (name, value) in enumerate(xg_arm_records.items())
+    }
+    xg_arm_pairs = {
+        "provider_vs_goals_only": _paired_differences(
+            xg_arm_records["provider_xg_only"], xg_arm_records["goals_only"],
+            bootstrap_samples=bootstrap_samples, seed=61101,
+        ),
+        "proxy_vs_goals_only": _paired_differences(
+            xg_arm_records["proxy_xg_only"], xg_arm_records["goals_only"],
+            bootstrap_samples=bootstrap_samples, seed=61102,
+        ),
+        "mixed_vs_goals_only": _paired_differences(
+            xg_arm_records["mixed_provider_preferred"], xg_arm_records["goals_only"],
+            bootstrap_samples=bootstrap_samples, seed=61103,
+        ),
+        "provider_vs_proxy": _paired_differences(
+            xg_arm_records["provider_xg_only"], xg_arm_records["proxy_xg_only"],
+            bootstrap_samples=bootstrap_samples, seed=61104,
+        ),
+        "mixed_vs_provider": _paired_differences(
+            xg_arm_records["mixed_provider_preferred"], xg_arm_records["provider_xg_only"],
+            bootstrap_samples=bootstrap_samples, seed=61105,
+        ),
+        "mixed_vs_proxy": _paired_differences(
+            xg_arm_records["mixed_provider_preferred"], xg_arm_records["proxy_xg_only"],
+            bootstrap_samples=bootstrap_samples, seed=61106,
+        ),
+    }
     delta = lambda left, right, key: (
         left[key] - right[key] if left[key] is not None and right[key] is not None else None
     )
@@ -596,7 +682,7 @@ def walk_forward_compare(
         "interpretation": (
             "All arms use identical fixtures, dates, temporal weighting, league rho and xG data. "
             "Negative full-minus-ablation Brier/log-loss means the enabled feature improves the "
-            "proper scoring rule; confidence intervals are paired fixture bootstrap intervals."
+            "proper scoring rule; confidence intervals resample paired calendar-day clusters."
         ),
     }
 
@@ -604,8 +690,34 @@ def walk_forward_compare(
         "n": len(prepared),
         "skipped": skipped,
         "xg_rows_available": xg_eligible_rows,
+        "xg_provider_rows_available": xg_provider_rows,
+        "xg_proxy_rows_available": xg_proxy_rows,
         "xg_forecasts_used": xg_forecasts,
         "xg_usage_share": xg_forecasts / len(prepared) if prepared else None,
+        "xg_ablation": {
+            "arms": xg_arm_metrics,
+            "paired_differences": xg_arm_pairs,
+            "usage": {
+                name: {
+                    "forecasts_using_xg": xg_arm_usage[name],
+                    "provider_xg_used": xg_arm_provider_usage[name],
+                    "proxy_xg_used": xg_arm_proxy_usage[name],
+                    "share": xg_arm_usage[name] / len(prepared) if prepared else None,
+                }
+                for name in xg_arm_names
+            },
+            "source_rows": {
+                "provider": xg_provider_rows,
+                "modelled_proxy": xg_proxy_rows,
+            },
+            "interpretation": (
+                "Four arms are predicted on the same chronological fixtures: goals-only, "
+                "provider-xG-only, aggregate-shot-proxy-only, and mixed (provider preferred, "
+                "proxy fallback). All confidence intervals resample whole calendar-day clusters. "
+                "A modelled proxy is not genuine shot-level xG. No arm is promoted from this "
+                "diagnostic without a separate untouched chronological holdout."
+            ),
+        },
         "feature_ablation": feature_ablation,
         "baseline": base_metrics,
         "candidate": candidate_metrics,
@@ -643,9 +755,9 @@ def walk_forward_compare(
             for key in ("brier", "log_loss", "accuracy")
         },
         "interpretation": (
-            "Market benchmark uses complete 1X2 odds triplets; proportional, power and Shin de-vig methods are reported. Bootstrap intervals are fixture-resampled 95% intervals. RPS is labelled H/D/A class-order diagnostic because 1X2 is not naturally ordinal. "
+            "Market benchmark uses complete 1X2 odds triplets; proportional, power and Shin de-vig methods are reported. Confidence intervals use calendar-day cluster bootstrap. RPS is labelled H/D/A class-order diagnostic because 1X2 is not naturally ordinal. "
             "Compare candidate_on_market_rows against market; both metrics use exactly the same fixtures. "
-            "xG effect is isolated by comparing candidate against temporal_goals_only on identical fixtures. "
+            "The xG report separately compares goals-only, provider-only, proxy-only and mixed arms on identical fixtures. "
             "Lower Brier/log_loss and higher accuracy are better. Do not claim a gain unless it persists "
             "on a separate untouched chronological holdout with adequate xG coverage."
         ),
