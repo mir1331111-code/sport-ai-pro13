@@ -1141,6 +1141,19 @@ def _render_manual_odds_block(
     elif source_odd is None:
         col_metrics.caption("Нет подтверждённого коэффициента для этого исхода.")
 
+def _historical_rows_csv(rows: list[dict]) -> bytes:
+    """Serialize validated imported history for a portable local copy."""
+    valid = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    if not valid:
+        return b""
+    columns = sorted({str(key) for row in valid for key in row})
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(valid)
+    return ("\\ufeff" + buffer.getvalue()).encode("utf-8")
+
+
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
     # User-imported history must survive Streamlit session recreation and app reboot.
@@ -1279,6 +1292,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     ))
             except (UnicodeDecodeError, ValueError) as exc:
                 st.error(f"Не удалось прочитать контекстный CSV: {exc}")
+        saved_context_rows = st.session_state.get("_historical_context_rows") or []
+        if saved_context_rows:
+            st.caption(
+                f"Постоянно сохранённый контекстный архив: {len(saved_context_rows)} строк."
+            )
+            st.download_button(
+                "⬇️ Скачать сохранённый контекстный архив",
+                data=_historical_rows_csv(saved_context_rows),
+                file_name="neuro_bet_context_history_saved.csv",
+                mime="text/csv",
+                key="download_saved_context_history",
+            )
+
         historical_match_file = st.file_uploader(
             "Архив исторических матчей для женских лиг / сборных (.csv)",
             type=["csv"],
@@ -1327,6 +1353,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             except (UnicodeDecodeError, ValueError) as exc:
                 st.error(f"Не удалось прочитать исторический CSV: {exc}")
         custom_historical_rows = st.session_state.get("_custom_historical_match_rows") or []
+        if custom_historical_rows:
+            st.caption(
+                f"Постоянно сохранённый архив обучения: {len(custom_historical_rows)} матчей."
+            )
+            st.download_button(
+                "⬇️ Скачать сохранённый архив женских лиг / сборных",
+                data=_historical_rows_csv(custom_historical_rows),
+                file_name="neuro_bet_historical_matches_saved.csv",
+                mime="text/csv",
+                key="download_saved_custom_history",
+            )
 
         historical_context_rows = st.session_state.get("_historical_context_rows") or []
         if st.button(
