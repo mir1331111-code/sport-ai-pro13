@@ -825,8 +825,15 @@ def espn_matches(days: int, logs=None) -> list:
                 if sport_name and sport_name not in ("soccer", "football"):
                     continue
                 logos = league_obj.get("logos") or []
+                mapped_div, mapped_kind, mapped_women, mapped_national = _tsdb_league_meta(
+                    f"{league} {slug} {event.get('name') or ''}"
+                )
+                # Prefer the stable existing ESPN competition mapping for major
+                # club leagues; use shared gender/age-aware classification for
+                # internationals and competitions absent from that small table.
+                div_code = _ESPN_DIVS.get(slug, mapped_div)
                 rows.append({
-                    "Div": _ESPN_DIVS.get(slug, "G"),
+                    "Div": div_code,
                     "League": league, "competition": slug,
                     "Date": _msk_date(event.get("date") or ""),
                     "Time": _msk_time(event.get("date") or ""),
@@ -837,7 +844,7 @@ def espn_matches(days: int, logs=None) -> list:
                     "away_badge": (away.get("team") or {}).get("logo") or "",
                     "league_badge": logos[0].get("href", "") if logos else "",
                     "status": ((event.get("status") or {}).get("type") or {}).get("name", ""),
-                    "women": False, "national": False, "kind": "club",
+                    "women": mapped_women, "national": mapped_national, "kind": mapped_kind,
                 })
             out += rows
             cache_put(ck, rows)
