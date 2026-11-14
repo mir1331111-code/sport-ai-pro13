@@ -77,6 +77,19 @@ class RemoteSqliteBackupTests(unittest.TestCase):
         self.assertEqual(result["state"], "not_configured")
         self.assertIn("NEURO_BACKUP_KEY", result["message"])
 
+    def test_new_local_snapshot_cannot_shrink_verified_remote_tables(self):
+        with self.assertRaisesRegex(ValueError, "fewer rows"):
+            remote_backup._assert_backup_does_not_regress(
+                {"forecasts": 14, "market_forecasts": 8, "bets": 3},
+                {"forecasts": 0, "market_forecasts": 0, "bets": 3},
+            )
+
+    def test_new_local_snapshot_may_add_rows_without_regressing_existing_tables(self):
+        remote_backup._assert_backup_does_not_regress(
+            {"forecasts": 14, "market_forecasts": 8},
+            {"forecasts": 15, "market_forecasts": 8, "bank_history": 4},
+        )
+
     def test_secret_gist_visibility_is_required(self):
         with patch("storage.remote_backup.requests.get") as get:
             response = get.return_value
