@@ -124,13 +124,14 @@ class WalkForwardTests(unittest.TestCase):
         self.assertEqual(strata["season_basis_counts"], {"source_field": 240})
         self.assertEqual(strata["by_league"]["E0"]["n"], 120)
         self.assertEqual(strata["by_league"]["E0"]["cluster_count"], 60)
+        self.assertTrue(strata["by_league"]["E0"]["inference_eligible"])
         self.assertEqual(strata["by_season"]["2023/24"]["n"], 120)
         self.assertEqual(strata["by_season"]["2023/24"]["cluster_count"], 30)
 
         cell = strata["by_league_season"]["E0"]["2023/24"]
         self.assertEqual(cell["n"], 60)
         self.assertEqual(cell["cluster_count"], 30)
-        self.assertTrue(cell["inference_eligible"])
+        self.assertFalse(cell["inference_eligible"])
         for arm in ("goals_only", "provider_xg_only", "proxy_xg_only", "mixed_provider_preferred"):
             self.assertEqual(cell["arms"][arm]["n"], 60)
             self.assertEqual(cell["arms"][arm]["cluster_count"], 30)
