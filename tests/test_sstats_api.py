@@ -313,7 +313,7 @@ class SStatsTests(unittest.TestCase):
             date_from="2026-11-11", date_to="2026-11-11",
             now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
         )
-        context = mapping[("2026-11-11", "home_fc", "away_fc")]
+        context = mapping[("2026-11-11", sstats._norm_name("Home FC"), sstats._norm_name("Away FC"))]
         self.assertEqual(context["provider"], "sstats")
         self.assertTrue(context["injuries_is_confirmed"])
         self.assertEqual(context["injuries"][0]["player_name"], "Injured Player")
