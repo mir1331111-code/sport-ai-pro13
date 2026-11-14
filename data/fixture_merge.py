@@ -97,6 +97,64 @@ def is_sstats_market_source(source) -> bool:
     return str(source or "").strip().casefold() == "sstats"
 
 
+
+def enforce_sstats_market_card(card: dict) -> dict:
+    """Remove non-SStats bookmaker quotes and stale actions from saved scan cards."""
+    if not isinstance(card, dict):
+        return {}
+    clean = dict(card)
+
+    quote_groups = (
+        ("market_odds", "odds_source"),
+        ("total_market_odds", "total_odds_source"),
+        ("btts_market_odds", "btts_odds_source"),
+        ("stat_market_odds", "extra_market_source"),
+        ("asian_handicap_market_odds", "extra_market_source"),
+    )
+    for odds_field, source_field in quote_groups:
+        if not is_sstats_market_source(clean.get(source_field)):
+            clean[odds_field] = {}
+            clean[source_field] = "no_market"
+
+    if not is_sstats_market_source(card.get("odds_source")):
+        clean["bookmaker_by_pick"] = {}
+    if not is_sstats_market_source(card.get("total_odds_source")):
+        clean["total_market_book_count"] = {}
+        clean["total_market_confirmed"] = {}
+
+    source_by_pick = clean.get("market_odds_source_by_pick")
+    if isinstance(source_by_pick, dict):
+        clean["market_odds_source_by_pick"] = {
+            pick: source for pick, source in source_by_pick.items()
+            if is_sstats_market_source(source)
+        }
+    else:
+        clean["market_odds_source_by_pick"] = {}
+
+    best = clean.get("best")
+    best_pick = best[1] if isinstance(best, (tuple, list)) and len(best) > 1 else None
+    best_source = (
+        clean.get("best_odds_source")
+        or (clean.get("market_odds_source_by_pick") or {}).get(best_pick)
+    )
+    if best is not None and not is_sstats_market_source(best_source):
+        clean["best"] = None
+        clean["best_by_market"] = {}
+        clean["best_odds_source"] = "no_market"
+        verdict = dict(clean.get("verdict") or {})
+        verdict.update({
+            "real_odds": False,
+            "value_passed": False,
+            "is_bet": False,
+            "odd": None,
+            "ev": None,
+            "edge": None,
+            "stake": 0.0,
+        })
+        clean["verdict"] = verdict
+    return clean
+
+
 def enforce_sstats_odds_only(rows) -> list:
     """Keep bookmaker prices only on fixtures owned by SStats.
 
