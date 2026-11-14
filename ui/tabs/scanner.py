@@ -2511,9 +2511,25 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         if sstats_is_primary:
             fixture_sources.extend(sstats_rows)
             logs.append(
-                f"✅ SStats выбран единственным источником расписания: "
-                f"{len(sstats_rows)} матчей. Дублирующие schedule API пропущены."
+                f"✅ SStats — основной источник расписания и коэффициентов: "
+                f"{len(sstats_rows)} матчей."
             )
+            # SStats may not cover every national-team, youth and women's event.
+            # Keep its fixture IDs/odds authoritative, but supplement the schedule
+            # with independent public feeds so an unrelated SStats fixture cannot
+            # hide international games from the same day's scan.
+            try:
+                tsdb_rows = tsdb_matches(days, logs)
+                source_counts["TheSportsDB"] = len(tsdb_rows)
+            except Exception as exc:
+                logs.append(f"⚠️ TheSportsDB supplementary fixtures: {type(exc).__name__}")
+            try:
+                espn_rows = espn_matches(days, logs)
+                source_counts["ESPN"] = len(espn_rows)
+            except Exception as exc:
+                logs.append(f"⚠️ ESPN supplementary fixtures: {type(exc).__name__}")
+            fixture_sources.extend(tsdb_rows)
+            fixture_sources.extend(espn_rows)
         else:
             if sstats_key:
                 logs.append(
@@ -2555,9 +2571,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             # Keep scanner usable even if cross-provider deduplication fails.
             rows = _safe_filter(fixture_sources)
 
-        # The selected source is either SStats alone or the fallback set.
-        # When SStats is primary, its odds are already on the same rows as its
-        # game IDs, so no cross-provider quote re-join is necessary.
+        # SStats rows remain first in the merge, preserving their game IDs and
+        # real bookmaker prices. TSDB/ESPN supplement only missing fixtures and
+        # fill logos/competition metadata where available; they never invent odds.
 
         logs.append(
             f"🔀 Объединение расписаний: получено {len(fixture_sources)} строк, "
