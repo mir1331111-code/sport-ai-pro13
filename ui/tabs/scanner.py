@@ -25,8 +25,8 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
                           parse_date, tsdb_matches, espn_matches,
                           sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
                           footballapi_xg_history)
-from data.fixture_merge import (enforce_sstats_odds_only, is_sstats_market_source,
-                                merge_fixture_sources)
+from data.fixture_merge import (enforce_sstats_market_card, enforce_sstats_odds_only,
+                                is_sstats_market_source, merge_fixture_sources)
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from data.context_data import (
     fixture_row_key,
@@ -85,7 +85,7 @@ def _runtime_secret(session_key: str, *names: str) -> str:
             value = str(st.secrets.get(name, "") or "").strip()
             if value:
                 return value
-        # Also accept common nested layouts such as [api] or [highlightly].
+        # Also accept the common nested [api], [apis], [secrets] or [sstats] layouts.
         for section_name in ("api", "apis", "secrets", "sstats"):
             section = st.secrets.get(section_name, {})
             if hasattr(section, "get"):
@@ -1111,6 +1111,17 @@ def _render_manual_odds_block(
 
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
+    # Existing saved cards may outlive an odds provider configuration. Strip any
+    # legacy non-SStats prices before they can be shown or treated as real quotes.
+    saved_cards = D.get("cards") or []
+    cleaned_cards = [
+        enforce_sstats_market_card(card)
+        for card in saved_cards if isinstance(card, dict)
+    ]
+    if cleaned_cards != saved_cards:
+        D["cards"] = cleaned_cards
+        st.session_state.data = D
+        usage.set_local_data(D)
     # Modern scanner header and clear workflow: fixtures -> odds -> value -> portfolio.
     st.markdown(
         "<div class='scanner-hero'>"
@@ -1123,9 +1134,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     )
     # Compact dashboard summary keeps the first screen useful before and after a scan.
     previous_cards = [c for c in (D.get("cards") or []) if isinstance(c, dict)]
-    priced_count = sum(bool(c.get("market_odds")) for c in previous_cards)
+    priced_count = sum(
+        bool(c.get("market_odds")) and is_sstats_market_source(c.get("odds_source"))
+        for c in previous_cards
+    )
     qualified_count = sum(
         bool(c.get("best") is not None
+             and is_sstats_market_source(c.get("best_odds_source"))
              and (c.get("verdict") or {}).get("real_odds")
              and (c.get("verdict") or {}).get("value_passed"))
         for c in previous_cards
@@ -1553,18 +1568,33 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
 
         quote_counts = {
-            "winner": sum(bool(x.get("market_odds")) for x in market_pool),
-            "goals": sum(bool(x.get("total_market_odds")) for x in market_pool),
-            "btts": sum(bool(x.get("btts_market_odds")) for x in market_pool),
+            "winner": sum(
+                bool(x.get("market_odds")) and is_sstats_market_source(x.get("odds_source"))
+                for x in market_pool
+            ),
+            "goals": sum(
+                bool(x.get("total_market_odds")) and is_sstats_market_source(x.get("total_odds_source"))
+                for x in market_pool
+            ),
+            "btts": sum(
+                bool(x.get("btts_market_odds")) and is_sstats_market_source(x.get("btts_odds_source"))
+                for x in market_pool
+            ),
             "corners": sum(
-                any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {}))
+                is_sstats_market_source(x.get("extra_market_source"))
+                and any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {}))
                 for x in market_pool
             ),
             "cards": sum(
-                any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {}))
+                is_sstats_market_source(x.get("extra_market_source"))
+                and any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {}))
                 for x in market_pool
             ),
-            "handicap": sum(bool(x.get("asian_handicap_market_odds")) for x in market_pool),
+            "handicap": sum(
+                bool(x.get("asian_handicap_market_odds"))
+                and is_sstats_market_source(x.get("extra_market_source"))
+                for x in market_pool
+            ),
         }
         signal_counts = {
             family: sum(
@@ -1867,7 +1897,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     _render_ranked_market_card(card, market_filter)
 
         with market_tabs[6]:
-            handicap_cards = [card for card in market_pool if card.get("asian_handicap_market_odds")]
+            handicap_cards = [
+                card for card in market_pool
+                if card.get("asian_handicap_market_odds")
+                and is_sstats_market_source(card.get("extra_market_source"))
+            ]
             if not handicap_cards:
                 st.info("SStats не вернул подтверждённых котировок на форы для показанных матчей.")
             for card in handicap_cards:
