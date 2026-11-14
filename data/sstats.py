@@ -1282,7 +1282,14 @@ def _sstats_context_player_rows(value):
                         result.append(name)
             if result:
                 return result
-            for item in node.values():
+            for key, item in node.items():
+                normalized = re.sub(r"[^a-z]", "", str(key).casefold())
+                # Dedicated and generic roster arrays have already been handled
+                # above. Do not revisit a generic players/squad array without
+                # its starter-marker requirement, or an unconfirmed squad of
+                # eleven can be mistaken for a confirmed starting XI.
+                if normalized in starter_arrays or normalized in generic_arrays:
+                    continue
                 found = _walk(item, require_starter_marker)
                 if found:
                     return found
