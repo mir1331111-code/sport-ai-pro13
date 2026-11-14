@@ -7,10 +7,11 @@ from pathlib import Path
 from model.audit_export import build_audit_export
 from model.audit_restore import restore_audit_export_bytes
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger
+from storage.user_datasets import load_user_dataset
 
 
 class AuditArchiveRestoreTests(unittest.TestCase):
-    def _archive(self) -> bytes:
+    def _archive(self, include_user_datasets: bool = True) -> bytes:
         payload = {
             "generated_at_utc": "2026-11-14T18:00:00+00:00",
             "forecasts": [{
@@ -110,6 +111,26 @@ class AuditArchiveRestoreTests(unittest.TestCase):
                 "evaluated_at": "2026-11-15 20:00:00",
             }],
         }
+        if include_user_datasets:
+            payload["user_datasets"] = [
+                {
+                    "dataset_key": "custom_historical_match_rows",
+                    "rows": [{
+                        "Date": "2025-04-01", "HomeTeam": "Home W",
+                        "AwayTeam": "Away W", "FTHG": 2, "FTAG": 1,
+                        "Div": "W_E0", "League": "Women's league",
+                    }],
+                },
+                {
+                    "dataset_key": "historical_context_rows",
+                    "rows": [{
+                        "fixture_id": "fixture-older",
+                        "home_team": "Home W", "away_team": "Away W",
+                        "kickoff_at": "2025-04-01T18:00:00+00:00",
+                        "observed_at": "2025-04-01T12:00:00+00:00",
+                    }],
+                },
+            ]
         return build_audit_export(payload)
 
     def test_legacy_current_audit_zip_restores_all_audit_tables(self):
@@ -122,6 +143,16 @@ class AuditArchiveRestoreTests(unittest.TestCase):
             self.assertEqual(result["paper_bets"], 1)
             self.assertEqual(result["bank_history"], 1)
             self.assertEqual(result["decision_snapshots"], 1)
+            self.assertEqual(result["user_datasets"], 2)
+            self.assertEqual(result["user_dataset_rows"], 2)
+            self.assertEqual(
+                load_user_dataset("custom_historical_match_rows", db_path=str(path))[0]["Div"],
+                "W_E0",
+            )
+            self.assertEqual(
+                load_user_dataset("historical_context_rows", db_path=str(path))[0]["fixture_id"],
+                "fixture-older",
+            )
 
             forecast = ForecastLedger(path).rows()[0]
             self.assertEqual(forecast["probabilities"], {"H": 0.5, "D": 0.3, "A": 0.2})
@@ -136,6 +167,20 @@ class AuditArchiveRestoreTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM bets").fetchone()[0], 1)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM bank_history").fetchone()[0], 1)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM decision_snapshots").fetchone()[0], 1)
+
+    def test_older_audit_zip_without_user_datasets_remains_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "neuro.db"
+            result = restore_audit_export_bytes(
+                self._archive(include_user_datasets=False), path,
+            )
+            self.assertEqual(result["forecasts"], 1)
+            self.assertEqual(result["user_datasets"], 0)
+            self.assertEqual(result["user_dataset_rows"], 0)
+            self.assertEqual(
+                load_user_dataset("custom_historical_match_rows", db_path=str(path)),
+                [],
+            )
 
     def test_audit_restore_refuses_to_replace_existing_local_rows(self):
         with tempfile.TemporaryDirectory() as tmp:
