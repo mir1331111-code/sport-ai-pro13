@@ -152,3 +152,10 @@ Important separation:
 
 The scanner's manual 1X2 view also now requires a complete P1/X/P2 line attributed to the same named bookmaker before it labels the market line coherent.
 
+
+
+## Chronological xG coverage and provenance
+
+The xG pipeline distinguishes provider xG from a locally estimated aggregate-shot proxy. Historical football-data.co.uk rows commonly contain match totals for shots (HS/AS) and shots on target (HST/AST), but not shot coordinates, body part, or situation. The app therefore cannot reconstruct true per-shot xG from those aggregates. It fits a small ridge model separately inside each competition, estimates each date using only earlier dates, and only then admits that date's goals into the calibration sample. Generated values are tagged xg_kind=modelled_proxy and xg_source=shot_aggregate_ridge_v1; they are not presented as provider xG.
+
+Provider xG remains in its own model stream and has the existing higher-priority blend. The aggregate-shot proxy is used only when genuine xG does not qualify, needs at least 30 prior league fixtures and eight same-venue team observations, and has a maximum model blend weight of 12%. Missing or inconsistent shot totals are left blank; no xG is fabricated from goals alone. The xG label on a forecast card distinguishes provider xG from the modelled proxy.

@@ -33,6 +33,39 @@ class XGModelTests(unittest.TestCase):
         self.assertGreater(forecast["xg_weight"], 0.0)
         self.assertLess(forecast["lams"][0], forecast["lams"][1])
 
+    def test_modelled_proxy_is_separate_and_has_low_blend_weight(self):
+        engine = Engine()
+        start = date(2023, 1, 1)
+        for i in range(80):
+            engine.add("Home", "Away", 1, 1, row={
+                "Div": "E0", "HxG": 1.7, "AxG": 0.8,
+                "xg_source": "shot_aggregate_ridge_v1",
+                "xg_kind": "modelled_proxy",
+            }, match_date=(start + timedelta(days=7 * i)).isoformat())
+        prediction = engine.predict("Home", "Away", "E0", match_date="2025-01-01")
+        self.assertTrue(prediction["xg_used"])
+        self.assertTrue(prediction["xg_modelled_used"])
+        self.assertEqual(prediction["xg_source"], "shot_model_v1_proxy")
+        self.assertGreaterEqual(prediction["xg_modelled_league_samples"], 30)
+        self.assertLessEqual(prediction["xg_weight"], 0.12)
+        self.assertEqual(prediction["xg_league_samples"], 0)
+
+    def test_genuine_provider_xg_is_not_blended_with_proxy_stream(self):
+        engine = Engine()
+        start = date(2023, 1, 1)
+        for i in range(80):
+            kind = "modelled_proxy" if i < 50 else None
+            source = "shot_aggregate_ridge_v1" if kind else "footballapi.org"
+            row = {"Div": "E0", "HxG": 1.7, "AxG": 0.8, "xg_source": source}
+            if kind:
+                row["xg_kind"] = kind
+            engine.add("Home", "Away", 1, 1, row=row,
+                       match_date=(start + timedelta(days=7 * i)).isoformat())
+        prediction = engine.predict("Home", "Away", "E0", match_date="2025-01-01")
+        self.assertTrue(prediction["xg_used"])
+        self.assertFalse(prediction["xg_modelled_used"])
+        self.assertEqual(prediction["xg_source"], "provider")
+
     def test_missing_xg_keeps_legacy_goals_only_path(self):
         engine = Engine()
         for i in range(40):
