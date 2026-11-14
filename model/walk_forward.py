@@ -444,9 +444,16 @@ def _binary_paired_differences(candidate_records, market_records, *, bootstrap_s
     }
 
 
-def totals_market_is_validated(report, *, min_n=500):
-    """Conservative gate: enough paired data and both 95% CIs below zero."""
+def totals_market_is_validated(report, *, min_n=500, min_clusters=30):
+    """Require enough fixtures, independent matchdays and both 95% CIs below zero."""
     if not isinstance(report, dict) or int(report.get("n", 0) or 0) < int(min_n):
+        return False
+    # A large fixture count concentrated on very few matchdays does not
+    # provide the same independent evidence as a broad chronological sample.
+    try:
+        if int(report.get("cluster_count", 0) or 0) < int(min_clusters):
+            return False
+    except (TypeError, ValueError):
         return False
     intervals = report.get("confidence_intervals_95") or {}
     differences = report.get("differences") or {}
