@@ -2,8 +2,14 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "14.4.0"
+APP_VERSION = "14.4.1"
 DATA_VERSION = 18
+
+# The favorites panel targets seven forecasts when the schedule contains them.
+# Lower-history items remain forecast-only.
+MIN_RECOMMENDED_MATCHES = 7
+MAX_RECOMMENDED_MATCHES = 10
+MIN_FAVORITE_HISTORY = 5
 
 # A model forecast is labelled strong at or above this event probability.
 # This display classification is separate from Value/EV/Edge/Kelly approval.

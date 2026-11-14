@@ -377,6 +377,44 @@ def model_favorite(card: object) -> dict | None:
     }
 
 
+def rank_model_favorites_with_minimum(
+    cards: object, *, minimum: int = 7, limit: int = 10,
+    min_sample_games: int = 5,
+) -> list[dict]:
+    """Return a probability-ranked forecast list with an explicit history flag.
+
+    All valid model forecasts remain eligible for this display-only list.
+    Historical support is surfaced explicitly rather than silently dropping
+    fixtures. The function never changes Value eligibility, EV/Edge, Kelly or
+    stake sizing.
+    """
+    try:
+        required = max(0, int(minimum))
+    except (TypeError, ValueError):
+        required = 7
+    try:
+        maximum = max(0, int(limit))
+    except (TypeError, ValueError):
+        maximum = 10
+    display_limit = max(required, maximum)
+    try:
+        history_floor = max(0, int(min_sample_games))
+    except (TypeError, ValueError):
+        history_floor = 5
+
+    ranked = rank_model_favorites(
+        cards, limit=display_limit, min_sample_games=0,
+    )
+    return [
+        {
+            **item,
+            "history_sufficient": int(item.get("sample_games") or 0) >= history_floor,
+            "history_floor": history_floor,
+        }
+        for item in ranked
+    ]
+
+
 def rank_model_favorites(
     cards: object, limit: int | None = None, *, min_sample_games: int = 0,
 ) -> list[dict]:

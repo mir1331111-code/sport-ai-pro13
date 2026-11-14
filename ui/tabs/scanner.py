@@ -17,7 +17,8 @@ import streamlit as st
 
 from config import (
     APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE,
-    STRONG_FORECAST_MIN_PROB,
+    STRONG_FORECAST_MIN_PROB, MIN_RECOMMENDED_MATCHES,
+    MAX_RECOMMENDED_MATCHES, MIN_FAVORITE_HISTORY,
 )
 from storage import usage
 from storage import sqlite_store as db
@@ -47,7 +48,10 @@ from model.training import prepare_completed_training_rows, train_engine_chronol
 from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
-from betting.ranking import model_favorite, rank_model_favorites, rank_score
+from betting.ranking import (
+    model_favorite, rank_model_favorites,
+    rank_model_favorites_with_minimum, rank_score,
+)
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
 from betting.kelly import market_type
 from betting.risk import (
@@ -1317,35 +1321,44 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Forecast favorites are ranked independently of bookmaker value gates.
         # They are displayed as model probabilities, never as guaranteed winners
         # or automatic betting recommendations.
-        favorite_history_floor = 5
-        favorite_candidates = rank_model_favorites(all_cards)
-        favorite_matches = rank_model_favorites(
-            all_cards, limit=10, min_sample_games=favorite_history_floor
+        favorite_history_floor = MIN_FAVORITE_HISTORY
+        favorite_matches = rank_model_favorites_with_minimum(
+            all_cards,
+            minimum=MIN_RECOMMENDED_MATCHES,
+            limit=MAX_RECOMMENDED_MATCHES,
+            min_sample_games=favorite_history_floor,
         )
         low_history_favorites = sum(
-            1 for item in favorite_candidates
-            if int(item.get("sample_games") or 0) < favorite_history_floor
+            1 for item in favorite_matches if not item.get("history_sufficient", False)
         )
         strong_favorites = sum(
             1 for item in favorite_matches
-            if float(item.get("probability") or 0.0) >= STRONG_FORECAST_MIN_PROB
+            if item.get("history_sufficient", False)
+            and float(item.get("probability") or 0.0) >= STRONG_FORECAST_MIN_PROB
         )
         st.markdown(
             "<div style='display:flex;align-items:end;justify-content:space-between;gap:12px;margin:18px 0 4px'>"
             "<div><div class='scanner-kicker'>MODEL FAVORITES · 1X2</div>"
             "<h2 style='margin:0'>Самые вероятные исходы</h2>"
             "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>"
-            f"Топ-10 уникальных матчей с историей не менее {favorite_history_floor} матчей у каждой команды. "
-            f"Сильных прогнозов ≥{STRONG_FORECAST_MIN_PROB:.0%}: {strong_favorites}. "
-            "Сначала — самая высокая вероятность; при равенстве учитываются отрыв от второго исхода "
-            "и объём истории. Это не гарантия победы.</div></div>"
+            f"Показано {len(favorite_matches)} уникальных матчей: целевой минимум {MIN_RECOMMENDED_MATCHES}, "
+            f"максимум {MAX_RECOMMENDED_MATCHES}. Сильных прогнозов ≥{STRONG_FORECAST_MIN_PROB:.0%} "
+            f"с достаточной историей: {strong_favorites}. "
+            "Сортировка прежде всего по вероятности. Матчи с короткой историей явно помечаются "
+            "и не считаются сильными сигналами. Это прогнозы, не гарантии победы.</div></div>"
             "</div>",
             unsafe_allow_html=True,
         )
         if low_history_favorites:
             st.caption(
-                f"Не включено в список фаворитов из-за недостаточной истории команд: "
-                f"{low_history_favorites}. Такие матчи остаются доступными в общем сканере."
+                f"В список включено матчей с историей менее {favorite_history_floor} игр "
+                f"хотя бы у одной команды: {low_history_favorites}. В этом блоке они помечены "
+                "как прогнозы с ограниченной историей и не считаются Strong; отдельные Value-проверки не менялись."
+            )
+        if len(favorite_matches) < MIN_RECOMMENDED_MATCHES:
+            st.caption(
+                f"В текущем расписании доступно только {len(favorite_matches)} уникальных "
+                "матчей с корректным распределением вероятностей. Недостающие матчи не создаются искусственно."
             )
         if favorite_matches:
             favorite_columns = st.columns(2)
@@ -1365,10 +1378,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 favorite_probability = float(favorite_item["probability"])
                 favorite_margin = float(favorite_item["probability_margin"])
                 favorite_sample = int(favorite_item["sample_games"])
+                favorite_history_sufficient = bool(
+                    favorite_item.get("history_sufficient", False)
+                )
                 favorite_strength_label = (
-                    f"СИЛЬНЫЙ ПРОГНОЗ ≥{STRONG_FORECAST_MIN_PROB:.0%}"
+                    "ОГРАНИЧЕННАЯ ИСТОРИЯ · НЕ СИЛЬНЫЙ СИГНАЛ"
+                    if not favorite_history_sufficient
+                    else f"СИЛЬНЫЙ ПРОГНОЗ ≥{STRONG_FORECAST_MIN_PROB:.0%}"
                     if favorite_probability >= STRONG_FORECAST_MIN_PROB
                     else f"НИЖЕ ПОРОГА СИЛЬНОГО ПРОГНОЗА {STRONG_FORECAST_MIN_PROB:.0%}"
+                )
+                favorite_strength_title = (
+                    favorite_item["strength"] if favorite_history_sufficient
+                    else "МАЛО ИСТОРИИ"
                 )
                 with favorite_columns[(favorite_rank - 1) % 2]:
                     st.markdown(
@@ -1376,7 +1398,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "border-radius:12px;background:linear-gradient(120deg,rgba(22,42,54,.9),rgba(15,24,32,.94))'>"
                         f"<div style='display:flex;justify-content:space-between;gap:8px;color:#9eb1bd;font-size:11px'>"
                         f"<span>#{favorite_rank} · {html.escape(favorite_league)}</span>"
-                        f"<span>{html.escape(favorite_item['strength'])}</span></div>"
+                        f"<span>{html.escape(favorite_strength_title)}</span></div>"
                         f"<div style='font-weight:750;font-size:16px;color:#f0f5f7;margin:7px 0 4px'>"
                         f"{html.escape(favorite_match)}</div>"
                         f"<div style='color:#8fd8bd;font-weight:800;font-size:19px'>"
