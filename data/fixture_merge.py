@@ -92,6 +92,11 @@ _SSTATS_ODDS_FIELDS = (
 )
 
 
+def is_sstats_market_source(source) -> bool:
+    """Return whether a quote's explicit provenance is SStats."""
+    return str(source or "").strip().casefold() == "sstats"
+
+
 def enforce_sstats_odds_only(rows) -> list:
     """Keep bookmaker prices only on fixtures owned by SStats.
 
