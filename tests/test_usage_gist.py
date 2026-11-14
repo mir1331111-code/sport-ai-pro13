@@ -19,6 +19,14 @@ class _Response:
         return json.dumps(self.payload).encode("utf-8")
 
 
+class _RawResponse(_Response):
+    def __init__(self, content: str):
+        self.content = content
+
+    def read(self):
+        return self.content.encode("utf-8")
+
+
 class UsageGistVisibilityTests(unittest.TestCase):
     def test_portfolio_write_refuses_public_gist_before_patch(self):
         with (
@@ -66,7 +74,7 @@ class UsageGistVisibilityTests(unittest.TestCase):
                             }
                         },
                     }),
-                    _Response(json.dumps(expected)),
+                    _RawResponse(json.dumps(expected)),
                 ],
             ) as open_url,
         ):
