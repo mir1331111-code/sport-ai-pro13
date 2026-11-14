@@ -682,7 +682,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     for off in range(total_days):
         d = today + timedelta(days=off)
         dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_day_v10_{dstr}"
+        ck = f"tsdb_day_v11_{dstr}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
