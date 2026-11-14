@@ -900,10 +900,13 @@ def _sstats_div_code(league_name: str) -> str:
          if age in name),
         "",
     )
+    # Do not classify domestic competitions such as England's "National League"
+    # as international football. Require an explicit national-team qualifier.
     international = any(token in name for token in (
-        "national", "international", "nations league", "world cup", "world cup qualification",
-        "euro", "africa cup", "african cup", "afcon", "copa america",
-        "asian cup", "asian games", "friendl", "qualifier", "qualification",
+        "national team", "national teams", "international", "nations league",
+        "world cup", "euro", "africa cup", "african cup", "afcon",
+        "copa america", "asian cup", "asian games", "friendl",
+        "qualifier", "qualification",
     ))
     if international or age:
         if "nations league" in name:
@@ -942,15 +945,42 @@ def _sstats_div_code(league_name: str) -> str:
                 return code
         return "W_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10].upper()
 
+    # Country-specific competitions must precede generic labels such as
+    # "Premier League", "Serie A" and "Bundesliga". SStats uses different
+    # display names from football-data.co.uk; mapping to the trained division
+    # is required for venue history and xG features to be found.
     mappings = (
+        (("brazilian serie a", "brasileirao serie a", "brasileiro serie a",
+          "campeonato brasileiro serie a", "brasil serie a", "brazil serie a"), "BR1"),
+        (("argentina primera division", "argentine primera division",
+          "primera division argentina", "liga profesional argentina",
+          "liga profesional de futbol", "argentina liga profesional"), "AR1"),
+        (("austrian bundesliga", "austria bundesliga", "admiral bundesliga"), "AT1"),
+        (("swiss super league", "switzerland super league"), "CH1"),
+        (("norway eliteserien", "eliteserien"), "NO1"),
+        (("sweden allsvenskan", "allsvenskan"), "SE1"),
+        (("denmark superliga", "danish superliga", "superligaen"), "DK1"),
+        (("poland ekstraklasa", "ekstraklasa"), "PL1"),
+        (("japan j1 league", "j1 league", "meiji yasuda j1"), "JP1"),
+        (("k league 1", "south korea k league 1", "korea republic k league 1"), "KR1"),
+        (("liga mx", "mexico liga mx", "mexican primera division"), "MX1"),
+        (("colombia primera a", "primera a colombia", "categoria primera a",
+          "categoría primera a", "liga betplay", "colombia primera division"), "CO1"),
+        (("scottish premiership", "scotland premiership",
+          "scottish premier league", "cinch premiership"), "SC1"),
+        (("greek super league", "greece super league",
+          "super league greece", "stoiximan super league"), "G1"),
+        (("russian premier league", "russia premier league",
+          "rossiyskaya premier liga", "rpl"), "R1"),
+        (("major league soccer", "mls", "usa mls", "united states mls"), "MLS1"),
         (("premier league", "premier league of england", "england premier", "epl"), "E0"),
         (("efl championship", "english championship", "sky bet championship"), "E1"),
         (("league one", "england league one", "efl league one"), "E2"),
         (("league two", "england league two", "efl league two"), "E3"),
         (("la liga", "primera division", "spain primera"), "SP1"),
         (("segunda division", "la liga 2", "spain segunda"), "SP2"),
-        (("serie a", "italy serie a"), "I1"),
-        (("serie b", "italy serie b"), "I2"),
+        (("italy serie a", "italian serie a", "serie a italy", "serie a"), "I1"),
+        (("italy serie b", "italian serie b", "serie b italy", "serie b"), "I2"),
         # The second tier contains the generic "bundesliga" token, so it
         # must be matched before the top-flight label.
         (("2. bundesliga", "2 bundesliga"), "D2"),
