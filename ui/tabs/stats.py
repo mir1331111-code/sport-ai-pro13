@@ -201,6 +201,9 @@ def _render_forecast_journal(D):
                     "generated_at_utc": datetime.now(timezone.utc).isoformat(),
                     "source_database": "application forecast ledger (sensitive credentials excluded)",
                     "summary": {
+                        "decision_snapshots": len(db.fetch_decision_snapshots(limit=100000)),
+                        "paper_bets": len(db.fetch_bets(limit=100000)),
+                        "bank_history": len(db.bank_history(limit=100000)),
                         "main_forecasts": len(main_rows),
                         "main_settled": len(settled_main_rows),
                         "llm_forecasts": len(ai_rows),
@@ -223,6 +226,7 @@ def _render_forecast_journal(D):
                     "market_forecasts": market_rows,
                     "paper_bets": db.fetch_bets(limit=100000),
                     "bank_history": db.bank_history(limit=100000),
+                    "decision_snapshots": db.fetch_decision_snapshots(limit=100000),
                     "notes": {
                         "h2h_rest_days_ablation": (
                             "Not stored as live ledger variants. Historical walk-forward "
