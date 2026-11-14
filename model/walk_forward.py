@@ -73,7 +73,10 @@ def _xg_origin(row):
     Explicit modelled-proxy metadata wins. Unlabelled legacy xG pairs retain
     the Engine's existing treatment as provider xG for compatibility.
     """
-    if not isinstance(row, dict) or _row_xg_pair(row)[0] is None:
+    if not isinstance(row, dict):
+        return None
+    home_xg, away_xg = _row_xg_pair(row)
+    if home_xg is None or away_xg is None:
         return None
     source = str(row.get("xg_source") or "").casefold()
     kind = str(row.get("xg_kind") or "").casefold()
@@ -274,6 +277,10 @@ def _paired_differences(left_records, right_records, *, bootstrap_samples=1000, 
             "error": "paired records do not share identical matchday clusters",
         }
     diffs = left - right
+    explicit_groups = all(
+        isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None
+        for record in left_records
+    )
     names = ("brier", "log_loss", "rps_hda_order", "accuracy")
     means = diffs.mean(axis=0).tolist()
     samples = _cluster_bootstrap_mean_samples(diffs, groups, bootstrap_samples, seed)
@@ -281,9 +288,9 @@ def _paired_differences(left_records, right_records, *, bootstrap_samples=1000, 
         "n": len(diffs),
         "differences": dict(zip(names, means)),
         "confidence_intervals_95": _intervals_from_samples(samples, names),
-        "bootstrap_unit": "matchday",
+        "bootstrap_unit": "matchday" if explicit_groups else "fixture_fallback",
         "cluster_count": len(set(groups)),
-        "note": "Negative values favor left model for proper scoring rules; positive accuracy difference favors left. Confidence intervals resample paired calendar-day clusters.",
+        "note": "Negative values favor left model for proper scoring rules; positive accuracy difference favors left. Confidence intervals resample paired calendar-day clusters when group labels are supplied.",
     }
 
 
@@ -421,14 +428,19 @@ def _binary_paired_differences(candidate_records, market_records, *, bootstrap_s
         differences.append((cbrier-mbrier, closs-mloss))
     matrix = np.asarray(differences, dtype=float)
     n = len(differences)
+    explicit_groups = all(
+        isinstance(record, (tuple, list)) and len(record) >= 3 and record[2] is not None
+        for record in candidate_records
+    )
     names = ("brier", "log_loss")
     means = matrix.mean(axis=0).tolist()
     samples = _cluster_bootstrap_mean_samples(matrix, groups, bootstrap_samples, seed)
     return {
         "n": n, "differences": dict(zip(names, means)),
         "confidence_intervals_95": _intervals_from_samples(samples, names),
-        "bootstrap_unit": "matchday", "cluster_count": len(set(groups)),
-        "note": "Negative differences favor the model; intervals resample paired calendar-day clusters.",
+        "bootstrap_unit": "matchday" if explicit_groups else "fixture_fallback",
+        "cluster_count": len(set(groups)),
+        "note": "Negative differences favor the model; intervals resample paired calendar-day clusters when group labels are supplied.",
     }
 
 
