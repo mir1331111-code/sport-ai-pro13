@@ -920,7 +920,7 @@ def _sstats_div_code(league_name: str) -> str:
     # "Europa League" contains the letters "euro" but is a club
     # competition. Only a standalone "Euro" token denotes the national-team
     # tournament family.
-    international = international or bool(re.search(r"\\beuro\\b", name))
+    international = international or bool(re.search(r"\beuro\b, name))
     if "club world cup" in name:
         return "S_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10].upper()
     if international or age:
