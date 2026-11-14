@@ -913,10 +913,16 @@ def _sstats_div_code(league_name: str) -> str:
     # as international football. Require an explicit national-team qualifier.
     international = any(token in name for token in (
         "national team", "national teams", "international", "nations league",
-        "world cup", "euro", "africa cup", "african cup", "afcon",
+        "world cup", "africa cup", "african cup", "afcon",
         "copa america", "asian cup", "asian games", "friendl",
         "qualifier", "qualification",
     ))
+    # "Europa League" contains the letters "euro" but is a club
+    # competition. Only a standalone "Euro" token denotes the national-team
+    # tournament family.
+    international = international or bool(re.search(r"\\beuro\\b", name))
+    if "club world cup" in name:
+        return "S_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10].upper()
     if international or age:
         if "nations league" in name:
             competition = "UNL"
