@@ -3,7 +3,8 @@ from datetime import date, timedelta
 
 from model.walk_forward import (
     _ClusteredRecords, _metrics, _paired_differences,
-    _binary_metrics, _binary_paired_differences, walk_forward_compare,
+    _binary_metrics, _binary_paired_differences,
+    totals_market_is_validated, walk_forward_compare,
 )
 
 
@@ -90,6 +91,22 @@ class WalkForwardTests(unittest.TestCase):
         report = _paired_differences(left, right, bootstrap_samples=10)
         self.assertEqual(report["n"], 0)
         self.assertIn("matchday", report["error"])
+
+    def test_market_validation_requires_thirty_independent_matchdays(self):
+        report = {
+            "n": 800,
+            "cluster_count": 29,
+            "differences": {"brier": -0.02, "log_loss": -0.03},
+            "confidence_intervals_95": {
+                "brier": {"low": -0.03, "high": -0.01},
+                "log_loss": {"low": -0.04, "high": -0.02},
+            },
+        }
+        self.assertFalse(totals_market_is_validated(report, min_n=500))
+        report["cluster_count"] = 30
+        self.assertTrue(totals_market_is_validated(report, min_n=500))
+        report.pop("cluster_count")
+        self.assertFalse(totals_market_is_validated(report, min_n=500))
 
     def test_skips_rows_without_valid_dates_or_scores(self):
         result = walk_forward_compare([
