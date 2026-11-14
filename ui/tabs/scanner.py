@@ -22,6 +22,7 @@ from config import (
 )
 from storage import usage
 from storage import sqlite_store as db
+from storage import user_datasets
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches,
                           sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
@@ -1142,6 +1143,20 @@ def _render_manual_odds_block(
 
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
+    # User-imported history must survive Streamlit session recreation and app reboot.
+    for session_key, dataset_key in (
+        ("_custom_historical_match_rows", "custom_historical_match_rows"),
+        ("_historical_context_rows", "historical_context_rows"),
+    ):
+        if session_key not in st.session_state:
+            try:
+                st.session_state[session_key] = user_datasets.load_user_dataset(dataset_key)
+            except Exception as dataset_exc:
+                st.session_state[session_key] = []
+                st.warning(
+                    f"Не удалось восстановить архив {dataset_key}: "
+                    f"{type(dataset_exc).__name__}. Локальная база не изменена."
+                )
     # Existing saved cards may outlive an odds provider configuration. Strip any
     # legacy non-SStats prices before they can be shown or treated as real quotes.
     saved_cards = D.get("cards") or []
@@ -1244,9 +1259,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             try:
                 context_payload = parse_context_csv(context_csv_file.getvalue())
                 st.session_state["_historical_context_rows"] = context_payload["rows"]
+                if context_payload["rows"]:
+                    saved_context = user_datasets.save_user_dataset(
+                        "historical_context_rows", context_payload["rows"],
+                    )
+                    persistence_note = (
+                        f"; сохранено в SQLite: {saved_context['row_count']} строк"
+                    )
+                else:
+                    persistence_note = "; прежний сохранённый архив оставлен без изменений"
                 st.success(
                     f"Контекстный архив: принято {context_payload['accepted']} строк, "
-                    f"отклонено {len(context_payload['rejected'])} (post-kickoff данные исключены)."
+                    f"отклонено {len(context_payload['rejected'])} "
+                    f"(post-kickoff данные исключены){persistence_note}."
                 )
                 if context_payload["rejected"]:
                     st.caption("Причины отклонения: " + "; ".join(
@@ -1280,10 +1305,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     historical_match_file.getvalue()
                 )
                 st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
+                if history_payload["rows"]:
+                    saved_history = user_datasets.save_user_dataset(
+                        "custom_historical_match_rows", history_payload["rows"],
+                    )
+                    persistence_note = (
+                        f"; сохранено в SQLite: {saved_history['row_count']} матчей"
+                    )
+                else:
+                    persistence_note = "; прежний сохранённый архив оставлен без изменений"
                 st.success(
                     f"Исторический архив: принято {history_payload['accepted']} матчей "
                     f"из {len(history_payload['divisions'])} соревнований; "
-                    f"отклонено {len(history_payload['rejected'])}."
+                    f"отклонено {len(history_payload['rejected'])}{persistence_note}."
                 )
                 st.caption(
                     "Коды: " + ", ".join(history_payload["divisions"])
