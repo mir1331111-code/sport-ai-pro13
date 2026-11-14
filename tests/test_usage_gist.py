@@ -49,6 +49,45 @@ class UsageGistVisibilityTests(unittest.TestCase):
         self.assertEqual(open_url.call_count, 2)
         self.assertEqual(open_url.call_args.args[0].get_method(), "PATCH")
 
+    def test_gist_backup_never_serializes_provider_credentials(self):
+        secrets = {
+            "fdorg_token": "FDORG_SENTINEL",
+            "odds_api_key": "ODDS_SENTINEL",
+            "therundown_api_key": "RUNDOWN_SENTINEL",
+            "rundown_key": "RUNDOWN_ALIAS_SENTINEL",
+            "highlightly_api_key": "HIGHLIGHTLY_SENTINEL",
+            "sstats_api_key": "SSTATS_SENTINEL",
+            "footballapi_key": "FOOTBALL_SENTINEL",
+            "llm_api_key": "LLM_SENTINEL",
+            "xai_api_key": "XAI_SENTINEL",
+            "grok_api_key": "GROK_SENTINEL",
+            "groq_api_key": "GROQ_SENTINEL",
+        }
+        captured = {}
+
+        class _PatchResponse(_Response):
+            pass
+
+        def fake_urlopen(request, timeout):
+            if request.get_method() == "GET":
+                return _Response({"public": False, "files": {}})
+            captured["payload"] = request.data.decode("utf-8")
+            return _PatchResponse({"public": False, "files": {"neuro_local.json": {}}})
+
+        with (
+            patch.object(usage, "_gist_config", return_value=("gist-id", "token")),
+            patch.object(usage.urllib.request, "urlopen", side_effect=fake_urlopen),
+        ):
+            result = usage._gist_write({
+                "bank": 1000, "bets": [],
+                "meta": {**secrets, "initial_bank": 1000},
+            })
+
+        self.assertTrue(result)
+        self.assertIn('"initial_bank": 1000', captured["payload"])
+        for sentinel in secrets.values():
+            self.assertNotIn(sentinel, captured["payload"])
+
     def test_read_keeps_public_legacy_backup_available_but_logs_warning(self):
         legacy = {"data": {"bank": 1000, "bets": []}}
         with (
