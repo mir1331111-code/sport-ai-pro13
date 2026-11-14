@@ -65,7 +65,9 @@ from llm.deep_analysis import (
     format_top_match_opinion, merge_context_snapshots,
     select_top_matches, top_match_shortlist_diagnostics,
 )
-from model.independent_forecasts import historical_features, record_scan_forecasts
+from model.independent_forecasts import (
+    historical_features, record_scan_forecasts, parse_llm_probabilities,
+)
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label, render_fixture_header)
 from ui.scanner_engine import _train_engine, _shared_engine_cache, _load_engine
@@ -1150,12 +1152,28 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
              and (c.get("verdict") or {}).get("value_passed"))
         for c in previous_cards
     )
+    model_forecast_count = 0
+    ai_forecast_count = 0
+    for card in previous_cards:
+        try:
+            probabilities = [float(card.get(key)) for key in ("p1", "px", "p2")]
+            if (
+                all(0 <= probability <= 1 for probability in probabilities)
+                and 0.90 <= sum(probabilities) <= 1.10
+            ):
+                model_forecast_count += 1
+        except (TypeError, ValueError):
+            pass
+        if parse_llm_probabilities(card.get("llm_opinion") or "") is not None:
+            ai_forecast_count += 1
     pending_count = sum(1 for b in (D.get("bets") or []) if b.get("status") == "pending")
-    k1, k2, k3, k4 = st.columns(4)
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Матчи в последнем скане", len(previous_cards))
-    k2.metric("С реальными кэфами", priced_count)
-    k3.metric("Value-проходы", qualified_count)
-    k4.metric("Виртуальный портфель", pending_count)
+    k2.metric("Прогнозы 1X2", model_forecast_count)
+    k3.metric("Прогнозы ИИ", ai_forecast_count)
+    k4.metric("С реальными кэфами", priced_count)
+    k5.metric("Value-проходы", qualified_count)
+    k6.metric("Открытые ставки", pending_count)
 
     st.markdown("<div class='scanner-section-label'>БЫСТРЫЙ ЗАПУСК</div>",
                 unsafe_allow_html=True)
