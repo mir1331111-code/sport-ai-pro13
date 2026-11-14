@@ -224,7 +224,11 @@ def _gist_write(data: dict) -> bool:
         return False
     safe = dict(data)
     safe_meta = dict(safe.get("meta") or {})
-    for key in ("fdorg_token", "odds_api_key", "highlightly_api_key", "sstats_api_key", "llm_api_key"):
+    for key in (
+        "fdorg_token", "odds_api_key", "therundown_api_key", "rundown_key",
+        "highlightly_api_key", "sstats_api_key", "footballapi_key",
+        "llm_api_key", "xai_api_key", "grok_api_key", "groq_api_key",
+    ):
         safe_meta.pop(key, None)
     safe["meta"] = safe_meta
     payload = {"files": {"neuro_local.json": {
