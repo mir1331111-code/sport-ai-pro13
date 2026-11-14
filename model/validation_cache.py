@@ -74,6 +74,6 @@ def validation_cache_key(rows, *, matrix_n=12, model_version="unspecified"):
     ).encode("utf-8")
     digest = hashlib.sha256(payload).hexdigest()
     version = str(model_version or "unspecified").strip().replace("/", "_").replace(" ", "_")
-    return f"neuro_market_validation_v5_{version}_bootstrap1000_{int(matrix_n)}_{digest}"
+    return f"neuro_market_validation_v6_matchday_bootstrap_{version}_{int(matrix_n)}_{digest}"
 
 
