@@ -49,6 +49,32 @@ class UsageGistVisibilityTests(unittest.TestCase):
         self.assertEqual(open_url.call_count, 2)
         self.assertEqual(open_url.call_args.args[0].get_method(), "PATCH")
 
+    def test_read_fetches_full_raw_file_when_gist_content_is_truncated(self):
+        expected = {"data": {"bank": 2500, "bets": [], "cards": []}}
+        with (
+            patch.object(usage, "_gist_config", return_value=("gist-id", "token")),
+            patch.object(
+                usage.urllib.request, "urlopen",
+                side_effect=[
+                    _Response({
+                        "public": False,
+                        "files": {
+                            "neuro_local.json": {
+                                "content": "{\"data\":",
+                                "truncated": True,
+                                "raw_url": "https://gist.githubusercontent.com/user/id/raw/neuro_local.json",
+                            }
+                        },
+                    }),
+                    _Response(json.dumps(expected)),
+                ],
+            ) as open_url,
+        ):
+            result = usage._gist_read()
+        self.assertEqual(result, expected)
+        self.assertEqual(open_url.call_count, 2)
+        self.assertIn("gist.githubusercontent.com", open_url.call_args.args[0].full_url)
+
     def test_gist_backup_never_serializes_provider_credentials(self):
         secrets = {
             "fdorg_token": "FDORG_SENTINEL",
