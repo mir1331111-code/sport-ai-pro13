@@ -43,6 +43,7 @@ from storage.remote_backup import (
     generate_backup_key, remote_backup_status, restore_database_if_empty,
     restore_sqlite_backup_bytes,
 )  # noqa: E402
+from model.audit_restore import restore_audit_export_bytes  # noqa: E402
 from data.sources import (
     parse_date, fdorg_match_result,
     sstats_account_check, sstats_match_statistics, sstats_find_match_id,
@@ -1204,6 +1205,38 @@ with st.sidebar:
                 st.error(
                     "Восстановление SQLite отменено: "
                     + str(_restore_sqlite_exc)[:180]
+                )
+
+        _audit_upload = st.file_uploader(
+            "Восстановить журнал из архива ledger .zip",
+            type=["zip"], key="restore_neuro_audit_zip",
+        )
+        if _audit_upload is not None and st.button(
+            "Восстановить прогнозы, рынок и историю банка из audit ZIP",
+            key="restore_neuro_audit_zip_button",
+        ):
+            try:
+                _audit_restored = restore_audit_export_bytes(
+                    _audit_upload.getvalue(), DB_FILE,
+                )
+                db.db_init()
+                db.invalidate_caches()
+                st.session_state["_sqlite_restore_status"] = {
+                    "restored": True, "state": "restored",
+                    "message": "Журнал восстановлен из audit ZIP.",
+                }
+                st.success(
+                    "Журнал восстановлен без перезаписи существующих данных: "
+                    f"прогнозы {_audit_restored['forecasts']}, "
+                    f"рынки {_audit_restored['market_forecasts']}, "
+                    f"ставки {_audit_restored['paper_bets']}, "
+                    f"банк {_audit_restored['bank_history']}, "
+                    f"снимки решений {_audit_restored['decision_snapshots']}."
+                )
+            except Exception as _audit_restore_exc:
+                st.error(
+                    "Восстановление audit ZIP отменено: "
+                    + str(_audit_restore_exc)[:220]
                 )
 
         st.caption(
