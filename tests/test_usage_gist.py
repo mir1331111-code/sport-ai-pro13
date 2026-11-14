@@ -1,5 +1,6 @@
 import json
 import unittest
+from cryptography.fernet import Fernet
 from unittest.mock import patch
 
 from storage import usage
@@ -42,8 +43,10 @@ class UsageGistVisibilityTests(unittest.TestCase):
         self.assertEqual(open_url.call_args.args[0].get_method(), "GET")
 
     def test_portfolio_write_only_patches_confirmed_non_public_gist(self):
+        cipher = Fernet(Fernet.generate_key())
         with (
             patch.object(usage, "_gist_config", return_value=("gist-id", "token")),
+            patch.object(usage, "_portfolio_fernet", return_value=cipher),
             patch.object(
                 usage.urllib.request, "urlopen",
                 side_effect=[
@@ -108,8 +111,10 @@ class UsageGistVisibilityTests(unittest.TestCase):
             captured["payload"] = request.data.decode("utf-8")
             return _PatchResponse({"public": False, "files": {"neuro_local.json": {}}})
 
+        cipher = Fernet(Fernet.generate_key())
         with (
             patch.object(usage, "_gist_config", return_value=("gist-id", "token")),
+            patch.object(usage, "_portfolio_fernet", return_value=cipher),
             patch.object(usage.urllib.request, "urlopen", side_effect=fake_urlopen),
         ):
             result = usage._gist_write({
@@ -119,13 +124,52 @@ class UsageGistVisibilityTests(unittest.TestCase):
 
         self.assertTrue(result)
         request_payload = json.loads(captured["payload"])
-        saved_json = request_payload["files"]["neuro_local.json"]["content"]
-        saved_data = json.loads(saved_json)
+        envelope = json.loads(request_payload["files"]["neuro_local.json"]["content"])
+        self.assertEqual(envelope["format"], "neuro-local-fernet-v1")
+        plaintext = cipher.decrypt(envelope["ciphertext"].encode("ascii")).decode("utf-8")
+        saved_data = json.loads(plaintext)
         self.assertEqual(saved_data["meta"]["initial_bank"], 1000)
         for secret_name in secrets:
             self.assertNotIn(secret_name, saved_data["meta"])
         for sentinel in secrets.values():
-            self.assertNotIn(sentinel, captured["payload"])
+            self.assertNotIn(captured["payload"], sentinel)
+
+    def test_encrypted_portfolio_gist_round_trips_with_shared_backup_key(self):
+        cipher = Fernet(Fernet.generate_key())
+        expected = {"data": {"bank": 3600, "bets": [{"pick": "П1"}]}}
+        envelope = {
+            "format": "neuro-local-fernet-v1",
+            "ciphertext": cipher.encrypt(
+                json.dumps(expected, ensure_ascii=False).encode("utf-8")
+            ).decode("ascii"),
+        }
+        with (
+            patch.object(usage, "_gist_config", return_value=("gist-id", "token")),
+            patch.object(usage, "_portfolio_fernet", return_value=cipher),
+            patch.object(
+                usage.urllib.request, "urlopen",
+                return_value=_Response({
+                    "public": False,
+                    "files": {"neuro_local.json": {"content": json.dumps(envelope)}},
+                }),
+            ),
+        ):
+            result = usage._gist_read()
+        self.assertEqual(result, expected)
+
+    def test_portfolio_gist_write_refuses_to_store_plaintext_without_backup_key(self):
+        with (
+            patch.object(usage, "_gist_config", return_value=("gist-id", "token")),
+            patch.object(usage, "_portfolio_fernet", return_value=None),
+            patch.object(
+                usage.urllib.request, "urlopen",
+                return_value=_Response({"public": False, "files": {}}),
+            ) as open_url,
+            self.assertLogs("usage", level="ERROR"),
+        ):
+            result = usage._gist_write({"bank": 1000, "bets": []})
+        self.assertFalse(result)
+        self.assertEqual(open_url.call_count, 1)
 
     def test_read_keeps_public_legacy_backup_available_but_logs_warning(self):
         legacy = {"data": {"bank": 1000, "bets": []}}
