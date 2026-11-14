@@ -273,9 +273,6 @@ class SStatsTests(unittest.TestCase):
     @patch.object(sstats, "_sstats_request")
     @patch.object(sstats, "cache_put")
     @patch.object(sstats, "cache_get", return_value=None)
-    @patch.object(sstats, "_sstats_request")
-    @patch.object(sstats, "cache_put")
-    @patch.object(sstats, "cache_get", return_value=None)
     def test_context_enrichment_uses_sstats_ids_for_injuries_lineups_and_referee(
         self, _cache_get, _cache_put, request_mock
     ):
@@ -373,6 +370,9 @@ class SStatsTests(unittest.TestCase):
             [],
         )
 
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
     def test_full_odds_uses_bookmaker_data_and_caches(self, _cache_get, _cache_put, request_mock):
         request_mock.return_value = _Response(200, {
             "status": "success",
