@@ -3328,6 +3328,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 f"после старта пропущено {tracked['skipped_started']}, "
                 f"ошибок {tracked['invalid']}"
             )
+            try:
+                from storage.remote_backup import backup_database_to_gist
+                backup_status = backup_database_to_gist(DB_FILE)
+                if backup_status.get("ok") and backup_status.get("state") == "uploaded":
+                    logs.append("🛡️ SQLite: зашифрованная копия журнала сохранена и проверена в Secret Gist.")
+                elif backup_status.get("state") not in {"not_configured", "current"}:
+                    logs.append(
+                        "⚠️ SQLite remote backup: "
+                        + str(backup_status.get("message") or backup_status.get("state"))
+                    )
+            except Exception as backup_exc:
+                logs.append(f"⚠️ SQLite remote backup: {type(backup_exc).__name__}")
         except Exception as exc:
             logs.append(f"⚠️ Журнал прогнозов ИИ недоступен: {type(exc).__name__}: {str(exc)[:120]}")
 
