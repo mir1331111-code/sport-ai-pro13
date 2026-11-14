@@ -174,6 +174,34 @@ class UsageGistVisibilityTests(unittest.TestCase):
         # Without a cipher key, refuse locally before making any remote request.
         self.assertEqual(open_url.call_count, 0)
 
+    def test_legacy_portfolio_is_migrated_to_encrypted_gist_after_recovery(self):
+        legacy = {"bank": 2200, "bets": [], "meta": {"initial_bank": 1000}}
+        persisted = {}
+        with (
+            patch.object(usage, "_safe_read", return_value={}),
+            patch.object(usage, "_gist_read", return_value=legacy),
+            patch.object(usage, "_update", side_effect=lambda mutate: mutate(persisted)),
+            patch.object(usage, "_gist_write", return_value=True) as write_remote,
+        ):
+            result = usage.get_local_data()
+        self.assertEqual(result, legacy)
+        self.assertEqual(persisted["data"], legacy)
+        write_remote.assert_called_once_with(legacy)
+
+    def test_legacy_portfolio_recovery_keeps_local_copy_when_encryption_key_is_missing(self):
+        legacy = {"bank": 2200, "bets": []}
+        persisted = {}
+        with (
+            patch.object(usage, "_safe_read", return_value={}),
+            patch.object(usage, "_gist_read", return_value=legacy),
+            patch.object(usage, "_update", side_effect=lambda mutate: mutate(persisted)),
+            patch.object(usage, "_gist_write", return_value=False) as write_remote,
+        ):
+            result = usage.get_local_data()
+        self.assertEqual(result, legacy)
+        self.assertEqual(persisted["data"], legacy)
+        write_remote.assert_called_once_with(legacy)
+
     def test_read_keeps_public_legacy_backup_available_but_logs_warning(self):
         legacy = {"data": {"bank": 1000, "bets": []}}
         with (
