@@ -188,6 +188,7 @@ MAX_PER_RUN = 20
 SECRET_KEYS = (
     "fdorg_token", "highlightly_api_key", "sstats_api_key",
     "footballapi_key", "llm_api_key", "xai_api_key",
+    "odds_api_key", "therundown_api_key", "rundown_key",
 )
 
 
@@ -374,8 +375,7 @@ D.setdefault("meta", {})
 # Credentials live outside portfolio data and backup/sync files.
 _saved_ui_secrets = load_local_secrets()
 # API credentials are session/env/secrets-only, never persisted in local state.
-_secret_keys = ("fdorg_token", "odds_api_key", "therundown_api_key", "rundown_key",
-                "highlightly_api_key", "llm_api_key", "xai_api_key")
+_secret_keys = SECRET_KEYS
 _secrets_removed = False
 for _key in _secret_keys:
     if D["meta"].pop(_key, None) is not None:
