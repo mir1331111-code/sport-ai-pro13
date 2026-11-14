@@ -1231,7 +1231,9 @@ with st.sidebar:
                     f"рынки {_audit_restored['market_forecasts']}, "
                     f"ставки {_audit_restored['paper_bets']}, "
                     f"банк {_audit_restored['bank_history']}, "
-                    f"снимки решений {_audit_restored['decision_snapshots']}."
+                    f"снимки решений {_audit_restored['decision_snapshots']}, "
+                    f"исторические архивы {_audit_restored.get('user_datasets', 0)} "
+                    f"({_audit_restored.get('user_dataset_rows', 0)} строк)."
                 )
             except Exception as _audit_restore_exc:
                 st.error(
