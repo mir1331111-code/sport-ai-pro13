@@ -46,7 +46,10 @@ class SStatsDivisionMappingTests(unittest.TestCase):
         self.assertEqual(_sstats_div_code("Women's Super League"), "W_E0")
         self.assertEqual(_sstats_div_code("Frauen-Bundesliga"), "W_D1")
         self.assertEqual(_sstats_div_code("Primera Division Femenina"), "W_SP1")
+        self.assertEqual(_sstats_div_code("UEFA Europa League"), "EL")
+        self.assertEqual(_sstats_div_code("UEFA Champions League"), "C1")
         self.assertTrue(_sstats_div_code("UEFA Nations League").startswith("NT_"))
+        self.assertTrue(_sstats_div_code("FIFA Club World Cup").startswith("S_"))
 
 
 if __name__ == "__main__":
