@@ -903,7 +903,7 @@ def _sstats_div_code(league_name: str) -> str:
     international = any(token in name for token in (
         "national", "international", "nations league", "world cup", "world cup qualification",
         "euro", "africa cup", "african cup", "afcon", "copa america",
-        "asian cup", "asian games", "friendly", "qualifier", "qualification",
+        "asian cup", "asian games", "friendl", "qualifier", "qualification",
     ))
     if international or age:
         if "nations league" in name:
@@ -918,7 +918,7 @@ def _sstats_div_code(league_name: str) -> str:
             competition = "WCQ" if any(x in name for x in ("qualif", "qualification")) else "WC"
         elif "euro" in name:
             competition = "EURO"
-        elif "friendly" in name:
+        elif "friendl" in name:
             competition = "FR"
         elif any(x in name for x in ("qualifier", "qualification")):
             competition = "QUAL"
