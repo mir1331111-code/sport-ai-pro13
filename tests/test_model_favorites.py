@@ -1,6 +1,9 @@
 import unittest
 
-from betting.ranking import model_favorite, rank_model_favorites
+from betting.ranking import (
+    model_favorite, rank_model_favorites,
+    rank_model_favorites_with_minimum,
+)
 
 
 class ModelFavoriteTests(unittest.TestCase):
@@ -167,6 +170,59 @@ class ModelFavoriteTests(unittest.TestCase):
 
     def test_probabilities_outside_tolerance_are_rejected(self):
         self.assertIsNone(model_favorite({"p1": 0.8, "px": 0.3, "p2": 0.2}))
+
+    def test_minimum_seven_display_includes_lower_history_as_forecast_only(self):
+        cards = [
+            {
+                "match": f"Team {i} vs Opponent {i}",
+                "date_iso": f"2026-11-{i + 1:02d}",
+                "p1": 0.50 + i * 0.01,
+                "px": 0.30,
+                "p2": 0.20 - i * 0.01,
+                "games": 12 if i < 4 else 2,
+            }
+            for i in range(7)
+        ]
+        ranked = rank_model_favorites_with_minimum(
+            cards, minimum=7, limit=10, min_sample_games=5,
+        )
+        self.assertEqual(len(ranked), 7)
+        self.assertEqual(sum(item["history_sufficient"] for item in ranked), 4)
+        self.assertEqual(sum(not item["history_sufficient"] for item in ranked), 3)
+        self.assertTrue(all("card" in item for item in ranked))
+
+    def test_minimum_seven_never_invents_missing_fixtures(self):
+        cards = [
+            {"match": f"Team {i} vs Opponent", "date_iso": "2026-11-01",
+             "p1": 0.60, "px": 0.22, "p2": 0.18, "games": 12}
+            for i in range(6)
+        ]
+        ranked = rank_model_favorites_with_minimum(
+            cards, minimum=7, limit=10, min_sample_games=5,
+        )
+        self.assertEqual(len(ranked), 6)
+
+    def test_minimum_floor_overrides_smaller_nominal_limit(self):
+        cards = [
+            {"match": f"Team {i} vs Opponent", "date_iso": "2026-11-01",
+             "p1": 0.60, "px": 0.22, "p2": 0.18, "games": 12}
+            for i in range(8)
+        ]
+        ranked = rank_model_favorites_with_minimum(
+            cards, minimum=7, limit=5, min_sample_games=5,
+        )
+        self.assertEqual(len(ranked), 7)
+
+    def test_minimum_display_keeps_probability_first_order(self):
+        cards = [
+            {"match": f"Team {i} vs Opponent", "date_iso": "2026-11-01",
+             "p1": 0.50 + i * 0.02, "px": 0.30, "p2": 0.20 - i * 0.02,
+             "games": 1 if i == 6 else 12}
+            for i in range(7)
+        ]
+        ranked = rank_model_favorites_with_minimum(cards, minimum=7, limit=10)
+        self.assertEqual(ranked[0]["card"]["match"], "Team 6 vs Opponent")
+        self.assertFalse(ranked[0]["history_sufficient"])
 
 
 if __name__ == "__main__":
