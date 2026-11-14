@@ -900,7 +900,8 @@ def _sstats_div_code(league_name: str) -> str:
     # and youth international football out of men's senior calibration/history.
     women = any(token in name for token in (
         "women", "womens", "ladies", "female", "feminine",
-        "femenina", "femminile", "frauen",
+        "femenina", "femminile", "frauen", "serie a fem",
+        "liga f", "wsl", "uwcl",
     ))
     age = next(
         (age for age in ("u21", "u-21", "under 21", "u19", "u-19", "under 19",
@@ -932,8 +933,37 @@ def _sstats_div_code(league_name: str) -> str:
             competition = "COPA"
         elif "asian cup" in name:
             competition = "ASIAN"
-        elif "world cup" in name:
-            competition = "WCQ" if any(x in name for x in ("qualif", "qualification")) else "WC"
+        elif any(token in name for token in (
+            "world cup qualification europe", "world cup qualifiers europe",
+            "world cup qualifying europe", "world cup qualifiers - europe",
+        )):
+            competition = "WCE"
+        elif any(token in name for token in (
+            "world cup qualification south america", "world cup qualification conmebol",
+            "world cup qualifiers conmebol", "world cup qualifying south america",
+        )):
+            competition = "WCC"
+        elif any(token in name for token in (
+            "world cup qualification asia", "world cup qualification afc",
+            "world cup qualifiers afc", "world cup qualifying asia",
+        )):
+            competition = "WCA"
+        elif any(token in name for token in (
+            "world cup qualification africa", "world cup qualification caf",
+            "world cup qualifiers caf", "world cup qualifying africa",
+        )):
+            competition = "WCF"
+        elif any(token in name for token in (
+            "world cup qualification north america", "world cup qualification concacaf",
+            "world cup qualifiers concacaf", "world cup qualifying north america",
+        )):
+            competition = "WCN"
+        elif any(token in name for token in (
+            "world cup", "world cup qualif", "world cup qualification",
+        )):
+            competition = "WC"
+        elif any(token in name for token in ("euro qualifier", "euro qualification", "euro qualifying")):
+            competition = "EQ"
         elif "euro" in name:
             competition = "EURO"
         elif "friendl" in name:
