@@ -25,7 +25,8 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
                           parse_date, tsdb_matches, espn_matches,
                           sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
                           footballapi_xg_history)
-from data.fixture_merge import enforce_sstats_odds_only, merge_fixture_sources
+from data.fixture_merge import (enforce_sstats_market_card, enforce_sstats_odds_only,
+                                is_sstats_market_source, merge_fixture_sources)
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from data.context_data import (
     fixture_row_key,
@@ -84,8 +85,8 @@ def _runtime_secret(session_key: str, *names: str) -> str:
             value = str(st.secrets.get(name, "") or "").strip()
             if value:
                 return value
-        # Also accept common nested layouts such as [api] or [highlightly].
-        for section_name in ("api", "apis", "secrets", "highlightly", "sstats"):
+        # Also accept the common nested [api], [apis], [secrets] or [sstats] layouts.
+        for section_name in ("api", "apis", "secrets", "sstats"):
             section = st.secrets.get(section_name, {})
             if hasattr(section, "get"):
                 for name in names:
@@ -539,30 +540,23 @@ def _render_manual_odds_block(
 
     def quote_for(candidate_pick):
         kind = market_type(candidate_pick)
-        # Extra markets are usable only when the detail page explicitly labels
-        # a quote belongs to the exact market. A page-wide bookmaker mention is not proof
-        # that every parsed price belongs to that bookmaker.
-        extra_source = str(c.get("extra_market_source") or "").casefold()
-        # Secondary markets have independent provenance. A verified SStats
-        # BTTS quote must not accidentally bless a stale totals quote from
-        # another provider merely because both live on the same fixture card.
-        if kind == "OU":
-            source = str(c.get("total_odds_source") or "").casefold()
-            if source not in {"highlightly", "manual_import", "sstats"}:
-                return None
-        elif kind == "BTTS":
-            source = str(c.get("btts_odds_source") or "").casefold()
-            if source not in {"highlightly", "manual_import", "sstats"}:
-                return None
-        elif kind == "STAT" and extra_source not in {"highlightly", "manual_import", "sstats"}:
-            return None
+        # The automatic scanner accepts only explicitly SStats-tagged prices.
+        # Do not grandfather Highlightly/manual-import quotes on persisted cards.
         if kind == "1X2":
+            if not is_sstats_market_source(c.get("odds_source")):
+                return None
             raw = source_odds.get(candidate_pick)
         elif kind == "OU":
+            if not is_sstats_market_source(c.get("total_odds_source")):
+                return None
             raw = total_odds.get(candidate_pick)
         elif kind == "BTTS":
+            if not is_sstats_market_source(c.get("btts_odds_source")):
+                return None
             raw = btts_odds.get(candidate_pick)
         elif kind == "STAT":
+            if not is_sstats_market_source(c.get("extra_market_source")):
+                return None
             raw = stat_odds.get(candidate_pick)
         else:
             raw = None
@@ -615,7 +609,7 @@ def _render_manual_odds_block(
             "Коэффициенты 1X2 не подставляются вместо неё."
         )
     asian_quotes = c.get("asian_handicap_market_odds") or {}
-    if asian_quotes:
+    if asian_quotes and is_sstats_market_source(c.get("extra_market_source")):
         asian_text = " · ".join(
             f"{pick}: **{float(odd):.2f}**"
             for pick, odd in sorted(asian_quotes.items())
@@ -769,9 +763,12 @@ def _render_manual_odds_block(
     market_pair_validated = has_coherent_market_line(pick)
     if selected_market_type == "1X2":
         market_is_validated = (
-            bool(c.get("winner_market_validation")) and market_pair_validated
+            is_sstats_market_source(c.get("odds_source"))
+            and bool(c.get("winner_market_validation")) and market_pair_validated
         )
         validation_parts = []
+        if not is_sstats_market_source(c.get("odds_source")):
+            validation_parts.append("Рыночная котировка отсутствует из SStats; другие источники не допускаются.")
         if not c.get("winner_market_validation"):
             validation_parts.append(
                 "Модель пока не доказала статистически значимое улучшение над de-vig букмекерским рынком "
@@ -797,8 +794,8 @@ def _render_manual_odds_block(
         source = str(c.get("total_odds_source") or "").casefold()
         book_count = int((c.get("total_market_book_count") or {}).get(pick) or 0)
         quote_corroborated = (
-            source != "sstats"
-            or bool((c.get("total_market_confirmed") or {}).get(pick))
+            is_sstats_market_source(source)
+            and bool((c.get("total_market_confirmed") or {}).get(pick))
         )
         bookmaker_benchmark_validated = (
             abs(float(line_key or 0.0) - 2.5) < 1e-9
@@ -856,7 +853,7 @@ def _render_manual_odds_block(
                 and int(stat_prediction.get("away_team_games") or 0) >= 4
             )
             source = str(c.get("extra_market_source") or "").casefold()
-            quote_source_valid = source in {"highlightly", "manual_import", "sstats"}
+            quote_source_valid = is_sstats_market_source(source)
             # The current statistical walk-forward compares with a league
             # baseline, not bookmaker prices. It is not an actionable Value gate.
             market_is_validated = False
@@ -1114,6 +1111,17 @@ def _render_manual_odds_block(
 
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
+    # Existing saved cards may outlive an odds provider configuration. Strip any
+    # legacy non-SStats prices before they can be shown or treated as real quotes.
+    saved_cards = D.get("cards") or []
+    cleaned_cards = [
+        enforce_sstats_market_card(card)
+        for card in saved_cards if isinstance(card, dict)
+    ]
+    if cleaned_cards != saved_cards:
+        D["cards"] = cleaned_cards
+        st.session_state.data = D
+        usage.set_local_data(D)
     # Modern scanner header and clear workflow: fixtures -> odds -> value -> portfolio.
     st.markdown(
         "<div class='scanner-hero'>"
@@ -1126,9 +1134,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     )
     # Compact dashboard summary keeps the first screen useful before and after a scan.
     previous_cards = [c for c in (D.get("cards") or []) if isinstance(c, dict)]
-    priced_count = sum(bool(c.get("market_odds")) for c in previous_cards)
+    priced_count = sum(
+        bool(c.get("market_odds")) and is_sstats_market_source(c.get("odds_source"))
+        for c in previous_cards
+    )
     qualified_count = sum(
         bool(c.get("best") is not None
+             and is_sstats_market_source(c.get("best_odds_source"))
              and (c.get("verdict") or {}).get("real_odds")
              and (c.get("verdict") or {}).get("value_passed"))
         for c in previous_cards
@@ -1556,18 +1568,33 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
 
         quote_counts = {
-            "winner": sum(bool(x.get("market_odds")) for x in market_pool),
-            "goals": sum(bool(x.get("total_market_odds")) for x in market_pool),
-            "btts": sum(bool(x.get("btts_market_odds")) for x in market_pool),
+            "winner": sum(
+                bool(x.get("market_odds")) and is_sstats_market_source(x.get("odds_source"))
+                for x in market_pool
+            ),
+            "goals": sum(
+                bool(x.get("total_market_odds")) and is_sstats_market_source(x.get("total_odds_source"))
+                for x in market_pool
+            ),
+            "btts": sum(
+                bool(x.get("btts_market_odds")) and is_sstats_market_source(x.get("btts_odds_source"))
+                for x in market_pool
+            ),
             "corners": sum(
-                any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {}))
+                is_sstats_market_source(x.get("extra_market_source"))
+                and any(str(k).startswith("Угл ") for k in (x.get("stat_market_odds") or {}))
                 for x in market_pool
             ),
             "cards": sum(
-                any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {}))
+                is_sstats_market_source(x.get("extra_market_source"))
+                and any(str(k).startswith("Карты ") for k in (x.get("stat_market_odds") or {}))
                 for x in market_pool
             ),
-            "handicap": sum(bool(x.get("asian_handicap_market_odds")) for x in market_pool),
+            "handicap": sum(
+                bool(x.get("asian_handicap_market_odds"))
+                and is_sstats_market_source(x.get("extra_market_source"))
+                for x in market_pool
+            ),
         }
         signal_counts = {
             family: sum(
@@ -1870,7 +1897,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     _render_ranked_market_card(card, market_filter)
 
         with market_tabs[6]:
-            handicap_cards = [card for card in market_pool if card.get("asian_handicap_market_odds")]
+            handicap_cards = [
+                card for card in market_pool
+                if card.get("asian_handicap_market_odds")
+                and is_sstats_market_source(card.get("extra_market_source"))
+            ]
             if not handicap_cards:
                 st.info("SStats не вернул подтверждённых котировок на форы для показанных матчей.")
             for card in handicap_cards:
@@ -3304,7 +3335,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         # Surface source diagnostics in deployment logs, not only the in-app report.
         for source_line in logs:
-            if "Highlightly" in source_line or "матчей после фильтрации" in source_line:
+            if "матчей после фильтрации" in source_line:
                 _print_log(f"SOURCE: {source_line}")
 
         _print_log(f"FUNNEL: {funnel_counts}")
