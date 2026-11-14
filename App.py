@@ -709,6 +709,44 @@ def _sync_forecast_results(force: bool = False):
     return status
 
 
+@st.fragment(run_every="10m")
+def _automatic_result_sync_widget():
+    """Run settlement while the Streamlit session remains open, without user clicks."""
+    now_ts = time.time()
+    last_portfolio_check = float(st.session_state.get("_last_auto_settle_ts", 0) or 0)
+    if now_ts - last_portfolio_check >= AUTO_SETTLE_EVERY_SEC:
+        st.session_state["_last_auto_settle_ts"] = now_ts
+        try:
+            current_data = st.session_state.get("data") or {}
+            updated_data, closed, tried = _auto_settle(current_data)
+            _apply_settle_result(updated_data, closed, tried, "auto_settle")
+            st.session_state["_portfolio_auto_settlement_status"] = {
+                "closed": closed, "tried": tried,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if closed:
+                st.toast(f"🔄 Автоматически закрыто ставок: {closed}", icon="✅")
+        except Exception as exc:
+            st.session_state["_portfolio_auto_settlement_status"] = {
+                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
+            }
+
+    _sync_forecast_results()
+    status = st.session_state.get("_forecast_ledger_sync_status") or {}
+    portfolio_status = st.session_state.get("_portfolio_auto_settlement_status") or {}
+    if status.get("error") or portfolio_status.get("error"):
+        st.caption(
+            "Автосверка: " + str(status.get("error") or portfolio_status.get("error"))
+        )
+    elif status or portfolio_status:
+        st.caption(
+            "Автосверка (пока приложение открыто): "
+            f"прогнозов закрыто {status.get('forecasts_settled', 0)} · "
+            f"рыночных рекомендаций {status.get('market_forecasts_settled', 0)} · "
+            f"ставок портфеля {portfolio_status.get('closed', 0)}."
+        )
+
+
 _now_ts = time.time()
 if _now_ts - st.session_state.get("_last_auto_settle_ts", 0) > AUTO_SETTLE_EVERY_SEC:
     st.session_state["_last_auto_settle_ts"] = _now_ts
@@ -961,6 +999,8 @@ with st.sidebar:
             f"закрыто рыночных рекомендаций: {forecast_sync.get('market_forecasts_settled', 0)}"
         )
         st.rerun()
+
+    _automatic_result_sync_widget()
 
     _sync_status = st.session_state.get("_forecast_ledger_sync_status") or {}
     if _sync_status.get("error"):
