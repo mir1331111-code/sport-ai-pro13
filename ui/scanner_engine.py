@@ -24,13 +24,26 @@ from model.training import (
     prepare_completed_training_rows, train_engine_chronologically,
 )
 
+# Keep validation leagues module-scoped: training and validation are separate
+# functions, so a local variable inside the history loader is not visible here.
+_PRIORITY_DIVS = (
+    "E0", "SP1", "I1", "D1", "F1", "E1", "SP2", "I2",
+    "D2", "F2", "N1", "B1", "P1", "T1", "R1",
+)
+
+
+def _validation_divisions(train_divs):
+    """Return priority validation leagues in stable order, limited to trained divisions."""
+    available = set(train_divs or ())
+    return tuple(division for division in _PRIORITY_DIVS if division in available)
+
+
 def _load_seasonal_history(logs, update_loader):
     """Load one deterministic snapshot of the configured seasonal training feed."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     history_years = list(range(cur_year - 4, cur_year + 1))
-    priority_divs = ["E0", "SP1", "I1", "D1", "F1", "E1", "SP2", "I2",
-                     "D2", "F2", "N1", "B1", "P1", "T1", "R1"]
+    priority_divs = list(_PRIORITY_DIVS)
     supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
     train_divs = list(dict.fromkeys(priority_divs + supported_divs))
     history = {}
@@ -199,7 +212,7 @@ def _train_engine(
     # competition/season on each cold start made Streamlit appear frozen.
     # 15 main leagues × latest 500 complete fixtures retains >500 observations
     # across competitions for each supported market while limiting CPU time.
-    validation_divs = tuple(priority_divs)
+    validation_divs = _validation_divisions(train_divs)
     validation_rows = select_validation_rows(
         history, validation_divs, max_rows_per_league=500,
     )
