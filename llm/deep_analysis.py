@@ -129,31 +129,61 @@ def top_match_shortlist_diagnostics(
     cards: object,
     *,
     min_team_history: int = MIN_TOP_TEAM_HISTORY,
-) -> dict[str, int]:
-    """Count evidence-ready fixtures independently of model probability or odds."""
+) -> dict[str, Any]:
+    """Explain shortlist coverage, including missing team history per competition."""
     rows = [card for card in cards if isinstance(card, dict)] if isinstance(cards, list) else []
-    result = {
+    minimum = max(1, int(min_team_history))
+    result: dict[str, Any] = {
         "fixtures": len(rows),
         "enough_venue_history": 0,
+        "insufficient_venue_history": 0,
+        "missing_goal_features": 0,
+        "zero_home_history": 0,
+        "zero_away_history": 0,
         "with_goal_market_history": 0,
         "with_corners_history": 0,
         "with_cards_history": 0,
         "with_xg_history": 0,
         "eligible": 0,
+        "division_coverage": {},
     }
+    divisions: dict[str, dict[str, Any]] = {}
     for card in rows:
         features = card.get("independent_features") or {}
+        features = features if isinstance(features, dict) else {}
+        home_n = max(0, int(_number(features.get("home_home_sample")) or 0))
+        away_n = max(0, int(_number(features.get("away_away_sample")) or 0))
+        division = str(card.get("div") or "UNKNOWN").strip().upper()
+        league = str(card.get("league") or division).strip()
+        bucket = divisions.setdefault(division, {
+            "code": division, "league": league, "fixtures": 0, "eligible": 0,
+            "max_home_sample": 0, "max_away_sample": 0,
+            "zero_home_history": 0, "zero_away_history": 0,
+        })
+        bucket["fixtures"] += 1
+        bucket["max_home_sample"] = max(bucket["max_home_sample"], home_n)
+        bucket["max_away_sample"] = max(bucket["max_away_sample"], away_n)
+        if home_n == 0:
+            result["zero_home_history"] += 1
+            bucket["zero_home_history"] += 1
+        if away_n == 0:
+            result["zero_away_history"] += 1
+            bucket["zero_away_history"] += 1
+
+        enough_venue = min(home_n, away_n) >= minimum
+        if not enough_venue:
+            result["insufficient_venue_history"] += 1
         if not has_sufficient_history(features):
+            result["missing_goal_features"] += 1
             continue
-        home_n = int(_number(features.get("home_home_sample")) or 0)
-        away_n = int(_number(features.get("away_away_sample")) or 0)
-        if min(home_n, away_n) < int(min_team_history):
+        if not enough_venue:
             continue
+
         result["enough_venue_history"] += 1
+        bucket["eligible"] += 1
         markets = features.get("markets") or {}
         if isinstance(markets, dict):
-            goal_rows = min(home_n, away_n)
-            if goal_rows >= int(min_team_history):
+            if min(home_n, away_n) >= minimum:
                 result["with_goal_market_history"] += 1
             for market in ("corners", "cards"):
                 item = markets.get(market)
@@ -168,6 +198,11 @@ def top_match_shortlist_diagnostics(
         ):
             result["with_xg_history"] += 1
         result["eligible"] += 1
+
+    result["division_coverage"] = sorted(
+        divisions.values(),
+        key=lambda item: (-item["fixtures"], -item["eligible"], item["code"]),
+    )
     return result
 
 
