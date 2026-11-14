@@ -2655,6 +2655,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     # If no provider has a verified line, leave odds empty.
 
                     for source_name, candidate in candidates:
+                        # Defensive guard: no adapter other than SStats may supply
+                        # bookmaker prices to the automatic scanner.
+                        if str(source_name or "").strip().casefold() != "sstats":
+                            continue
                         if not isinstance(candidate, dict):
                             continue
                         valid = {}
