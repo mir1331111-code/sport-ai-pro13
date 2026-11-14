@@ -25,6 +25,7 @@ _ALLOWED_KEYS = {
     "footballapi_key",
     "highlightly_api_key",
     "llm_api_key",
+    "xai_api_key",
 }
 
 

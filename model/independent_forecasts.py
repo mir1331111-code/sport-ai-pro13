@@ -66,6 +66,73 @@ def historical_features(
     }
 
 
+def historical_xg_features(
+    engine: Any, home: str, away: str, league: str = "G",
+    match_date: datetime | None = None,
+) -> dict[str, Any]:
+    """Return leakage-safe, venue-specific provider/proxy xG and xGA history.
+
+    Provider xG and the local aggregate-shot proxy stay in separate fields.
+    Only dated observations strictly before the target calendar day are used.
+    """
+    from model.engine import _team_state_key
+
+    teams = getattr(engine, "st", {})
+    division = str(league or "G").strip().upper() or "G"
+    home_state = teams.get(_team_state_key(division, home), {}) if hasattr(teams, "get") else {}
+    away_state = teams.get(_team_state_key(division, away), {}) if hasattr(teams, "get") else {}
+    cutoff = match_date.date() if isinstance(match_date, datetime) else match_date
+
+    def dated_mean(state: dict, value_key: str, date_key: str) -> tuple[float | None, int]:
+        values = list(state.get(value_key) or [])
+        dates = list(state.get(date_key) or [])
+        eligible = []
+        for value, stamp in zip(values, dates):
+            if cutoff is not None:
+                if stamp is None:
+                    continue
+                stamp_date = stamp.date() if hasattr(stamp, "date") else stamp
+                if isinstance(stamp_date, str):
+                    try:
+                        stamp_date = datetime.fromisoformat(stamp_date[:10]).date()
+                    except ValueError:
+                        continue
+                if stamp_date >= cutoff:
+                    continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number) and 0.0 <= number <= 8.0:
+                eligible.append(number)
+        return (_mean(eligible), len(eligible))
+
+    result: dict[str, Any] = {}
+    streams = (
+        ("provider", home_state, "hs_xg", "hs_xga", "hs_xg_dates", "hs_xga_dates",
+         away_state, "as_xg", "as_xga", "as_xg_dates", "as_xga_dates"),
+        ("proxy", home_state, "hs_pxg", "hs_pxga", "hs_pxg_dates", "hs_pxga_dates",
+         away_state, "as_pxg", "as_pxga", "as_pxg_dates", "as_pxga_dates"),
+    )
+    for label, h_state, h_for_key, h_against_key, h_for_dates, h_against_dates, a_state, a_for_key, a_against_key, a_for_dates, a_against_dates in streams:
+        home_for, home_n = dated_mean(h_state, h_for_key, h_for_dates)
+        home_against, home_against_n = dated_mean(h_state, h_against_key, h_against_dates)
+        away_for, away_n = dated_mean(a_state, a_for_key, a_for_dates)
+        away_against, away_against_n = dated_mean(a_state, a_against_key, a_against_dates)
+        result[label] = {
+            "home_xg_for_avg": home_for,
+            "home_xga_avg": home_against,
+            "away_xg_for_avg": away_for,
+            "away_xga_avg": away_against,
+            "home_xg_samples": home_n,
+            "home_xga_samples": home_against_n,
+            "away_xg_samples": away_n,
+            "away_xga_samples": away_against_n,
+        }
+    result["source_priority"] = "provider_then_proxy"
+    return result
+
+
 def _valid_probabilities(values: dict[str, Any]) -> dict[str, float] | None:
     try:
         result = {key: float(values[key]) for key in OUTCOMES}
