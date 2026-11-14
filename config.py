@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "14.4.4"
+APP_VERSION = "14.4.5"
 DATA_VERSION = 18
 
 # The favorites panel targets seven forecasts when the schedule contains them.
@@ -22,7 +22,7 @@ DISK_CACHE_DIR = os.path.join(_APP_DIR, "neuro_cache")
 os.makedirs(DISK_CACHE_DIR, exist_ok=True)
 
 AUTO_SETTLE_LIMIT = 999
-AUTO_SETTLE_THROTTLE_SEC = 3600
+AUTO_SETTLE_THROTTLE_SEC = 900
 LLM_DAILY_LIMIT = 20
 LLM_TOP_N = 8
 ODDS_LIMIT_DAILY = 25
