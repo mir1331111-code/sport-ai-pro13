@@ -84,6 +84,7 @@ class ScanSummaryTests(unittest.TestCase):
         self.assertEqual(_scan_summary(cards), {
             "matches": 3,
             "forecasted": 3,
+            "ai_forecasted": 0,
             "quoted_1x2": 1,
             "quoted_any": 2,
             "value_signals": 1,
@@ -92,7 +93,7 @@ class ScanSummaryTests(unittest.TestCase):
 
     def test_empty_scan_returns_zero_counts(self):
         self.assertEqual(_scan_summary([]), {
-            "matches": 0, "forecasted": 0, "quoted_1x2": 0,
+            "matches": 0, "forecasted": 0, "ai_forecasted": 0, "quoted_1x2": 0,
             "quoted_any": 0, "value_signals": 0, "ai_opinions": 0,
         })
 

@@ -9,7 +9,9 @@ from data.scores import completed_matches_for_day
 from data.fixture_time import app_timezone
 from storage import sqlite_store as db
 from config import DB_FILE
-from model.independent_forecasts import comparison_report, settle_due_forecasts
+from model.independent_forecasts import (
+    comparison_report, settle_due_forecasts, parse_llm_probabilities,
+)
 from model.forecast_ledger import ForecastLedger
 from model.forecast_ledger import MarketForecastLedger
 from model.audit_export import build_audit_export
@@ -30,7 +32,7 @@ def _sharpe(returns: list, periods_per_year: int = 252) -> float:
 def _scan_summary(cards: object) -> dict[str, int]:
     """Summarize current-scan fixtures without treating forecasts as bets."""
     valid_cards = [card for card in cards or [] if isinstance(card, dict)]
-    forecasted = quoted_1x2 = quoted_any = value_signals = ai_opinions = 0
+    forecasted = ai_forecasted = quoted_1x2 = quoted_any = value_signals = ai_opinions = 0
     for card in valid_cards:
         try:
             probabilities = [float(card.get(key)) for key in ("p1", "px", "p2")]
@@ -56,11 +58,15 @@ def _scan_summary(cards: object) -> dict[str, int]:
             and verdict.get("real_odds") and verdict.get("value_passed")
         ):
             value_signals += 1
-        if str(card.get("llm_opinion") or "").strip():
+        opinion = str(card.get("llm_opinion") or "").strip()
+        if opinion:
             ai_opinions += 1
+        if parse_llm_probabilities(opinion) is not None:
+            ai_forecasted += 1
     return {
         "matches": len(valid_cards),
         "forecasted": forecasted,
+        "ai_forecasted": ai_forecasted,
         "quoted_1x2": quoted_1x2,
         "quoted_any": quoted_any,
         "value_signals": value_signals,
@@ -77,9 +83,14 @@ def _render_forecast_journal(D):
         columns = st.columns(5)
         columns[0].metric("Матчей проанализировано", summary["matches"])
         columns[1].metric("Прогнозов 1X2", summary["forecasted"])
-        columns[2].metric("Матчей с 1X2", summary["quoted_1x2"])
-        columns[3].metric("С Value-сигналом", summary["value_signals"])
-        columns[4].metric("Мнений ИИ", summary["ai_opinions"])
+        columns[2].metric("Прогнозов ИИ", summary["ai_forecasted"])
+        columns[3].metric("Матчей с кэфами 1X2", summary["quoted_1x2"])
+        columns[4].metric("Value-проходов", summary["value_signals"])
+        if summary["ai_opinions"] > summary["ai_forecasted"]:
+            st.caption(
+                f"Текстовых мнений ИИ: {summary['ai_opinions']}; "
+                f"валидных прогнозов с вероятностями: {summary['ai_forecasted']}."
+            )
         st.caption(
             f"Котировки хотя бы одного рынка есть у {summary['quoted_any']} матчей. "
             "Прогнозы и котировки не равны ставкам в портфеле."
@@ -105,29 +116,39 @@ def _render_forecast_journal(D):
             row for row in rows
             if str(row.get("model_version") or "").startswith("independent-llm-")
         ]
+        settled_main = sum(row.get("result") in {"H", "D", "A"} for row in main_rows)
+        settled_ai = sum(row.get("result") in {"H", "D", "A"} for row in ai_rows)
+        pending_main = len(main_rows) - settled_main
+        pending_ai = len(ai_rows) - settled_ai
+        journal_columns = st.columns(6)
+        journal_columns[0].metric("Журнал · модель", len(main_rows))
+        journal_columns[1].metric("Модель · FT подтверждены", settled_main)
+        journal_columns[2].metric("Модель · ждут FT", pending_main)
+        journal_columns[3].metric("Журнал · ИИ", len(ai_rows))
+        journal_columns[4].metric("ИИ · FT подтверждены", settled_ai)
+        journal_columns[5].metric("ИИ · ждут FT", pending_ai)
+        xg_tracked = [row for row in main_rows if row.get("xg_used") is not None]
+        xg_used_n = sum(bool(row.get("xg_used")) for row in xg_tracked)
+        st.caption(
+            "Журнал сохраняет только предматчевые прогнозы. Результат попадает в него "
+            "после подтверждённого FT; не найденный счёт остаётся в ожидании, а не "
+            "считается проигрышем. "
+            f"xG учтён у {xg_used_n}/{len(xg_tracked)} размеченных прогнозов; "
+            f"старых записей без флага xG: {len(main_rows) - len(xg_tracked)}."
+        )
+        market_rows = MarketForecastLedger(DB_FILE).rows()
+        market_settled = sum(row.get("result_status") is not None for row in market_rows)
+        market_pending = len(market_rows) - market_settled
+        stat_market_pending = sum(
+            row.get("result_status") is None and str(row.get("market") or "").upper() == "STAT"
+            for row in market_rows
+        )
+        st.caption(
+            f"Аудит Value-рынков: {len(market_rows)} рекомендаций · "
+            f"{market_settled} закрыто · {market_pending} ожидают. "
+            f"Из них статистические рынки (угловые/карточки) ожидают SStats: {stat_market_pending}."
+        )
         if rows:
-            settled_main = sum(row.get("result") in {"H", "D", "A"} for row in main_rows)
-            settled_ai = sum(row.get("result") in {"H", "D", "A"} for row in ai_rows)
-            journal_columns = st.columns(5)
-            journal_columns[0].metric("Журнал: прогнозы модели", len(main_rows))
-            journal_columns[1].metric("Журнал: прогнозы ИИ", len(ai_rows))
-            journal_columns[2].metric("Результат подтверждён · модель", settled_main)
-            journal_columns[3].metric("Результат подтверждён · ИИ", settled_ai)
-            xg_tracked = [row for row in main_rows if row.get("xg_used") is not None]
-            xg_used_n = sum(bool(row.get("xg_used")) for row in xg_tracked)
-            if xg_tracked:
-                xg_share = xg_used_n / len(xg_tracked)
-                journal_columns[4].metric(
-                    "Прогнозы с xG", f"{xg_used_n}/{len(xg_tracked)}",
-                    delta=f"{xg_share:.1%} от учтённых",
-                )
-            else:
-                journal_columns[4].metric("Прогнозы с xG", "пока нет данных")
-            st.caption(
-                "Журнал хранит прогнозы, сделанные до начала матча. "
-                "Точность, Brier и Log loss рассчитываются только после подтверждённого FT. "
-                f"Старых записей без флага xG: {len(main_rows) - len(xg_tracked)}."
-            )
             calibration = ForecastLedger(DB_FILE).reliability_bins(
                 model_version_prefix="main-model-", bins=10,
             )
@@ -420,37 +441,29 @@ def _render_independent_ai():
         "результат учитывается после подтверждённого статуса FT."
     )
 
-    import time
-    now_ts = time.time()
-    last_check = float(st.session_state.get("_independent_ai_last_check", 0) or 0)
-    if now_ts - last_check >= 600:
+    # The app-level synchronizer handles automatic checks for both portfolio bets
+    # and forecast ledgers. Keep this tab's button as a ledger-only manual retry.
+    if st.button("🔄 Дополнительно проверить журнал прогнозов", use_container_width=False):
         try:
-            with st.spinner("Сверяю уже завершившиеся матчи с источниками результатов…"):
-                settle_status = settle_due_forecasts(db_path=DB_FILE, max_fixtures=8)
-            st.session_state["_independent_ai_settlement_status"] = settle_status
-            st.session_state["_independent_ai_last_check"] = now_ts
-        except Exception as exc:
-            st.session_state["_independent_ai_settlement_status"] = {
-                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
-            }
-            st.session_state["_independent_ai_last_check"] = now_ts
-
-    if st.button("🔄 Проверить результаты завершённых матчей ИИ", use_container_width=False):
-        try:
+            import time
             with st.spinner("Запрашиваю подтверждённые результаты…"):
                 settle_status = settle_due_forecasts(db_path=DB_FILE, max_fixtures=30)
-            st.session_state["_independent_ai_settlement_status"] = settle_status
-            st.session_state["_independent_ai_last_check"] = time.time()
+            settle_status["checked_at"] = datetime.now(timezone.utc).isoformat()
+            st.session_state["_forecast_ledger_sync_status"] = settle_status
+            st.session_state["_last_forecast_ledger_sync_ts"] = time.time()
         except Exception as exc:
-            st.error(f"Не удалось обновить результаты: {type(exc).__name__}: {str(exc)[:160]}")
+            st.session_state["_forecast_ledger_sync_status"] = {
+                "error": f"{type(exc).__name__}: {str(exc)[:160]}"
+            }
 
-    settle_status = st.session_state.get("_independent_ai_settlement_status") or {}
+    settle_status = st.session_state.get("_forecast_ledger_sync_status") or {}
     if settle_status.get("error"):
-        st.warning("Автоматическая проверка результатов временно недоступна: " + str(settle_status["error"]))
+        st.warning("Автоматическая сверка временно недоступна: " + str(settle_status["error"]))
     elif settle_status:
         st.caption(
-            f"Последняя сверка: проверено матчей {settle_status.get('fixtures_checked', 0)}, "
-            f"добавлено завершённых прогнозов {settle_status.get('forecasts_settled', 0)}, "
+            f"Последняя общая сверка: проверено матчей {settle_status.get('fixtures_checked', 0)}, "
+            f"обновлено прогнозов модели/ИИ {settle_status.get('forecasts_settled', 0)}, "
+            f"закрыто рыночных рекомендаций {settle_status.get('market_forecasts_settled', 0)}, "
             f"ошибок источников {settle_status.get('errors', 0)}."
         )
 
