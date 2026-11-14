@@ -17,6 +17,7 @@ from config import (
 )
 from data.sources import load_seasonal, season_str, parse_date
 from model.engine import Engine, _norm
+from model.shot_xg import enrich_history_with_shot_xg
 from model.validation_cache import select_validation_rows, validation_cache_key
 from model.training import (
     prepare_completed_training_rows, train_engine_chronologically,
@@ -108,8 +109,8 @@ def _train_engine(
         "к Value без отдельной рыночной валидации."
     )
 
-    # Enrich only the current Premier League season with genuine match xG.
-    # Football API's complimentary plan is limited to this season's EPL.
+    # Enrich exact matching EPL history rows with genuine provider xG.
+    # Unmatched provider events must not become duplicate historical fixtures.
     xg_rows = list(footballapi_xg_rows or [])
     if xg_rows and "E0" in history and history["E0"]:
         current_rows = history["E0"][-1]
@@ -125,10 +126,11 @@ def _train_engine(
             )
             if all(key):
                 index[key] = row
-        enriched = added = already_present = 0
+        enriched = already_present = replaced_proxy = unmatched = 0
         for xg_row in xg_rows:
             date_value = parse_date(xg_row.get("Date") or "")
             if not date_value:
+                unmatched += 1
                 continue
             key = (
                 date_value.date().isoformat(),
@@ -136,32 +138,41 @@ def _train_engine(
                 _norm(xg_row.get("AwayTeam") or ""),
             )
             if not all(key):
+                unmatched += 1
                 continue
             existing = index.get(key)
-            if existing is not None:
-                if existing.get("HxG") not in (None, "") and existing.get("AxG") not in (None, ""):
+            if existing is None:
+                unmatched += 1
+                continue
+            if existing.get("HxG") not in (None, "") and existing.get("AxG") not in (None, ""):
+                if str(existing.get("xg_kind") or "").casefold() == "modelled_proxy":
+                    for field in ("HxG", "AxG", "xg_source", "xg_kind",
+                                  "xg_model_version", "xg_training_sides"):
+                        existing.pop(field, None)
+                    replaced_proxy += 1
+                else:
                     already_present += 1
                     continue
-                existing["HxG"] = xg_row["HxG"]
-                existing["AxG"] = xg_row["AxG"]
-                existing["xg_source"] = xg_row.get("xg_source", "footballapi.org")
-                enriched += 1
-            else:
-                current_rows.append(dict(xg_row))
-                index[key] = current_rows[-1]
-                added += 1
-        current_rows.sort(
-            key=lambda row: parse_date(row.get("Date") or "") or datetime.min
-        )
+            existing["HxG"] = xg_row["HxG"]
+            existing["AxG"] = xg_row["AxG"]
+            existing["xg_source"] = xg_row.get("xg_source", "footballapi.org")
+            existing.pop("xg_kind", None)
+            existing.pop("xg_model_version", None)
+            existing.pop("xg_training_sides", None)
+            enriched += 1
         logs.append(
-            f"✅ Football API xG применён: добавлено матчей={added}, "
-            f"обогащено строк={enriched}, xG уже были={already_present}."
+            f"✅ Football API xG: обогащено={enriched} (включая замену proxy={replaced_proxy}), "
+            f"уже были={already_present}, не сопоставлено={unmatched}; "
+            f"дубликаты исторических матчей не создавались."
         )
     elif not footballapi_key:
         logs.append(
-            "ℹ️ xG API не подключён. xG-ветка модели готова, но без источника "
-            "в исторических строках используется обычная модель голов."
+            "ℹ️ Football API xG-ключ не задан; доступны архивные и модельные xG."
         )
+
+    # Estimate xG coverage from aggregate shot counts with a separate, dated model.
+    # The function estimates a whole calendar day before learning that day's results.
+    enrich_history_with_shot_xg(history, train_divs, logs)
 
     # The validation sample is intentionally bounded: full replays over every
     # competition/season on each cold start made Streamlit appear frozen.

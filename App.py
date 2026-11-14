@@ -499,22 +499,49 @@ def _auto_settle(D, force: bool = False):
             if h_team and a_team and d_iso:
                 try:
                     from data.scores import find_match_score
-                    res = find_match_score(h_team, a_team, d_iso)
+                    # First ask ESPN only. This prevents its internal FDORG/OLB
+                    # fallbacks from running before a stored FDORG fixture ID.
+                    res = find_match_score(
+                        h_team, a_team, d_iso, token=token, providers=("espn",)
+                    )
                     if res:
-                        source = res.get("source", "auto")
+                        source = res.get("source", "espn")
                 except Exception as exc:
                     log.warning("find_match_score error: %s", type(exc).__name__)
 
             if not _is_finished(res):
                 res = None
-                fixture_id = b.get("fixture_id")
-                if fixture_id and token:
+                fixture_id = str(b2.get("fixture_id") or "").strip()
+                fixture_source = str(
+                    b2.get("fixture_source") or b2.get("fixture_provider") or ""
+                ).strip().casefold()
+                # SStats fixture IDs use "sstats:<id>" and are never sent to
+                # football-data.org. Direct lookups require explicit provenance.
+                direct_fdorg_id = None
+                if fixture_id.casefold().startswith("fdorg:"):
+                    direct_fdorg_id = fixture_id.split(":", 1)[1]
+                elif fixture_source in {"fdorg", "football-data.org", "football_data_org"}:
+                    direct_fdorg_id = fixture_id
+                if direct_fdorg_id and direct_fdorg_id.isdigit() and token:
                     try:
-                        res = fdorg_match_result(fixture_id, token)
-                        if res:
-                            source = "fdorg"
+                        res = fdorg_match_result(direct_fdorg_id, token)
+                        if _is_finished(res):
+                            source = "fdorg_fixture_id"
                     except Exception as exc:
-                        log.warning("fdorg error: %s", type(exc).__name__)
+                        log.warning("fdorg fixture-ID lookup failed: %s", type(exc).__name__)
+
+            if not _is_finished(res) and h_team and a_team and d_iso:
+                try:
+                    # Pass the UI token into date-based lookup explicitly;
+                    # do not depend on a different session-state key.
+                    res = find_match_score(
+                        h_team, a_team, d_iso, token=token,
+                        providers=("fdorg", "olb"),
+                    )
+                    if res:
+                        source = res.get("source", "auto")
+                except Exception as exc:
+                    log.warning("score fallback error: %s", type(exc).__name__)
 
             if not _is_finished(res):
                 bets[idx] = b2

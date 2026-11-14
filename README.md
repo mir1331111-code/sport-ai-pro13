@@ -152,3 +152,8 @@ Important separation:
 
 The scanner's manual 1X2 view also now requires a complete P1/X/P2 line attributed to the same named bookmaker before it labels the market line coherent.
 
+
+
+## Result settlement source order
+
+Score settlement checks ESPN first, then queries football-data.org by fixture ID only when that ID is explicitly tagged as football-data.org, and finally uses date/team matching through football-data.org and OpenLigaDB. The token used by the UI is passed into date-based lookup explicitly rather than relying on a separate Streamlit session-state key. SStats fixture IDs are preserved as SStats provenance and are not mistaken for football-data.org IDs. SStats continues to settle corner/card markets through its verified full-time statistics parser; goal-score settlement is not inferred from undocumented fields.

@@ -2,8 +2,8 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "14.3.0"
-DATA_VERSION = 17
+APP_VERSION = "14.4.0"
+DATA_VERSION = 18
 
 # A model forecast is labelled strong at or above this event probability.
 # This display classification is separate from Value/EV/Edge/Kelly approval.

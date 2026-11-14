@@ -29,6 +29,9 @@ def _new_team():
         "hs_xga_dates": [],
         "as_xg_dates": [],
         "as_xga_dates": [],
+        "hs_pxg": [], "hs_pxga": [], "as_pxg": [], "as_pxga": [],
+        "hs_pxg_dates": [], "hs_pxga_dates": [],
+        "as_pxg_dates": [], "as_pxga_dates": [],
     }
 
 
@@ -135,6 +138,12 @@ class Engine:
         self.lg_axg = defaultdict(list)
         self.lg_hxg_dates = defaultdict(list)
         self.lg_axg_dates = defaultdict(list)
+
+        # Modelled aggregate-shot xG is never mixed into provider xG.
+        self.lg_phxg = defaultdict(list)
+        self.lg_paxg = defaultdict(list)
+        self.lg_phxg_dates = defaultdict(list)
+        self.lg_paxg_dates = defaultdict(list)
 
         # Параметры, доступные для A/B через forecast ledger
         self.half_life_days = 180.0
@@ -383,7 +392,19 @@ class Engine:
         teams[away_key]["ac_dates"].append(stamp)
 
         home_xg, away_xg = _row_xg_pair(row)
-        if home_xg is not None and away_xg is not None:
+        row_source = str((row or {}).get("xg_source") or "").casefold() if isinstance(row, dict) else ""
+        row_kind = str((row or {}).get("xg_kind") or "").casefold() if isinstance(row, dict) else ""
+        is_modelled_xg = row_kind == "modelled_proxy" or "shot_model" in row_source
+        if home_xg is not None and away_xg is not None and is_modelled_xg:
+            teams[home_key]["hs_pxg"].append(home_xg)
+            teams[home_key]["hs_pxga"].append(away_xg)
+            teams[home_key]["hs_pxg_dates"].append(stamp)
+            teams[home_key]["hs_pxga_dates"].append(stamp)
+            teams[away_key]["as_pxg"].append(away_xg)
+            teams[away_key]["as_pxga"].append(home_xg)
+            teams[away_key]["as_pxg_dates"].append(stamp)
+            teams[away_key]["as_pxga_dates"].append(stamp)
+        elif home_xg is not None and away_xg is not None:
             teams[home_key]["hs_xg"].append(home_xg)
             teams[home_key]["hs_xga"].append(away_xg)
             teams[home_key]["hs_xg_dates"].append(stamp)
@@ -412,7 +433,16 @@ class Engine:
         self.lg_ag[div].append(ag)
         self.lg_hg_dates[div].append(stamp)
         self.lg_ag_dates[div].append(stamp)
-        if home_xg is not None and away_xg is not None:
+        if home_xg is not None and away_xg is not None and is_modelled_xg:
+            self.lg_phxg[div].append(home_xg)
+            self.lg_paxg[div].append(away_xg)
+            self.lg_phxg_dates[div].append(stamp)
+            self.lg_paxg_dates[div].append(stamp)
+            self.lg_phxg[div] = self.lg_phxg[div][-500:]
+            self.lg_paxg[div] = self.lg_paxg[div][-500:]
+            self.lg_phxg_dates[div] = self.lg_phxg_dates[div][-500:]
+            self.lg_paxg_dates[div] = self.lg_paxg_dates[div][-500:]
+        elif home_xg is not None and away_xg is not None:
             self.lg_hxg[div].append(home_xg)
             self.lg_axg[div].append(away_xg)
             self.lg_hxg_dates[div].append(stamp)
@@ -607,6 +637,47 @@ class Engine:
                 attack_away, sa["as_xg"], sa["as_xg_dates"], league_away_xg)
             defense_home = blend_strength(
                 defense_home, sh["hs_xga"], sh["hs_xga_dates"], league_away_xg)
+
+        # Use the locally estimated proxy only when genuine xG did not qualify.
+        # Its influence is capped at 12% and needs a broader team sample.
+        xg_modelled_used = False
+        xg_modelled_home_samples = len(sh["hs_pxg"])
+        xg_modelled_away_samples = len(sa["as_pxg"])
+        xg_modelled_league_samples = len(self.lg_phxg.get(lg, []))
+        if (
+            not xg_used
+            and xg_modelled_league_samples >= 30
+            and min(
+                len(sh["hs_pxg"]), len(sh["hs_pxga"]),
+                len(sa["as_pxg"]), len(sa["as_pxga"]),
+            ) >= 8
+        ):
+            league_proxy_home = self._m(
+                self.lg_phxg[lg], lh_g, self.lg_phxg_dates[lg], match_date)
+            league_proxy_away = self._m(
+                self.lg_paxg[lg], la_g, self.lg_paxg_dates[lg], match_date)
+            proxy_weights = []
+
+            def blend_proxy(goal_strength, values, dates, league_xg):
+                nonlocal xg_used, xg_modelled_used
+                if league_xg <= 0 or not values:
+                    return goal_strength
+                xg_strength = self._m(values, league_xg, dates, match_date) / league_xg
+                weight = 0.12 * min(1.0, len(values) / 8.0)
+                xg_used = True
+                xg_modelled_used = True
+                proxy_weights.append(weight)
+                return (1.0 - weight) * goal_strength + weight * xg_strength
+
+            attack_home = blend_proxy(
+                attack_home, sh["hs_pxg"], sh["hs_pxg_dates"], league_proxy_home)
+            defense_away = blend_proxy(
+                defense_away, sa["as_pxga"], sa["as_pxga_dates"], league_proxy_home)
+            attack_away = blend_proxy(
+                attack_away, sa["as_pxg"], sa["as_pxg_dates"], league_proxy_away)
+            defense_home = blend_proxy(
+                defense_home, sh["hs_pxga"], sh["hs_pxga_dates"], league_proxy_away)
+            xg_weights = proxy_weights
 
         fh = self._form(home_key)
         fa = self._form(away_key)
@@ -831,9 +902,14 @@ class Engine:
             "home_rest_days": home_rest,
             "away_rest_days": away_rest,
             "xg_used": xg_used,
+            "xg_modelled_used": xg_modelled_used,
+            "xg_source": "shot_model_v1_proxy" if xg_modelled_used else ("provider" if xg_used else None),
             "xg_home_samples": xg_home_samples,
             "xg_away_samples": xg_away_samples,
             "xg_league_samples": league_xg_n,
+            "xg_modelled_home_samples": xg_modelled_home_samples,
+            "xg_modelled_away_samples": xg_modelled_away_samples,
+            "xg_modelled_league_samples": xg_modelled_league_samples,
             "xg_weight": (sum(xg_weights) / len(xg_weights)) if xg_weights else 0.0,
         }
 
