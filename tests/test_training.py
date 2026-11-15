@@ -95,28 +95,44 @@ class ChronologicalTrainingTests(unittest.TestCase):
         self.assertEqual(progress[-1], (3, 3))
         self.assertEqual(skipped["missing_or_invalid_score"], 0)
 
-    def test_incremental_trainer_preserves_global_offsets_and_same_day_batching(self):
-        rows = [
-            {"home": "A", "away": "B", "home_goals": 1, "away_goals": 0,
-             "league": "E0", "match_date": datetime(2024, 1, 1), "row": {"Div": "E0"}},
-            {"home": "C", "away": "D", "home_goals": 0, "away_goals": 1,
-             "league": "SP1", "match_date": datetime(2024, 1, 1), "row": {"Div": "SP1"}},
-        ]
-        engine = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
-        stats = HistoricalMatchStats()
+    def test_incremental_trainer_matches_full_chronological_replay(self):
         seed = [{
             "home": "Seed", "away": "Opponent", "home_goals": 1, "away_goals": 0,
             "league": "E0", "match_date": datetime(2023, 12, 31),
             "row": {"Div": "E0"},
         }]
-        train_engine_chronologically(engine, stats, seed)
+        new_day = [
+            {"home": "A", "away": "B", "home_goals": 1, "away_goals": 0,
+             "league": "E0", "match_date": datetime(2024, 1, 1), "row": {"Div": "E0"}},
+            {"home": "C", "away": "D", "home_goals": 0, "away_goals": 1,
+             "league": "SP1", "match_date": datetime(2024, 1, 1), "row": {"Div": "SP1"}},
+        ]
+        incremental_engine = Engine(matrix_n=8, league_rho_fitting=False)
+        incremental_stats = HistoricalMatchStats()
+        train_engine_chronologically(incremental_engine, incremental_stats, seed)
         summary = train_engine_chronologically(
-            engine, stats, rows, start_index=1, total_rows=3,
+            incremental_engine, incremental_stats, new_day,
+            start_index=1, total_rows=3,
         )
+
+        full_engine = Engine(matrix_n=8, league_rho_fitting=False)
+        full_stats = HistoricalMatchStats()
+        train_engine_chronologically(full_engine, full_stats, seed + new_day)
+
         self.assertEqual(summary, {"trained": 3, "days": 1, "skipped": 0})
-        self.assertEqual(engine.trained_n, 3)
-        self.assertEqual(stats.trained_matches["E0"], 2)
-        self.assertEqual(stats.trained_matches["SP1"], 1)
+        self.assertEqual(incremental_engine.trained_n, 3)
+        self.assertEqual(incremental_stats.trained_matches["E0"], 2)
+        self.assertEqual(incremental_stats.trained_matches["SP1"], 1)
+        incremental_prediction = incremental_engine.predict(
+            "A", "C", "E0", match_date="2024-01-02",
+        )
+        full_prediction = full_engine.predict(
+            "A", "C", "E0", match_date="2024-01-02",
+        )
+        for key in ("p1", "x", "p2", "over", "btts"):
+            self.assertAlmostEqual(
+                incremental_prediction[key], full_prediction[key], places=12,
+            )
 
     def test_incremental_plan_accepts_only_unchanged_or_whole_new_days(self):
         from model.training import TRAINING_STATE_SCHEMA
