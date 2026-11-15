@@ -339,7 +339,13 @@ def _train_engine(
                 f"⏱️ Рыночная walk-forward проверка не старше {validation_refresh_days} дн.; "
                 "повторный replay в обычном сканировании пропущен."
             )
-    if cached_validation is None and not force_market_validation:
+    if (
+        cached_validation is None
+        and not force_market_validation
+        and incremental_plan["mode"] == "full"
+    ):
+        # Exact-content cache is appropriate for a full build. Incremental
+        # runs obey the schedule TTL above and refresh when that TTL expires.
         cached_validation = cache_get(validation_key, 30 * 86400)
 
     if isinstance(cached_validation, dict):
