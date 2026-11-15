@@ -10,7 +10,7 @@ from typing import Optional
 
 import requests
 
-from config import CACHE_TTL, LLM_PROVIDERS
+from config import CACHE_TTL, LLM_PROVIDERS, normalize_llm_provider
 from security import cache_get, cache_put
 from storage import usage
 
@@ -528,11 +528,19 @@ def analyze_match(ctx: dict) -> Optional[str]:
         )
         return None
 
-    provider = ctx.get("provider") or "Groq (бесплатно, быстро)"
-    if provider not in LLM_PROVIDERS:
-        provider = "Groq (бесплатно, быстро)"
+    # Normalize legacy provider labels kept in saved cards and older sessions.
+    provider = normalize_llm_provider(
+        ctx.get("provider") or "Groq (бесплатно, быстро)"
+    )
     cfg = LLM_PROVIDERS[provider]
-    model = ctx.get("model") or cfg["model"]
+    configured_model = str(cfg.get("model") or "")
+    requested_model = str(ctx.get("model") or "").strip()
+    if requested_model and requested_model != configured_model:
+        _log(
+            f"MODEL MIGRATION: ignored stale model '{requested_model}' "
+            f"for provider '{provider}'; using '{configured_model}'."
+        )
+    model = configured_model
     base = cfg["base"]
 
     # The primary model's pick is intentionally excluded from the LLM prompt and
