@@ -479,6 +479,35 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         self.assertEqual(result["http_status"], 401)
         self.assertIn("HTTP 401", result["message"])
 
+    def test_groq_gpt_oss_120b_connection_check_uses_supported_chat_model(self):
+        from llm import deep_analysis
+
+        success_response = SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"choices": [{
+                "message": {"content": '{"ok":true}'},
+            }]},
+        )
+        with patch.object(
+            deep_analysis._sess, "post", return_value=success_response
+        ) as post:
+            result = deep_analysis.check_provider_connection(
+                "Groq GPT-OSS 120B (мощнее)", "groq-unit-test-key"
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["model"], "openai/gpt-oss-120b")
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://api.groq.com/openai/v1/chat/completions",
+        )
+        request = post.call_args.kwargs["json"]
+        self.assertEqual(request["model"], "openai/gpt-oss-120b")
+        self.assertEqual(request["max_completion_tokens"], 128)
+        self.assertEqual(request["reasoning_effort"], "low")
+        self.assertNotIn("max_tokens", request)
+
     def test_non_monotone_market_probabilities_are_discarded_without_losing_1x2(self):
         from llm.deep_analysis import _normalize_analysis
 
