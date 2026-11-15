@@ -54,6 +54,7 @@ from betting.ranking import (
     rank_model_favorites_with_minimum, rank_score,
 )
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
+from betting.event_shortlist import build_best_market_events, build_market_coverage
 from betting.kelly import market_type
 from betting.risk import (
     KELLY_FRACTION, MIN_BET_ODDS, MAX_MARKET_STAKE_PCT,
@@ -1773,6 +1774,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"Карточки · прогнозы {forecast_counts['cards']} (сильных {strong_forecast_counts['cards']}) / Value {signal_counts['cards']} / цены {quote_counts['cards']}",
             f"Форы · котировки {quote_counts['handicap']}",
             f"🏆 TOP MATCHES · AI {len(top_match_candidates)}/{MAX_TOP_MATCHES}",
+            "🏆 Лучшие события · все рынки",
         ])
 
         def _market_recommendation(card, family):
@@ -2444,6 +2446,114 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         else:
                             st.warning("Фид травм не подтверждён.")
                 st.divider()
+
+        with market_tabs[8]:
+            st.subheader("Лучшие события по всем рынкам")
+            st.caption(
+                "Здесь сравниваются отдельные исходы, а не только фавориты 1X2: "
+                "победа/ничья, тоталы, обе забьют, угловые, карточки и азиатские форы. "
+                "Один матч может дать несколько разных рыночных событий."
+            )
+
+            coverage = build_market_coverage(market_pool)
+            coverage_table = [{
+                "Рынок": item["market"],
+                "Матчи с прогнозом": item["forecast_matches"],
+                "Есть котировка": item["quoted_matches"],
+                "Value подтверждён": item["value_matches"],
+                "Пока только прогноз": item["forecast_only_matches"],
+                "Сильный прогноз": item["strong_matches"],
+            } for item in coverage]
+            st.markdown("**Покрытие рынков в текущем скане**")
+            st.dataframe(coverage_table, use_container_width=True, hide_index=True)
+
+            events = build_best_market_events(market_pool, limit=50)
+            if not events:
+                st.info(
+                    "Пока нет событий с корректной вероятностью. Проверь историю команд, "
+                    "полноту линий SStats и наличие статистики для выбранных рынков."
+                )
+            else:
+                verified_count = sum(bool(item["value_verified"]) for item in events)
+                priced_count = sum(item.get("odds") is not None for item in events)
+                strong_count = sum(bool(item["strong_forecast"]) for item in events)
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Событий в рейтинге", len(events))
+                k2.metric("Подтверждённый Value", verified_count)
+                k3.metric("Сильные прогнозы ≥65%", strong_count)
+
+                event_filter = st.selectbox(
+                    "Показывать",
+                    [
+                        "Все рынки и события",
+                        "Только подтверждённый Value",
+                        "Сильные прогнозы ≥65%",
+                        "Только события с коэффициентами",
+                    ],
+                    key="scanner_all_market_event_filter",
+                )
+                shown_events = list(events)
+                if event_filter == "Только подтверждённый Value":
+                    shown_events = [item for item in shown_events if item["value_verified"]]
+                elif event_filter == "Сильные прогнозы ≥65%":
+                    shown_events = [item for item in shown_events if item["strong_forecast"]]
+                elif event_filter == "Только события с коэффициентами":
+                    shown_events = [item for item in shown_events if item.get("odds") is not None]
+
+                event_table = []
+                for index, item in enumerate(shown_events, start=1):
+                    odds_text = f"{item['odds']:.2f}" if item.get("odds") is not None else "—"
+                    fair_text = f"{item['fair_odds']:.2f}" if item.get("fair_odds") is not None else "—"
+                    ev_text = (
+                        f"{item['model_ev']:+.1%}"
+                        if item.get("model_ev") is not None else "—"
+                    )
+                    edge_text = (
+                        f"{item['edge']:+.1%}"
+                        if item.get("edge") is not None else "не подтверждён"
+                    )
+                    event_table.append({
+                        "№": index,
+                        "Матч": item["match"],
+                        "Лига": item["league"],
+                        "Начало": " ".join(v for v in (item["date"], item["time"]) if v),
+                        "Рынок": item["family_label"],
+                        "Лучший исход": item["pick"],
+                        "Вероятность": f"{item['probability']:.1%}",
+                        "Коэффициент": odds_text,
+                        "Справедливый кэф": fair_text,
+                        "Модельный EV*": ev_text,
+                        "Edge": edge_text,
+                        "Статус": item["status_label"],
+                    })
+                if event_table:
+                    st.dataframe(
+                        event_table,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=min(620, 42 + 36 * len(event_table)),
+                    )
+                else:
+                    st.info("По выбранному фильтру подходящих событий нет.")
+
+                st.caption(
+                    "*Модельный EV для непроверенных рынков — предварительная оценка по вероятности модели "
+                    "и фактическому коэффициенту. Это не подтверждённый Edge и не рекомендация ставить. "
+                    "Edge/EV/Келли в статусе «ПРОВЕРЕННЫЙ VALUE» означают прохождение отдельной рыночной проверки."
+                )
+                if events:
+                    with st.expander("Почему события имеют разные статусы", expanded=False):
+                        st.markdown(
+                            "**ПРОВЕРЕННЫЙ VALUE** — рынок прошёл собственный benchmark, "
+                            "полную линию одного букмекера, Edge и EV от 5%, положительный Kelly.\n\n"
+                            "**ПРОГНОЗ + КОЭФФИЦИЕНТ · НЕ VALUE** — модель и цена есть, "
+                            "но независимая проверка именно этого рынка ещё не разрешает ставку.\n\n"
+                            "**ФОРА · ИССЛЕДОВАТЕЛЬСКАЯ ОЦЕНКА** — расчёт по полной матрице счёта "
+                            "учитывает win/half-win/push/half-loss/loss; отдельный out-of-sample benchmark "
+                            "для азиатских фор пока не подключён.\n\n"
+                            "**ПРОГНОЗ · НЕТ КОЭФФИЦИЕНТА** — модельная оценка есть, "
+                            "но котировки именно на этот исход нет."
+                        )
 
         st.caption(
             "✅ Общий shortlist: " + str(len(cards_view))
