@@ -68,6 +68,10 @@ class InternationalScheduleTests(unittest.TestCase):
         self.assertTrue(_tsdb_league_meta("A League")[0].startswith("AU_"))
         self.assertTrue(_tsdb_league_meta("Australia A-League")[0].startswith("AU_"))
 
+    def test_tsdb_keeps_fifa_club_world_cup_out_of_national_team_history(self):
+        club_world_cup = _tsdb_league_meta("FIFA Club World Cup")
+        self.assertEqual(club_world_cup, ("CLUB_WC", "club", False, False))
+
     def test_tsdb_keeps_standalone_euro_as_national_team_competition(self):
         self.assertEqual(_tsdb_league_meta("UEFA Euro 2024")[0], "NT_EURO")
         women = _tsdb_league_meta("UEFA Women's Euro 2025")
