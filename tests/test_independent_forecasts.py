@@ -112,6 +112,40 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(xg["provider"]["away_xg_samples"], 5)
         self.assertAlmostEqual(xg["provider"]["home_xg_for_avg"], 1.2)
 
+    def test_llm_goal_features_exclude_target_day_and_weight_recent_history(self):
+        from model.temporal import weighted_mean
+
+        engine = SimpleNamespace(
+            half_life_days=30.0,
+            st={
+                ("E0", "Home"): {
+                    "hs": [1, 2, 99, 100],
+                    "hs_dates": ["2026-11-01", "2026-11-13", "2026-11-14", "2026-11-16"],
+                    "hc": [0.5, 1.0, 99, 100],
+                    "hc_dates": ["2026-11-01", "2026-11-13", "2026-11-14", "2026-11-16"],
+                },
+                ("E0", "Away"): {
+                    "as": [1, 1.5, 99, 100],
+                    "as_dates": ["2026-11-01", "2026-11-13", "2026-11-14", "2026-11-16"],
+                    "ac": [1.5, 0.5, 99, 100],
+                    "ac_dates": ["2026-11-01", "2026-11-13", "2026-11-14", "2026-11-16"],
+                },
+            },
+        )
+        cutoff = datetime(2026, 11, 14, 18, 0)
+        result = historical_features(
+            engine, "Home", "Away", league="E0", match_date=cutoff,
+        )
+        expected_home = weighted_mean(
+            [1.0, 2.0], ["2026-11-01", "2026-11-13"],
+            cutoff, half_life_days=30.0,
+        )
+        self.assertAlmostEqual(result["home_scored_at_home_avg"], expected_home)
+        self.assertGreater(result["home_scored_at_home_avg"], 1.5)
+        self.assertEqual(result["home_home_sample"], 2)
+        self.assertEqual(result["away_away_sample"], 2)
+        self.assertEqual(result["as_of_date"], "2026-11-14")
+
     def test_llm_historical_features_do_not_cross_competitions(self):
         engine = SimpleNamespace(st={
             ("W_E0", "Same Team"): {"hs": [4, 4, 4], "hc": [0, 0, 0]},
