@@ -65,7 +65,7 @@ from llm.analyst import LLMRateLimitError
 from llm.deep_analysis import (
     MAX_TOP_MATCHES, build_match_dossier, analyze_top_matches,
     format_top_match_opinion, merge_context_snapshots,
-    select_top_matches, top_match_shortlist_diagnostics,
+    select_top_matches, top_match_shortlist_diagnostics, last_top_matches_status,
 )
 from model.independent_forecasts import (
     historical_features, historical_xg_features,
@@ -3437,13 +3437,22 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 }
 
             if not llm_key:
+                reason = (
+                    f"Не задан ключ {llm_provider_key_config(llm_prov)['env']}."
+                )
                 logs.append(
-                    f"🏆 TOP MATCHES: кандидаты найдены, но {llm_provider_name} не вызван — "
-                    f"не задан ключ {llm_provider_key_config(llm_prov)['env']}."
+                    f"🏆 TOP MATCHES: кандидаты найдены, но {llm_provider_name} не вызван — {reason}"
+                )
+                logs.append(
+                    f"🏆 TOP MATCHES · AI STATUS: missing_key · {llm_provider_name} · {reason}"
                 )
             elif usage.llm_remaining() <= 0:
+                reason = "Дневной лимит AI-запросов исчерпан."
                 logs.append(
-                    "🏆 TOP MATCHES: кандидаты найдены, но дневной лимит LLM исчерпан."
+                    f"🏆 TOP MATCHES: кандидаты найдены, но {reason}"
+                )
+                logs.append(
+                    f"🏆 TOP MATCHES · AI STATUS: daily_limit · {llm_provider_name} · {reason}"
                 )
             elif top_dossiers:
                 update_loader(
@@ -3474,6 +3483,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"⚠️ {llm_provider_name} TOP MATCHES: {type(exc).__name__}: {str(exc)[:140]}"
                     )
 
+                ai_status = last_top_matches_status()
+                logs.append(
+                    "🏆 TOP MATCHES · AI STATUS: "
+                    + str(ai_status.get("state") or "unknown")
+                    + f" · {llm_provider_name} · {ai_status.get('model') or llm_model or 'модель не указана'} · "
+                    + str(ai_status.get("message") or "нет подробностей")
+                )
                 for fixture_id, analysis in top_analyses.items():
                     target = top_card_by_id.get(fixture_id)
                     if not target:
@@ -3504,9 +3520,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             f"{dossier['match']['home']} — {dossier['match']['away']}."
                         )
         else:
+            reason = (
+                "Нет матчей с достаточной независимой историей: нужны минимум 5 "
+                "домашних игр хозяев и 5 выездных игр гостей, а также исторические "
+                "средние голов. Это ограничение данных, не ошибка API."
+            )
+            logs.append("🏆 TOP MATCHES: " + reason)
             logs.append(
-                "🏆 TOP MATCHES: нет матчей с минимум 5 домашними матчами хозяев "
-                "и 5 выездными матчами гостей в независимой исторической выборке."
+                f"🏆 TOP MATCHES · AI STATUS: no_candidates · {llm_provider_name} · {reason}"
             )
 
         # Persist both forecasters before the fixture starts. The ledger keeps the
