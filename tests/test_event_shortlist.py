@@ -93,6 +93,7 @@ class UnifiedMarketEventShortlistTests(unittest.TestCase):
         self.assertAlmostEqual(handicap["probability"], 0.52)
         self.assertAlmostEqual(handicap["model_ev"], 0.04)
         self.assertEqual(handicap["status"], "handicap_research_only")
+        self.assertIsNone(handicap["fair_odds"])
         self.assertFalse(handicap["value_verified"])
         self.assertIn("ИССЛЕДОВАТЕЛЬСКАЯ", handicap["status_label"])
 
