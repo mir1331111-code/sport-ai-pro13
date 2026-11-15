@@ -528,6 +528,11 @@ def _tsdb_league_meta(league_name: str):
     # example, England's National League is a domestic club competition.
     # "Europa" also contains the substring "euro", so only a standalone
     # "Euro" token is a national-team marker.
+    # FIFA Club World Cup is a club competition despite containing both
+    # "FIFA" and "World Cup" markers. Keep it out of national-team histories.
+    if "club world cup" in ln:
+        return ("CLUB_WC", "club", False, False)
+
     age_international = bool(age) and any(token in ln for token in (
         "uefa", "fifa", "afc", "caf", "concacaf", "conmebol", "ofc",
     ))
