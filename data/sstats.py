@@ -1782,6 +1782,13 @@ def _sstats_parse_glicko(payload, *, retrieved_at=None):
     optional rating/probability fields are included only when valid.
     """
     data = _sstats_context_data(payload)
+    if not isinstance(data, dict) and isinstance(payload, dict):
+        # Accept an unwrapped object only when it explicitly contains the
+        # documented Glicko node or its expected-goals pair.
+        if isinstance(payload.get("glicko"), dict) or (
+            "homeXg" in payload and "awayXg" in payload
+        ):
+            data = payload
     if not isinstance(data, dict):
         return None
     raw = data.get("glicko")
