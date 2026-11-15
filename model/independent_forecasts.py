@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
+from config import APP_VERSION, DB_FILE, LLM_PROVIDERS, normalize_llm_provider
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger, OUTCOMES
 
 
@@ -295,8 +295,15 @@ def record_scan_forecasts(
         raise ValueError("now must be timezone-aware")
     now = now.astimezone(timezone.utc)
     main_version = f"main-model-v{APP_VERSION}"
-    resolved_provider = provider if provider in LLM_PROVIDERS else "Groq (бесплатно, быстро)"
-    resolved_model = model or LLM_PROVIDERS[resolved_provider]["model"]
+    # Keep ledger writes compatible with provider labels from older scans.
+    resolved_provider = normalize_llm_provider(
+        provider or "Groq (бесплатно, быстро)"
+    )
+    configured_model = str(LLM_PROVIDERS[resolved_provider].get("model") or "")
+    requested_model = str(model or "").strip()
+    resolved_model = (
+        requested_model if requested_model == configured_model else configured_model
+    )
     slug = re.sub(
         r"[^a-z0-9]+", "-", f"{resolved_provider}-{resolved_model}".casefold()
     ).strip("-")[:80]
