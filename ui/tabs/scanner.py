@@ -3380,6 +3380,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         llm_provider_name = _provider_display_name(llm_prov)
         llm_model = D.get("meta", {}).get("llm_model", "")
         llm_done = 0
+        llm_resolved_model = None
 
         top_diagnostics = top_match_shortlist_diagnostics(
             cards, min_team_history=5,
@@ -3519,6 +3520,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     )
 
                 ai_status = last_top_matches_status()
+                llm_resolved_model = (
+                    ai_status.get("resolved_model")
+                    or ai_status.get("model")
+                    or llm_model
+                )
                 logs.append(
                     "🏆 TOP MATCHES · AI STATUS: "
                     + str(ai_status.get("state") or "unknown")
@@ -3569,7 +3575,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # first prediction immutable, making repeated scans idempotent and auditable.
         try:
             tracked = record_scan_forecasts(
-                cards, provider=llm_prov, model=llm_model, db_path=DB_FILE,
+                cards, provider=llm_prov, model=llm_model,
+                resolved_model=llm_resolved_model, db_path=DB_FILE,
             )
             logs.append(
                 "📚 Журнал прогнозов: "
