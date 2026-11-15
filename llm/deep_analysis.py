@@ -909,7 +909,7 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
     status_code = int(getattr(response, "status_code", 0) or 0)
     if status_code != 200:
         detail = str(getattr(response, "text", "") or "").strip()
-        detail = re.sub(r"(?i)(bearer\\s+)[A-Za-z0-9._-]+", r"\1[скрыт]", detail)
+        detail = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]+", r"\1[скрыт]", detail)
         explanations = {
             401: "Ключ отклонён провайдером. Проверь ключ XAI_API_KEY/выбранного сервиса.",
             403: "У ключа нет доступа к этому API или модели.",
@@ -1103,7 +1103,7 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
             raise LLMRateLimitError(_retry_after_seconds(response))
         if response.status_code != 200:
             detail = str(getattr(response, "text", "") or "").strip()
-            detail = re.sub(r"(?i)(bearer\\s+)[A-Za-z0-9._-]+", r"\\1[скрыт]", detail)
+        detail = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]+", r"\1[скрыт]", detail)
             _set_top_matches_status(
                 state="http_error", provider=provider, model=model,
                 candidate_count=len(dossiers), analysis_count=0,
