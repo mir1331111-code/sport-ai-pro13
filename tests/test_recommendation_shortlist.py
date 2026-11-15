@@ -3,6 +3,7 @@ import unittest
 from ui.tabs.scanner import (
     _is_actionable_recommendation, _qualified_bet_cards,
     _portfolio_auto_recommendation, _runtime_int,
+    _secondary_market_gate_passed,
 )
 
 
@@ -99,6 +100,9 @@ class RecommendationShortlistTests(unittest.TestCase):
         }
         self.assertEqual(_qualified_bet_cards([card]), [])
         card["total_market_validation"] = True
+        # Existing totals validation is not enough before the fixed 1X2 holdout passes.
+        self.assertEqual(_qualified_bet_cards([card]), [])
+        card["fixed_holdout_1x2_passed"] = True
         self.assertEqual(_qualified_bet_cards([card])[0]["best"][1], "ТБ 2.5")
 
 
@@ -125,7 +129,12 @@ class RecommendationShortlistTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["best"][1], "П1")
 
-    def test_portfolio_autopick_allows_only_1x2_and_market_benchmarked_over25(self):
+    def test_secondary_market_gate_fails_closed_for_missing_or_false_card_flag(self):
+        self.assertFalse(_secondary_market_gate_passed({}))
+        self.assertFalse(_secondary_market_gate_passed({"fixed_holdout_1x2_passed": False}))
+        self.assertTrue(_secondary_market_gate_passed({"fixed_holdout_1x2_passed": True}))
+
+    def test_portfolio_autopick_blocks_over25_until_fixed_1x2_holdout_passes(self):
         winner = {
             "verdict": {"real_odds": True, "value_passed": True, "is_bet": True, "edge": 0.08},
             "best": ("1X2", "П1", 2.20, 0.12, 0.60, 10.0),
@@ -160,6 +169,10 @@ class RecommendationShortlistTests(unittest.TestCase):
         self.assertEqual(selected["best"][1], "П1")
 
         card["total_market_validation"] = True
+        selected = _portfolio_auto_recommendation(card)
+        self.assertEqual(selected["best"][1], "П1")
+
+        card["fixed_holdout_1x2_passed"] = True
         selected = _portfolio_auto_recommendation(card)
         self.assertEqual(selected["best"][1], "ТБ 2.5")
 
