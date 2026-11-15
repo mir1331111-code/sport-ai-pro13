@@ -524,11 +524,15 @@ def _tsdb_league_meta(league_name: str):
     )
     age_code = re.sub(r"[^0-9]", "", age)
     women = any(token in ln for token in ("women", "womens", "ladies", "female", "женск"))
+    # Do not infer national-team status from the broad word "national": for
+    # example, England's National League is a domestic club competition.
+    # "Europa" also contains the substring "euro", so only a standalone
+    # "Euro" token is a national-team marker.
     national = bool(age) or any(token in ln for token in (
-        "national", "international", "world cup", "euro", "nations league",
-        "friendl", "fifa", "copa america", "africa cup", "afcon",
-        "afc asian", "qualifier", "qualification",
-    ))
+        "national team", "national teams", "international", "world cup",
+        "nations league", "friendl", "fifa", "copa america", "africa cup",
+        "afcon", "afc asian", "qualifier", "qualification",
+    )) or bool(re.search(r"\beuro\b", ln))
 
     if women:
         if national:
@@ -536,7 +540,7 @@ def _tsdb_league_meta(league_name: str):
                 competition = "UNL"
             elif "world cup" in ln:
                 competition = "WCQ" if any(x in ln for x in ("qualif", "qualification")) else "WC"
-            elif "euro" in ln:
+            elif re.search(r"\beuro\b", ln):
                 competition = "EURO"
             elif "friendl" in ln:
                 competition = "FR"
@@ -567,7 +571,7 @@ def _tsdb_league_meta(league_name: str):
             competition = "UNL"
         elif "world cup" in ln:
             competition = "WCQ" if any(x in ln for x in ("qualif", "qualification")) else "WC"
-        elif "euro" in ln:
+        elif re.search(r"\beuro\b", ln):
             competition = "EURO"
         elif "friendl" in ln:
             competition = "FR"
