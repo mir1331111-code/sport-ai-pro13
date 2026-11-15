@@ -954,6 +954,17 @@ def _sstats_div_code(league_name: str) -> str:
     age_international = bool(age) and any(token in name for token in (
         "uefa", "fifa", "afc", "caf", "concacaf", "conmebol", "ofc",
     ))
+    age_club_competition = bool(age) and any(token in name for token in (
+        "youth league", "academy league", "premier league", "elite league",
+    ))
+    if age_club_competition:
+        age_code = re.sub(r"[^0-9]", "", age)
+        prefix = "S_WY_" if women else "S_Y_"
+        digest = hashlib.sha1(
+            f"{age_code}|{name}".encode("utf-8")
+        ).hexdigest()[:8].upper()
+        return f"{prefix}U{age_code}_{digest}"[:24]
+
     international = international or age_international
     if "club world cup" in name:
         return "S_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10].upper()
