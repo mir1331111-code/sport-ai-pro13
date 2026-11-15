@@ -77,13 +77,24 @@ class FixedHoldoutModelLabTests(unittest.TestCase):
         self.assertTrue(verified["readiness"]["market_snapshot_verified"])
         self.assertEqual(verified["market"]["timestamp_audit"]["verified"], verified["market"]["n"])
 
-        holdout_row = next(row for row in rows if row["Date"] == "2024-01-17")
-        holdout_row["OddsCapturedAt"] = holdout_row["KickoffAt"]
+        holdout_rows = [row for row in rows if "2024-01-17" <= row["Date"] <= "2024-02-01"]
+        for row in holdout_rows:
+            row["OddsCapturedAt"] = row["KickoffAt"]
         invalid = self._run(
             rows, odds_timestamp_field="OddsCapturedAt", kickoff_timestamp_field="KickoffAt",
         )
         self.assertFalse(invalid["readiness"]["market_snapshot_verified"])
+        self.assertEqual(invalid["market"]["n"], 0)
         self.assertGreater(invalid["market"]["timestamp_audit"]["not_pre_kickoff"], 0)
+
+        for row in holdout_rows:
+            row["OddsCapturedAt"] = row["Date"] + "T10:00:00"
+        naive = self._run(
+            rows, odds_timestamp_field="OddsCapturedAt", kickoff_timestamp_field="KickoffAt",
+        )
+        self.assertFalse(naive["readiness"]["market_snapshot_verified"])
+        self.assertEqual(naive["market"]["n"], 0)
+        self.assertGreater(naive["market"]["timestamp_audit"]["missing_or_invalid"], 0)
 
     def test_ablation_and_xg_provenance_are_reported(self):
         rows = make_rows()
