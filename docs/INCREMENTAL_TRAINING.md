@@ -47,6 +47,10 @@ MODEL_MARKET_VALIDATION_REFRESH_DAYS=7
 
 A first build or detected correction to already-trained history forces a fresh walk-forward rather than reusing a stale report. The scan still fails closed for any market without a valid benchmark report. The independent Fixed Holdout Model Lab remains a separately invoked audit.
 
+## Source-data freshness
+
+The football-data.co.uk CSV cache uses a shorter TTL for the active July-to-June season: 6 hours by default. Completed seasons retain the 3-day TTL. This reduces the delay between a provider publishing a completed result and the next scan seeing it. It cannot make an upstream CSV update immediately; training only includes results that the source has actually published and the loader has fetched.
+
 ## Cache placement and recovery
 
 The full fitted Engine remains content-addressed as before. A second stable checkpoint file is stored under DISK_CACHE_DIR with an incremental-v1 key. The process-local shared cache supports multiple Streamlit sessions; the disk checkpoint supports process restarts when the deployment's disk persists.

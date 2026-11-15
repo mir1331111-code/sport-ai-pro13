@@ -191,14 +191,24 @@ def insert_decision_snapshots(snapshots: Iterable) -> int:
     if not rows:
         return 0
     with _db() as c:
-        c.executemany("""
-            INSERT OR IGNORE INTO decision_snapshots (
-                snapshot_key, fixture_id, match, match_ru, league, market, pick,
-                decision, decision_reason, model_prob, fair_odd, market_odd,
-                edge, ev, kelly_pct, confidence, value_score, odds_source, date_iso
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, rows)
-    return len(rows)
+        before = c.total_changes
+        c.execute("BEGIN")
+        try:
+            c.executemany("""
+                INSERT OR IGNORE INTO decision_snapshots (
+                    snapshot_key, fixture_id, match, match_ru, league, market, pick,
+                    decision, decision_reason, model_prob, fair_odd, market_odd,
+                    edge, ev, kelly_pct, confidence, value_score, odds_source, date_iso
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, rows)
+            inserted = int(c.total_changes - before)
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+    if inserted:
+        invalidate_caches()
+    return inserted
 
 @_cache(ttl=30, show_spinner=False)
 def fetch_decision_snapshots(decision: Optional[str] = None, limit: int = 100000) -> list:
@@ -241,9 +251,11 @@ def update_bet(bet_id: int, **fields) -> None:
     invalidate_caches()
 
 
-@_cache(ttl=30, show_spinner=False)
 def update_bet_by_identity(match, market, pick, date_iso, **fields) -> None:
-    """Update the latest pending bet when legacy local records lack SQLite id."""
+    """Update the latest pending bet when legacy local records lack SQLite id.
+
+    This is a database mutation: do not wrap it in Streamlit's data cache.
+    """
     allowed = {"odds", "closing_odds", "stake", "prob", "status", "score",
                "ev", "clv", "settled_at", "fixture_id", "market"}
     safe = {k: v for k, v in fields.items() if k in allowed}
@@ -251,7 +263,7 @@ def update_bet_by_identity(match, market, pick, date_iso, **fields) -> None:
         return
     set_sql = ", ".join(f"{k}=?" for k in safe)
     values = list(safe.values())
-    with _connect() as c:
+    with _db() as c:
         row = c.execute(
             """SELECT id FROM bets
                WHERE match=? AND market=? AND pick=? AND date_iso=?
@@ -263,10 +275,9 @@ def update_bet_by_identity(match, market, pick, date_iso, **fields) -> None:
             return
         c.execute(
             f"UPDATE bets SET {set_sql} WHERE id=?",
-            (*values, row["id"]),
+            (*values, row[0]),
         )
-        c.commit()
-    _invalidate()
+    invalidate_caches()
 
 
 def fetch_bets(status: Optional[str] = None, limit: int = 100000) -> list:
@@ -347,6 +358,7 @@ def log_bank(bank: float, event: str = "",
             c.execute(
                 "INSERT INTO bank_history(bank,event,bet_id,pnl) VALUES(?,?,?,?)",
                 (float(bank), event, bet_id, pnl))
+        invalidate_caches()
     except Exception as e:
         log.warning("log_bank: %s", e)
 

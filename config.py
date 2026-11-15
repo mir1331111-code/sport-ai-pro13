@@ -28,7 +28,8 @@ LLM_TOP_N = 8
 ODDS_LIMIT_DAILY = 25
 
 CACHE_TTL = {
-    "seasonal": 86400 * 3,
+    "seasonal": 86400 * 3,       # Completed seasons are effectively immutable.
+    "seasonal_active": 6 * 3600,  # Active season: expose newly completed results sooner.
     "tsdb_day": 1800,
     "tsdb_past": 86400 * 3,
     "tsdb_result": 86400,

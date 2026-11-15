@@ -53,25 +53,45 @@ def _msk_time(utc_iso: str) -> str:
 
 
 def parse_date(s) -> Optional[datetime]:
-    """Парсит дату из строки. Нужна для App.py и scanner."""
+    """Parse source dates while preserving any explicit ISO timezone offset."""
     if s is None:
         return None
     src = str(s).strip()
     if not src:
         return None
+    if "T" in src:
+        try:
+            return datetime.fromisoformat(src.replace("Z", "+00:00"))
+        except (TypeError, ValueError, OverflowError):
+            pass
     for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d",
                 "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S",
                 "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            sc = src[:19] if "%z" in fmt or "T" in fmt else src
+            sc = src if "%z" in fmt else (src[:19] if "T" in fmt else src)
             return datetime.strptime(sc, fmt)
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             continue
     return None
 
 
 def season_str(year: int) -> str:
     return f"{year % 100:02d}{(year + 1) % 100:02d}"
+
+
+def _seasonal_cache_ttl(season: str, *, now: datetime | None = None) -> int:
+    """Use a shorter cache for the active July-to-June season.
+
+    The scanner incrementally learns newly completed fixtures, so a multi-day
+    cache on the live season would delay their admission even on a fresh scan.
+    Older seasons retain the longer cache because their source files rarely change.
+    """
+    current = now or datetime.now(timezone.utc)
+    season_start_year = current.year if current.month >= 7 else current.year - 1
+    active_season = season_str(season_start_year)
+    if str(season or "").strip() == active_season:
+        return int(CACHE_TTL.get("seasonal_active", 6 * 3600))
+    return int(CACHE_TTL["seasonal"])
 
 
 def _norm_name(s: str) -> str:
@@ -486,7 +506,7 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
 # ============ FOOTBALL-DATA.CO.UK ============
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
-    cached = cache_get(ck, CACHE_TTL["seasonal"])
+    cached = cache_get(ck, _seasonal_cache_ttl(season))
     if cached is not None:
         return cached if isinstance(cached, list) else []
     url = f"https://www.football-data.co.uk/mmz4281/{season}/{div}.csv"

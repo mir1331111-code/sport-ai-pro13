@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from data import sources
@@ -15,6 +16,57 @@ class _Response:
 
 
 class SourceOptimizationTests(unittest.TestCase):
+    def test_parse_date_preserves_iso_timezone_offsets(self):
+        offset = sources.parse_date("2026-11-15T00:30:45.123+02:00")
+        utc = sources.parse_date("2026-11-15T22:15:00Z")
+        naive = sources.parse_date("2026-11-15T22:15:00")
+
+        self.assertEqual(offset.isoformat(), "2026-11-15T00:30:45.123000+02:00")
+        self.assertEqual(utc.utcoffset().total_seconds(), 0)
+        self.assertIsNone(naive.tzinfo)
+
+    def test_active_season_cache_expires_faster_than_completed_seasons(self):
+        nov_2026 = datetime(2026, 11, 15, tzinfo=timezone.utc)
+        jan_2027 = datetime(2027, 1, 15, tzinfo=timezone.utc)
+        july_2027 = datetime(2027, 7, 1, tzinfo=timezone.utc)
+
+        self.assertEqual(
+            sources._seasonal_cache_ttl("2627", now=nov_2026),
+            sources.CACHE_TTL["seasonal_active"],
+        )
+        self.assertEqual(
+            sources._seasonal_cache_ttl("2526", now=nov_2026),
+            sources.CACHE_TTL["seasonal"],
+        )
+        self.assertEqual(
+            sources._seasonal_cache_ttl("2627", now=jan_2027),
+            sources.CACHE_TTL["seasonal_active"],
+        )
+        self.assertEqual(
+            sources._seasonal_cache_ttl("2728", now=july_2027),
+            sources.CACHE_TTL["seasonal_active"],
+        )
+
+    @patch("data.sources.cache_get", return_value=None)
+    @patch("data.sources.cache_put")
+    @patch("data.sources._sess.get")
+    def test_load_seasonal_passes_active_ttl_to_disk_cache(
+        self, get_mock, _cache_put, cache_get_mock
+    ):
+        response = Mock(
+            status_code=200,
+            content=b"HomeTeam,AwayTeam,FTHG,FTAG\nHome,Away,1,0\n",
+        )
+        get_mock.return_value = response
+
+        rows = sources.load_seasonal("E0", "2627")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            cache_get_mock.call_args.args[1],
+            sources.CACHE_TTL["seasonal_active"],
+        )
+
     @patch("data.sources.cache_get", return_value=None)
     @patch("data.sources.cache_put")
     @patch("data.sources._sess.get")
