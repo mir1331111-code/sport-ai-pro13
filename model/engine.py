@@ -292,10 +292,12 @@ class Engine:
         # Dixon-Coles low-score correction (standard rho convention).
         # Apply only the four affected cells directly; avoid a dictionary lookup
         # for every cell in the N x N score matrix.
-        matrix[0][0] *= 1 - lh * la * rho
-        matrix[1][0] *= 1 + la * rho
-        matrix[0][1] *= 1 + lh * rho
-        matrix[1][1] *= 1 - rho
+        if N:
+            matrix[0][0] *= 1 - lh * la * rho
+        if N > 1:
+            matrix[1][0] *= 1 + la * rho
+            matrix[0][1] *= 1 + lh * rho
+            matrix[1][1] *= 1 - rho
 
         total = sum(map(sum, matrix)) or 1.0
 
