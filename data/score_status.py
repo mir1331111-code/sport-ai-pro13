@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import re
 from typing import Any
 
 FINISHED_SCORE_STATUSES = frozenset({
@@ -21,7 +20,7 @@ def _non_negative_integer(value: Any) -> bool:
         return value >= 0
     if isinstance(value, float):
         return math.isfinite(value) and value >= 0 and value.is_integer()
-    return isinstance(value, str) and bool(re.fullmatch(r"\\d+", value.strip()))
+    return isinstance(value, str) and value.strip().isascii() and value.strip().isdigit()
 
 
 def is_verified_final_score(result: Any) -> bool:
