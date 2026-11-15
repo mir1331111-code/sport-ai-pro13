@@ -63,6 +63,29 @@ class ForecastLedgerTests(unittest.TestCase):
             self.ledger.record_predictions_batch([new_record, conflicting])
         self.assertNotIn("must-rollback", self.ledger.keys())
 
+    def test_idempotency_rejects_changed_kickoff(self):
+        self.record()
+        with self.assertRaises(ValueError):
+            self.ledger.record_prediction(
+                forecast_key="fx-1", fixture_id="fixture-1", home_team="Home",
+                away_team="Away", model_version="test-v1",
+                probabilities={"H": 0.6, "D": 0.25, "A": 0.15},
+                forecast_at=self.t0, kickoff_at=self.t0 + timedelta(hours=5),
+                entry_odds={"H": 2.0, "D": 3.5, "A": 4.5},
+                odds_source="test-book",
+            )
+
+    def test_settlement_source_is_recorded_and_immutable(self):
+        self.record()
+        self.ledger.settle(
+            "fx-1", "H", home_score=2, away_score=0,
+            settled_at=self.t0 + timedelta(hours=5),
+            result_source="ESPN",
+        )
+        self.assertEqual(self.ledger.rows()[0]["result_source"], "ESPN")
+        with self.assertRaises(ValueError):
+            self.ledger.settle("fx-1", "H", result_source="football-data.org")
+
     def test_settlement_and_metrics(self):
         self.record()
         self.ledger.settle(
@@ -143,7 +166,7 @@ class ForecastLedgerTests(unittest.TestCase):
         path = self.tmp.name + "/old-schema.sqlite"
         old_schema = SCHEMA.replace(
             " xg_used INTEGER CHECK(xg_used IS NULL OR xg_used IN (0,1)),\n", ""
-        )
+        ).replace(" result_source TEXT,\n", "")
         with sqlite3.connect(path) as connection:
             connection.executescript(old_schema)
         migrated = ForecastLedger(path)
@@ -153,6 +176,7 @@ class ForecastLedgerTests(unittest.TestCase):
             ).fetchall()
         }
         self.assertIn("xg_used", columns)
+        self.assertIn("result_source", columns)
         migrated.record_prediction(
             forecast_key="legacy", fixture_id="legacy", home_team="Home",
             away_team="Away", model_version="main-model-old",
