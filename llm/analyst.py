@@ -620,6 +620,7 @@ def analyze_match(ctx: dict) -> Optional[str]:
     }
     is_groq = "groq" in str(base).casefold()
     is_gpt_oss = is_groq and model.casefold().startswith("openai/gpt-oss")
+    is_gemini = "generativelanguage.googleapis.com" in str(base).casefold()
     if is_gpt_oss:
         # Groq documents low reasoning effort and max_completion_tokens for
         # GPT-OSS. The previous 1,600-token max_tokens budget was frequently
@@ -637,8 +638,11 @@ def analyze_match(ctx: dict) -> Optional[str]:
     body = {
         "model": model,
         "messages": messages,
-        "temperature": 0.5 if is_groq else 0.4,
     }
+    # Gemini 3.x ignores sampling controls on the OpenAI-compatible endpoint;
+    # omit temperature rather than sending a misleading legacy setting.
+    if not is_gemini:
+        body["temperature"] = 0.5 if is_groq else 0.4
     if is_groq:
         body["max_completion_tokens"] = 4096 if is_gpt_oss else 2048
     else:
