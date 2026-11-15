@@ -4,6 +4,7 @@ from datetime import date, datetime
 from model.engine import Engine
 from model.historical_match_stats import HistoricalMatchStats
 from model.training import (
+    iter_calendar_day_batches,
     prepare_completed_training_rows,
     train_engine_chronologically,
 )
@@ -65,6 +66,24 @@ class ChronologicalTrainingTests(unittest.TestCase):
             self.assertAlmostEqual(predictions[1][key], reference[key], places=12)
         self.assertEqual(model.trained_n, 2)
         self.assertEqual(model.match_count, 2)
+
+    def test_calendar_day_batch_iterator_keeps_same_day_matches_together(self):
+        rows = [
+            {"match_date": datetime(2024, 1, 1), "home": "A"},
+            {"match_date": datetime(2024, 1, 1), "home": "B"},
+            {"match_date": datetime(2024, 1, 2), "home": "C"},
+        ]
+        batches = list(iter_calendar_day_batches(rows))
+        self.assertEqual([[row["home"] for row in batch] for batch in batches],
+                         [["A", "B"], ["C"]])
+
+    def test_calendar_day_batch_iterator_rejects_unsorted_dates(self):
+        rows = [
+            {"match_date": datetime(2024, 1, 2), "home": "Later"},
+            {"match_date": datetime(2024, 1, 1), "home": "Earlier"},
+        ]
+        with self.assertRaisesRegex(ValueError, "sorted by calendar day"):
+            list(iter_calendar_day_batches(rows))
 
     def test_chronological_trainer_uses_one_batch_per_calendar_day(self):
         history = {
