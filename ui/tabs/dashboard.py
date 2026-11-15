@@ -279,8 +279,8 @@ def render():
         if shortlist_line else ""
     )
     next_matches = cards[:6]
-    focus_matches = groq_matches[:7] if groq_matches else ([item[1] for item in ranked[:5]] or cards[:5])
-    focus_title = "TOP MATCHES · Groq + основная модель" if groq_matches else "Матчи в фокусе · основная модель"
+    focus_matches = ai_matches[:7] if ai_matches else ([item[1] for item in ranked[:5]] or cards[:5])
+    focus_title = f"TOP MATCHES · {ai_name} + основная модель" if ai_matches else "Матчи в фокусе · основная модель"
 
     left, mid, right = st.columns([1.08, 0.96, 0.88], gap="medium")
     with left:
