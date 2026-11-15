@@ -62,6 +62,15 @@ class DixonColesReferenceTests(unittest.TestCase):
             + [(0.95, goals) for goals in range(12)],
         )
 
+    def test_p1px_handles_one_cell_score_matrix(self):
+        engine = Engine(matrix_n=1)
+        home, draw, matrix = engine._p1px(1.4, 0.9, -0.13)
+        self.assertAlmostEqual(home, 0.0)
+        self.assertAlmostEqual(draw, 1.0)
+        self.assertEqual(len(matrix), 1)
+        self.assertEqual(len(matrix[0]), 1)
+        self.assertAlmostEqual(matrix[0][0], 1.0)
+
     def test_h2h_can_be_disabled_without_mutating_history(self):
         engine = Engine()
         for i in range(6):
