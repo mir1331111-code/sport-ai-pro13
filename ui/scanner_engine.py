@@ -749,7 +749,7 @@ def _load_engine(
     matrix_n, logs, update_loader, footballapi_key="",
     footballapi_xg_rows=None, custom_historical_rows=None,
 ):
-    """Reuse a fitted model; serialize training only for an identical cache key."""
+    """Reuse a fitted model and append only new, complete chronological matchdays."""
     import pickle, gzip, os, json
     from config import DISK_CACHE_DIR
     from model.cache_locks import get_keyed_lock
