@@ -864,6 +864,9 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
                 {"role": "user", "content": "Connection check. Return exactly ok=true."},
             ],
             "max_output_tokens": 96,
+            "reasoning": {"effort": "low"},
+            "temperature": 0.7,
+            "top_p": 0.95,
             "store": False,
             "text": {
                 "format": {
@@ -1052,7 +1055,9 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         body = {
             "model": model,
             "input": messages,
-            "temperature": 0.2,
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "reasoning": {"effort": "high"},
             "max_output_tokens": 8192,
             "store": False,
             "text": {
@@ -1096,7 +1101,7 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
     try:
         response = _sess.post(
             url, headers=headers, json=body,
-            timeout=180 if is_xai else 75, proxies=NO_PROXY,
+            timeout=900 if is_xai else 75, proxies=NO_PROXY,
         )
         usage.llm_increment(1)
         if response.status_code == 429:
