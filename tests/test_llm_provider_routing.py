@@ -5,20 +5,20 @@ from config import LLM_PROVIDERS, normalize_llm_provider
 
 class LLMProviderRoutingTests(unittest.TestCase):
     def test_default_groq_provider_uses_official_endpoint(self):
-        provider = LLM_PROVIDERS["Groq GPT-OSS 20B (оплата по токенам)"]
+        provider = LLM_PROVIDERS["Groq GPT-OSS 20B"]
         self.assertEqual(
             provider["base"], "https://api.groq.com/openai/v1"
         )
         self.assertEqual(provider["model"], "openai/gpt-oss-20b")
         self.assertEqual(
             normalize_llm_provider("Groq (бесплатно, быстро)"),
-            "Groq GPT-OSS 20B (оплата по токенам)",
+            "Groq GPT-OSS 20B",
         )
 
     def test_retired_groq_70b_selection_migrates_to_supported_gpt_oss_120b(self):
         provider_name = normalize_llm_provider("Groq 70B (бесплатно, мощнее)")
         self.assertEqual(
-            provider_name, "Groq GPT-OSS 120B (оплата по токенам)"
+            provider_name, "Groq GPT-OSS 120B"
         )
         self.assertEqual(
             LLM_PROVIDERS[provider_name]["model"], "openai/gpt-oss-120b"
