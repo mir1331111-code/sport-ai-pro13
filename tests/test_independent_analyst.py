@@ -3,6 +3,17 @@ import unittest
 from llm.analyst import _parse_llm_response
 
 
+def _user_prompt_from_request(request):
+    """Read the user prompt from either GPT-OSS or chat-completions message layout."""
+    messages = request["messages"]
+    content = messages[-1]["content"]
+    if len(messages) == 1:
+        _system, separator, user_prompt = content.partition("\n\n")
+        if separator:
+            return user_prompt
+    return content
+
+
 class IndependentAnalystTests(unittest.TestCase):
     def test_formats_independent_pick_and_disagreement(self):
         raw = '''{
@@ -108,7 +119,7 @@ class IndependentAnalystTests(unittest.TestCase):
         ):
             result = analyst.analyze_match(ctx)
         request = post.call_args.kwargs["json"]
-        user_prompt = request["messages"][1]["content"]
+        user_prompt = _user_prompt_from_request(request)
         self.assertIn("Голы хозяев дома за матч", user_prompt)
         self.assertNotIn("5.67", user_prompt)
         self.assertNotIn("0.92", user_prompt)
@@ -178,7 +189,7 @@ class IndependentAnalystTests(unittest.TestCase):
             patch.object(analyst._sess, "post", return_value=response) as post,
         ):
             result = analyst.analyze_match(ctx)
-        prompt = post.call_args.kwargs["json"]["messages"][1]["content"]
+        prompt = _user_prompt_from_request(post.call_args.kwargs["json"])
         self.assertIn("Угловые:", prompt)
         self.assertIn("Карточки:", prompt)
         self.assertIn("Оцени 1X2 обязательно", prompt)

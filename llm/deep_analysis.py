@@ -10,7 +10,7 @@ import requests
 from typing import Any
 
 from betting.ranking import model_favorite, rank_model_favorites
-from config import CACHE_TTL, LLM_PROVIDERS
+from config import CACHE_TTL, LLM_PROVIDERS, normalize_llm_provider
 from betting.risk import MIN_BET_ODDS
 from llm.analyst import (
     LLMRateLimitError,
@@ -803,7 +803,7 @@ def resolve_provider_model(provider: str, requested_model: str | None = None) ->
     """Use the selected provider's configured model; discard stale cross-provider IDs."""
     cfg = LLM_PROVIDERS.get(str(provider or ""))
     if not cfg:
-        cfg = LLM_PROVIDERS["Groq (бесплатно, быстро)"]
+        cfg = LLM_PROVIDERS["Groq GPT-OSS 20B"]
     configured = str(cfg.get("model") or "").strip()
     requested = str(requested_model or "").strip()
     if requested and requested != configured:
@@ -994,9 +994,9 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         )
         return {}
 
-    provider = ctx.get("provider") or "Groq (бесплатно, быстро)"
-    if provider not in LLM_PROVIDERS:
-        provider = "Groq (бесплатно, быстро)"
+    provider = normalize_llm_provider(
+        ctx.get("provider") or "Groq GPT-OSS 20B"
+    )
     cfg = LLM_PROVIDERS[provider]
     model = resolve_provider_model(provider, ctx.get("model"))
     base = str(cfg["base"]).rstrip("/")

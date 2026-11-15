@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "14.4.7"
+APP_VERSION = "14.4.8"
 DATA_VERSION = 18
 
 # The favorites panel targets seven forecasts when the schedule contains them.
@@ -39,14 +39,15 @@ CACHE_TTL = {
 
 LLM_PROVIDERS = {
     # API keys are sent directly to the selected provider; no author-controlled proxy.
-    "Groq (бесплатно, быстро)": {
+    "Groq GPT-OSS 20B": {
         "base": "https://api.groq.com/openai/v1",
         "model": "openai/gpt-oss-20b",
         "key_url": "https://console.groq.com/keys",
     },
-    "Groq 70B (бесплатно, мощнее)": {
+    "Groq GPT-OSS 120B": {
         "base": "https://api.groq.com/openai/v1",
-        "model": "llama-3.3-70b-versatile",
+        # llama-3.3-70b-versatile was shut down for developer/free tier on 2026-08-16.
+        "model": "openai/gpt-oss-120b",
         "key_url": "https://console.groq.com/keys",
     },
     "Gemini (Google, бесплатно)": {
@@ -83,6 +84,20 @@ LLM_PROVIDERS = {
         "key_url": "https://dashscope.console.aliyun.com/apiKey",
     },
 }
+
+# Preserve existing user selections after replacing the retired Llama 3.3 model.
+LLM_PROVIDER_ALIASES = {
+    "Groq (бесплатно, быстро)": "Groq GPT-OSS 20B",
+    "Groq 70B (бесплатно, мощнее)": "Groq GPT-OSS 120B",
+}
+
+
+def normalize_llm_provider(provider: object) -> str:
+    """Migrate saved provider names and fall back to a configured provider."""
+    selected = str(provider or "").strip()
+    selected = LLM_PROVIDER_ALIASES.get(selected, selected)
+    return selected if selected in LLM_PROVIDERS else next(iter(LLM_PROVIDERS))
+
 
 def llm_provider_key_config(provider: str) -> dict[str, str]:
     """Return the credential source for the selected LLM provider."""
