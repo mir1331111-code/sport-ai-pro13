@@ -715,12 +715,16 @@ def _sync_forecast_results(force: bool = False):
         or os.environ.get("FDORG_TOKEN", "")
         or _configured_secret("FDORG_TOKEN", "fdorg_token")
     ).strip()
+    sstats_score_key = _api_key_default(
+        "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
+    ).strip()
     try:
         with st.spinner("Автоматически сверяю прогнозы с завершёнными матчами…"):
             status = settle_due_forecasts(
                 db_path=DB_FILE,
                 max_fixtures=30 if force else 8,
                 token=score_token or None,
+                sstats_api_key=sstats_score_key or None,
                 force=force,
             )
         status["checked_at"] = datetime.now(timezone.utc).isoformat()
@@ -1103,6 +1107,8 @@ with st.sidebar:
             f"старше окна {_sync_status.get('age_limited_fixtures', 0)} · "
             f"ожидают повтора {_sync_status.get('retry_deferred_fixtures', 0)} · "
             f"не найден результат {_sync_status.get('not_found_fixtures', 0)} · "
+            f"SStats запросов {_sync_status.get('sstats_lookups', 0)} · "
+            f"источники {', '.join(f'{name}:{count}' for name, count in sorted((_sync_status.get('result_sources') or {}).items())) or 'нет'} · "
             f"ошибок {_sync_status.get('errors', 0)}"
         )
 
