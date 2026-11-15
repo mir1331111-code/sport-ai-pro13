@@ -113,7 +113,7 @@ class UnifiedMarketEventShortlistTests(unittest.TestCase):
         events = build_best_market_events([card], limit=30)
         handicap = next(item for item in events if item["family"] == "handicap")
         # 0.40*(2.10-1) + 0.10*0.5*(2.10-1) - 0.10*0.5 - 0.30
-        self.assertAlmostEqual(handicap["model_ev"], 0.115)
+        self.assertAlmostEqual(handicap["model_ev"], 0.145)
         self.assertIn("полпобеды", handicap["outcome_detail"])
 
     def test_only_explicitly_passed_recommendation_is_value_verified(self):
