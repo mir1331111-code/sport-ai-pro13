@@ -39,12 +39,12 @@ CACHE_TTL = {
 
 LLM_PROVIDERS = {
     # API keys are sent directly to the selected provider; no author-controlled proxy.
-    "Groq GPT-OSS 20B (оплата по токенам)": {
+    "Groq GPT-OSS 20B": {
         "base": "https://api.groq.com/openai/v1",
         "model": "openai/gpt-oss-20b",
         "key_url": "https://console.groq.com/keys",
     },
-    "Groq GPT-OSS 120B (оплата по токенам)": {
+    "Groq GPT-OSS 120B": {
         "base": "https://api.groq.com/openai/v1",
         # llama-3.3-70b-versatile was shut down for developer/free tier on 2026-08-16.
         "model": "openai/gpt-oss-120b",
@@ -87,8 +87,8 @@ LLM_PROVIDERS = {
 
 # Preserve existing user selections after replacing the retired Llama 3.3 model.
 LLM_PROVIDER_ALIASES = {
-    "Groq (бесплатно, быстро)": "Groq GPT-OSS 20B (оплата по токенам)",
-    "Groq 70B (бесплатно, мощнее)": "Groq GPT-OSS 120B (оплата по токенам)",
+    "Groq (бесплатно, быстро)": "Groq GPT-OSS 20B",
+    "Groq 70B (бесплатно, мощнее)": "Groq GPT-OSS 120B",
 }
 
 
