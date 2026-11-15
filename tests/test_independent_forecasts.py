@@ -373,6 +373,8 @@ class IndependentForecastTests(unittest.TestCase):
                 db_path=path, now=now, timezone_name="Europe/Warsaw",
             )
         self.assertEqual(result["forecasts_settled"], 2)
+        self.assertEqual(result["eligible_fixtures"], 1)
+        self.assertEqual(result["eligible_fixtures_remaining"], 0)
         self.assertEqual(len(ledger.rows(settled_only=True)), 2)
 
 
@@ -418,6 +420,8 @@ class IndependentForecastTests(unittest.TestCase):
         with patch("data.scores.find_match_score", return_value=None) as lookup:
             first = settle_due_forecasts(db_path=path, now=now)
             self.assertEqual(first["fixtures_checked"], 1)
+            self.assertEqual(first["eligible_fixtures"], 1)
+            self.assertEqual(first["eligible_fixtures_remaining"], 1)
             lookup.assert_called_once()
 
         with patch("data.scores.find_match_score", return_value=None) as lookup:
@@ -425,6 +429,7 @@ class IndependentForecastTests(unittest.TestCase):
                 db_path=path, now=now + timedelta(minutes=10),
             )
             self.assertEqual(second["fixtures_checked"], 0)
+            self.assertEqual(second["eligible_fixtures_remaining"], 1)
             lookup.assert_not_called()
 
         with patch("data.scores.find_match_score", return_value={
@@ -435,6 +440,7 @@ class IndependentForecastTests(unittest.TestCase):
             )
             self.assertEqual(later["fixtures_checked"], 1)
             self.assertEqual(later["forecasts_settled"], 1)
+            self.assertEqual(later["eligible_fixtures_remaining"], 0)
             lookup.assert_called_once()
 
 
