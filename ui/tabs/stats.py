@@ -9,6 +9,7 @@ from data.scores import completed_matches_for_day
 from data.fixture_time import app_timezone
 from storage import sqlite_store as db
 from storage.user_datasets import export_user_datasets
+from betting.event_shortlist import build_market_coverage
 from config import DB_FILE
 from model.independent_forecasts import (
     comparison_report, settle_due_forecasts, parse_llm_probabilities,
@@ -95,6 +96,27 @@ def _render_forecast_journal(D):
         st.caption(
             f"Котировки хотя бы одного рынка есть у {summary['quoted_any']} матчей. "
             "Прогнозы и котировки не равны ставкам в портфеле."
+        )
+
+    market_coverage = build_market_coverage(D.get("cards") or [])
+    if market_coverage:
+        st.markdown("**Охват всех рынков — не только 1X2**")
+        st.caption(
+            "«Матчи с прогнозом» — модель рассчитала исход; «есть котировка» — источник "
+            "вернул цену именно на этот рынок; «Value подтверждён» — рынок прошёл отдельную "
+            "рыночную проверку. Эти числа не нужно складывать: один матч может иметь несколько рынков."
+        )
+        st.dataframe(
+            [{
+                "Рынок": item["market"],
+                "Прогнозы": item["forecast_matches"],
+                "Котировки": item["quoted_matches"],
+                "Value подтверждён": item["value_matches"],
+                "Только прогноз": item["forecast_only_matches"],
+                "Сильные ≥65%": item["strong_matches"],
+            } for item in market_coverage],
+            use_container_width=True,
+            hide_index=True,
         )
 
     funnel = D.get("funnel") or {}
