@@ -63,6 +63,11 @@ class InternationalScheduleTests(unittest.TestCase):
                 self.assertFalse(div.startswith("NT_"))
                 self.assertFalse(div.startswith("W_NT"))
 
+    def test_tsdb_still_recognizes_australian_a_league(self):
+        self.assertTrue(_tsdb_league_meta("A-League")[0].startswith("AU_"))
+        self.assertTrue(_tsdb_league_meta("A League")[0].startswith("AU_"))
+        self.assertTrue(_tsdb_league_meta("Australia A-League")[0].startswith("AU_"))
+
     def test_tsdb_keeps_standalone_euro_as_national_team_competition(self):
         self.assertEqual(_tsdb_league_meta("UEFA Euro 2024")[0], "NT_EURO")
         women = _tsdb_league_meta("UEFA Women's Euro 2025")
