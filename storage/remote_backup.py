@@ -13,6 +13,7 @@ import logging
 import os
 import sqlite3
 import tempfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -193,6 +194,30 @@ def _database_has_user_rows(db_path: str | os.PathLike) -> bool:
         return True
 
 
+def _bounded_gzip_decompress(payload: bytes, *, max_bytes: int) -> bytes:
+    """Decompress one gzip member without allowing output beyond max_bytes."""
+    if not isinstance(payload, (bytes, bytearray, memoryview)):
+        raise ValueError("Uploaded SQLite backup must be gzip bytes")
+    if isinstance(max_bytes, bool) or int(max_bytes) < 0:
+        raise ValueError("Invalid SQLite backup size limit")
+    compressed = bytes(payload)
+    # A compressed stream should not be larger than the configured raw database
+    # limit by more than gzip framing overhead. Avoid accepting arbitrarily large
+    # upload bodies even before decompression starts.
+    if len(compressed) > int(max_bytes) + 1024 * 1024:
+        raise ValueError("Uploaded SQLite backup exceeds the safety limit")
+    try:
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        raw = decoder.decompress(compressed, int(max_bytes) + 1)
+    except zlib.error as exc:
+        raise ValueError("Uploaded SQLite backup is not a valid gzip stream") from exc
+    if len(raw) > int(max_bytes) or decoder.unconsumed_tail:
+        raise ValueError("Uploaded SQLite backup exceeds the safety limit")
+    if not decoder.eof or decoder.unused_data:
+        raise ValueError("Uploaded SQLite backup is truncated or contains trailing data")
+    return raw
+
+
 def create_sqlite_backup_bytes(db_path: str | os.PathLike = DB_FILE) -> bytes:
     """Return a portable gzip-compressed SQLite snapshot for manual download."""
     return gzip.compress(_snapshot_sqlite(db_path), compresslevel=6)
@@ -205,9 +230,7 @@ def restore_sqlite_backup_bytes(
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """Restore a manual .sqlite.gz backup after integrity validation."""
-    raw = gzip.decompress(payload)
-    if len(raw) > MAX_SQLITE_BYTES:
-        raise ValueError("Uploaded SQLite backup exceeds the safety limit")
+    raw = _bounded_gzip_decompress(payload, max_bytes=MAX_SQLITE_BYTES)
     counts = _validate_sqlite_bytes(raw)
     target = Path(db_path)
     target.parent.mkdir(parents=True, exist_ok=True)
