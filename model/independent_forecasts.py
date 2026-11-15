@@ -809,12 +809,16 @@ def settle_due_forecasts(
                 errors += 1
                 score = None
             status = str((score or {}).get("status") or "").upper()
+            regulation_ft = bool(
+                status == "AET" and (score or {}).get("regulation_time") is True
+            )
+            settleable_score = status == "FT" or regulation_ft
             if score is None:
                 not_found_fixtures += 1
-            elif status != "FT":
+            elif not settleable_score:
                 non_ft_fixtures += 1
             try:
-                if status == "FT":
+                if settleable_score:
                     int(score["home"])
                     int(score["away"])
                     delay = confirmed_retry
@@ -836,7 +840,12 @@ def settle_due_forecasts(
             sample = rows[0]
             date_iso = fixture_id.split(":", 2)[1]
             score = _score_for_fixture(fixture_id, sample, date_iso)
-            if not score or str(score.get("status") or "").upper() != "FT":
+            if not score:
+                continue
+            score_status = str(score.get("status") or "").upper()
+            if score_status != "FT" and not (
+                score_status == "AET" and score.get("regulation_time") is True
+            ):
                 continue
             try:
                 home_score, away_score = int(score["home"]), int(score["away"])
@@ -861,7 +870,12 @@ def settle_due_forecasts(
             score = _score_for_fixture(
                 fixture_id, sample, fixture_id.split(":", 2)[1],
             )
-            if not score or str(score.get("status") or "").upper() != "FT":
+            if not score:
+                continue
+            score_status = str(score.get("status") or "").upper()
+            if score_status != "FT" and not (
+                score_status == "AET" and score.get("regulation_time") is True
+            ):
                 continue
             try:
                 hg, ag = int(score["home"]), int(score["away"])
