@@ -492,7 +492,7 @@ class IndependentForecastTests(unittest.TestCase):
             result = settle_due_forecasts(db_path=path, now=now)
         self.assertEqual(result["fixtures_checked"], 1)
         self.assertEqual(result["forecasts_settled"], 1)
-        self.assertEqual(result["pending_forecasts"], 1)
+        self.assertEqual(result["pending_forecasts"], 0)
         self.assertEqual(result["age_limited_fixtures"], 0)
         self.assertEqual(len(ledger.rows(settled_only=True)), 1)
         lookup.assert_called_once()
