@@ -319,7 +319,7 @@ def poisson_over_probability(mean, line):
 
 def walk_forward_market_validation(
     rows, *, min_history: int = 30, min_n: int = 500,
-    bootstrap_samples: int = 250,
+    bootstrap_samples: int = 250, progress_callback=None,
 ) -> dict:
     """Chronological corners/cards probability tests versus prior league-rate baselines.
 
@@ -359,6 +359,13 @@ def walk_forward_market_validation(
     }
 
     cursor = 0
+    processed = 0
+    last_progress_report = 0
+    if callable(progress_callback):
+        try:
+            progress_callback(0, len(prepared))
+        except Exception:
+            pass
     while cursor < len(prepared):
         stamp = prepared[cursor][0]
         group = []
@@ -424,6 +431,15 @@ def walk_forward_market_validation(
         # Update only after every fixture for the same date has been forecast.
         for row, league in pending_rows:
             model.learn_step(row, league)
+        processed += len(group)
+        if callable(progress_callback) and (
+            processed == len(prepared) or processed - last_progress_report >= 100
+        ):
+            try:
+                progress_callback(processed, len(prepared))
+            except Exception:
+                pass
+            last_progress_report = processed
 
     report = {}
     for market, market_lines in lines.items():
