@@ -136,6 +136,29 @@ class ChronologicalTrainingTests(unittest.TestCase):
                 incremental_prediction[key], full_prediction[key], places=12,
             )
 
+    def test_market_quote_changes_do_not_retrain_engine_but_xg_changes_do(self):
+        original = self.row("01/01/2024", "A", "B", 1, 0, HS=12, HST=5, AS=8, AST=3)
+        original.update({"B365H": "2.1", "B365D": "3.4", "B365A": "3.5"})
+        base_rows, _ = prepare_completed_training_rows({"E0": [[original]]}, ("E0",))
+        base_digest = training_day_digests(base_rows)
+
+        market_only_change = dict(original)
+        market_only_change["B365H"] = "2.2"
+        market_rows, _ = prepare_completed_training_rows(
+            {"E0": [[market_only_change]]}, ("E0",),
+        )
+        self.assertEqual(base_digest, training_day_digests(market_rows))
+
+        xg_change = dict(original)
+        xg_change["HxG"] = 1.7
+        xg_rows, _ = prepare_completed_training_rows({"E0": [[xg_change]]}, ("E0",))
+        self.assertNotEqual(base_digest, training_day_digests(xg_rows))
+
+        shot_change = dict(original)
+        shot_change["HS"] = 15
+        shot_rows, _ = prepare_completed_training_rows({"E0": [[shot_change]]}, ("E0",))
+        self.assertNotEqual(base_digest, training_day_digests(shot_rows))
+
     def test_incremental_plan_accepts_only_unchanged_or_whole_new_days(self):
         from model.training import TRAINING_STATE_SCHEMA
 
