@@ -39,7 +39,7 @@ CACHE_TTL = {
 
 LLM_PROVIDERS = {
     # API keys are sent directly to the selected provider; no author-controlled proxy.
-    "Groq (бесплатно, быстро)": {
+    "Groq GPT-OSS 20B (оплата по токенам)": {
         "base": "https://api.groq.com/openai/v1",
         "model": "openai/gpt-oss-20b",
         "key_url": "https://console.groq.com/keys",
@@ -87,6 +87,7 @@ LLM_PROVIDERS = {
 
 # Preserve existing user selections after replacing the retired Llama 3.3 model.
 LLM_PROVIDER_ALIASES = {
+    "Groq (бесплатно, быстро)": "Groq GPT-OSS 20B (оплата по токенам)",
     "Groq 70B (бесплатно, мощнее)": "Groq GPT-OSS 120B (оплата по токенам)",
 }
 
