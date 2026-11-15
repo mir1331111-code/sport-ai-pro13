@@ -627,9 +627,11 @@ def _tsdb_league_meta(league_name: str):
         (("turkish super", "super lig"), "T1"),
         (("greek super", "super league greece", "super league 1"), "G1"),
         (("russian premier", "russian football"), "R1"),
+        # Europa Conference is a distinct competition and contains "Europa";
+        # classify it before the broader Europa League aliases.
+        (("uefa conference", "europa conference", "conference league"), "EC"),
         (("uefa champions", "champions league"), "C1"),
         (("uefa europa", "europa league"), "EL"),
-        (("uefa conference", "conference league"), "EC"),
     ]
     for keys, code in mapping:
         if any(key in ln for key in keys):
