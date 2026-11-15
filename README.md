@@ -50,7 +50,7 @@ For a model promotion decision, use an untouched later-period holdout and, where
 
 ## Runtime ledger diagnostics
 
-The main-model forecast ledger reports ten-bin reliability tables separately for P1, draw and P2, using only forecasts with a verified settled result. It also stores `xg_used` for new main-model forecasts and reports the share among rows where that flag was actually recorded. Legacy rows created before the flag existed remain untracked; their xG use is not inferred retrospectively. The independent LLM comparison reports paired per-fixture Brier/log-loss error correlations; this is a diversity diagnostic only, not an implemented weighted ensemble.
+The main-model forecast ledger reports ten-bin reliability tables separately for P1, draw and P2, using only forecasts with a verified settled result. It also stores `xg_used` for new main-model forecasts and reports the share among rows where that flag was actually recorded. Legacy rows created before the flag existed remain untracked; their xG use is not inferred retrospectively. The independent LLM comparison reports paired per-fixture Brier/log-loss error correlations; this is a diversity diagnostic only, not an implemented weighted ensemble. Independent AI forecast rows are versioned by the concrete model identifier returned by the provider when available (with the configured model as fallback), so a router that changes its serving model does not silently pool predictions from different backends.
 
 ## Tests
 

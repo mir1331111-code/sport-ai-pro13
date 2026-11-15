@@ -7,6 +7,7 @@ import json
 import math
 import re
 import requests
+from contextvars import ContextVar
 from typing import Any
 
 from betting.ranking import model_favorite, rank_model_favorites
@@ -786,17 +787,21 @@ def _normalize_analysis(raw: object, known: dict[str, dict]) -> dict | None:
     }
 
 
-_LAST_TOP_MATCHES_STATUS: dict[str, Any] = {}
+_TOP_MATCHES_STATUS: ContextVar[dict[str, Any]] = ContextVar(
+    "top_matches_status", default={},
+)
 
 
 def last_top_matches_status() -> dict[str, Any]:
-    """Return the latest provider request status without exposing credentials."""
-    return dict(_LAST_TOP_MATCHES_STATUS)
+    """Return this execution context's latest provider status, without credentials."""
+    return dict(_TOP_MATCHES_STATUS.get())
 
 
 def _set_top_matches_status(**values) -> None:
-    _LAST_TOP_MATCHES_STATUS.clear()
-    _LAST_TOP_MATCHES_STATUS.update(values)
+    # Streamlit serves multiple users in one process. A module-global mutable
+    # dict lets concurrent scans overwrite each other's provider/model status.
+    # ContextVar keeps each request's status isolated across execution contexts.
+    _TOP_MATCHES_STATUS.set(dict(values))
 
 
 def resolve_provider_model(provider: str, requested_model: str | None = None) -> str:
@@ -1012,15 +1017,25 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
     digest = hashlib.sha256(
         json.dumps(cache_context, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
-    cache_key = f"independent_multimarket_batch_v3_{digest}"
+    cache_key = f"independent_multimarket_batch_v4_{digest}"
     cached = cache_get(cache_key, DEEP_ANALYSIS_CACHE_TTL)
     if isinstance(cached, dict):
+        # v4 stores a small envelope with the actual provider-returned model.
+        # Accept legacy cache payloads too, but label their model as configured.
+        metadata = cached.get("__meta__") if isinstance(cached.get("__meta__"), dict) else {}
+        cached_analyses = (
+            cached.get("analyses")
+            if isinstance(cached.get("analyses"), dict)
+            else cached
+        )
         result = {
-            key: value for key, value in cached.items()
+            key: value for key, value in cached_analyses.items()
             if key in known and isinstance(value, dict)
         }
+        served_model = str(metadata.get("resolved_model") or model).strip()[:180]
         _set_top_matches_status(
             state="cache_hit", provider=provider, model=model,
+            requested_model=model, resolved_model=served_model or model,
             candidate_count=len(dossiers), analysis_count=len(result),
             message=f"Получено из кэша: {len(result)}/{len(dossiers)} разборов.",
         )
@@ -1132,6 +1147,13 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
             response_payload = response.json()
         except (TypeError, ValueError):
             response_payload = {}
+        # OpenAI-compatible routers (notably OpenRouter) may return a concrete
+        # model different from the requested alias. Record what actually served
+        # the response so later forecast comparisons remain reproducible.
+        resolved_model = str(
+            response_payload.get("model") or model
+        ).strip()[:180] if isinstance(response_payload, dict) else model
+        resolved_model = resolved_model or model
         if is_xai:
             content = _extract_responses_text(response_payload)
             diagnostics = {
@@ -1185,10 +1207,18 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
                 continue
             normalized[fixture_id] = item
         if normalized:
-            cache_put(cache_key, normalized)
+            cache_put(cache_key, {
+                "analyses": normalized,
+                "__meta__": {
+                    "provider": provider,
+                    "requested_model": model,
+                    "resolved_model": resolved_model,
+                },
+            })
         _set_top_matches_status(
             state="completed" if normalized else "no_valid_analyses",
             provider=provider, model=model,
+            requested_model=model, resolved_model=resolved_model,
             candidate_count=len(dossiers), analysis_count=len(normalized),
             endpoint=endpoint_label,
             message=f"Получено и проверено {len(normalized)}/{len(dossiers)} независимых разборов.",
