@@ -309,6 +309,38 @@ class MatchDossierTests(unittest.TestCase):
         self.assertEqual(merged["injuries"][0]["player_name"], "Player A")
 
 
+    def test_context_merge_keeps_last_valid_glicko_when_refresh_fails(self):
+        old = {
+            "provider": "sstats",
+            "glicko": {
+                "available": True, "source": "sstats_games_glicko",
+                "home_xg": 1.2, "away_xg": 1.4, "is_observed_xg": False,
+                "retrieved_at": "2026-11-15T10:00:00+00:00",
+            },
+        }
+        failed_refresh = {
+            "provider": "sstats",
+            "glicko": {
+                "available": False, "source": "sstats_games_glicko",
+                "status": "unavailable_or_no_valid_data", "is_observed_xg": False,
+            },
+        }
+        merged = merge_context_snapshots(old, failed_refresh)
+        self.assertTrue(merged["glicko"]["available"])
+        self.assertEqual(merged["glicko"]["retrieved_at"], "2026-11-15T10:00:00+00:00")
+
+        newer = {
+            "provider": "sstats",
+            "glicko": {
+                "available": True, "source": "sstats_games_glicko",
+                "home_xg": 1.5, "away_xg": 0.9, "is_observed_xg": False,
+                "retrieved_at": "2026-11-15T11:00:00+00:00",
+            },
+        }
+        merged_new = merge_context_snapshots(old, newer)
+        self.assertEqual(merged_new["glicko"]["home_xg"], 1.5)
+
+
 class BatchGroqAnalysisTests(unittest.TestCase):
     def test_one_batch_request_returns_validated_analysis_and_caps_quality(self):
         from llm import deep_analysis
