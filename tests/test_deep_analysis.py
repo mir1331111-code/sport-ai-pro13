@@ -352,6 +352,34 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         increment.assert_called_once_with(1)
         cache_write.assert_called_once()
 
+    def test_ai_provider_status_is_isolated_between_concurrent_requests(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        from llm import deep_analysis
+
+        barrier = Barrier(2)
+
+        def run_request(provider, model):
+            deep_analysis._set_top_matches_status(
+                state="completed", provider=provider,
+                model=model, resolved_model=model,
+            )
+            barrier.wait(timeout=5)
+            return deep_analysis.last_top_matches_status()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(run_request, "Grok (x.ai)", "grok-4.7")
+            second = executor.submit(
+                run_request, "OpenRouter (Llama 3.3)", "router/model-b"
+            )
+            first_status = first.result(timeout=10)
+            second_status = second.result(timeout=10)
+
+        self.assertEqual(first_status["provider"], "Grok (x.ai)")
+        self.assertEqual(first_status["resolved_model"], "grok-4.7")
+        self.assertEqual(second_status["provider"], "OpenRouter (Llama 3.3)")
+        self.assertEqual(second_status["resolved_model"], "router/model-b")
+
     def test_openrouter_records_actual_model_in_status_and_cache(self):
         from llm import deep_analysis
 
