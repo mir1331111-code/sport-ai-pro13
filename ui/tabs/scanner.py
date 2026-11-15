@@ -1766,6 +1766,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             for family, items in ranked_forecast_pool.items()
         }
         market_tabs = st.tabs([
+            "🏆 Лучшие события · все рынки",
             f"Тоталы · прогнозы {forecast_counts['goals']} (сильных {strong_forecast_counts['goals']}) / Value {signal_counts['goals']} / цены {quote_counts['goals']}",
             f"{'Общий shortlist' if recommendation_mode else 'Все матчи'} ({len(cards_view)})",
             f"1X2 · прогнозы {forecast_counts['winner']} (сильных {strong_forecast_counts['winner']}) / Value {signal_counts['winner']} / цены {quote_counts['winner']}",
@@ -1774,7 +1775,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"Карточки · прогнозы {forecast_counts['cards']} (сильных {strong_forecast_counts['cards']}) / Value {signal_counts['cards']} / цены {quote_counts['cards']}",
             f"Форы · котировки {quote_counts['handicap']}",
             f"🏆 TOP MATCHES · AI {len(top_match_candidates)}/{MAX_TOP_MATCHES}",
-            "🏆 Лучшие события · все рынки",
         ])
 
         def _market_recommendation(card, family):
@@ -1904,7 +1904,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             [card for card in market_pool if card.get("total_market_odds")]
         )
         goal_cards = _sort_market_cards(goal_cards, "goals")
-        with market_tabs[0]:
+        with market_tabs[1]:
             st.caption(
                 "Тоталы ранжируются независимо по всем матчам. Проверка конкретной линии "
                 "против исторической средней лиги оценивает прогноз модели, но сама по себе "
@@ -1928,7 +1928,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             for card in goal_cards:
                 _render_ranked_market_card(card, "goals")
 
-        with market_tabs[1]:
+        with market_tabs[2]:
             if not cards_view:
                 st.info("В общем shortlist нет ставок, прошедших все пороги. Отдельные вкладки рынков проверяются независимо.")
             elif group_by_day:
@@ -1957,10 +1957,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         )
 
         market_specs = [
-            (2, "winner", "market_odds", "1X2"),
-            (3, "btts", "btts_market_odds", "BTTS"),
-            (4, "corners", "stat_market_odds", "угловые"),
-            (5, "cards", "stat_market_odds", "карточки"),
+            (3, "winner", "market_odds", "1X2"),
+            (4, "btts", "btts_market_odds", "BTTS"),
+            (5, "corners", "stat_market_odds", "угловые"),
+            (6, "cards", "stat_market_odds", "карточки"),
         ]
         for tab_index, market_filter, odds_field, market_label in market_specs:
             with market_tabs[tab_index]:
@@ -2035,7 +2035,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 for card in selected_cards:
                     _render_ranked_market_card(card, market_filter)
 
-        with market_tabs[6]:
+        with market_tabs[7]:
             handicap_cards = [
                 card for card in market_pool
                 if card.get("asian_handicap_market_odds")
@@ -2066,7 +2066,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "информационным и не может попасть в Value-портфель."
                 )
 
-        with market_tabs[7]:
+        with market_tabs[8]:
             st.caption(
                 "Независимый список для глубокого анализа: минимум 5 домашних матчей хозяев "
                 "и 5 выездных матчей гостей. Отбор не зависит от фаворита основной модели "
@@ -2447,7 +2447,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             st.warning("Фид травм не подтверждён.")
                 st.divider()
 
-        with market_tabs[8]:
+        with market_tabs[0]:
             st.subheader("Лучшие события по всем рынкам")
             st.caption(
                 "Здесь сравниваются отдельные исходы, а не только фавориты 1X2: "
