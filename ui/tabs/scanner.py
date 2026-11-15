@@ -3239,7 +3239,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "lam_h": P["lams"][0], "lam_a": P["lams"][1],
                 # LLM receives observed venue-specific goal averages, not the primary model's lambdas.
                 "independent_features": {
-                    **historical_features(engine, h_en, a_en, league=lg),
+                    **historical_features(
+                        engine, h_en, a_en, league=lg, match_date=d,
+                    ),
                     "xg_history": historical_xg_features(
                         engine, h_en, a_en, league=lg, match_date=d,
                     ),
