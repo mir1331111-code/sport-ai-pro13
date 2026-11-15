@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import time as _time
 import unicodedata
@@ -48,12 +49,29 @@ _sess = _session()
 
 
 def _get_token() -> str:
+    """Resolve the active UI credential without depending on stripped portfolio metadata."""
+    env_token = os.environ.get("FDORG_TOKEN", "").strip()
     try:
         import streamlit as st
-        return (st.session_state.get("data", {}).get("meta", {})
-                .get("fdorg_token", "") or "").strip()
+        widget_token = str(
+            st.session_state.get("fdorg_token_input", "") or ""
+        ).strip()
+        legacy_token = str(
+            st.session_state.get("data", {}).get("meta", {}).get("fdorg_token", "")
+            or ""
+        ).strip()
+        configured_token = ""
+        try:
+            configured_token = str(
+                st.secrets.get("FDORG_TOKEN", "")
+                or st.secrets.get("fdorg_token", "")
+                or ""
+            ).strip()
+        except Exception:
+            pass
+        return widget_token or env_token or configured_token or legacy_token
     except Exception:
-        return ""
+        return env_token
 
 
 # ============ СОПОСТАВЛЕНИЕ КОМАНД ============
