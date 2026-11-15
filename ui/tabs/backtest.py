@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-from streamlit import runtime
 import streamlit as st
 
 from config import DIV_NAMES
@@ -183,8 +182,9 @@ def render(matrix_n):
     st.header("Бэктест (walk-forward)")
 
     st.caption(
-        "Исторические букмекерские коэффициенты. "
-        "Модель не видит результат матча до формирования сигнала."
+        "Исторические букмекерские коэффициенты. Все матчи одной календарной даты "
+        "прогнозируются до загрузки любого результата этого дня. Размер позиций "
+        "ограничен live-политикой: quarter Kelly, 1% на рынок, 2% на матч и 5% на день."
     )
 
     b1, b2, b3, b4 = st.columns(4)
@@ -307,6 +307,7 @@ def render(matrix_n):
     # from the same pre-day model state before any result is ingested.
     # ================================================================
 
+    last_progress_report = 0
     for day_batch in iter_calendar_day_batches(prepared_rows):
         day_start_bank = bank
         day_date = day_batch[0]["match_date"].date()
@@ -398,7 +399,7 @@ def render(matrix_n):
                 division=bt_div,
                 now=day_stamp,
             )
-            if risk.get("reason") not in ("approved", "no_positive_quarter_kelly"):
+            if risk.get("reason") != "approved":
                 continue
 
             if bt_mode == "Kelly":
@@ -484,8 +485,9 @@ def render(matrix_n):
             return
 
         processed += len(day_batch)
-        if processed == total or processed - (processed // 25 * 25) < len(day_batch):
+        if processed == total or processed - last_progress_report >= 25:
             progress.progress(min(1.0, processed / max(1, total)))
+            last_progress_report = processed
 
     progress.progress(1.0)
 
