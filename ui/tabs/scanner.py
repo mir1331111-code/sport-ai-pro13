@@ -2477,10 +2477,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 verified_count = sum(bool(item["value_verified"]) for item in events)
                 priced_count = sum(item.get("odds") is not None for item in events)
                 strong_count = sum(bool(item["strong_forecast"]) for item in events)
-                k1, k2, k3 = st.columns(3)
+                k1, k2, k3, k4 = st.columns(4)
                 k1.metric("Событий в рейтинге", len(events))
-                k2.metric("Подтверждённый Value", verified_count)
-                k3.metric("Сильные прогнозы ≥65%", strong_count)
+                k2.metric("Есть коэффициент", priced_count)
+                k3.metric("Подтверждённый Value", verified_count)
+                k4.metric("Сильные прогнозы ≥65%", strong_count)
 
                 event_filter = st.selectbox(
                     "Показывать",
@@ -2520,6 +2521,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "Рынок": item["family_label"],
                         "Лучший исход": item["pick"],
                         "Вероятность": f"{item['probability']:.1%}",
+                        "Разбивка форы": item.get("outcome_detail") or "—",
                         "Коэффициент": odds_text,
                         "Справедливый кэф": fair_text,
                         "Модельный EV*": ev_text,
