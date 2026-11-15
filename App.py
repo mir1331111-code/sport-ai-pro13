@@ -707,10 +707,21 @@ def _sync_forecast_results(force: bool = False):
         return None
     # Save the attempt time even on failure so a transient outage does not hammer providers.
     st.session_state["_last_forecast_ledger_sync_ts"] = now_ts
+    # The API token is kept in a password widget/local secret store, not in
+    # portfolio metadata. Pass it explicitly to the forecast-ledger score lookup;
+    # data.meta.fdorg_token is intentionally stripped from persisted portfolio data.
+    score_token = (
+        st.session_state.get("fdorg_token_input", "")
+        or os.environ.get("FDORG_TOKEN", "")
+        or _configured_secret("FDORG_TOKEN", "fdorg_token")
+    ).strip()
     try:
         with st.spinner("Автоматически сверяю прогнозы с завершёнными матчами…"):
             status = settle_due_forecasts(
-                db_path=DB_FILE, max_fixtures=30 if force else 8,
+                db_path=DB_FILE,
+                max_fixtures=30 if force else 8,
+                token=score_token or None,
+                force=force,
             )
         status["checked_at"] = datetime.now(timezone.utc).isoformat()
         status["mode"] = "manual" if force else "automatic"
@@ -1069,7 +1080,9 @@ with st.sidebar:
         st.success(
             f"Закрыто ставок: {n} · подтверждено прогнозов модели/ИИ: "
             f"{forecast_sync.get('forecasts_settled', 0)} · "
-            f"закрыто рыночных рекомендаций: {forecast_sync.get('market_forecasts_settled', 0)}"
+            f"закрыто рыночных рекомендаций: {forecast_sync.get('market_forecasts_settled', 0)} · "
+            f"проверено матчей: {forecast_sync.get('fixtures_checked', 0)} · "
+            f"осталось прогнозов: {forecast_sync.get('pending_forecasts', 0)}"
         )
         st.rerun()
 
@@ -1085,6 +1098,11 @@ with st.sidebar:
             f"матчей проверено {_sync_status.get('fixtures_checked', 0)} · "
             f"прогнозов закрыто {_sync_status.get('forecasts_settled', 0)} · "
             f"рыночных рекомендаций закрыто {_sync_status.get('market_forecasts_settled', 0)} · "
+            f"ожидают FT {_sync_status.get('pending_forecasts', 0)} · "
+            f"в очереди {_sync_status.get('eligible_fixtures', 0)} · "
+            f"старше окна {_sync_status.get('age_limited_fixtures', 0)} · "
+            f"ожидают повтора {_sync_status.get('retry_deferred_fixtures', 0)} · "
+            f"не найден результат {_sync_status.get('not_found_fixtures', 0)} · "
             f"ошибок {_sync_status.get('errors', 0)}"
         )
 

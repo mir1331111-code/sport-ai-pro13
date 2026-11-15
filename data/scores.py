@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import time as _time
 import unicodedata
@@ -48,12 +49,29 @@ _sess = _session()
 
 
 def _get_token() -> str:
+    """Resolve the active UI credential without depending on stripped portfolio metadata."""
+    env_token = os.environ.get("FDORG_TOKEN", "").strip()
     try:
         import streamlit as st
-        return (st.session_state.get("data", {}).get("meta", {})
-                .get("fdorg_token", "") or "").strip()
+        widget_token = str(
+            st.session_state.get("fdorg_token_input", "") or ""
+        ).strip()
+        legacy_token = str(
+            st.session_state.get("data", {}).get("meta", {}).get("fdorg_token", "")
+            or ""
+        ).strip()
+        configured_token = ""
+        try:
+            configured_token = str(
+                st.secrets.get("FDORG_TOKEN", "")
+                or st.secrets.get("fdorg_token", "")
+                or ""
+            ).strip()
+        except Exception:
+            pass
+        return widget_token or env_token or configured_token or legacy_token
     except Exception:
-        return ""
+        return env_token
 
 
 # ============ СОПОСТАВЛЕНИЕ КОМАНД ============
@@ -289,11 +307,11 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
             duration = str(score.get("duration") or "REGULAR").upper()
             official = score.get("fullTime") or {}
             regular = official
+            regulation_time_available = duration == "REGULAR"
             tag = "FT"
             if duration != "REGULAR":
-                # football-data.org fullTime is the final match score; regularTime
-                # is the 90-minute score. Preserve both so settlement can refuse
-                # AET while the results archive displays the actual final score.
+                # fullTime is the post-extra-time score; regularTime is the
+                # 90-minute score required by standard 1X2 settlement.
                 tag = "AET"
                 regular_time = score.get("regularTime") or {}
                 if (
@@ -301,6 +319,7 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
                     and regular_time.get("away") is not None
                 ):
                     regular = regular_time
+                    regulation_time_available = True
             if (
                 not h or not a
                 or regular.get("home") is None or regular.get("away") is None
@@ -316,6 +335,7 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
                 "as": int(regular["away"]), "official_hs": int(official_score["home"]),
                 "official_as": int(official_score["away"]), "status": tag,
                 "duration": duration,
+                "regulation_time": bool(regulation_time_available),
                 "date": _source_local_day(m.get("utcDate")) or "",
                 "league": str(competition.get("name") or "football-data.org"),
                 "fixture_id": str(m.get("id") or ""),
@@ -348,8 +368,11 @@ def _find_fdorg(
     e = _closest(cands, date_iso)
     if not e:
         return None
-    return {"home": e["hs"], "away": e["as"],
-            "status": e["status"], "source": "fdorg"}
+    return {
+        "home": e["hs"], "away": e["as"],
+        "status": e["status"], "source": "fdorg",
+        "regulation_time": bool(e.get("regulation_time")),
+    }
 
 
 # ============ OPENLIGADB ============

@@ -158,6 +158,7 @@ class CompletedMatchArchiveTests(unittest.TestCase):
         self.assertEqual((rows[0]["hs"], rows[0]["as"]), (1, 1))
         self.assertEqual((rows[0]["official_hs"], rows[0]["official_as"]), (2, 1))
         self.assertEqual(rows[0]["status"], "AET")
+        self.assertTrue(rows[0]["regulation_time"])
 
     def test_archive_uses_official_score_for_extra_time_matches(self):
         with (
