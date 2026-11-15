@@ -528,6 +528,62 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(forced["retry_deferred_fixtures"], 0)
         lookup.assert_called_once()
 
+    def test_verified_regulation_time_score_from_aet_settles_1x2(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="aet-regulation",
+            fixture_id="ind:2026-10-25:aet-regulation",
+            home_team="Cup Home",
+            away_team="Cup Away",
+            model_version="main-model-vX",
+            probabilities={"H": .3, "D": .4, "A": .3},
+            forecast_at=now - timedelta(hours=6),
+            kickoff_at=now - timedelta(hours=4),
+            league="Cup",
+        )
+        with patch("data.scores.find_match_score", return_value={
+            "home": 1, "away": 1, "status": "AET",
+            "regulation_time": True, "source": "football-data.org",
+        }) as lookup:
+            result = settle_due_forecasts(db_path=path, now=now)
+        self.assertEqual(result["forecasts_settled"], 1)
+        self.assertEqual(result["pending_forecasts"], 0)
+        self.assertEqual(ledger.rows(settled_only=True)[0]["result"], "D")
+        lookup.assert_called_once()
+
+    def test_aet_without_verified_regulation_score_stays_pending(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="aet-no-regulation",
+            fixture_id="ind:2026-10-25:aet-no-regulation",
+            home_team="Cup Home",
+            away_team="Cup Away",
+            model_version="main-model-vX",
+            probabilities={"H": .3, "D": .4, "A": .3},
+            forecast_at=now - timedelta(hours=6),
+            kickoff_at=now - timedelta(hours=4),
+            league="Cup",
+        )
+        with patch("data.scores.find_match_score", return_value={
+            "home": 2, "away": 1, "status": "AET",
+            "source": "OpenLigaDB",
+        }) as lookup:
+            result = settle_due_forecasts(db_path=path, now=now)
+        self.assertEqual(result["forecasts_settled"], 0)
+        self.assertEqual(result["non_ft_fixtures"], 1)
+        self.assertEqual(result["pending_forecasts"], 1)
+        self.assertEqual(ledger.rows(settled_only=True), [])
+        lookup.assert_called_once()
+
+
     def test_settlement_reports_forecasts_outside_backfill_window(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
