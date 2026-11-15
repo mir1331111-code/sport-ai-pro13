@@ -136,7 +136,11 @@ def _base_row(
     elif status == "handicap_research_only" and odds is None:
         status = "forecast_only"
 
-    fair_odds = 1.0 / probability if 0.0 < probability < 1.0 else None
+    # Asian handicaps have split settlements; their break-even price is not 1 / P(win).
+    fair_odds = (
+        1.0 / probability
+        if family != "handicap" and 0.0 < probability < 1.0 else None
+    )
     score = float(recommendation.get("score") or 0.0) if verified else 0.0
     # Display-only raw model EV must never be labelled as verified Value.
     if not verified and odds is not None and model_ev is None:
@@ -245,7 +249,12 @@ def _family_candidates(card: dict, family: str) -> list[dict]:
             if odds is None:
                 continue
             line = float(match.group(2).replace(",", "."))
-            over = float(card.get("over") or 0.0) if abs(line - 2.5) < 1e-9 else poisson_over_probability(total_mean, line)
+            raw_over = card.get("over")
+            over = (
+                _finite(raw_over)
+                if abs(line - 2.5) < 1e-9 and raw_over not in (None, "")
+                else poisson_over_probability(total_mean, line)
+            )
             if over is None:
                 continue
             probability = over if match.group(1).upper() == "Б" else 1.0 - over
