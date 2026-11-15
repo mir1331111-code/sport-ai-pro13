@@ -326,7 +326,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         ):
             result = deep_analysis.analyze_top_matches({
                 "api_key": "private-unit-test-key",
-                "provider": "Groq (бесплатно, быстро)",
+                "provider": "Groq GPT-OSS 20B (оплата по токенам)",
                 "model": "openai/gpt-oss-20b",
                 "candidates": [dossier],
             })
@@ -391,7 +391,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         ):
             result = deep_analysis.analyze_top_matches({
                 "api_key": "test",
-                "provider": "Groq (бесплатно, быстро)",
+                "provider": "Groq GPT-OSS 20B (оплата по токенам)",
                 "model": "openai/gpt-oss-20b",
                 "candidates": [dossier],
             })
