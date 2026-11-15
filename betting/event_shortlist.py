@@ -57,7 +57,7 @@ def _card_id(card: dict) -> str:
 
 
 def _canonical_pick(value: Any) -> str:
-    text = re.sub(r"\\s+", " ", str(value or "").strip())
+    text = re.sub(r"\s+", " ", str(value or "").strip())
     total = _TOTAL_RE.fullmatch(text)
     if total:
         return f"Т{total.group(1).upper()} {float(total.group(2).replace(',', '.')):g}"
@@ -65,7 +65,7 @@ def _canonical_pick(value: Any) -> str:
     if stat:
         prefix = "Угл" if stat.group(1).casefold() == "угл" else "Карты"
         return f"{prefix} Т{stat.group(2).upper()} {float(stat.group(3).replace(',', '.')):g}"
-    btts = re.fullmatch(r"BTTS\\s+(да|yes|нет|no)", text, re.I)
+    btts = re.fullmatch(r"BTTS\s+(да|yes|нет|no)", text, re.I)
     if btts:
         return "BTTS Да" if btts.group(1).casefold() in {"да", "yes"} else "BTTS Нет"
     handicap = _AH_RE.fullmatch(text)
