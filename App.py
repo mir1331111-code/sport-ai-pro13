@@ -38,6 +38,12 @@ from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
+from storage.remote_backup import (
+    backup_database_to_gist, create_sqlite_backup_bytes,
+    generate_backup_key, remote_backup_status, restore_database_if_empty,
+    restore_sqlite_backup_bytes,
+)  # noqa: E402
+from model.audit_restore import restore_audit_export_bytes  # noqa: E402
 from data.sources import (
     parse_date, fdorg_match_result,
     sstats_account_check, sstats_match_statistics, sstats_find_match_id,
@@ -182,6 +188,7 @@ MAX_PER_RUN = 20
 SECRET_KEYS = (
     "fdorg_token", "highlightly_api_key", "sstats_api_key",
     "footballapi_key", "llm_api_key", "xai_api_key",
+    "odds_api_key", "therundown_api_key", "rundown_key",
 )
 
 
@@ -341,6 +348,17 @@ def _validate_data(raw):
 
 
 # ==================== BOOT ====================
+# Streamlit Community Cloud local disks are ephemeral. If a private encrypted
+# Gist is configured, restore only when this local SQLite file has no user rows.
+# Existing local data is never overwritten by this automatic path.
+if "_sqlite_restore_status" not in st.session_state:
+    try:
+        st.session_state["_sqlite_restore_status"] = restore_database_if_empty(DB_FILE)
+    except Exception as _backup_exc:
+        st.session_state["_sqlite_restore_status"] = {
+            "restored": False, "state": "restore_error",
+            "message": f"SQLite backup restore failed: {type(_backup_exc).__name__}",
+        }
 db.db_init()
 theme.inject()
 
@@ -357,8 +375,7 @@ D.setdefault("meta", {})
 # Credentials live outside portfolio data and backup/sync files.
 _saved_ui_secrets = load_local_secrets()
 # API credentials are session/env/secrets-only, never persisted in local state.
-_secret_keys = ("fdorg_token", "odds_api_key", "therundown_api_key", "rundown_key",
-                "highlightly_api_key", "llm_api_key", "xai_api_key")
+_secret_keys = SECRET_KEYS
 _secrets_removed = False
 for _key in _secret_keys:
     if D["meta"].pop(_key, None) is not None:
@@ -709,6 +726,27 @@ def _sync_forecast_results(force: bool = False):
     return status
 
 
+@st.fragment(run_every="5m")
+def _automatic_sqlite_backup_widget():
+    """Persist a changed SQLite snapshot to the configured encrypted secret Gist."""
+    last_attempt = float(st.session_state.get("_last_sqlite_backup_ts", 0) or 0)
+    now_ts = time.time()
+    if now_ts - last_attempt < 300:
+        return
+    st.session_state["_last_sqlite_backup_ts"] = now_ts
+    try:
+        result = backup_database_to_gist(DB_FILE)
+        st.session_state["_sqlite_backup_status"] = {
+            **result, "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:
+        st.session_state["_sqlite_backup_status"] = {
+            "ok": False, "state": "backup_error",
+            "message": f"SQLite backup failed: {type(exc).__name__}",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
 @st.fragment(run_every="10m")
 def _automatic_result_sync_widget():
     """Run settlement while the Streamlit session remains open, without user clicks."""
@@ -1015,6 +1053,7 @@ with st.sidebar:
         st.rerun()
 
     _automatic_result_sync_widget()
+    _automatic_sqlite_backup_widget()
 
     _sync_status = st.session_state.get("_forecast_ledger_sync_status") or {}
     if _sync_status.get("error"):
@@ -1059,6 +1098,154 @@ with st.sidebar:
         "<div style='font-size:.72rem;color:#8b93a7;margin-bottom:6px;'>"
         "💾 Бэкап (API-ключи не включаются)</div>",
         unsafe_allow_html=True)
+
+    # Local SQLite is independent from neuro_local.json and is not included in
+    # the ordinary portfolio JSON backup. Offer a direct encrypted-file export
+    # even before a remote Gist is configured.
+    with st.expander("🛡️ Защита журнала прогнозов SQLite", expanded=False):
+        _restore_state = st.session_state.get("_sqlite_restore_status") or {}
+        if _restore_state.get("restored"):
+            st.success(
+                "SQLite восстановлена из зашифрованной резервной копии. "
+                "Проверьте число строк и последние результаты."
+            )
+        elif _restore_state.get("state") == "local_data_present":
+            st.caption("Локальная SQLite содержит записи; автоматическое восстановление её не заменяло.")
+        elif _restore_state.get("state") == "not_configured":
+            st.warning(
+                "Удалённая копия SQLite пока не настроена. Локальная база на Streamlit Cloud "
+                "может исчезнуть при пересоздании контейнера."
+            )
+        elif _restore_state.get("state") == "restore_error":
+            st.error(str(_restore_state.get("message") or "Не удалось проверить резервную копию."))
+
+        _remote_state = st.session_state.get("_sqlite_backup_status") or {}
+        if _remote_state.get("ok"):
+            st.success(
+                "Зашифрованная копия: "
+                + str(_remote_state.get("backup_at") or "сохранена")
+                + " · "
+                + str(_remote_state.get("bytes") or 0)
+                + " байт"
+            )
+        elif _remote_state.get("state") == "backup_error":
+            st.error(str(_remote_state.get("message") or "Ошибка резервного копирования."))
+
+        st.caption(
+            "Для автоматического хранения портфеля и SQLite создай Secret Gist (не Public) "
+            "и добавь в Streamlit → Manage app → Settings → Secrets: GIST_ID, GITHUB_TOKEN, "
+            "NEURO_BACKUP_KEY. Оба файла шифруются этим ключом; не добавляй его в GitHub."
+        )
+        if st.button("🔐 Сгенерировать ключ шифрования", key="generate_neuro_backup_key"):
+            st.session_state["_new_neuro_backup_key"] = generate_backup_key()
+        if st.session_state.get("_new_neuro_backup_key"):
+            st.code(st.session_state["_new_neuro_backup_key"])
+            st.caption(
+                "Скопируй ключ в Streamlit Secrets как NEURO_BACKUP_KEY. "
+                "Он шифрует и портфель, и SQLite; потеря ключа сделает обе удалённые копии невосстановимыми."
+            )
+
+        _b1, _b2 = st.columns(2)
+        if _b1.button("Проверить удалённую копию", key="check_neuro_remote_backup"):
+            st.session_state["_sqlite_remote_status_check"] = remote_backup_status()
+        _checked_remote = st.session_state.get("_sqlite_remote_status_check") or {}
+        if _checked_remote:
+            if _checked_remote.get("ok"):
+                st.success(str(_checked_remote.get("message") or "Удалённая копия доступна."))
+            else:
+                st.warning(str(_checked_remote.get("message") or "Удалённая копия не настроена."))
+
+        if _b2.button("Сохранить SQLite в Secret Gist", key="backup_neuro_sqlite_now"):
+            with st.spinner("Создаю и проверяю зашифрованную копию SQLite…"):
+                st.session_state["_sqlite_backup_status"] = backup_database_to_gist(DB_FILE)
+        if st.button("Подготовить резервную копию SQLite для скачивания", key="prepare_neuro_sqlite_download"):
+            try:
+                st.session_state["_sqlite_manual_backup_bytes"] = create_sqlite_backup_bytes(DB_FILE)
+                st.session_state["_sqlite_manual_backup_name"] = (
+                    f"neuro_db_{datetime.now():%Y%m%d_%H%M}.sqlite.gz"
+                )
+            except Exception as _sqlite_export_exc:
+                st.error(
+                    "Не удалось подготовить SQLite-бэкап: "
+                    + type(_sqlite_export_exc).__name__
+                )
+        if st.session_state.get("_sqlite_manual_backup_bytes"):
+            st.download_button(
+                "⬇️ Скачать полную резервную копию SQLite",
+                data=st.session_state["_sqlite_manual_backup_bytes"],
+                file_name=st.session_state.get("_sqlite_manual_backup_name") or "neuro_db.sqlite.gz",
+                mime="application/gzip",
+                key="download_neuro_sqlite_backup",
+                use_container_width=True,
+            )
+
+        _sqlite_upload = st.file_uploader(
+            "Восстановить SQLite из .sqlite.gz (только в пустую базу)",
+            type=["gz"], key="restore_neuro_sqlite_upload",
+        )
+        if _sqlite_upload is not None and st.button(
+            "Восстановить пустой журнал SQLite",
+            key="restore_neuro_sqlite_button",
+        ):
+            try:
+                _restored_sqlite = restore_sqlite_backup_bytes(
+                    _sqlite_upload.getvalue(), DB_FILE, overwrite=False,
+                )
+                db.db_init()
+                db.invalidate_caches()
+                st.session_state["_sqlite_restore_status"] = {
+                    "restored": True, "state": "restored",
+                    "message": "SQLite восстановлена из локального бэкапа.",
+                }
+                st.success(
+                    "SQLite восстановлена. Таблиц с данными: "
+                    + str(len(_restored_sqlite.get("tables") or {}))
+                )
+            except Exception as _restore_sqlite_exc:
+                st.error(
+                    "Восстановление SQLite отменено: "
+                    + str(_restore_sqlite_exc)[:180]
+                )
+
+        _audit_upload = st.file_uploader(
+            "Восстановить журнал из архива ledger .zip",
+            type=["zip"], key="restore_neuro_audit_zip",
+        )
+        if _audit_upload is not None and st.button(
+            "Восстановить прогнозы, рынок и историю банка из audit ZIP",
+            key="restore_neuro_audit_zip_button",
+        ):
+            try:
+                _audit_restored = restore_audit_export_bytes(
+                    _audit_upload.getvalue(), DB_FILE,
+                )
+                db.db_init()
+                db.invalidate_caches()
+                st.session_state["_sqlite_restore_status"] = {
+                    "restored": True, "state": "restored",
+                    "message": "Журнал восстановлен из audit ZIP.",
+                }
+                st.success(
+                    "Журнал восстановлен без перезаписи существующих данных: "
+                    f"прогнозы {_audit_restored['forecasts']}, "
+                    f"рынки {_audit_restored['market_forecasts']}, "
+                    f"ставки {_audit_restored['paper_bets']}, "
+                    f"банк {_audit_restored['bank_history']}, "
+                    f"снимки решений {_audit_restored['decision_snapshots']}, "
+                    f"исторические архивы {_audit_restored.get('user_datasets', 0)} "
+                    f"({_audit_restored.get('user_dataset_rows', 0)} строк)."
+                )
+            except Exception as _audit_restore_exc:
+                st.error(
+                    "Восстановление audit ZIP отменено: "
+                    + str(_audit_restore_exc)[:220]
+                )
+
+        st.caption(
+            "Secret Gist — это непубличная ссылка, а не приватный диск: любой с URL может его открыть. "
+            "Портфель и SQLite шифруются NEURO_BACKUP_KEY; сам Streamlit app также следует "
+            "ограничить в Share/Manage access."
+        )
 
     _backup = json.dumps(_strip_secrets(D), ensure_ascii=False, indent=2, default=str)
     st.download_button("📥 Скачать", _backup,

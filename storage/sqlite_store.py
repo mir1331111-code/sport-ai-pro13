@@ -78,6 +78,13 @@ CREATE TABLE IF NOT EXISTS bank_history (
     bank REAL NOT NULL, event TEXT, bet_id INTEGER, pnl REAL
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS user_datasets (
+    dataset_key TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL,
+    row_count INTEGER NOT NULL CHECK(row_count >= 0),
+    sha256 TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 

@@ -144,11 +144,22 @@ def footballapi_xg_connection_check(api_key: str) -> dict:
             "message": f"Football API недоступен: {type(exc).__name__}.",
         }
     if response.status_code != 200:
-        return {
-            "ok": False,
-            "http_status": response.status_code,
-            "message": f"Football API отклонил проверку ключа: HTTP {response.status_code}.",
-        }
+        if response.status_code == 401:
+            message = (
+                "Football API отклонил ключ (HTTP 401 Unauthorized). "
+                "Проверьте FOOTBALLAPI_KEY в настройках Streamlit → Secrets "
+                "или заново введите ключ в поле Football API."
+            )
+        elif response.status_code == 403:
+            message = (
+                "Football API вернул HTTP 403: ключ распознан, но доступ к тарифу "
+                "или endpoint /usage запрещён."
+            )
+        elif response.status_code == 429:
+            message = "Football API вернул HTTP 429: достигнут лимит запросов."
+        else:
+            message = f"Football API отклонил проверку ключа: HTTP {response.status_code}."
+        return {"ok": False, "http_status": response.status_code, "message": message}
     try:
         payload = response.json() or {}
         data = payload.get("data") or payload
@@ -304,7 +315,24 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
         usage_response = _footballapi_request("usage", key, timeout=(4, 10))
         if usage_response.status_code != 200:
             if logs is not None:
-                logs.append(f"⚠️ Football API /usage: HTTP {usage_response.status_code}")
+                if usage_response.status_code == 401:
+                    logs.append(
+                        "⚠️ Football API /usage: HTTP 401 — ключ FOOTBALLAPI_KEY отклонён. "
+                        "Проверьте его в Streamlit → Settings → Secrets или в поле Football API. "
+                        "xG-фид не загружен; базовые прогнозы продолжают работать."
+                    )
+                elif usage_response.status_code == 403:
+                    logs.append(
+                        "⚠️ Football API /usage: HTTP 403 — у ключа нет доступа к тарифу или endpoint."
+                    )
+                elif usage_response.status_code == 429:
+                    logs.append(
+                        "⚠️ Football API /usage: HTTP 429 — достигнут лимит запросов."
+                    )
+                else:
+                    logs.append(
+                        f"⚠️ Football API /usage: HTTP {usage_response.status_code}"
+                    )
             return []
         usage_payload = usage_response.json() or {}
         usage_data = usage_payload.get("data") or usage_payload

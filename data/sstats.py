@@ -9,6 +9,7 @@ import hashlib
 import math
 import os
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -724,6 +725,31 @@ def sstats_account_check(api_key: str) -> dict:
     }
 
 
+def _sstats_division_for_game(
+    game: dict, league_obj: dict, league_name: str,
+) -> str:
+    """Resolve a league using its country when SStats supplies it separately."""
+    game = game if isinstance(game, dict) else {}
+    league_obj = league_obj if isinstance(league_obj, dict) else {}
+    season_obj = game.get("season")
+    season_obj = season_obj if isinstance(season_obj, dict) else {}
+    country_value = (
+        league_obj.get("country")
+        or league_obj.get("countryName")
+        or game.get("country")
+        or game.get("countryName")
+        or season_obj.get("country")
+    )
+    if isinstance(country_value, dict):
+        country = str(country_value.get("name") or country_value.get("title") or "").strip()
+    else:
+        country = str(country_value or "").strip()
+    label = str(league_name or "").strip()
+    if country and country.casefold() not in label.casefold():
+        label = f"{country} {label}".strip()
+    return _sstats_div_code(label)
+
+
 def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
     """Load upcoming fixtures and compact 1X2 odds; totals require corroborated bookmaker quotes."""
     key = str(api_key or "").strip()
@@ -815,7 +841,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             or game.get("league")
             or "SStats"
         ).strip()
-        div = _sstats_div_code(league_name)
+        div = _sstats_division_for_game(game, league_obj, league_name)
         normalized = _sstats_parse_markets(game.get("odds") or [])
         compact_1x2 = {
             key: normalized[key]
@@ -886,13 +912,22 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
 
 def _sstats_div_code(league_name: str) -> str:
     """Map SStats competitions without collapsing unknown tournaments into G."""
-    name = re.sub(r"\s+", " ", str(league_name or "").casefold()).strip()
+    raw_name = str(league_name or "").casefold()
+    name = "".join(
+        char for char in unicodedata.normalize("NFKD", raw_name)
+        if not unicodedata.combining(char)
+    )
+    name = re.sub(r"\s+", " ", name).strip()
     if not name:
         return "SSTATS_UNKNOWN"
 
     # Gender and age are resolved before competition labels. This keeps women's
     # and youth international football out of men's senior calibration/history.
-    women = any(token in name for token in ("women", "womens", "ladies", "female", "feminine"))
+    women = any(token in name for token in (
+        "women", "womens", "ladies", "female", "feminine",
+        "femenina", "femminile", "frauen", "serie a fem",
+        "liga f", "wsl", "uwcl",
+    ))
     age = next(
         (age for age in ("u21", "u-21", "under 21", "u19", "u-19", "under 19",
                          "u23", "u-23", "under 23", "u20", "u-20", "u18", "u-18",
@@ -900,11 +935,20 @@ def _sstats_div_code(league_name: str) -> str:
          if age in name),
         "",
     )
+    # Do not classify domestic competitions such as England's "National League"
+    # as international football. Require an explicit national-team qualifier.
     international = any(token in name for token in (
-        "national", "international", "nations league", "world cup", "world cup qualification",
-        "euro", "africa cup", "african cup", "afcon", "copa america",
-        "asian cup", "asian games", "friendl", "qualifier", "qualification",
+        "national team", "national teams", "international", "nations league",
+        "world cup", "africa cup", "african cup", "afcon",
+        "copa america", "asian cup", "asian games", "friendl",
+        "qualifier", "qualification",
     ))
+    # "Europa League" contains the letters "euro" but is a club
+    # competition. Only a standalone "Euro" token denotes the national-team
+    # tournament family.
+    international = international or bool(re.search(r"\beuro\b", name))
+    if "club world cup" in name:
+        return "S_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10].upper()
     if international or age:
         if "nations league" in name:
             competition = "UNL"
@@ -914,8 +958,37 @@ def _sstats_div_code(league_name: str) -> str:
             competition = "COPA"
         elif "asian cup" in name:
             competition = "ASIAN"
-        elif "world cup" in name:
-            competition = "WCQ" if any(x in name for x in ("qualif", "qualification")) else "WC"
+        elif any(token in name for token in (
+            "world cup qualification europe", "world cup qualifiers europe",
+            "world cup qualifying europe", "world cup qualifiers - europe",
+        )):
+            competition = "WCE"
+        elif any(token in name for token in (
+            "world cup qualification south america", "world cup qualification conmebol",
+            "world cup qualifiers conmebol", "world cup qualifying south america",
+        )):
+            competition = "WCC"
+        elif any(token in name for token in (
+            "world cup qualification asia", "world cup qualification afc",
+            "world cup qualifiers afc", "world cup qualifying asia",
+        )):
+            competition = "WCA"
+        elif any(token in name for token in (
+            "world cup qualification africa", "world cup qualification caf",
+            "world cup qualifiers caf", "world cup qualifying africa",
+        )):
+            competition = "WCF"
+        elif any(token in name for token in (
+            "world cup qualification north america", "world cup qualification concacaf",
+            "world cup qualifiers concacaf", "world cup qualifying north america",
+        )):
+            competition = "WCN"
+        elif any(token in name for token in (
+            "world cup", "world cup qualif", "world cup qualification",
+        )):
+            competition = "WC"
+        elif any(token in name for token in ("euro qualifier", "euro qualification", "euro qualifying")):
+            competition = "EQ"
         elif "euro" in name:
             competition = "EURO"
         elif "friendl" in name:
@@ -930,42 +1003,95 @@ def _sstats_div_code(league_name: str) -> str:
 
     if women:
         women_mappings = (
-            (("women's super league", "womens super league", "fa wsl"), "W_E0"),
+            (("women's super league", "womens super league", "fa wsl", "wsl"), "W_E0"),
             (("liga f", "primera division femenina"), "W_SP1"),
             (("d1 feminine", "division 1 feminine"), "W_F1"),
-            (("frauen bundesliga", "frauen-bundesliga"), "W_D1"),
-            (("serie a women", "serie a femminile"), "W_I1"),
-            (("women's champions league", "womens champions league"), "W_C1"),
+            (("frauen bundesliga", "frauen-bundesliga", "frauen-bl"), "W_D1"),
+            (("serie a women", "serie a femminile", "serie a fem"), "W_I1"),
+            (("women's champions league", "womens champions league", "uwcl"), "W_C1"),
         )
         for tokens, code in women_mappings:
             if any(token in name for token in tokens):
                 return code
         return "W_" + hashlib.sha1(name.encode("utf-8")).hexdigest()[:10].upper()
 
+    # Exact, unqualified league labels retain their conventional home
+    # competition. Qualified names are handled below so a Brazilian Serie B
+    # or Austrian Bundesliga cannot be mistaken for an Italian/German league.
+    bare_names = {
+        "premier league": "E0",
+        "serie a": "I1",
+        "serie b": "I2",
+        "bundesliga": "D1",
+        "ligue 1": "F1",
+        "ligue 2": "F2",
+        "la liga": "SP1",
+        "primera division": "SP1",
+        "segunda division": "SP2",
+        "eredivisie": "N1",
+        "primeira liga": "P1",
+        "jupiler pro league": "B1",
+        "super lig": "T1",
+        "champions league": "C1",
+        "europa league": "EL",
+        "conference league": "EC",
+        "major league soccer": "MLS1",
+        "mls": "MLS1",
+    }
+    if name in bare_names:
+        return bare_names[name]
+
+    # Country-specific competitions must precede generic labels such as
+    # "Premier League", "Serie A" and "Bundesliga". SStats uses different
+    # display names from football-data.co.uk; mapping to the trained division
+    # is required for venue history and xG features to be found.
     mappings = (
-        (("premier league", "premier league of england", "england premier", "epl"), "E0"),
+        (("brazilian serie a", "brasileirao serie a", "brasileiro serie a",
+          "campeonato brasileiro serie a", "brasil serie a", "brazil serie a"), "BR1"),
+        (("argentina primera division", "argentine primera division",
+          "primera division argentina", "liga profesional argentina",
+          "liga profesional de futbol", "argentina liga profesional"), "AR1"),
+        (("austrian bundesliga", "austria bundesliga", "admiral bundesliga"), "AT1"),
+        (("swiss super league", "switzerland super league"), "CH1"),
+        (("norway eliteserien", "eliteserien"), "NO1"),
+        (("sweden allsvenskan", "allsvenskan"), "SE1"),
+        (("denmark superliga", "danish superliga", "superligaen"), "DK1"),
+        (("poland ekstraklasa", "ekstraklasa"), "PL1"),
+        (("japan j1 league", "j1 league", "meiji yasuda j1"), "JP1"),
+        (("k league 1", "south korea k league 1", "korea republic k league 1"), "KR1"),
+        (("liga mx", "mexico liga mx", "mexican primera division"), "MX1"),
+        (("colombia primera a", "primera a colombia", "categoria primera a",
+          "categoría primera a", "liga betplay", "colombia primera division"), "CO1"),
+        (("scottish premiership", "scotland premiership",
+          "scottish premier league", "cinch premiership"), "SC1"),
+        (("greek super league", "greece super league",
+          "super league greece", "stoiximan super league"), "G1"),
+        (("russian premier league", "russia premier league",
+          "rossiyskaya premier liga", "rpl"), "R1"),
+        (("major league soccer", "usa mls", "united states mls"), "MLS1"),
+        (("english premier league", "premier league of england", "england premier", "epl"), "E0"),
         (("efl championship", "english championship", "sky bet championship"), "E1"),
         (("league one", "england league one", "efl league one"), "E2"),
         (("league two", "england league two", "efl league two"), "E3"),
-        (("la liga", "primera division", "spain primera"), "SP1"),
-        (("segunda division", "la liga 2", "spain segunda"), "SP2"),
-        (("serie a", "italy serie a"), "I1"),
-        (("serie b", "italy serie b"), "I2"),
+        (("la liga spain", "spain primera", "spain primera division"), "SP1"),
+        (("la liga 2", "spain segunda", "spain segunda division"), "SP2"),
+        (("italy serie a", "italian serie a", "serie a italy"), "I1"),
+        (("italy serie b", "italian serie b", "serie b italy"), "I2"),
         # The second tier contains the generic "bundesliga" token, so it
         # must be matched before the top-flight label.
         (("2. bundesliga", "2 bundesliga"), "D2"),
-        (("bundesliga", "germany bundesliga"), "D1"),
-        (("ligue 1", "france ligue 1"), "F1"),
-        (("ligue 2", "france ligue 2"), "F2"),
-        (("eredivisie", "netherlands eredivisie"), "N1"),
-        (("primeira liga", "portugal primeira"), "P1"),
-        (("jupiler pro league", "belgian pro league"), "B1"),
-        (("super lig", "turkey super lig"), "T1"),
-        (("uefa champions league", "champions league"), "C1"),
-        (("uefa europa league", "europa league"), "EL"),
-        (("uefa conference league", "conference league"), "EC"),
+        (("germany bundesliga", "german bundesliga"), "D1"),
+        (("france ligue 1", "french ligue 1"), "F1"),
+        (("france ligue 2", "french ligue 2"), "F2"),
+        (("netherlands eredivisie",), "N1"),
+        (("portugal primeira liga", "portugal primeira"), "P1"),
+        (("belgian pro league",), "B1"),
+        (("turkey super lig", "turkish super lig"), "T1"),
+        (("uefa champions league",), "C1"),
+        (("uefa europa league",), "EL"),
+        (("uefa conference league",), "EC"),
         (("usl", "united soccer league"), "US_USL"),
-        (("mls", "major league soccer"), "US_MLS"),
+        (("mls", "major league soccer"), "MLS1"),
     )
     for tokens, code in mappings:
         if any(token in name for token in tokens):

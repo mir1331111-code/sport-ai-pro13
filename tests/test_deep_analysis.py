@@ -192,6 +192,9 @@ class TopMatchSelectionTests(unittest.TestCase):
         self.assertEqual(result["enough_venue_history"], 2)
         self.assertEqual(result["with_corners_history"], 1)
         self.assertEqual(result["eligible"], 2)
+        self.assertEqual(result["insufficient_venue_history"], 1)
+        self.assertEqual(result["division_coverage"][0]["fixtures"], 3)
+        self.assertEqual(result["division_coverage"][0]["eligible"], 2)
 
 
 class MatchDossierTests(unittest.TestCase):

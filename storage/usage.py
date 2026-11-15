@@ -194,6 +194,19 @@ def _gist_config() -> tuple[str, str]:
     return _secret("GIST_ID"), _secret("GITHUB_TOKEN")
 
 
+def _portfolio_fernet():
+    """Return the shared backup cipher; never write a new unencrypted portfolio Gist."""
+    key = _secret("NEURO_BACKUP_KEY")
+    if not key:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(key.encode("ascii"))
+    except Exception as exc:
+        log.error("Invalid NEURO_BACKUP_KEY for portfolio backup: %s", type(exc).__name__)
+        return None
+
+
 def _gist_read() -> dict:
     gist_id, token = _gist_config()
     if not gist_id or not token:
@@ -205,8 +218,46 @@ def _gist_read() -> dict:
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
-        content = ((payload.get("files") or {}).get("neuro_local.json") or {}).get("content", "")
+        if payload.get("public") is True:
+            log.error(
+                "Configured Gist is PUBLIC. Legacy neuro_local.json can be read for "
+                "recovery, but create a Secret Gist and update GIST_ID immediately."
+            )
+        file_entry = (payload.get("files") or {}).get("neuro_local.json") or {}
+        content = file_entry.get("content", "")
+        if file_entry.get("truncated"):
+            raw_url = str(file_entry.get("raw_url") or "")
+            if not raw_url.startswith("https://gist.githubusercontent.com/"):
+                log.error("Gist neuro_local.json is truncated and has no trusted raw_url")
+                return {}
+            raw_req = urllib.request.Request(
+                raw_url,
+                headers={"Authorization": f"Bearer {token}",
+                         "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(raw_req, timeout=12) as raw_resp:
+                content = raw_resp.read().decode("utf-8")
         data = json.loads(content) if content else {}
+        if isinstance(data, dict) and data.get("format") == "neuro-local-fernet-v1":
+            cipher = _portfolio_fernet()
+            if cipher is None:
+                log.error(
+                    "Encrypted portfolio Gist cannot be read: configure the original "
+                    "NEURO_BACKUP_KEY in Streamlit Secrets."
+                )
+                return {}
+            try:
+                plaintext = cipher.decrypt(
+                    str(data.get("ciphertext") or "").encode("ascii")
+                )
+                data = json.loads(plaintext.decode("utf-8"))
+            except Exception as exc:
+                log.error(
+                    "Encrypted portfolio Gist could not be decrypted (%s); "
+                    "the remote copy was left untouched.",
+                    type(exc).__name__,
+                )
+                return {}
         return data if isinstance(data, dict) else {}
     except Exception as exc:
         log.warning("Gist read failed: %s", type(exc).__name__)
@@ -219,22 +270,60 @@ def _gist_write(data: dict) -> bool:
         return False
     safe = dict(data)
     safe_meta = dict(safe.get("meta") or {})
-    for key in ("fdorg_token", "odds_api_key", "highlightly_api_key", "sstats_api_key", "llm_api_key"):
+    for key in (
+        "fdorg_token", "odds_api_key", "therundown_api_key", "rundown_key",
+        "highlightly_api_key", "sstats_api_key", "footballapi_key",
+        "llm_api_key", "xai_api_key", "grok_api_key", "groq_api_key",
+    ):
         safe_meta.pop(key, None)
     safe["meta"] = safe_meta
+    cipher = _portfolio_fernet()
+    if cipher is None:
+        log.error(
+            "Portfolio Gist write refused: configure a valid NEURO_BACKUP_KEY. "
+            "No unencrypted portfolio copy was uploaded."
+        )
+        return False
+    plaintext = json.dumps(safe, ensure_ascii=False, default=str).encode("utf-8")
+    encrypted = cipher.encrypt(plaintext).decode("ascii")
+    envelope = {
+        "format": "neuro-local-fernet-v1",
+        "ciphertext": encrypted,
+    }
     payload = {"files": {"neuro_local.json": {
-        "content": json.dumps(safe, ensure_ascii=False, default=str)
+        "content": json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
     }}}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     try:
+        # Gist "secret" means unlisted, not private. Refuse to keep writing
+        # portfolio/bank data into a publicly visible Gist. Read remains allowed
+        # above so an existing backup can still be downloaded and migrated.
+        check_req = urllib.request.Request(
+            f"https://api.github.com/gists/{gist_id}",
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(check_req, timeout=8) as resp:
+            metadata = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(metadata, dict) or metadata.get("public") is not False:
+            log.error(
+                "Gist write refused: configured Gist is public or visibility is unknown. "
+                "Create a Secret Gist and update GIST_ID."
+            )
+            return False
+
         req = urllib.request.Request(
             f"https://api.github.com/gists/{gist_id}", data=body, method="PATCH",
             headers={"Authorization": f"Bearer {token}",
                      "Accept": "application/vnd.github+json",
                      "Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=8):
-            return True
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            updated = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(updated, dict) or updated.get("public") is not False:
+            log.error("Gist write verification failed: Gist is not confirmed non-public.")
+            return False
+        return True
     except Exception as exc:
         log.warning("Gist write failed: %s", type(exc).__name__)
         return False
@@ -247,6 +336,12 @@ def get_local_data() -> dict:
     remote = _gist_read()
     if remote:
         _update(lambda all_: all_.__setitem__("data", remote))
+        # Migrate a legacy plaintext Gist to the encrypted envelope on first
+        # recovery. For an already-encrypted Gist this simply refreshes the
+        # encrypted snapshot. A missing/invalid key is refused by _gist_write,
+        # but the recovered local copy remains available to the running app.
+        if _gist_write(remote):
+            log.info("Recovered portfolio data was saved back to Gist in encrypted format.")
         return remote
     return {}
 

@@ -22,6 +22,7 @@ from config import (
 )
 from storage import usage
 from storage import sqlite_store as db
+from storage import user_datasets
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches,
                           sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
@@ -1140,8 +1141,35 @@ def _render_manual_odds_block(
     elif source_odd is None:
         col_metrics.caption("Нет подтверждённого коэффициента для этого исхода.")
 
+def _historical_rows_csv(rows: list[dict]) -> bytes:
+    """Serialize validated imported history for a portable local copy."""
+    valid = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    if not valid:
+        return b""
+    columns = sorted({str(key) for row in valid for key in row})
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(valid)
+    return ("\\ufeff" + buffer.getvalue()).encode("utf-8")
+
+
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
+    # User-imported history must survive Streamlit session recreation and app reboot.
+    for session_key, dataset_key in (
+        ("_custom_historical_match_rows", "custom_historical_match_rows"),
+        ("_historical_context_rows", "historical_context_rows"),
+    ):
+        if session_key not in st.session_state:
+            try:
+                st.session_state[session_key] = user_datasets.load_user_dataset(dataset_key)
+            except Exception as dataset_exc:
+                st.session_state[session_key] = []
+                st.warning(
+                    f"Не удалось восстановить архив {dataset_key}: "
+                    f"{type(dataset_exc).__name__}. Локальная база не изменена."
+                )
     # Existing saved cards may outlive an odds provider configuration. Strip any
     # legacy non-SStats prices before they can be shown or treated as real quotes.
     saved_cards = D.get("cards") or []
@@ -1243,17 +1271,43 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         if context_csv_file is not None:
             try:
                 context_payload = parse_context_csv(context_csv_file.getvalue())
-                st.session_state["_historical_context_rows"] = context_payload["rows"]
+                if context_payload["rows"]:
+                    saved_context = user_datasets.save_user_dataset(
+                        "historical_context_rows", context_payload["rows"],
+                    )
+                    st.session_state["_historical_context_rows"] = context_payload["rows"]
+                    persistence_note = (
+                        f"; сохранено в SQLite: {saved_context['row_count']} строк"
+                    )
+                else:
+                    persistence_note = "; прежний сохранённый архив оставлен без изменений"
                 st.success(
                     f"Контекстный архив: принято {context_payload['accepted']} строк, "
-                    f"отклонено {len(context_payload['rejected'])} (post-kickoff данные исключены)."
+                    f"отклонено {len(context_payload['rejected'])} "
+                    f"(post-kickoff данные исключены){persistence_note}."
                 )
                 if context_payload["rejected"]:
                     st.caption("Причины отклонения: " + "; ".join(
                         str(item.get("reason")) for item in context_payload["rejected"][:5]
                     ))
-            except (UnicodeDecodeError, ValueError) as exc:
-                st.error(f"Не удалось прочитать контекстный CSV: {exc}")
+            except Exception as exc:
+                st.error(
+                    "Контекстный CSV не удалось проверить или сохранить: "
+                    + f"{type(exc).__name__}: {str(exc)[:160]}"
+                )
+        saved_context_rows = st.session_state.get("_historical_context_rows") or []
+        if saved_context_rows:
+            st.caption(
+                f"Постоянно сохранённый контекстный архив: {len(saved_context_rows)} строк."
+            )
+            st.download_button(
+                "⬇️ Скачать сохранённый контекстный архив",
+                data=_historical_rows_csv(saved_context_rows),
+                file_name="neuro_bet_context_history_saved.csv",
+                mime="text/csv",
+                key="download_saved_context_history",
+            )
+
         historical_match_file = st.file_uploader(
             "Архив исторических матчей для женских лиг / сборных (.csv)",
             type=["csv"],
@@ -1279,20 +1333,43 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 history_payload = parse_historical_matches_csv(
                     historical_match_file.getvalue()
                 )
-                st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
+                if history_payload["rows"]:
+                    saved_history = user_datasets.save_user_dataset(
+                        "custom_historical_match_rows", history_payload["rows"],
+                    )
+                    st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
+                    persistence_note = (
+                        f"; сохранено в SQLite: {saved_history['row_count']} матчей"
+                    )
+                else:
+                    persistence_note = "; прежний сохранённый архив оставлен без изменений"
                 st.success(
                     f"Исторический архив: принято {history_payload['accepted']} матчей "
                     f"из {len(history_payload['divisions'])} соревнований; "
-                    f"отклонено {len(history_payload['rejected'])}."
+                    f"отклонено {len(history_payload['rejected'])}{persistence_note}."
                 )
                 st.caption(
                     "Коды: " + ", ".join(history_payload["divisions"])
                     + ". Эти соревнования обучают Base-модель отдельно и пока не проходят "
                     "Value-валидацию крупных лиг."
                 )
-            except (UnicodeDecodeError, ValueError) as exc:
-                st.error(f"Не удалось прочитать исторический CSV: {exc}")
+            except Exception as exc:
+                st.error(
+                    "Архив исторических матчей не удалось проверить или сохранить: "
+                    + f"{type(exc).__name__}: {str(exc)[:160]}"
+                )
         custom_historical_rows = st.session_state.get("_custom_historical_match_rows") or []
+        if custom_historical_rows:
+            st.caption(
+                f"Постоянно сохранённый архив обучения: {len(custom_historical_rows)} матчей."
+            )
+            st.download_button(
+                "⬇️ Скачать сохранённый архив женских лиг / сборных",
+                data=_historical_rows_csv(custom_historical_rows),
+                file_name="neuro_bet_historical_matches_saved.csv",
+                mime="text/csv",
+                key="download_saved_custom_history",
+            )
 
         historical_context_rows = st.session_state.get("_historical_context_rows") or []
         if st.button(
@@ -2539,13 +2616,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         cards = []
         matches_with_best = 0
         xg_used_count = 0
-        # The compact SStats fixture feed provides 1X2 and main totals in one request.
-        # Full bookmaker markets are requested only for a limited shortlist to respect
-        # the provider's free API quota.
+        # Games/list compact 1X2 can be empty even when Odds/{gameId} has a
+        # complete bookmaker line. Fetch details for the whole normal daily slate
+        # (107-140 matches in recent scans), with an environment/Secrets override.
         sstats_detail_calls = 0
-        # Bound per-fixture requests to avoid exhausting the provider's API quota.
-        # Compact odds from Games/list remain available for every fixture.
-        SSTATS_DETAIL_MAX_PER_SCAN = 100
+        SSTATS_DETAIL_MAX_PER_SCAN = _runtime_int(
+            "sstats_detail_max_per_scan",
+            "SSTATS_DETAIL_MAX_PER_SCAN",
+            default=150,
+            minimum=1,
+        )
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
@@ -2994,11 +3074,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"({best[0]} · {best_odds_source})"
                 )
             else:
-                no_best_reason = (
-                    "ни один доступный исход не прошёл проверку модели для конкретной линии, "
-                    "полную линию одного букмекера, вероятность, Edge >= 5%, "
-                    "EV >= 5% и положительный Kelly"
-                )
+                if not context_quality.get("strong_value_eligible"):
+                    no_best_reason = (
+                        "контекстный фильтр Strong/Value: нет подтверждённого стартового XI "
+                        "обеих команд и/или назначенного судьи; ставки заблокированы"
+                    )
+                else:
+                    no_best_reason = (
+                        "ни один доступный исход не прошёл проверку для конкретной линии, "
+                        "полную линию одного букмекера, минимальную вероятность, "
+                        "Edge >= 5%, EV >= 5% и положительный Kelly"
+                    )
                 logs.append(
                     f"❌ NO BEST: {h_ru} — {a_ru} | "
                     f"is_action={verdict.get('is_action')} | reason={no_best_reason}"
@@ -3114,8 +3200,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
         logs.append(f"📈 xG: использован в {xg_used_count} из {funnel_counts['model']} прогнозов")
         logs.append(f"🎯 BET: {matches_with_best}")
+        context_ready = sum(
+            bool((card.get("context_quality") or {}).get("strong_value_eligible"))
+            for card in cards
+        )
+        lineup_ready = sum(
+            bool((card.get("context_quality") or {}).get("lineup_confirmed"))
+            for card in cards
+        )
+        referee_ready = sum(
+            bool((card.get("context_quality") or {}).get("referee_confirmed"))
+            for card in cards
+        )
+        logs.append(
+            f"🔐 Контекст Strong/Value: допущено {context_ready}/{len(cards)}; "
+            f"подтверждённые XI {lineup_ready}/{len(cards)}, "
+            f"судьи {referee_ready}/{len(cards)}. "
+            "Без подтверждённых XI обеих команд и судьи Value-кандидаты блокируются."
+        )
 
-        # ============ TOP MATCHES · GROQ DEEP ANALYSIS ============
+        # ============ TOP MATCHES · INDEPENDENT AI ANALYSIS ============
         llm_prov = D.get("meta", {}).get(
             "llm_provider", "Groq (бесплатно, быстро)"
         )
@@ -3133,11 +3237,22 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         logs.append(
             "🏆 TOP MATCHES · независимый shortlist: "
             f"история команд ≥5: {top_diagnostics['enough_venue_history']}; "
+            f"недостаточная история: {top_diagnostics['insufficient_venue_history']}; "
+            f"без исторических средних: {top_diagnostics['missing_goal_features']}; "
             f"xG-история: {top_diagnostics['with_xg_history']}; "
             f"угловые: {top_diagnostics['with_corners_history']}; "
             f"карточки: {top_diagnostics['with_cards_history']}; "
             f"отобрано {len(top_match_items)}/{MAX_TOP_MATCHES}."
         )
+        coverage = top_diagnostics.get("division_coverage") or []
+        if coverage:
+            coverage_text = " · ".join(
+                f"{item['league']} [{item['code']}]: "
+                f"{item['eligible']}/{item['fixtures']} shortlist, "
+                f"макс. дом/выезд {item['max_home_sample']}/{item['max_away_sample']}"
+                for item in coverage[:10]
+            )
+            logs.append("📚 TOP MATCHES · история по лигам: " + coverage_text)
 
         top_dossiers = []
         top_card_by_id = {}
@@ -3290,6 +3405,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 f"после старта пропущено {tracked['skipped_started']}, "
                 f"ошибок {tracked['invalid']}"
             )
+            try:
+                from storage.remote_backup import backup_database_to_gist
+                backup_status = backup_database_to_gist(DB_FILE)
+                if backup_status.get("ok") and backup_status.get("state") == "uploaded":
+                    logs.append("🛡️ SQLite: зашифрованная копия журнала сохранена и проверена в Secret Gist.")
+                elif backup_status.get("state") not in {"not_configured", "current"}:
+                    logs.append(
+                        "⚠️ SQLite remote backup: "
+                        + str(backup_status.get("message") or backup_status.get("state"))
+                    )
+            except Exception as backup_exc:
+                logs.append(f"⚠️ SQLite remote backup: {type(backup_exc).__name__}")
         except Exception as exc:
             logs.append(f"⚠️ Журнал прогнозов ИИ недоступен: {type(exc).__name__}: {str(exc)[:120]}")
 
