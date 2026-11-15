@@ -3528,7 +3528,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 logs.append(
                     "🏆 TOP MATCHES · AI STATUS: "
                     + str(ai_status.get("state") or "unknown")
-                    + f" · {llm_provider_name} · {ai_status.get('model') or llm_model or 'модель не указана'} · "
+                    + f" · {llm_provider_name} · {ai_status.get('resolved_model') or ai_status.get('model') or llm_model or 'модель не указана'} · "
                     + str(ai_status.get("message") or "нет подробностей")
                 )
                 for fixture_id, analysis in top_analyses.items():
