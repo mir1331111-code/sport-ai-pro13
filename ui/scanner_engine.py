@@ -16,13 +16,19 @@ import streamlit as st
 from config import (
     APP_VERSION, DATA_VERSION, DIV_NAMES, DIV_TO_TSDB, DISK_CACHE_DIR,
 )
-from model.engine_cache import engine_cache_fingerprint
+from model.engine_cache import (
+    engine_cache_fingerprint, incremental_engine_checkpoint_key,
+)
 from data.sources import load_seasonal, season_str, parse_date
 from model.engine import Engine, _norm
-from model.shot_xg import enrich_history_with_shot_xg
-from model.validation_cache import select_validation_rows, validation_cache_key
+from model.shot_xg import SHOT_XG_VERSION, enrich_history_with_shot_xg
+from model.validation_cache import (
+    select_validation_rows, validation_cache_key, validation_schedule_key,
+)
 from model.training import (
-    prepare_completed_training_rows, train_engine_chronologically,
+    TRAINING_STATE_SCHEMA, plan_incremental_training,
+    prepare_completed_training_rows, training_day_digests,
+    train_engine_chronologically,
 )
 
 # Keep validation leagues module-scoped: training and validation are separate
@@ -134,7 +140,8 @@ def _load_seasonal_history(logs, update_loader):
 def _train_engine(
     matrix_n, logs, update_loader, footballapi_key="",
     footballapi_xg_rows=None, custom_historical_rows=None,
-    seasonal_snapshot=None,
+    seasonal_snapshot=None, incremental_checkpoint=None,
+    incremental_key=None,
 ):
     if seasonal_snapshot is None:
         seasonal_snapshot = _load_seasonal_history(logs, update_loader)
@@ -263,6 +270,32 @@ def _train_engine(
     # The function estimates a whole calendar day before learning that day's results.
     enrich_history_with_shot_xg(history, train_divs, logs)
 
+    # Prepare the exact post-enrichment training sequence before deciding
+    # whether the saved Engine can be continued safely.
+    training_rows, skipped_rows = prepare_completed_training_rows(
+        history, train_divs,
+    )
+    if not training_rows:
+        raise RuntimeError(
+            "Не найдено ни одного исторического матча с валидной датой, "
+            "командами и финальным счётом; обучение остановлено без подстановки 0:0."
+        )
+    current_day_digests = training_day_digests(training_rows)
+    checkpoint_for_plan = (
+        incremental_checkpoint
+        if isinstance(incremental_checkpoint, dict)
+        and incremental_checkpoint.get("config_key") == incremental_key
+        else None
+    )
+    incremental_plan = plan_incremental_training(
+        checkpoint_for_plan, current_day_digests,
+    )
+    force_market_validation = bool(
+        checkpoint_for_plan is not None
+        and incremental_plan["mode"] == "full"
+        and incremental_plan["reason"] not in {"no_checkpoint"}
+    )
+
     # The validation sample is intentionally bounded: full replays over every
     # competition/season on each cold start made Streamlit appear frozen.
     # 15 main leagues × latest 500 complete fixtures retains >500 observations
@@ -279,7 +312,35 @@ def _train_engine(
     validation_key = validation_cache_key(
         validation_rows, matrix_n=matrix_n, model_version=APP_VERSION,
     )
-    cached_validation = cache_get(validation_key, 30 * 86400)
+    schedule_key = validation_schedule_key(
+        matrix_n=matrix_n, model_version=APP_VERSION,
+        divisions=validation_divs, max_rows_per_league=250,
+        min_history=30, min_market_n=500,
+    )
+    try:
+        validation_refresh_days = max(
+            1, int(os.environ.get("MODEL_MARKET_VALIDATION_REFRESH_DAYS", "7"))
+        )
+    except (TypeError, ValueError, OverflowError):
+        validation_refresh_days = 7
+
+    cached_validation = None
+    if (
+        not force_market_validation
+        and incremental_plan["mode"] in {"append", "unchanged"}
+    ):
+        # New results are admitted incrementally every scan, but expensive
+        # market walk-forward is refreshed on a separate seven-day cadence.
+        cached_validation = cache_get(
+            schedule_key, validation_refresh_days * 86400,
+        )
+        if isinstance(cached_validation, dict):
+            logs.append(
+                f"⏱️ Рыночная walk-forward проверка не старше {validation_refresh_days} дн.; "
+                "повторный replay в обычном сканировании пропущен."
+            )
+    if cached_validation is None and not force_market_validation:
+        cached_validation = cache_get(validation_key, 30 * 86400)
 
     if isinstance(cached_validation, dict):
         totals_backtest = cached_validation.get("totals_backtest") or {}
@@ -325,10 +386,12 @@ def _train_engine(
                 bootstrap_samples=1000,
                 progress_callback=_stat_market_progress,
             )
-            cache_put(validation_key, {
+            validation_payload = {
                 "totals_backtest": totals_backtest,
                 "stat_report": stat_report,
-            })
+            }
+            cache_put(validation_key, validation_payload)
+            cache_put(schedule_key, validation_payload)
             logs.append(
                 f"Историческая проверка рассчитана: {len(validation_rows)} матчей, "
                 f"{len(validation_divs)} лиг; результат сохранён в кэш."
@@ -575,15 +638,6 @@ def _train_engine(
             0.76, logs,
         )
 
-    training_rows, skipped_rows = prepare_completed_training_rows(
-        history, train_divs,
-    )
-    if not training_rows:
-        raise RuntimeError(
-            "Не найдено ни одного исторического матча с валидной датой, "
-            "командами и финальным счётом; обучение остановлено без подстановки 0:0."
-        )
-
     def _training_progress(processed, total):
         if processed % 50 == 0 or processed == total:
             update_loader(
@@ -591,14 +645,83 @@ def _train_engine(
                 0.76 + processed / max(1, total) * 0.22, logs,
             )
 
-    training_summary = train_engine_chronologically(
-        engine, engine.match_stats, training_rows,
-        on_progress=_training_progress,
-    )
+    if incremental_plan["mode"] in {"append", "unchanged"}:
+        # Never mutate the previously published checkpoint: a failed update
+        # must leave the last-good model available for the next scan.
+        previous_engine = copy.deepcopy(checkpoint_for_plan["engine"])
+        validation_attributes = (
+            "winner_market_validation", "winner_market_validation_report",
+            "total_market_validation", "total_market_validation_by_line",
+            "total_market_validation_report", "btts_market_validation",
+            "btts_market_validation_report", "stat_market_validation",
+            "stat_market_validation_report", "xg_ablation_report",
+        )
+        for attribute in validation_attributes:
+            if hasattr(engine, attribute):
+                setattr(
+                    previous_engine, attribute,
+                    copy.deepcopy(getattr(engine, attribute)),
+                )
+        engine = previous_engine
+        match_stats = engine.match_stats
+        start_index = int(incremental_plan["start_index"])
+        new_rows = training_rows[start_index:]
+        if new_rows:
+            update_loader(
+                f"Догружаю только новые результаты: {len(new_rows)} матчей",
+                0.76, logs,
+            )
+            training_summary = train_engine_chronologically(
+                engine, match_stats, new_rows,
+                on_progress=_training_progress,
+                start_index=start_index,
+                total_rows=len(training_rows),
+            )
+            logs.append(
+                f"✅ Инкрементальное обучение: добавлено {len(new_rows)} новых матчей "
+                f"за {training_summary['days']} игровых дней; всего в модели "
+                f"{training_summary['trained']} матчей."
+            )
+        else:
+            training_summary = {
+                "trained": start_index, "days": 0, "skipped": 0,
+            }
+            logs.append(
+                f"⚡ История не изменилась: хронологическое обучение пропущено "
+                f"({start_index} матчей уже в Engine)."
+            )
+    else:
+        # No checkpoint, a corrected historical row, xG backfill, deleted
+        # result, or a late fixture in an already-trained day: replay all rows.
+        reason = incremental_plan.get("reason", "checkpoint_invalid")
+        if incremental_checkpoint is not None:
+            logs.append(
+                f"♻️ Полное хронологическое переобучение: обнаружено изменение "
+                f"ранее обученной истории ({reason})."
+            )
+        else:
+            logs.append(
+                "🧠 Первичное полное хронологическое обучение: checkpoint ещё нет."
+            )
+        training_summary = train_engine_chronologically(
+            engine, engine.match_stats, training_rows,
+            on_progress=_training_progress,
+            start_index=0,
+            total_rows=len(training_rows),
+        )
+
     engine.trained_n = training_summary["trained"]
+    engine._incremental_training_manifest = {
+        "schema": TRAINING_STATE_SCHEMA,
+        "config_key": incremental_key,
+        "day_digests": current_day_digests,
+        "trained_rows": len(training_rows),
+        "last_training_date": (
+            current_day_digests[-1]["date"] if current_day_digests else None
+        ),
+    }
     logs.append(
-        f"Обучено хронологически: {training_summary['trained']} матчей, "
-        f"{training_summary['days']} календарных дней; "
+        f"📚 История обучения: {training_summary['trained']} матчей; "
         f"пропущено без даты={skipped_rows['missing_date']}, "
         f"без команд={skipped_rows['missing_teams']}, "
         f"без валидного финального счёта={skipped_rows['missing_or_invalid_score']}, "
@@ -610,7 +733,10 @@ def _train_engine(
 @st.cache_resource(show_spinner=False)
 def _shared_engine_cache():
     # Shared across Streamlit reruns and browser sessions in the same process.
-    return {"engines": {}, "locks": {}, "lock": threading.RLock()}
+    return {
+        "engines": {}, "incremental": {}, "locks": {},
+        "lock": threading.RLock(),
+    }
 
 
 def _load_engine(
@@ -637,6 +763,14 @@ def _load_engine(
         footballapi_xg_rows=footballapi_xg_rows,
         custom_historical_rows=custom_historical_rows,
     )
+    incremental_key = incremental_engine_checkpoint_key(
+        app_version=APP_VERSION,
+        data_version=DATA_VERSION,
+        matrix_n=matrix_n,
+        xg_enabled=xg_enabled,
+        shot_xg_version=SHOT_XG_VERSION,
+        training_state_schema=TRAINING_STATE_SCHEMA,
+    )
     session_key = f"_trained_engine_{cache_key}"
 
     update_loader("🔎 Проверяю кэш модели по отпечатку истории и xG...", 0.20, logs)
@@ -655,6 +789,7 @@ def _load_engine(
 
     shared = _shared_engine_cache()
     guard = shared.setdefault("lock", threading.RLock())
+    shared.setdefault("incremental", {})
 
     def _cached_engine():
         with guard:
@@ -678,10 +813,10 @@ def _load_engine(
         )
         return cached
 
-    # A single global lock used to cover the whole 30k–40k match training pass.
-    # That made unrelated sessions and different model keys wait silently.
-    # Use one lock per exact xG/data/matrix fingerprint instead.
-    model_lock = get_keyed_lock(shared, cache_key)
+    # Serialize updates for one model configuration, not one history hash:
+    # two scans that see different newly completed fixtures must not race to
+    # publish the same append-only checkpoint.
+    model_lock = get_keyed_lock(shared, incremental_key)
     acquired = model_lock.acquire(blocking=False)
     waited_seconds = 0
     while not acquired:
@@ -757,13 +892,59 @@ def _load_engine(
                     "создаю модель заново."
                 )
 
-        update_loader("🧠 Кэш не найден — начинаю обучение модели...", 0.24, logs)
+        # Prefer the last-good append-only checkpoint. It is copied before
+        # training so an exception cannot corrupt the published model.
+        incremental_path = os.path.join(
+            DISK_CACHE_DIR, f"{incremental_key}.incremental.pkl.gz",
+        )
+        incremental_checkpoint = None
+        with guard:
+            memory_checkpoint = shared.setdefault("incremental", {}).get(incremental_key)
+        if isinstance(memory_checkpoint, dict):
+            incremental_checkpoint = memory_checkpoint
+            logs.append("⚡ Найдено состояние Engine для инкрементального продолжения.")
+        elif os.path.exists(incremental_path):
+            try:
+                if os.path.getsize(incremental_path) > 350 * 1024 * 1024:
+                    raise ValueError("incremental checkpoint exceeds 350 MB safety limit")
+                with open(incremental_path, "rb") as file_obj:
+                    candidate = pickle.loads(gzip.decompress(file_obj.read()))
+                candidate_engine = candidate.get("engine") if isinstance(candidate, dict) else None
+                candidate_manifest = (
+                    getattr(candidate_engine, "_incremental_training_manifest", None)
+                    if candidate_engine is not None else None
+                )
+                if (
+                    isinstance(candidate, dict)
+                    and candidate.get("schema") == TRAINING_STATE_SCHEMA
+                    and candidate.get("config_key") == incremental_key
+                    and candidate_manifest
+                    and candidate_manifest.get("config_key") == incremental_key
+                    and hasattr(candidate_engine, "match_stats")
+                    and int(getattr(candidate_engine, "trained_n", -1))
+                    == int(candidate.get("trained_rows", -2))
+                ):
+                    incremental_checkpoint = candidate
+                    with guard:
+                        shared.setdefault("incremental", {})[incremental_key] = candidate
+                    logs.append("💾 Загружен сохранённый checkpoint хронологического обучения.")
+                else:
+                    logs.append("⚠️ Checkpoint обучения несовместим; будет безопасный полный replay.")
+            except Exception as exc:
+                logs.append(
+                    f"⚠️ Checkpoint обучения не прочитан ({type(exc).__name__}); "
+                    "будет безопасный полный replay."
+                )
+
+        update_loader("🧠 Проверяю новые результаты для обучения...", 0.24, logs)
         engine = _train_engine(
             matrix_n, logs, update_loader,
             footballapi_key=footballapi_key,
             footballapi_xg_rows=footballapi_xg_rows,
             custom_historical_rows=custom_historical_rows,
             seasonal_snapshot=seasonal_snapshot,
+            incremental_checkpoint=incremental_checkpoint,
+            incremental_key=incremental_key,
         )
         update_loader("💾 Сохраняю обученную модель...", 0.99, logs)
         try:
@@ -784,6 +965,39 @@ def _load_engine(
             )
         with guard:
             shared.setdefault("engines", {})[cache_key] = engine
+        manifest = getattr(engine, "_incremental_training_manifest", None)
+        if isinstance(manifest, dict):
+            checkpoint = {
+                "schema": TRAINING_STATE_SCHEMA,
+                "config_key": incremental_key,
+                "day_digests": manifest.get("day_digests") or [],
+                "trained_rows": int(manifest.get("trained_rows") or 0),
+                "last_training_date": manifest.get("last_training_date"),
+                "engine": engine,
+            }
+            with guard:
+                shared.setdefault("incremental", {})[incremental_key] = checkpoint
+            try:
+                os.makedirs(DISK_CACHE_DIR, exist_ok=True)
+                packed_checkpoint = gzip.compress(
+                    pickle.dumps(checkpoint), compresslevel=1,
+                )
+                temporary_checkpoint = incremental_path + ".tmp"
+                with open(temporary_checkpoint, "wb") as file_obj:
+                    file_obj.write(packed_checkpoint)
+                    file_obj.flush()
+                    os.fsync(file_obj.fileno())
+                os.replace(temporary_checkpoint, incremental_path)
+                logs.append(
+                    f"💾 Инкрементальный checkpoint сохранён "
+                    f"(дата {checkpoint.get('last_training_date')}, "
+                    f"{checkpoint['trained_rows']} матчей)."
+                )
+            except Exception as exc:
+                logs.append(
+                    f"ℹ️ Checkpoint не сохранён на диск ({type(exc).__name__}); "
+                    "состояние останется в памяти процесса."
+                )
         try:
             st.session_state[session_key] = engine
         except Exception:
