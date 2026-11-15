@@ -32,6 +32,8 @@ def is_verified_final_score(result: Any) -> bool:
     """
     if not isinstance(result, dict):
         return False
+    if result.get("regulation_time") is False:
+        return False
     status = str(result.get("status") or "").strip().casefold()
     if status in EXTRA_TIME_SCORE_STATUSES:
         if result.get("regulation_time") is not True:
