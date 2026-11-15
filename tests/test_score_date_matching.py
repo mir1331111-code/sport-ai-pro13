@@ -5,6 +5,77 @@ from data import scores
 
 
 class ExactScoreFixtureMatchingTests(unittest.TestCase):
+    def test_espn_marks_extra_time_and_penalty_final_status_ids_as_aet(self):
+        from types import SimpleNamespace
+
+        def response(status_type):
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {"events": [{
+                    "id": "espn-cup-final",
+                    "date": "2026-11-15T19:00:00Z",
+                    "league": {"name": "Test Cup"},
+                    "competitions": [{
+                        "status": {"type": {
+                            "state": "post",
+                            "completed": True,
+                            **status_type,
+                        }},
+                        "competitors": [
+                            {"team": {"displayName": "Home FC"},
+                             "homeAway": "home", "score": "2"},
+                            {"team": {"displayName": "Away FC"},
+                             "homeAway": "away", "score": "1"},
+                        ],
+                    }],
+                }]},
+            )
+
+        for status_type in (
+            {"id": "45", "name": "STATUS_FINAL", "detail": "Final"},
+            {"id": 47, "name": "STATUS_FINAL", "shortDetail": "Final"},
+            {"id": "3", "name": "STATUS_FINAL", "detail": "After Penalties"},
+        ):
+            with self.subTest(status_type=status_type), \
+                 patch.object(scores, "cache_get", return_value=None), \
+                 patch.object(scores, "cache_put"), \
+                 patch.object(scores._sess, "get", return_value=response(status_type)):
+                rows = scores._espn_day("2026-11-15")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["status"], "AET")
+
+    def test_espn_keeps_regular_full_time_as_ft(self):
+        from types import SimpleNamespace
+
+        response = SimpleNamespace(
+            status_code=200,
+            json=lambda: {"events": [{
+                "id": "espn-league-final",
+                "date": "2026-11-15T19:00:00Z",
+                "league": {"name": "Test League"},
+                "competitions": [{
+                    "status": {"type": {
+                        "id": "3", "name": "STATUS_FINAL",
+                        "state": "post", "completed": True, "detail": "Final",
+                    }},
+                    "competitors": [
+                        {"team": {"displayName": "Home FC"},
+                         "homeAway": "home", "score": "1"},
+                        {"team": {"displayName": "Away FC"},
+                         "homeAway": "away", "score": "0"},
+                    ],
+                }],
+            }]},
+        )
+        with (
+            patch.object(scores, "cache_get", return_value=None),
+            patch.object(scores, "cache_put"),
+            patch.object(scores._sess, "get", return_value=response),
+        ):
+            rows = scores._espn_day("2026-11-15")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "FT")
+
     def test_espn_ignores_same_teams_on_adjacent_calendar_day(self):
         adjacent = [{
             "home": "Home FC", "away": "Away FC",
