@@ -14,6 +14,13 @@ The scanner must not replay the complete historical archive on every ordinary sc
 
 The checkpoint contains the fitted Engine (including score-model and historical market state), training schema/configuration, trained-row count, last trained date, and ordered matchday digests. The ordinary scanner continues to produce forecasts from the resulting Engine.
 
+The matchday digest covers the fields consumed by Engine, HistoricalMatchStats and the
+dated aggregate-shot xG fitter: fixture/date/league/score, all supported provider-xG aliases
+and provenance, shot counts used to fit proxy xG, corners/cards and referee fields. It
+intentionally excludes bookmaker odds and presentation-only metadata. A price-only update
+therefore refreshes market validation on its separate cadence without retraining the score
+model; a change to score, xG, shots or market-stat training inputs invalidates the history prefix.
+
 ## Safety conditions for incremental continuation
 
 Incremental continuation is allowed only when all previously trained matchday hashes match the current history prefix exactly and the checkpoint Engine's trained-row count agrees with its manifest.
