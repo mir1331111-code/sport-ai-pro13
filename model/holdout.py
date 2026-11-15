@@ -867,6 +867,13 @@ def load_fixed_holdout_gate_status(path: str | Path | None = None) -> dict:
         and payload.get("schema") == "sport-ai-model-lab-gate-v1"
         and payload.get("status") == "PASS"
         and payload.get("strict_holdout_gate_passed") is True
+        and isinstance(payload.get("experiment_id"), str)
+        and len(payload.get("experiment_id", "")) == 64
+        and isinstance(payload.get("dataset_sha256"), str)
+        and len(payload.get("dataset_sha256", "")) == 64
+        and bool(payload.get("holdout_start"))
+        and bool(payload.get("holdout_end"))
+        and bool(payload.get("generated_at_utc"))
     )
     return {
         "passed": passed,
