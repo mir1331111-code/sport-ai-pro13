@@ -149,7 +149,7 @@ def _render_forecast_journal(D):
                 "Только прогноз": item["forecast_only_matches"],
                 "Сильные ≥65%": item["strong_matches"],
             } for item in market_coverage],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -509,7 +509,7 @@ def _render_independent_ai():
 
     # The app-level synchronizer handles automatic checks for both portfolio bets
     # and forecast ledgers. Keep this tab's button as a ledger-only manual retry.
-    if st.button("🔄 Дополнительно проверить журнал прогнозов", use_container_width=False):
+    if st.button("🔄 Дополнительно проверить журнал прогнозов", width="content"):
         try:
             import time
             with st.spinner("Запрашиваю подтверждённые результаты…"):
