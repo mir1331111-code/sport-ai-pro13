@@ -34,7 +34,7 @@ def engine_cache_fingerprint(
         })
 
     payload = {
-        "schema": "neuro-engine-cache-v2",
+        "schema": "neuro-engine-cache-v3",
         "app_version": str(app_version),
         "data_version": int(data_version),
         "matrix_n": int(matrix_n),
@@ -53,4 +53,34 @@ def engine_cache_fingerprint(
         default=str,
     ).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()[:24]
-    return f"neuro-engine-v2-{digest}"
+    return f"neuro-engine-v3-{digest}"
+
+
+
+def incremental_engine_checkpoint_key(
+    *,
+    app_version: str,
+    data_version: int,
+    matrix_n: int,
+    xg_enabled: bool,
+    shot_xg_version: str = "unspecified",
+    training_state_schema: str = "neuro-engine-training-state-v1",
+) -> str:
+    """Stable key for an append-only training checkpoint, independent of data rows."""
+    payload = {
+        "schema": "neuro-engine-incremental-cache-v1",
+        "app_version": str(app_version),
+        "data_version": int(data_version),
+        "matrix_n": int(matrix_n),
+        "xg_enabled": bool(xg_enabled),
+        "shot_xg_version": str(shot_xg_version),
+        "training_state_schema": str(training_state_schema),
+        "temporal_weighting": True,
+        "league_rho_fitting": True,
+        "half_life_days": 180.0,
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()[:24]
+    return f"neuro-engine-incremental-v1-{digest}"

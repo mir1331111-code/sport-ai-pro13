@@ -1,3 +1,4 @@
+import pickle
 import unittest
 from datetime import date, datetime
 
@@ -5,6 +6,8 @@ from model.engine import Engine
 from model.historical_match_stats import HistoricalMatchStats
 from model.training import (
     prepare_completed_training_rows,
+    plan_incremental_training,
+    training_day_digests,
     train_engine_chronologically,
 )
 
@@ -92,6 +95,121 @@ class ChronologicalTrainingTests(unittest.TestCase):
         self.assertEqual(stats.trained_matches["SP1"], 1)
         self.assertEqual(progress[-1], (3, 3))
         self.assertEqual(skipped["missing_or_invalid_score"], 0)
+
+    def test_incremental_trainer_matches_full_chronological_replay(self):
+        seed = [{
+            "home": "Seed", "away": "Opponent", "home_goals": 1, "away_goals": 0,
+            "league": "E0", "match_date": datetime(2023, 12, 31),
+            "row": {"Div": "E0", "HomeTeam": "Seed", "AwayTeam": "Opponent", "HC": 5, "AC": 4},
+        }]
+        new_day = [
+            {"home": "A", "away": "B", "home_goals": 1, "away_goals": 0,
+             "league": "E0", "match_date": datetime(2024, 1, 1),
+             "row": {"Div": "E0", "HomeTeam": "A", "AwayTeam": "B", "HC": 5, "AC": 4}},
+            {"home": "C", "away": "D", "home_goals": 0, "away_goals": 1,
+             "league": "SP1", "match_date": datetime(2024, 1, 1),
+             "row": {"Div": "SP1", "HomeTeam": "C", "AwayTeam": "D", "HC": 4, "AC": 6}},
+        ]
+        incremental_engine = Engine(matrix_n=8, league_rho_fitting=False)
+        incremental_stats = HistoricalMatchStats()
+        train_engine_chronologically(incremental_engine, incremental_stats, seed)
+        summary = train_engine_chronologically(
+            incremental_engine, incremental_stats, new_day,
+            start_index=1, total_rows=3,
+        )
+
+        full_engine = Engine(matrix_n=8, league_rho_fitting=False)
+        full_stats = HistoricalMatchStats()
+        train_engine_chronologically(full_engine, full_stats, seed + new_day)
+
+        self.assertEqual(summary, {"trained": 3, "days": 1, "skipped": 0})
+        self.assertEqual(incremental_engine.trained_n, 3)
+        self.assertEqual(incremental_stats.trained_matches["E0"], 2)
+        self.assertEqual(incremental_stats.trained_matches["SP1"], 1)
+        incremental_prediction = incremental_engine.predict(
+            "A", "C", "E0", match_date="2024-01-02",
+        )
+        full_prediction = full_engine.predict(
+            "A", "C", "E0", match_date="2024-01-02",
+        )
+        for key in ("p1", "x", "p2", "over", "btts"):
+            self.assertAlmostEqual(
+                incremental_prediction[key], full_prediction[key], places=12,
+            )
+
+    def test_market_quote_changes_do_not_retrain_engine_but_xg_changes_do(self):
+        original = self.row("01/01/2024", "A", "B", 1, 0, HS=12, HST=5, AS=8, AST=3)
+        original.update({"B365H": "2.1", "B365D": "3.4", "B365A": "3.5"})
+        base_rows, _ = prepare_completed_training_rows({"E0": [[original]]}, ("E0",))
+        base_digest = training_day_digests(base_rows)
+
+        market_only_change = dict(original)
+        market_only_change["B365H"] = "2.2"
+        market_rows, _ = prepare_completed_training_rows(
+            {"E0": [[market_only_change]]}, ("E0",),
+        )
+        self.assertEqual(base_digest, training_day_digests(market_rows))
+
+        xg_change = dict(original)
+        xg_change["HxG"] = 1.7
+        xg_rows, _ = prepare_completed_training_rows({"E0": [[xg_change]]}, ("E0",))
+        self.assertNotEqual(base_digest, training_day_digests(xg_rows))
+
+        shot_change = dict(original)
+        shot_change["HS"] = 15
+        shot_rows, _ = prepare_completed_training_rows({"E0": [[shot_change]]}, ("E0",))
+        self.assertNotEqual(base_digest, training_day_digests(shot_rows))
+
+    def test_incremental_plan_accepts_only_unchanged_or_whole_new_days(self):
+        from model.training import TRAINING_STATE_SCHEMA
+
+        history = {
+            "E0": [
+                [self.row("01/01/2024", "A", "B", 1, 0)],
+                [self.row("02/01/2024", "C", "D", 0, 1)],
+            ]
+        }
+        prepared, _ = prepare_completed_training_rows(history, ("E0",))
+        digests = training_day_digests(prepared)
+        engine = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        stats = HistoricalMatchStats()
+        train_engine_chronologically(engine, stats, prepared)
+        engine.match_stats = stats
+        # The on-disk checkpoint stores the full Engine, including online
+        # market-stat state. Verify the same state survives pickle round-trip.
+        restored_engine = pickle.loads(pickle.dumps(engine))
+        checkpoint = {
+            "schema": TRAINING_STATE_SCHEMA,
+            "day_digests": digests,
+            "trained_rows": 2,
+            "engine": restored_engine,
+        }
+        self.assertEqual(plan_incremental_training(checkpoint, digests)["mode"], "unchanged")
+
+        appended = dict(self.row("03/01/2024", "E", "F", 2, 0))
+        updated, _ = prepare_completed_training_rows(
+            {"E0": history["E0"] + [[appended]]}, ("E0",),
+        )
+        plan = plan_incremental_training(checkpoint, training_day_digests(updated))
+        self.assertEqual(plan["mode"], "append")
+        self.assertEqual(plan["start_index"], 2)
+
+        same_day_addition = dict(self.row("02/01/2024", "New", "Match", 1, 1))
+        changed, _ = prepare_completed_training_rows(
+            {"E0": history["E0"] + [[same_day_addition]]}, ("E0",),
+        )
+        changed_plan = plan_incremental_training(checkpoint, training_day_digests(changed))
+        self.assertEqual(changed_plan["mode"], "full")
+        self.assertEqual(changed_plan["reason"], "historical_prefix_changed")
+
+        corrected = dict(history["E0"][0][0])
+        corrected["FTHG"] = 3
+        corrected_history = {"E0": [[corrected], history["E0"][1][0:]]}
+        corrected_rows, _ = prepare_completed_training_rows(corrected_history, ("E0",))
+        self.assertEqual(
+            plan_incremental_training(checkpoint, training_day_digests(corrected_rows))["mode"],
+            "full",
+        )
 
     def test_single_match_wrapper_keeps_legacy_leakage_safe_contract(self):
         model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)

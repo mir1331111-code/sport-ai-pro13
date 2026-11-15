@@ -49,6 +49,10 @@ The model accepts paired fields such as `HxG`/`AxG`, `home_xg`/`away_xg`, and `x
 For a model promotion decision, use an untouched later-period holdout and, where available, compare with pre-kickoff bookmaker probabilities. This diagnostic walk-forward is not a profit guarantee.
 
 
+## Incremental chronological training
+
+The scanner reuses the fitted chronological Engine and learns only new complete matchdays. Corrections, xG backfills, same-day late results or schema changes trigger a safe full replay. Market walk-forward refreshes independently, by default every 7 days. See [docs/INCREMENTAL_TRAINING.md](docs/INCREMENTAL_TRAINING.md).
+
 ## Fixed Holdout Model Lab v1
 
 Run a reproducible 1X2 holdout with one fixed bookmaker source:
