@@ -7,7 +7,7 @@ import os
 import re
 import unicodedata
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS, normalize_llm_provider
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger, OUTCOMES
+from model.temporal import weighted_mean
 
 
 def _mean(values: list[Any]) -> float | None:
@@ -66,34 +67,151 @@ def _matching_team_state(teams: Any, team: str, division: str) -> dict[str, Any]
     )
 
 
+def _history_day(value: Any) -> date | None:
+    """Parse an observation day without guessing when the source date is absent."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        try:
+            return date.fromisoformat(raw[:10])
+        except ValueError:
+            return None
+
+
+def _history_series(
+    state: dict,
+    value_key: str,
+    date_key: str,
+    *,
+    limit: int | None = None,
+    match_date: datetime | date | str | None = None,
+) -> tuple[list[float], list[str | None]]:
+    """Return aligned observations, excluding the target day and future dates."""
+    values = list(state.get(value_key) or [])
+    dates = list(state.get(date_key) or [])
+    cutoff = _history_day(match_date)
+    pairs = []
+    for index, raw_value in enumerate(values):
+        try:
+            number = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(number):
+            continue
+        stamp = dates[index] if index < len(dates) else None
+        observed_day = _history_day(stamp)
+        if cutoff is not None and (
+            observed_day is None or observed_day >= cutoff
+        ):
+            continue
+        pairs.append((
+            number,
+            observed_day.isoformat() if observed_day is not None else None,
+        ))
+    if limit is not None:
+        pairs = pairs[-max(1, int(limit)):]
+    return [item[0] for item in pairs], [item[1] for item in pairs]
+
+
+def _history_mean(
+    state: dict,
+    value_key: str,
+    date_key: str,
+    *,
+    limit: int | None = None,
+    match_date: datetime | date | str | None = None,
+    half_life_days: float = 180.0,
+) -> tuple[float | None, int]:
+    values, dates = _history_series(
+        state, value_key, date_key, limit=limit, match_date=match_date,
+    )
+    if not values:
+        return None, 0
+    # Keep historical callers without an as-of date backward-compatible. The
+    # production scanner always supplies match_date and therefore gets the
+    # same dated exponential weighting as the core forecast engine.
+    if match_date is None or any(stamp is None for stamp in dates):
+        return _mean(values), len(values)
+    result = weighted_mean(
+        values, dates, match_date,
+        default=0.0, half_life_days=half_life_days,
+    )
+    return (result if math.isfinite(result) else None), len(values)
+
+
 def historical_features(
-    engine: Any, home: str, away: str, limit: int = 8, league: str = "G",
+    engine: Any,
+    home: str,
+    away: str,
+    limit: int = 8,
+    league: str = "G",
+    match_date: datetime | date | str | None = None,
 ) -> dict[str, Any]:
-    """Build independent observed-goal features from normalized names in this competition."""
+    """Build independent observed-goal features using only pre-match dated history.
+
+    With an as-of date, this mirrors the core engine's temporal half-life and
+    excludes every observation from the target calendar day or later. Legacy
+    offline callers that omit the date retain their unweighted behavior.
+    """
     teams = getattr(engine, "st", {})
     division = str(league or "G").strip().upper() or "G"
     home_stats = _matching_team_state(teams, home, division)
     away_stats = _matching_team_state(teams, away, division)
-    hs = list(home_stats.get("hs") or [])[-limit:]
-    hc = list(home_stats.get("hc") or [])[-limit:]
-    ass = list(away_stats.get("as") or [])[-limit:]
-    ac = list(away_stats.get("ac") or [])[-limit:]
-    home_scored, home_conceded = _mean(hs), _mean(hc)
-    away_scored, away_conceded = _mean(ass), _mean(ac)
-    lambda_home = (home_scored + away_conceded) / 2 if home_scored is not None and away_conceded is not None else None
-    lambda_away = (away_scored + home_conceded) / 2 if away_scored is not None and home_conceded is not None else None
-    lambda_total = lambda_home + lambda_away if lambda_home is not None and lambda_away is not None else None
+    half_life = float(getattr(engine, "half_life_days", 180.0) or 180.0)
+
+    home_scored, home_n = _history_mean(
+        home_stats, "hs", "hs_dates", limit=limit,
+        match_date=match_date, half_life_days=half_life,
+    )
+    home_conceded, home_conceded_n = _history_mean(
+        home_stats, "hc", "hc_dates", limit=limit,
+        match_date=match_date, half_life_days=half_life,
+    )
+    away_scored, away_n = _history_mean(
+        away_stats, "as", "as_dates", limit=limit,
+        match_date=match_date, half_life_days=half_life,
+    )
+    away_conceded, away_conceded_n = _history_mean(
+        away_stats, "ac", "ac_dates", limit=limit,
+        match_date=match_date, half_life_days=half_life,
+    )
+    lambda_home = (
+        (home_scored + away_conceded) / 2
+        if home_scored is not None and away_conceded is not None else None
+    )
+    lambda_away = (
+        (away_scored + home_conceded) / 2
+        if away_scored is not None and home_conceded is not None else None
+    )
+    lambda_total = (
+        lambda_home + lambda_away
+        if lambda_home is not None and lambda_away is not None else None
+    )
     over_25 = None
     if lambda_total is not None and math.isfinite(lambda_total) and lambda_total >= 0:
-        over_25 = 1 - math.exp(-lambda_total) * (1 + lambda_total + lambda_total**2 / 2)
+        over_25 = 1 - math.exp(-lambda_total) * (
+            1 + lambda_total + lambda_total**2 / 2
+        )
     return {
         "home_scored_at_home_avg": home_scored,
         "home_conceded_at_home_avg": home_conceded,
         "away_scored_away_avg": away_scored,
         "away_conceded_away_avg": away_conceded,
-        "home_home_sample": min(len(hs), len(hc)),
-        "away_away_sample": min(len(ass), len(ac)),
+        "home_home_sample": min(home_n, home_conceded_n),
+        "away_away_sample": min(away_n, away_conceded_n),
         "sample_limit": limit,
+        "as_of_date": (
+            _history_day(match_date).isoformat()
+            if match_date is not None and _history_day(match_date) is not None
+            else None
+        ),
         "simple_baseline_lambda_home": lambda_home,
         "simple_baseline_lambda_away": lambda_away,
         "simple_baseline_lambda_total": lambda_total,
@@ -102,43 +220,22 @@ def historical_features(
 
 
 def historical_xg_features(
-    engine: Any, home: str, away: str, league: str = "G",
-    match_date: datetime | None = None,
+    engine: Any,
+    home: str,
+    away: str,
+    league: str = "G",
+    match_date: datetime | date | str | None = None,
 ) -> dict[str, Any]:
-    """Return leakage-safe, venue-specific provider/proxy xG and xGA history.
+    """Return pre-match, time-weighted provider/proxy xG and xGA separately.
 
-    Provider xG and the local aggregate-shot proxy stay in separate fields.
-    Only dated observations strictly before the target calendar day are used.
+    Every target-day or future observation is excluded. Provider xG remains
+    separate from the aggregate-shot proxy and is never merged into that stream.
     """
     teams = getattr(engine, "st", {})
     division = str(league or "G").strip().upper() or "G"
     home_state = _matching_team_state(teams, home, division)
     away_state = _matching_team_state(teams, away, division)
-    cutoff = match_date.date() if isinstance(match_date, datetime) else match_date
-
-    def dated_mean(state: dict, value_key: str, date_key: str) -> tuple[float | None, int]:
-        values = list(state.get(value_key) or [])
-        dates = list(state.get(date_key) or [])
-        eligible = []
-        for value, stamp in zip(values, dates):
-            if cutoff is not None:
-                if stamp is None:
-                    continue
-                stamp_date = stamp.date() if hasattr(stamp, "date") else stamp
-                if isinstance(stamp_date, str):
-                    try:
-                        stamp_date = datetime.fromisoformat(stamp_date[:10]).date()
-                    except ValueError:
-                        continue
-                if stamp_date >= cutoff:
-                    continue
-            try:
-                number = float(value)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(number) and 0.0 <= number <= 8.0:
-                eligible.append(number)
-        return (_mean(eligible), len(eligible))
+    half_life = float(getattr(engine, "half_life_days", 180.0) or 180.0)
 
     result: dict[str, Any] = {}
     streams = (
@@ -147,11 +244,26 @@ def historical_xg_features(
         ("proxy", home_state, "hs_pxg", "hs_pxga", "hs_pxg_dates", "hs_pxga_dates",
          away_state, "as_pxg", "as_pxga", "as_pxg_dates", "as_pxga_dates"),
     )
-    for label, h_state, h_for_key, h_against_key, h_for_dates, h_against_dates, a_state, a_for_key, a_against_key, a_for_dates, a_against_dates in streams:
-        home_for, home_n = dated_mean(h_state, h_for_key, h_for_dates)
-        home_against, home_against_n = dated_mean(h_state, h_against_key, h_against_dates)
-        away_for, away_n = dated_mean(a_state, a_for_key, a_for_dates)
-        away_against, away_against_n = dated_mean(a_state, a_against_key, a_against_dates)
+    for (
+        label, h_state, h_for_key, h_against_key, h_for_dates, h_against_dates,
+        a_state, a_for_key, a_against_key, a_for_dates, a_against_dates,
+    ) in streams:
+        home_for, home_n = _history_mean(
+            h_state, h_for_key, h_for_dates, match_date=match_date,
+            half_life_days=half_life,
+        )
+        home_against, home_against_n = _history_mean(
+            h_state, h_against_key, h_against_dates, match_date=match_date,
+            half_life_days=half_life,
+        )
+        away_for, away_n = _history_mean(
+            a_state, a_for_key, a_for_dates, match_date=match_date,
+            half_life_days=half_life,
+        )
+        away_against, away_against_n = _history_mean(
+            a_state, a_against_key, a_against_dates, match_date=match_date,
+            half_life_days=half_life,
+        )
         result[label] = {
             "home_xg_for_avg": home_for,
             "home_xga_avg": home_against,
@@ -163,6 +275,11 @@ def historical_xg_features(
             "away_xga_samples": away_against_n,
         }
     result["source_priority"] = "provider_then_proxy"
+    result["as_of_date"] = (
+        _history_day(match_date).isoformat()
+        if match_date is not None and _history_day(match_date) is not None
+        else None
+    )
     return result
 
 

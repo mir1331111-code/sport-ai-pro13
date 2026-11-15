@@ -50,6 +50,42 @@ class WalkForwardTests(unittest.TestCase):
         self.assertLessEqual(report["confidence_intervals_95"]["brier"]["low"],
                              report["confidence_intervals_95"]["brier"]["high"])
 
+    def test_metrics_include_fixed_width_reliability_tables_for_each_1x2_class(self):
+        records = _ClusteredRecords()
+        records.set_cluster("2024-01-01")
+        outcomes = ["H"] * 6 + ["D"] * 3 + ["A"]
+        for outcome in outcomes:
+            records.append(({"H": 0.6, "D": 0.3, "A": 0.1}, outcome))
+
+        report = _metrics(records, bootstrap_samples=0)
+        reliability = report["reliability"]
+        self.assertEqual(reliability["n"], 10)
+        self.assertEqual(reliability["binning"], "fixed_width")
+        for code, expected_bin in (("H", 6), ("D", 3), ("A", 1)):
+            class_report = reliability["classes"][code]
+            self.assertEqual(class_report["n"], 10)
+            self.assertAlmostEqual(class_report["ece"], 0.0, places=12)
+            populated = [
+                item for item in class_report["bins"] if item["count"] > 0
+            ]
+            self.assertEqual(len(populated), 1)
+            self.assertEqual(populated[0]["count"], 10)
+            self.assertEqual(
+                int(populated[0]["lower"] * 10), expected_bin
+            )
+
+        miscalibrated = _ClusteredRecords()
+        miscalibrated.set_cluster("2024-01-02")
+        for index in range(10):
+            miscalibrated.append((
+                {"H": 0.6, "D": 0.3, "A": 0.1},
+                "H" if index < 8 else "D",
+            ))
+        second = _metrics(miscalibrated, bootstrap_samples=0)
+        self.assertAlmostEqual(
+            second["reliability"]["classes"]["H"]["ece"], 0.2, places=12
+        )
+
     def test_paired_and_binary_metrics_keep_matchday_cluster_alignment(self):
         left = _ClusteredRecords()
         right = _ClusteredRecords()
