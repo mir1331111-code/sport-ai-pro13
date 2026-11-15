@@ -52,7 +52,7 @@ LLM_PROVIDERS = {
     },
     "Gemini (Google, бесплатно)": {
         "base": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "model": "gemini-2.0-flash-exp",
+        "model": "gemini-3.8-flash",
         "key_url": "https://aistudio.google.com/apikey",
     },
     "Grok (x.ai)": {
