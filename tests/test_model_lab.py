@@ -68,15 +68,17 @@ class FixedHoldoutModelLabTests(unittest.TestCase):
     def test_market_capture_time_must_be_timezone_aware_and_pre_kickoff(self):
         rows = make_rows()
         for row in rows:
-            row["OddsCapturedAt"] = "2024-01-16T10:00:00+00:00"
-            row["KickoffAt"] = "2024-01-16T15:00:00+00:00"
+            match_date = row["Date"]
+            row["OddsCapturedAt"] = f"{match_date}T10:00:00+00:00"
+            row["KickoffAt"] = f"{match_date}T15:00:00+00:00"
         verified = self._run(
             rows, odds_timestamp_field="OddsCapturedAt", kickoff_timestamp_field="KickoffAt",
         )
         self.assertTrue(verified["readiness"]["market_snapshot_verified"])
         self.assertEqual(verified["market"]["timestamp_audit"]["verified"], verified["market"]["n"])
 
-        rows[0]["OddsCapturedAt"] = "2024-01-16T15:00:00+00:00"
+        holdout_row = next(row for row in rows if row["Date"] == "2024-01-17")
+        holdout_row["OddsCapturedAt"] = holdout_row["KickoffAt"]
         invalid = self._run(
             rows, odds_timestamp_field="OddsCapturedAt", kickoff_timestamp_field="KickoffAt",
         )
