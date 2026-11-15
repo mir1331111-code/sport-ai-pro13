@@ -493,7 +493,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
             deep_analysis._sess, "post", return_value=success_response
         ) as post:
             result = deep_analysis.check_provider_connection(
-                "Groq GPT-OSS 120B (мощнее)", "groq-unit-test-key"
+                "Groq GPT-OSS 120B (оплата по токенам)", "groq-unit-test-key"
             )
 
         self.assertTrue(result["ok"])
