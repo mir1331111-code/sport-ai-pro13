@@ -131,8 +131,10 @@ def _base_row(
         model_ev = _finite(value_verdict.get("ev"))
         status = "value_verified"
 
-    if status != "value_verified":
+    if status != "value_verified" and family != "handicap":
         status = "forecast_with_price" if odds is not None else "forecast_only"
+    elif status == "handicap_research_only" and odds is None:
+        status = "forecast_only"
 
     fair_odds = 1.0 / probability if 0.0 < probability < 1.0 else None
     score = float(recommendation.get("score") or 0.0) if verified else 0.0
@@ -165,6 +167,7 @@ def _base_row(
         "status": status,
         "status_label": (
             "ПРОВЕРЕННЫЙ VALUE" if verified
+            else "ФОРА · ИССЛЕДОВАТЕЛЬСКАЯ ОЦЕНКА" if family == "handicap"
             else "ПРОГНОЗ + КОЭФФИЦИЕНТ · НЕ VALUE" if odds is not None
             else "ПРОГНОЗ · НЕТ КОЭФФИЦИЕНТА"
         ),
@@ -173,6 +176,9 @@ def _base_row(
             "Прошёл независимую проверку рынка, полную линию одного букмекера, "
             "Edge, EV и положительный Kelly."
             if verified else
+            "Азиатская фора рассчитана по полной матрице счёта с учётом полупобеды, возврата "
+            "и полупоражения; отдельный out-of-sample benchmark ещё не подтверждён."
+            if family == "handicap" else
             "Есть модельная вероятность и цена, но независимый benchmark этого рынка "
             "ещё не подтверждён. Модельный EV предварительный; не считать ставкой."
             if odds is not None else
