@@ -61,7 +61,8 @@ python -m model.holdout path/to/top5_history.csv \
   --output-dir reports/model_lab
 ~~~
 
-The command writes JSON, Markdown and P1/X/P2 reliability SVG reports. See
+The command writes JSON, Markdown, P1/X/P2 reliability SVGs and a fail-closed
+`model-lab-v1-gate.json` promotion marker consumed by scanner automation. See
 [docs/MODEL_LAB.md](docs/MODEL_LAB.md) for the frozen league set, timestamp requirements,
 paired-market methodology and promotion gates. Market comparison is diagnostic-only unless
 bookmaker capture and kickoff timestamps are verified as timezone-aware and pre-kickoff.
