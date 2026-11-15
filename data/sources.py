@@ -528,11 +528,22 @@ def _tsdb_league_meta(league_name: str):
     # example, England's National League is a domestic club competition.
     # "Europa" also contains the substring "euro", so only a standalone
     # "Euro" token is a national-team marker.
-    national = bool(age) or any(token in ln for token in (
+    age_international = bool(age) and any(token in ln for token in (
+        "uefa", "fifa", "afc", "caf", "concacaf", "conmebol", "ofc",
+    ))
+    national = age_international or any(token in ln for token in (
         "national team", "national teams", "international", "world cup",
         "nations league", "friendl", "fifa", "copa america", "africa cup",
         "afcon", "afc asian", "qualifier", "qualification",
     )) or bool(re.search(r"\beuro\b", ln))
+
+    # An age marker alone does not mean a national-team tournament:
+    # domestic U21/U19 club leagues have their own stable competition namespace.
+    if age and not national:
+        digest = hashlib.sha1(ln.encode("utf-8")).hexdigest()[:8].upper()
+        if women:
+            return (f"W_Y_U{age_code}_{digest}"[:24], "women_youth", True, False)
+        return (f"Y_U{age_code}_{digest}"[:24], "youth_club", False, False)
 
     if women:
         if national:
