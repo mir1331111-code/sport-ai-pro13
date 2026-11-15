@@ -176,6 +176,35 @@ def _ttl(date_iso: str) -> int:
 
 
 # ============ ESPN ============
+def _espn_non_regulation_status(status_type: dict) -> bool:
+    """Identify ESPN final statuses that include extra time or a shootout.
+
+    ESPN can keep `name=STATUS_FINAL` for a completed cup tie while its
+    numeric status ID or detail identifies extra time/penalties. Such a score
+    is not interchangeable with the regulation-time 1X2 result.
+    """
+    if not isinstance(status_type, dict):
+        return False
+    try:
+        status_id = int(str(status_type.get("id") or "").strip())
+    except (TypeError, ValueError):
+        status_id = None
+    if status_id in {44, 45, 46, 47, 48, 49}:
+        return True
+
+    details = " ".join(
+        str(status_type.get(field) or "")
+        for field in ("name", "description", "detail", "shortDetail", "abbreviation", "text")
+    ).casefold()
+    if any(token in details for token in (
+        "aet", "after extra", "extra time", "after golden",
+        "after penalty", "after penalties", "penalty shootout",
+        "penalties", "shootout", "ft-pens", "ft pens",
+    )):
+        return True
+    return False
+
+
 def _espn_day(date_iso: str) -> list:
     # v5 invalidates pre-archive cache rows that had no date/league metadata.
     ck = f"espn_day_v5_{date_iso}"
@@ -208,8 +237,7 @@ def _espn_day(date_iso: str) -> list:
                     away = (name, t.get("score"))
             if not home or not away or home[1] is None or away[1] is None:
                 continue
-            sname = str(stype.get("name") or "").upper()
-            extra = any(x in sname for x in ("AET", "PEN", "EXTRA"))
+            extra = _espn_non_regulation_status(stype)
             league_meta = e.get("league") or {}
             event_day = _source_local_day(e.get("date")) or date_iso
             out.append({
