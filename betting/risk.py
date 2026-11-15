@@ -194,7 +194,7 @@ def size_bet(
             if _market_family(bet.get("market"), bet.get("pick")) == family:
                 market_used += stake
     daily_used = sum(
-        _safe_float(bet.get("stake"))
+        _stake_amount(bet.get("stake"))
         for bet in all_rows
         if _placed_day(bet, current.date() if _pending(bet) else date.min) == current.date()
     )
