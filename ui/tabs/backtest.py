@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 import streamlit as st
 
 from config import DIV_NAMES
@@ -14,8 +15,6 @@ from model.training import (
 from betting.kelly import edge, expected_value, kelly
 from betting.risk import (
     KELLY_FRACTION,
-    MAX_DAILY_EXPOSURE_PCT,
-    MAX_MATCH_EXPOSURE_PCT,
     MAX_MARKET_STAKE_PCT,
     size_bet,
 )
@@ -267,6 +266,10 @@ def render(matrix_n):
         {bt_div: [raw_rows]},
         (bt_div,),
     )
+
+    skipped_total = sum(skipped_rows.values())
+    if skipped_total:
+        st.caption(f"Пропущено некорректных исторических строк: {skipped_total}")
 
     if len(prepared_rows) < 150:
         st.error(
