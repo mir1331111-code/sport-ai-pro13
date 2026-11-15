@@ -30,18 +30,45 @@ def _mean(values: list[Any]) -> float | None:
     return sum(clean) / len(clean) if clean else None
 
 
-def _matching_team_state(teams: Any, team: str, division: str) -> dict[str, Any]:
-    """Resolve a team's stored state by normalized name, without crossing leagues."""
+def _matching_team_state(engine: Any, team: str, division: str) -> dict[str, Any]:
+    """Resolve normalized names through a per-engine, per-division lookup index.
+
+    The model state is stable after chronological training. Previously every
+    independent dossier scanned every team again for each fixture; building the
+    index once reduces repeated lookup work from O(fixtures × teams) to
+    O(teams + fixtures).
+    """
     from model.engine import _norm, _team_state_key
 
-    if not hasattr(teams, "get") or not hasattr(teams, "items"):
+    teams = getattr(engine, "st", {})
+    if not hasattr(teams, "items"):
         return {}
     wanted = _norm(team)
     if not wanted:
         return {}
+    direct_key = _team_state_key(division, team)
 
-    direct = teams.get(_team_state_key(division, team), {})
-    candidates = [direct] if isinstance(direct, dict) else []
+    signature = (
+        id(teams),
+        len(teams) if hasattr(teams, "__len__") else None,
+        int(getattr(engine, "trained_n", 0) or 0),
+    )
+    cached = getattr(engine, "_independent_team_state_index", None)
+    if not isinstance(cached, dict):
+        cached = {}
+        try:
+            setattr(engine, "_independent_team_state_index", cached)
+        except Exception:
+            cached = {}
+
+    entry = cached.get(division)
+    if isinstance(entry, tuple) and len(entry) == 2 and entry[0] == signature:
+        return entry[1].get(wanted, {})
+
+    index: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+    history_fields = (
+        "hs", "hc", "as", "ac", "hs_xg", "as_xg", "hs_pxg", "as_pxg",
+    )
     for key, state in teams.items():
         if not isinstance(state, dict):
             continue
@@ -51,20 +78,21 @@ def _matching_team_state(teams: Any, team: str, division: str) -> dict[str, Any]
             state_division, state_team = "G", key
         if str(state_division or "G").strip().upper() != division:
             continue
-        if _norm(state_team) == wanted and all(state is not item for item in candidates):
-            candidates.append(state)
+        normalized = _norm(state_team)
+        if not normalized:
+            continue
+        history_count = sum(len(state.get(field) or []) for field in history_fields)
+        # Preserve the old direct-key tie-break: if two spellings normalize to
+        # the same club and have equal history, prefer the requested exact key.
+        rank = (history_count, int(key == direct_key))
+        previous = index.get(normalized)
+        if previous is None or rank > previous[0]:
+            index[normalized] = (rank, state)
 
-    if not candidates:
-        return {}
-    # A defaultdict may have created an empty exact-name entry during prediction.
-    # Prefer the matching spelling that actually contains the most history.
-    return max(
-        candidates,
-        key=lambda state: sum(
-            len(state.get(field) or [])
-            for field in ("hs", "hc", "as", "ac", "hs_xg", "as_xg", "hs_pxg", "as_pxg")
-        ),
-    )
+    resolved = {name: value[1] for name, value in index.items()}
+    if cached is not None:
+        cached[division] = (signature, resolved)
+    return resolved.get(wanted, {})
 
 
 def _history_day(value: Any) -> date | None:
@@ -162,8 +190,8 @@ def historical_features(
     """
     teams = getattr(engine, "st", {})
     division = str(league or "G").strip().upper() or "G"
-    home_stats = _matching_team_state(teams, home, division)
-    away_stats = _matching_team_state(teams, away, division)
+    home_stats = _matching_team_state(engine, home, division)
+    away_stats = _matching_team_state(engine, away, division)
     half_life = float(getattr(engine, "half_life_days", 180.0) or 180.0)
 
     home_scored, home_n = _history_mean(
@@ -233,8 +261,8 @@ def historical_xg_features(
     """
     teams = getattr(engine, "st", {})
     division = str(league or "G").strip().upper() or "G"
-    home_state = _matching_team_state(teams, home, division)
-    away_state = _matching_team_state(teams, away, division)
+    home_state = _matching_team_state(engine, home, division)
+    away_state = _matching_team_state(engine, away, division)
     half_life = float(getattr(engine, "half_life_days", 180.0) or 180.0)
 
     result: dict[str, Any] = {}
