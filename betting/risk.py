@@ -157,7 +157,7 @@ def size_bet(
     family = _market_family(market, pick)
     all_rows = [b for b in bets if isinstance(b, dict)] if isinstance(bets, list) else []
     rows = [b for b in all_rows if _pending(b)]
-    pending = sum(_safe_float(b.get("stake")) for b in rows)
+    pending = sum(_stake_amount(b.get("stake")) for b in rows)
     bankroll = free_bank + pending
 
     diagnostics: dict[str, float | str] = {
