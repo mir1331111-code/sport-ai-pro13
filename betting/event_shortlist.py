@@ -355,6 +355,37 @@ def _family_candidates(card: dict, family: str) -> list[dict]:
     return []
 
 
+def _approved_candidate(card: dict, family: str) -> dict | None:
+    """Preserve an approved non-favourite pick when it differs from the top forecast."""
+    recommendation = _recommendation(card, family)
+    if not recommendation:
+        return None
+    best = recommendation.get("best") or ()
+    verdict = recommendation.get("verdict") or {}
+    if len(best) < 6:
+        return None
+    try:
+        pick = _canonical_pick(best[1])
+        probability = float(verdict.get("prob"))
+        odds = float(best[2])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not 0.0 < probability < 1.0 or _valid_odds(odds) is None:
+        return None
+    summary = market_forecast_summary(card, family)
+    return _base_row(
+        card,
+        family,
+        pick=pick,
+        label=str(verdict.get("label") or pick),
+        probability=probability,
+        odds=odds,
+        history_matches=int((summary or {}).get("history_matches") or 0),
+        team_samples=int((summary or {}).get("team_samples") or 0),
+        strong=bool((summary or {}).get("strong_forecast")),
+    )
+
+
 def build_best_market_events(cards: object, limit: int = 30) -> list[dict]:
     """Return one best display candidate per fixture/market family, ranked safely."""
     if not isinstance(cards, list):
@@ -365,6 +396,14 @@ def build_best_market_events(cards: object, limit: int = 30) -> list[dict]:
             continue
         for family in ("winner", "goals", "btts", "corners", "cards"):
             rows = _family_candidates(card, family)
+            approved = _approved_candidate(card, family)
+            if approved and not any(
+                _canonical_pick(item["pick"]) == _canonical_pick(approved["pick"])
+                for item in rows
+            ):
+                # The highest-probability outcome is not always the best Value
+                # outcome. Keep a validated underdog/alternative selection.
+                rows.append(approved)
             if not rows:
                 continue
             # Prefer a verified signal; otherwise prefer the highest preliminary
