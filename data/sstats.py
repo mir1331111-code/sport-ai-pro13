@@ -1774,6 +1774,163 @@ def _sstats_ls_event_keys(event: dict, timezone_offset: int = 0):
     ], external_id
 
 
+def _sstats_parse_glicko(payload, *, retrieved_at=None):
+    """Normalize the SStats Glicko forecast without treating it as observed xG.
+
+    The endpoint returns a model estimate (data.glicko.homeXg/awayXg), not a
+    historical shot-event record. Only the expected-goals pair is mandatory;
+    optional rating/probability fields are included only when valid.
+    """
+    data = _sstats_context_data(payload)
+    if not isinstance(data, dict) and isinstance(payload, dict):
+        # Accept an unwrapped object only when it explicitly contains the
+        # documented Glicko node or its expected-goals pair.
+        if isinstance(payload.get("glicko"), dict) or (
+            "homeXg" in payload and "awayXg" in payload
+        ):
+            data = payload
+    if not isinstance(data, dict):
+        return None
+    raw = data.get("glicko")
+    if not isinstance(raw, dict):
+        # Some response variants may return the Glicko object directly.
+        raw = data
+    if not isinstance(raw, dict):
+        return None
+
+    def number(*names, minimum=None, maximum=None):
+        for name in names:
+            value = raw.get(name)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                parsed = float(str(value).strip().replace(",", "."))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(parsed):
+                continue
+            if minimum is not None and parsed < minimum:
+                continue
+            if maximum is not None and parsed > maximum:
+                continue
+            return parsed
+        return None
+
+    home_xg = number("homeXg", "home_xg", "homeExpectedGoals", minimum=0.0, maximum=8.0)
+    away_xg = number("awayXg", "away_xg", "awayExpectedGoals", minimum=0.0, maximum=8.0)
+    if home_xg is None or away_xg is None:
+        return None
+
+    result = {
+        "available": True,
+        "source": "sstats_games_glicko",
+        "source_class": "external_model_forecast",
+        "kind": "glicko2_expected_goals_forecast",
+        "is_observed_xg": False,
+        "home_xg": round(home_xg, 3),
+        "away_xg": round(away_xg, 3),
+        "retrieved_at": (
+            retrieved_at.astimezone(timezone.utc).isoformat()
+            if isinstance(retrieved_at, datetime) and retrieved_at.tzinfo
+            else datetime.now(timezone.utc).isoformat()
+        ),
+    }
+
+    optional_fields = {
+        "home_rating": number("homeRating", "home_rating", minimum=0.0, maximum=4000.0),
+        "away_rating": number("awayRating", "away_rating", minimum=0.0, maximum=4000.0),
+        "home_rd": number("homeRd", "home_rd", minimum=0.0, maximum=500.0),
+        "away_rd": number("awayRd", "away_rd", minimum=0.0, maximum=500.0),
+        "home_win_probability": number(
+            "homeWinProbability", "home_win_probability", minimum=0.0, maximum=1.0
+        ),
+        "away_win_probability": number(
+            "awayWinProbability", "away_win_probability", minimum=0.0, maximum=1.0
+        ),
+        "home_volatility": number("homeVolatility", "home_volatility", minimum=0.0, maximum=1.0),
+        "away_volatility": number("awayVolatility", "away_volatility", minimum=0.0, maximum=1.0),
+    }
+    result.update({
+        key: round(value, 6)
+        for key, value in optional_fields.items() if value is not None
+    })
+
+    upstream = str(raw.get("updated") or "").strip()
+    upstream_stamp = _parse_provider_date(upstream)
+    fetched = _parse_provider_date(result["retrieved_at"])
+    # SStats examples may contain the DateTime.MinValue sentinel (year 0001).
+    # Do not present that sentinel as a genuine provider update timestamp.
+    if (
+        upstream_stamp is not None
+        and upstream_stamp.year >= 2000
+        and fetched is not None
+        and (
+            upstream_stamp.replace(tzinfo=timezone.utc)
+            if upstream_stamp.tzinfo is None else upstream_stamp.astimezone(timezone.utc)
+        ) <= fetched.astimezone(timezone.utc) + timedelta(minutes=5)
+    ):
+        normalized_stamp = (
+            upstream_stamp.replace(tzinfo=timezone.utc)
+            if upstream_stamp.tzinfo is None else upstream_stamp.astimezone(timezone.utc)
+        )
+        result["upstream_updated_at"] = normalized_stamp.isoformat()
+        result["upstream_timestamp_valid"] = True
+    else:
+        result["upstream_updated_at"] = None
+        result["upstream_timestamp_valid"] = False
+    return result
+
+
+def _sstats_glicko_fixture(game_id, api_key: str, *, now=None, logs=None):
+    """Fetch one bounded, cacheable Glicko forecast; never poison cache on bad data."""
+    key = str(api_key or "").strip()
+    raw_id = str(game_id or "").strip()
+    if not key or not raw_id or not re.fullmatch(r"\d{1,12}", raw_id):
+        return None
+    key_tag = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    cache_key = f"sstats_glicko_v1_{raw_id}_{key_tag}"
+    try:
+        cached = cache_get(cache_key, 3 * 60 * 60)
+    except Exception:
+        # A cache outage must not disable the independent shortlist or base scan.
+        cached = None
+    if isinstance(cached, dict) and cached.get("source") == "sstats_games_glicko":
+        return cached
+
+    retrieved_at = now or datetime.now(timezone.utc)
+    if retrieved_at.tzinfo is None:
+        retrieved_at = retrieved_at.replace(tzinfo=timezone.utc)
+    else:
+        retrieved_at = retrieved_at.astimezone(timezone.utc)
+    try:
+        response = _sstats_request(
+            f"Games/glicko/{raw_id}", key, timeout=(4, 12)
+        )
+        if response.status_code != 200:
+            if logs is not None:
+                logs.append(
+                    f"⚠️ SStats Glicko game={raw_id}: HTTP {response.status_code}; external forecast unavailable."
+                )
+            return None
+        payload = response.json() or {}
+        normalized = _sstats_parse_glicko(payload, retrieved_at=retrieved_at)
+        if not normalized:
+            if logs is not None:
+                logs.append(
+                    f"ℹ️ SStats Glicko game={raw_id}: response has no valid homeXg/awayXg pair."
+                )
+            return None
+        normalized["sstats_game_id"] = raw_id
+        cache_put(cache_key, normalized)
+        return normalized
+    except Exception as exc:
+        if logs is not None:
+            logs.append(
+                f"⚠️ SStats Glicko game={raw_id}: {type(exc).__name__}; external forecast unavailable."
+            )
+        return None
+
+
 def sstats_context_enrich(
     rows: list[dict],
     api_key: str,
@@ -1783,6 +1940,7 @@ def sstats_context_enrich(
     now: datetime | None = None,
     max_injury_checks: int = 20,
     max_lineup_checks: int = 12,
+    max_glicko_checks: int = 0,
     timezone_offset: int | None = None,
 ) -> tuple[dict[tuple[str, str, str], dict], list[str]]:
     """Enrich SStats Games/list fixtures using SStats injuries and Flashscore Ls endpoints.
@@ -1884,9 +2042,19 @@ def sstats_context_enrich(
     )[:max(0, int(max_lineup_checks))]
     injury_candidate_ids = {id(row) for row in injury_candidates}
     lineup_candidate_ids = {id(row) for row in lineup_candidates}
+    glicko_candidates = sorted(
+        [
+            row for row in valid_rows
+            if kickoff_by_identity[id(row)] is not None
+            and timedelta(0) <= kickoff_by_identity[id(row)] - current_utc <= timedelta(days=7)
+        ],
+        key=lambda row: kickoff_by_identity[id(row)],
+    )[:max(0, int(max_glicko_checks))]
+    glicko_candidate_ids = {id(row) for row in glicko_candidates}
 
     context_by_fixture = {}
     injury_checked = injury_found = info_checked = lineup_checked = lineup_confirmed = referee_confirmed = 0
+    glicko_checked = glicko_available = 0
     linked_fixtures = 0
 
     for row in valid_rows:
@@ -1917,6 +2085,22 @@ def sstats_context_enrich(
             "injuries": [], "injuries_is_confirmed": False,
             "injuries_timestamp": None, "injuries_source_reliability": None,
         }
+
+        if id(row) in glicko_candidate_ids:
+            glicko_checked += 1
+            glicko = _sstats_glicko_fixture(
+                row.get("sstats_game_id"), key, now=current_utc, logs=logs,
+            )
+            if glicko:
+                context["glicko"] = glicko
+                glicko_available += 1
+            else:
+                context["glicko"] = {
+                    "available": False,
+                    "source": "sstats_games_glicko",
+                    "status": "unavailable_or_no_valid_data",
+                    "is_observed_xg": False,
+                }
 
         if id(row) in injury_candidate_ids:
             try:
@@ -1994,7 +2178,8 @@ def sstats_context_enrich(
         f"linked fixtures={linked_fixtures}/{len(valid_rows)}; "
         f"injuries checked={injury_checked}, entries={injury_found}; "
         f"GameInfo={info_checked}; lineups checked={lineup_checked}, "
-        f"confirmed XI={lineup_confirmed}; confirmed referees={referee_confirmed}."
+        f"confirmed XI={lineup_confirmed}; confirmed referees={referee_confirmed}; "
+        f"Glicko checked={glicko_checked}, valid={glicko_available}."
     )
     if linked_fixtures == 0:
         logs.append(
