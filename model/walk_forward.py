@@ -545,7 +545,7 @@ def totals_market_is_validated(report, *, min_n=500, min_clusters=30):
 def walk_forward_compare(
     rows, *, matrix_n: int = 12, half_life_days: float = 180.0,
     bootstrap_samples: int = 1000, totals_bootstrap_samples: int | None = None,
-    market_bootstrap_samples: int | None = None,
+    market_bootstrap_samples: int | None = None, progress_callback=None,
 ) -> dict:
     """Compare goals-only and xG engines on identical chronological fixtures.
 
@@ -627,6 +627,12 @@ def walk_forward_compare(
     xg_forecasts = xg_eligible_rows = 0
     index = 0
     cursor = 0
+    last_progress_report = 0
+    if callable(progress_callback):
+        try:
+            progress_callback(0, len(prepared))
+        except Exception:
+            pass
     while cursor < len(prepared):
         stamp = prepared[cursor][0]
         group = []
@@ -817,6 +823,17 @@ def walk_forward_compare(
             prior_btts = btts_history.setdefault(row_copy.get("Div") or "G", [0, 0])
             prior_btts[0] += int(hg > 0 and ag > 0)
             prior_btts[1] += 1
+
+        # Report progress after a complete matchday has been processed. The UI
+        # must not appear frozen during the multi-model walk-forward replay.
+        if callable(progress_callback) and (
+            index == len(prepared) or index - last_progress_report >= 100
+        ):
+            try:
+                progress_callback(index, len(prepared))
+            except Exception:
+                pass
+            last_progress_report = index
 
     metrics = {name: _metrics(value, bootstrap_samples=bootstrap_samples, seed=1729)
                for name, value in records.items() if not name.startswith("goals_over25")}
