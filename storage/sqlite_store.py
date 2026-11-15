@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -30,6 +31,7 @@ log = logging.getLogger("sqlite_store")
 _LOCK = threading.RLock()
 SQLITE_BOOT_OK = False
 SQLITE_BOOT_ERROR = ""
+_WAL_INITIALIZED_PATH = ""
 
 
 @contextmanager
@@ -37,7 +39,8 @@ def _db():
     with _LOCK:
         conn = sqlite3.connect(DB_FILE, timeout=15, isolation_level=None)
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
+            # journal_mode=WAL is persistent for the database file; set it during
+            # initialization rather than taking a schema-level lock on every read.
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
             yield conn
@@ -89,9 +92,13 @@ CREATE TABLE IF NOT EXISTS user_datasets (
 
 
 def db_init() -> bool:
-    global SQLITE_BOOT_OK, SQLITE_BOOT_ERROR
+    global SQLITE_BOOT_OK, SQLITE_BOOT_ERROR, _WAL_INITIALIZED_PATH
     try:
         with _db() as c:
+            database_path = os.path.abspath(DB_FILE)
+            if _WAL_INITIALIZED_PATH != database_path:
+                c.execute("PRAGMA journal_mode=WAL")
+                _WAL_INITIALIZED_PATH = database_path
             c.executescript(SCHEMA)
             # Lightweight migration for decision snapshots created by older builds.
             existing = {
