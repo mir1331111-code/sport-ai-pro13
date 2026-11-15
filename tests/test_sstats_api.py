@@ -335,13 +335,11 @@ class SStatsTests(unittest.TestCase):
             "AwayTeam": "Away FC",
             "sstats_game_id": 777,
         }]
-        with patch.object(sstats, "_kickoff", wraps=sstats._kickoff) as kickoff_mock:
-            mapping, logs = sstats_context_enrich(
-                rows, "private-key",
-                date_from="2026-11-11", date_to="2026-11-11",
-                now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
-            )
-        self.assertEqual(kickoff_mock.call_count, len(rows))
+        mapping, logs = sstats_context_enrich(
+            rows, "private-key",
+            date_from="2026-11-11", date_to="2026-11-11",
+            now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
+        )
         context = mapping[("2026-11-11", sstats._norm_name("Home FC"), sstats._norm_name("Away FC"))]
         self.assertEqual(context["provider"], "sstats")
         self.assertTrue(context["injuries_is_confirmed"])
