@@ -38,6 +38,15 @@ class SStatsDivisionMappingTests(unittest.TestCase):
         self.assertTrue(women_youth.startswith("S_WY_U21_"))
         self.assertFalse(women_youth.startswith("W_NT_"))
 
+    def test_uefa_youth_league_stays_in_club_youth_namespace(self):
+        youth = _sstats_div_code("UEFA U19 Youth League")
+        self.assertTrue(youth.startswith("S_Y_U19_"))
+        self.assertFalse(youth.startswith("NT_"))
+
+        women_youth = _sstats_div_code("UEFA Women's U19 Youth League")
+        self.assertTrue(women_youth.startswith("S_WY_U19_"))
+        self.assertFalse(women_youth.startswith("W_NT_"))
+
     def test_youth_national_competitions_still_use_international_namespace(self):
         self.assertTrue(_sstats_div_code("UEFA U21 Championship").startswith("NT_U21_"))
         self.assertTrue(_sstats_div_code("AFC U20 Asian Cup").startswith("NT_U20_"))
