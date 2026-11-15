@@ -135,6 +135,95 @@ class FixtureMergeTests(unittest.TestCase):
         self.assertEqual(rows[0]["Div"], "I1")
         self.assertEqual(rows[0]["League"], "Serie A")
 
+    def test_same_teams_and_date_do_not_merge_across_model_namespaces(self):
+        senior = {
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City", "Div": "E0",
+            "fixture_id": "senior-fixture",
+            "market_odds": {"П1": 2.1},
+        }
+        youth = {
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City", "Div": "Y_U19_ABC123",
+            "fixture_id": "youth-fixture",
+        }
+        women = {
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City", "Div": "W_E0",
+            "fixture_id": "women-fixture",
+        }
+        national = {
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City", "Div": "NT_U19",
+            "fixture_id": "national-fixture",
+        }
+
+        rows = merge_fixture_sources([senior, youth, women, national])
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(
+            {row["fixture_id"] for row in rows},
+            {"senior-fixture", "youth-fixture", "women-fixture", "national-fixture"},
+        )
+        self.assertEqual(
+            next(row for row in rows if row["fixture_id"] == "senior-fixture")["market_odds"],
+            {"П1": 2.1},
+        )
+
+    def test_generic_row_only_joins_when_competition_namespace_is_unambiguous(self):
+        generic = {
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City", "Div": "G",
+            "fixture_id": "generic-fixture",
+        }
+        senior = {
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City", "Div": "E0",
+            "fixture_id": "senior-fixture",
+        }
+        youth = {
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City", "Div": "Y_U19_ABC123",
+            "fixture_id": "youth-fixture",
+        }
+        rows = merge_fixture_sources([generic], [senior], [youth])
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(
+            {row["fixture_id"] for row in rows},
+            {"generic-fixture", "senior-fixture", "youth-fixture"},
+        )
+
+        # A single known namespace makes the generic placeholder safe to merge.
+        rows = merge_fixture_sources([generic], [senior])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["fixture_id"], "generic-fixture")
+        self.assertEqual(rows[0]["Div"], "E0")
+
+    def test_visual_enrichment_rejects_conflicting_or_ambiguous_namespaces(self):
+        primary = [{
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City", "Div": "E0",
+        }]
+        wrong_category = [{
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City", "Div": "W_E0",
+            "home_badge": "wrong-category.png",
+        }]
+        rows, report = enrich_fixture_visual_metadata(primary, wrong_category)
+        self.assertNotIn("home_badge", rows[0])
+        self.assertEqual(report["fixtures_matched"], 0)
+
+        generic_primary = [{
+            "Date": "2026-11-20", "HomeTeam": "Liverpool",
+            "AwayTeam": "Manchester City",
+        }]
+        ambiguous_metadata = [
+            dict(wrong_category[0], home_badge="women.png"),
+            dict(wrong_category[0], Div="E0", home_badge="men.png"),
+        ]
+        rows, report = enrich_fixture_visual_metadata(generic_primary, ambiguous_metadata)
+        self.assertNotIn("home_badge", rows[0])
+        self.assertEqual(report["fixtures_matched"], 0)
+
     def test_keeps_distinct_matches_and_tolerates_failed_sources(self):
         rows = merge_fixture_sources(
             [{"Date": "2026-10-20", "HomeTeam": "A", "AwayTeam": "B"}],
