@@ -112,6 +112,36 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(xg["provider"]["away_xg_samples"], 5)
         self.assertAlmostEqual(xg["provider"]["home_xg_for_avg"], 1.2)
 
+    def test_normalized_team_index_is_reused_and_invalidated_after_training(self):
+        class CountingTeams(dict):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.items_calls = 0
+
+            def items(self):
+                self.items_calls += 1
+                return super().items()
+
+        teams = CountingTeams({
+            ("E0", "Home"): {"hs": [1, 2], "hc": [0, 1]},
+            ("E0", "Away"): {"as": [1, 2], "ac": [1, 0]},
+            ("W_E0", "Home"): {"hs": [9, 9], "hc": [0, 0]},
+            ("E0", "Spare"): {"hs": [1], "hc": [1]},
+        })
+        engine = SimpleNamespace(st=teams, trained_n=100)
+
+        historical_features(engine, "Home FC", "Away FC", league="E0")
+        historical_xg_features(engine, "Home FC", "Away FC", league="E0")
+        self.assertEqual(teams.items_calls, 1)
+
+        teams[("E0", "New Club FC")] = {"hs": [4, 5], "hc": [0, 0]}
+        engine.trained_n += 1
+        updated = historical_features(
+            engine, "New Club", "Away FC", league="E0",
+        )
+        self.assertEqual(updated["home_scored_at_home_avg"], 4.5)
+        self.assertEqual(teams.items_calls, 2)
+
     def test_llm_goal_features_exclude_target_day_and_weight_recent_history(self):
         from model.temporal import weighted_mean
 
