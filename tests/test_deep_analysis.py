@@ -227,6 +227,41 @@ class MatchDossierTests(unittest.TestCase):
         self.assertNotIn('"p1"', dossier)
         self.assertNotIn("model_pick_code", dossier)
 
+    def test_glicko_forecast_is_kept_separate_from_observed_and_proxy_xg_history(self):
+        card = make_card()
+        card["independent_features"]["xg_history"] = {
+            "provider": {
+                "home_xg_for_avg": 1.42, "home_xga_avg": 0.92,
+                "away_xg_for_avg": 1.11, "away_xga_avg": 1.31,
+                "home_xg_samples": 8, "home_xga_samples": 8,
+                "away_xg_samples": 7, "away_xga_samples": 7,
+            },
+            "proxy": {"home_xg_for_avg": 1.30, "home_xga_avg": 1.05},
+        }
+        card["api_context"]["glicko"] = {
+            "available": True,
+            "source": "sstats_games_glicko",
+            "source_class": "external_model_forecast",
+            "kind": "glicko2_expected_goals_forecast",
+            "is_observed_xg": False,
+            "home_xg": 1.11, "away_xg": 1.34,
+            "home_rating": 1504.9, "away_rating": 1519.3,
+            "home_win_probability": 0.31, "away_win_probability": 0.42,
+            "retrieved_at": "2026-11-15T12:00:00+00:00",
+            "upstream_updated_at": None,
+            "upstream_timestamp_valid": False,
+        }
+        dossier = build_match_dossier(card)
+        self.assertEqual(dossier["xg"]["provider_history"]["home_xg_for_avg"], 1.42)
+        self.assertEqual(dossier["xg"]["proxy_history"]["home_xg_for_avg"], 1.3)
+        self.assertEqual(dossier["sstats_glicko"]["home_xg"], 1.11)
+        self.assertEqual(dossier["sstats_glicko"]["away_xg"], 1.34)
+        self.assertEqual(
+            dossier["sstats_glicko"]["source_class"], "external_model_forecast"
+        )
+        self.assertFalse(dossier["sstats_glicko"]["is_observed_xg"])
+        self.assertIsNone(dossier["sstats_glicko"]["upstream_updated_at"])
+
     def test_quality_is_capped_when_lineups_or_referee_are_unconfirmed(self):
         context = {
             "provider": "sstats",
