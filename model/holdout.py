@@ -305,6 +305,7 @@ def evaluate_fixed_holdout(
     xg_history_origins = defaultdict(lambda: {
         "provider": 0, "proxy": 0, "unlabelled_legacy": 0,
     })
+    season_basis_counts = defaultdict(int)
     timestamp_audit = {
         "configured": bool(odds_timestamp_field and kickoff_timestamp_field),
         "verified": 0,
@@ -330,6 +331,8 @@ def evaluate_fixed_holdout(
         # before updating any model with a result from that day.
         for match_date, league, home, away, hg, ag, row, source_index in group:
             season, season_basis = _season_label(row, match_date)
+            if is_holdout:
+                season_basis_counts[season_basis] += 1
             origin = _xg_input_origin(row)
             if is_holdout and origin:
                 xg_usage[origin]["rows_available"] += 1
@@ -548,6 +551,7 @@ def evaluate_fixed_holdout(
             "training_rows_before_holdout": training_count,
             "holdout_rows": holdout_count,
             "holdout_matchdays": holdout_days,
+            "season_assignment_basis_counts": dict(season_basis_counts),
             "invalid_rows": invalid_rows,
             "excluded_non_top_five_rows": excluded_league_rows,
             "duplicate_rows_skipped": duplicate_rows,
@@ -701,6 +705,26 @@ def render_markdown_report(report: Mapping[str, Any]) -> str:
             f"{_number(metric.get('log_loss'))} | {_number(metric.get('accuracy'))} |"
         )
     lines += [
+        "",
+        "## Results by season",
+        "",
+        "| Season | Matches | Brier | Log Loss | Accuracy |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    by_season = (report.get("stratified") or {}).get("by_season") or {}
+    for season, item in sorted(by_season.items(), key=lambda pair: pair[0]):
+        metric = (item.get("arms") or {}).get("full") or {}
+        lines.append(
+            f"| {season} | {metric.get('n', 0)} | {_number(metric.get('brier'))} | "
+            f"{_number(metric.get('log_loss'))} | {_number(metric.get('accuracy'))} |"
+        )
+    lines += [
+        "",
+        "Season assignment basis: " + json.dumps(
+            data.get("season_assignment_basis_counts") or {}, ensure_ascii=False, sort_keys=True,
+        ),
+        "",
+        "Detailed league × season results are included in the JSON report.",
         "",
         "## Feature ablation",
         "",
