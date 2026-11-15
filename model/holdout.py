@@ -847,6 +847,37 @@ def _atomic_write(path: Path, content: str) -> None:
     temporary.replace(path)
 
 
+def load_fixed_holdout_gate_status(path: str | Path | None = None) -> dict:
+    """Load the explicit Model Lab v1 promotion gate used by scanner automation.
+
+    Missing, malformed, stale-schema or non-PASS files fail closed. The default
+    path is reports/model_lab/model-lab-v1-gate.json; deployments can override
+    it with MODEL_LAB_GATE_PATH.
+    """
+    configured_path = path or os.environ.get(
+        "MODEL_LAB_GATE_PATH", "reports/model_lab/model-lab-v1-gate.json"
+    )
+    gate_path = Path(configured_path)
+    try:
+        payload = json.loads(gate_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        payload = {}
+    passed = bool(
+        isinstance(payload, dict)
+        and payload.get("schema") == "sport-ai-model-lab-gate-v1"
+        and payload.get("status") == "PASS"
+        and payload.get("strict_holdout_gate_passed") is True
+    )
+    return {
+        "passed": passed,
+        "status": "PASS" if passed else "NOT_READY",
+        "experiment_id": payload.get("experiment_id") if isinstance(payload, dict) else None,
+        "holdout_start": payload.get("holdout_start") if isinstance(payload, dict) else None,
+        "holdout_end": payload.get("holdout_end") if isinstance(payload, dict) else None,
+        "gate_file": str(gate_path),
+    }
+
+
 def write_model_lab_artifacts(report: Mapping[str, Any], output_dir: str | Path) -> dict[str, str]:
     output = Path(output_dir)
     manifest = report.get("manifest") or {}
@@ -856,13 +887,28 @@ def write_model_lab_artifacts(report: Mapping[str, Any], output_dir: str | Path)
     json_path = output / f"{stem}.json"
     markdown_path = output / f"{stem}.md"
     svg_path = output / f"{stem}-reliability.svg"
+    gate_path = output / "model-lab-v1-gate.json"
+    readiness = report.get("readiness") or {}
+    gate_passed = bool(readiness.get("strict_holdout_gate_passed"))
+    gate_payload = {
+        "schema": "sport-ai-model-lab-gate-v1",
+        "status": "PASS" if gate_passed else "NOT_READY",
+        "strict_holdout_gate_passed": gate_passed,
+        "experiment_id": report.get("experiment_id"),
+        "holdout_start": manifest.get("holdout_start"),
+        "holdout_end": manifest.get("holdout_end"),
+        "dataset_sha256": manifest.get("dataset_sha256"),
+        "generated_at_utc": report.get("generated_at_utc"),
+    }
     _atomic_write(json_path, json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     _atomic_write(markdown_path, render_markdown_report(report))
     _atomic_write(svg_path, render_reliability_svg(report))
+    _atomic_write(gate_path, json.dumps(gate_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     return {
         "json": str(json_path),
         "markdown": str(markdown_path),
         "reliability_svg": str(svg_path),
+        "promotion_gate": str(gate_path),
     }
 
 
