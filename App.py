@@ -944,7 +944,7 @@ with st.sidebar:
     st.caption("SStats — единственный источник списка матчей и букмекерских коэффициентов. Контекст (составы, травмы и судьи) запрашивается у SStats там, где API подтверждает эти данные.")
 
     if st.button("🔎 Проверить подключение xG Football API", key="check_footballapi_xg",
-                 use_container_width=True):
+                 width="stretch"):
         with st.spinner("Проверяю ключ и дневную квоту Football API…"):
             _footballapi_check = footballapi_xg_connection_check(footballapi_key)
         if _footballapi_check.get("ok"):
@@ -953,7 +953,7 @@ with st.sidebar:
         else:
             st.error(_footballapi_check.get("message", "Не удалось проверить Football API."))
     if st.button("🔎 Проверить подключение SStats.net", key="check_sstats_api",
-                 use_container_width=True):
+                 width="stretch"):
         with st.spinner("Проверяю ключ SStats, расписание и Odds…"):
             _sstats_check = sstats_account_check(sstats_key)
         if (_sstats_check.get("ok") and _sstats_check.get("games_ok")
@@ -995,7 +995,7 @@ with st.sidebar:
     if st.button(
         f"🔎 Проверить AI-подключение · {llm_prov}",
         key="check_llm_provider_connection",
-        use_container_width=True,
+        width="stretch",
         help="Отправляет короткий тестовый запрос выбранной модели. Провайдер может списать несколько токенов.",
     ):
         with st.spinner(f"Проверяю реальное подключение к {llm_prov}…"):
@@ -1059,7 +1059,7 @@ with st.sidebar:
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
                 unsafe_allow_html=True)
 
-    if st.button("🔃 Проверить все результаты", use_container_width=True,
+    if st.button("🔃 Проверить все результаты", width="stretch",
                  help="Принудительно сверяет виртуальные ставки, прогнозы модели/ИИ и рыночный журнал"):
         with st.spinner("Проверяю портфель и все журналы прогнозов…"):
             D2, n, tried = _auto_settle(D, force=True)
@@ -1089,7 +1089,7 @@ with st.sidebar:
         )
 
     if stale_count and st.button(f"↩️ Вернуть стейки по устаревшим ({stale_count})",
-                                 use_container_width=True,
+                                 width="stretch",
                                  help="Помечает ставки как void и возвращает стейк в банк"):
         D2, n = _void_stale(D)
         _apply_settle_result(D2, n, 0, "void_stale")
@@ -1097,7 +1097,7 @@ with st.sidebar:
         st.toast(f"Возвращены стейки: {n}")
         st.rerun()
 
-    if st.button("🔄 Очистить карточки", use_container_width=True):
+    if st.button("🔄 Очистить карточки", width="stretch"):
         D["cards"] = []
         D["funnel"] = None
         D["report"] = []
@@ -1105,7 +1105,7 @@ with st.sidebar:
         st.toast("Карточки очищены")
         st.rerun()
 
-    if st.button("♻️ Сбросить счётчики", use_container_width=True):
+    if st.button("♻️ Сбросить счётчики", width="stretch"):
         usage.settle_reset()
         usage.llm_reset()
         usage.odds_reset()
@@ -1197,7 +1197,7 @@ with st.sidebar:
                 file_name=st.session_state.get("_sqlite_manual_backup_name") or "neuro_db.sqlite.gz",
                 mime="application/gzip",
                 key="download_neuro_sqlite_backup",
-                use_container_width=True,
+                width="stretch",
             )
 
         _sqlite_upload = st.file_uploader(
@@ -1272,7 +1272,7 @@ with st.sidebar:
     st.download_button("📥 Скачать", _backup,
                        file_name=f"neuro_data_{datetime.now():%Y%m%d_%H%M}.json",
                        mime="application/json",
-                       use_container_width=True)
+                       width="stretch")
 
     _up = st.file_uploader("📤 Загрузить", type=["json"],
                            key="restore_upload",
@@ -1298,7 +1298,7 @@ with st.sidebar:
         st.session_state.confirm_clear = False
 
     if not st.session_state.confirm_clear:
-        if st.button("🗑️ Очистить портфель", use_container_width=True):
+        if st.button("🗑️ Очистить портфель", width="stretch"):
             st.session_state.confirm_clear = True
             st.rerun()
     else:
