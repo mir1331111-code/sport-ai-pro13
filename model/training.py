@@ -9,6 +9,19 @@ from typing import Any
 
 TRAINING_STATE_SCHEMA = "neuro-engine-training-state-v1"
 
+# Only values consumed by Engine.add, HistoricalMatchStats or the dated
+# aggregate-shot xG fitter belong to the training-state digest. Market prices
+# and other presentation/context fields must not force a score-model replay.
+_TRAINING_DIGEST_FIELDS = (
+    "Date", "date", "Div", "HomeTeam", "home_team", "AwayTeam", "away_team",
+    "FTHG", "home_goals", "FTAG", "away_goals",
+    "HxG", "AxG", "xg_source", "xg_kind", "xg_model_version",
+    "xg_training_sides", "HS", "HST", "AS", "AST",
+    "HC", "AC", "HY", "AY", "HR", "AR",
+    "HTHG", "HTAG", "HTHC", "HTAC",
+    "Referee", "referee_id", "referee",
+)
+
 
 def _parse_match_date(value: Any) -> date | None:
     if isinstance(value, datetime):
@@ -143,13 +156,20 @@ def training_day_digests(rows: list[dict]) -> list[dict]:
                 current_day = parsed.isoformat()
             if current_day != day:
                 break
+            source_row = current.get("row") or {}
+            if not isinstance(source_row, dict):
+                raise TypeError("prepared training row has an invalid source row")
             payload.append({
                 "home": current.get("home"),
                 "away": current.get("away"),
                 "home_goals": current.get("home_goals"),
                 "away_goals": current.get("away_goals"),
                 "league": current.get("league"),
-                "row": current.get("row") or {},
+                "row": {
+                    key: source_row[key]
+                    for key in _TRAINING_DIGEST_FIELDS
+                    if key in source_row
+                },
             })
             end += 1
         encoded = json.dumps(
