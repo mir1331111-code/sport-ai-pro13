@@ -307,11 +307,11 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
             duration = str(score.get("duration") or "REGULAR").upper()
             official = score.get("fullTime") or {}
             regular = official
+            regulation_time_available = duration == "REGULAR"
             tag = "FT"
             if duration != "REGULAR":
-                # football-data.org fullTime is the final match score; regularTime
-                # is the 90-minute score. Preserve both so settlement can refuse
-                # AET while the results archive displays the actual final score.
+                # fullTime is the post-extra-time score; regularTime is the
+                # 90-minute score required by standard 1X2 settlement.
                 tag = "AET"
                 regular_time = score.get("regularTime") or {}
                 if (
@@ -319,6 +319,7 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
                     and regular_time.get("away") is not None
                 ):
                     regular = regular_time
+                    regulation_time_available = True
             if (
                 not h or not a
                 or regular.get("home") is None or regular.get("away") is None
@@ -334,6 +335,7 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
                 "as": int(regular["away"]), "official_hs": int(official_score["home"]),
                 "official_as": int(official_score["away"]), "status": tag,
                 "duration": duration,
+                "regulation_time": bool(regulation_time_available),
                 "date": _source_local_day(m.get("utcDate")) or "",
                 "league": str(competition.get("name") or "football-data.org"),
                 "fixture_id": str(m.get("id") or ""),
@@ -366,8 +368,11 @@ def _find_fdorg(
     e = _closest(cands, date_iso)
     if not e:
         return None
-    return {"home": e["hs"], "away": e["as"],
-            "status": e["status"], "source": "fdorg"}
+    return {
+        "home": e["hs"], "away": e["as"],
+        "status": e["status"], "source": "fdorg",
+        "regulation_time": bool(e.get("regulation_time")),
+    }
 
 
 # ============ OPENLIGADB ============
