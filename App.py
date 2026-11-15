@@ -240,10 +240,6 @@ def _configured_key_value(env_names, secret_names):
             return value
     return _configured_secret(*secret_names)
 
-FINISHED_STATUSES = {"finished", "ft", "final", "closed", "ended",
-                     "full-time", "full_time", "completed"}
-
-
 # ==================== ХЕЛПЕРЫ ====================
 def _naive(dt):
     if dt is None:
