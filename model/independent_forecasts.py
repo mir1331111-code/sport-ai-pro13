@@ -425,6 +425,7 @@ def _main_probabilities(card: dict) -> dict[str, float] | None:
 
 def record_scan_forecasts(
     cards: list[dict], *, provider: str = "", model: str = "",
+    resolved_model: str | None = None,
     db_path: str | Path = DB_FILE, timezone_name: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, int]:
@@ -451,12 +452,13 @@ def record_scan_forecasts(
     )
     configured_model = str(LLM_PROVIDERS[resolved_provider].get("model") or "")
     requested_model = str(model or "").strip()
-    resolved_model = (
+    selected_model = (
         requested_model if requested_model == configured_model else configured_model
     )
+    actual_model = str(resolved_model or "").strip()[:180] or selected_model
     slug = re.sub(
-        r"[^a-z0-9]+", "-", f"{resolved_provider}-{resolved_model}".casefold()
-    ).strip("-")[:80]
+        r"[^a-z0-9]+", "-", f"{resolved_provider}-{actual_model}".casefold()
+    ).strip("-")[:120]
     ai_version = f"independent-llm-{slug or 'configured-model'}"
 
     for card in cards or []:
