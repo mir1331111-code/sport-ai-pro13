@@ -43,6 +43,25 @@ class DixonColesReferenceTests(unittest.TestCase):
                     self.assertAlmostEqual(actual_matrix[i][j], ref_matrix[i][j], places=12)
             self.assertAlmostEqual(actual_home + actual_draw, 1.0 - ref_away, places=12)
 
+    def test_p1px_computes_each_poisson_marginal_once(self):
+        engine = Engine(matrix_n=12)
+        calls = []
+        original = engine._p
+
+        def counted(lam, goals):
+            calls.append((lam, goals))
+            return original(lam, goals)
+
+        engine._p = counted
+        engine._p1px(1.45, 0.95, -0.13)
+
+        self.assertEqual(len(calls), 24)
+        self.assertEqual(
+            calls,
+            [(1.45, goals) for goals in range(12)]
+            + [(0.95, goals) for goals in range(12)],
+        )
+
     def test_h2h_can_be_disabled_without_mutating_history(self):
         engine = Engine()
         for i in range(6):
