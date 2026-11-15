@@ -15,9 +15,25 @@ class TemporalModelTests(unittest.TestCase):
         result = weighted_mean([2.0, 100.0], ["2025-01-01", "2025-02-01"], "2025-01-15")
         self.assertAlmostEqual(result, 2.0)
 
-    def test_weighted_mean_falls_back_when_dates_are_missing(self):
-        result = weighted_mean([1.0, 3.0], [None, "2025-01-01"], "2025-01-02")
-        self.assertAlmostEqual(result, 2.0)
+    def test_weighted_mean_excludes_undated_and_future_observations_with_cutoff(self):
+        result = weighted_mean(
+            [100.0, 3.0, 200.0],
+            [None, "2025-01-01", "2025-02-01"],
+            "2025-01-02",
+            default=1.5,
+            half_life_days=30,
+        )
+        self.assertAlmostEqual(result, 3.0)
+
+    def test_weighted_mean_uses_neutral_prior_when_no_dated_sample_survives(self):
+        self.assertAlmostEqual(
+            weighted_mean([1.0, 3.0], [None, None], "2025-01-02", default=1.5),
+            1.5,
+        )
+        self.assertAlmostEqual(
+            weighted_mean([100.0], ["2025-02-01"], "2025-01-02", default=1.5),
+            1.5,
+        )
 
     def test_rest_days_are_safe_for_missing_and_future_dates(self):
         self.assertEqual(days_since_last_match("2025-01-01", "2025-01-08"), 7)
