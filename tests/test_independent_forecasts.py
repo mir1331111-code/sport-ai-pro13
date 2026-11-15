@@ -438,6 +438,124 @@ class IndependentForecastTests(unittest.TestCase):
             lookup.assert_called_once()
 
 
+    def test_settlement_passes_user_entered_football_data_token(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+        ledger = ForecastLedger(path)
+        ledger.record_prediction(
+            forecast_key="token-test",
+            fixture_id="ind:2026-10-25:token-test",
+            home_team="Home FC",
+            away_team="Away FC",
+            model_version="main-model-vX",
+            probabilities={"H": .5, "D": .3, "A": .2},
+            forecast_at=now - timedelta(hours=5),
+            kickoff_at=now - timedelta(hours=3),
+            league="L",
+        )
+        with patch("data.scores.find_match_score", return_value={
+            "home": 2, "away": 1, "status": "FT", "source": "football-data.org",
+        }) as lookup:
+            result = settle_due_forecasts(
+                db_path=path, now=now, token="user-entered-fdorg-token",
+            )
+        self.assertEqual(result["forecasts_settled"], 1)
+        self.assertEqual(result["fixtures_checked"], 1)
+        lookup.assert_called_once_with(
+            "Home FC", "Away FC", "2026-10-25",
+            token="user-entered-fdorg-token",
+        )
+
+    def test_forecasts_older_than_fourteen_days_are_backfilled(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 11, 15, 20, 0, tzinfo=timezone.utc)
+        kickoff = datetime(2026, 10, 25, 17, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="backfill-21d",
+            fixture_id="ind:2026-10-25:backfill",
+            home_team="Home FC",
+            away_team="Away FC",
+            model_version="main-model-vX",
+            probabilities={"H": .5, "D": .3, "A": .2},
+            forecast_at=kickoff - timedelta(hours=5),
+            kickoff_at=kickoff,
+            league="L",
+        )
+        with patch("data.scores.find_match_score", return_value={
+            "home": 0, "away": 1, "status": "FT", "source": "ESPN",
+        }) as lookup:
+            result = settle_due_forecasts(db_path=path, now=now)
+        self.assertEqual(result["fixtures_checked"], 1)
+        self.assertEqual(result["forecasts_settled"], 1)
+        self.assertEqual(result["pending_forecasts"], 1)
+        self.assertEqual(result["age_limited_fixtures"], 0)
+        self.assertEqual(len(ledger.rows(settled_only=True)), 1)
+        lookup.assert_called_once()
+
+    def test_manual_force_retries_fixture_before_six_hour_deadline(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="force-retry",
+            fixture_id="ind:2026-10-25:force-retry",
+            home_team="Home FC",
+            away_team="Away FC",
+            model_version="main-model-vX",
+            probabilities={"H": .5, "D": .3, "A": .2},
+            forecast_at=now - timedelta(hours=6),
+            kickoff_at=now - timedelta(hours=4),
+            league="L",
+        )
+        with patch("data.scores.find_match_score", return_value=None):
+            first = settle_due_forecasts(db_path=path, now=now)
+        self.assertEqual(first["fixtures_checked"], 1)
+        with patch("data.scores.find_match_score", return_value={
+            "home": 1, "away": 0, "status": "FT", "source": "ESPN",
+        }) as lookup:
+            forced = settle_due_forecasts(
+                db_path=path, now=now + timedelta(minutes=10), force=True,
+            )
+        self.assertEqual(forced["fixtures_checked"], 1)
+        self.assertEqual(forced["forecasts_settled"], 1)
+        self.assertEqual(forced["retry_deferred_fixtures"], 0)
+        lookup.assert_called_once()
+
+    def test_settlement_reports_forecasts_outside_backfill_window(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 11, 15, 20, 0, tzinfo=timezone.utc)
+        kickoff = datetime(2025, 10, 1, 17, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="backfill-too-old",
+            fixture_id="ind:2025-10-01:old",
+            home_team="Old Home",
+            away_team="Old Away",
+            model_version="main-model-vX",
+            probabilities={"H": .5, "D": .3, "A": .2},
+            forecast_at=kickoff - timedelta(hours=5),
+            kickoff_at=kickoff,
+            league="L",
+        )
+        with patch("data.scores.find_match_score") as lookup:
+            result = settle_due_forecasts(
+                db_path=path, now=now, max_age_days=365,
+            )
+        self.assertEqual(result["pending_forecasts"], 1)
+        self.assertEqual(result["age_limited_fixtures"], 1)
+        self.assertEqual(result["fixtures_checked"], 0)
+        lookup.assert_not_called()
+
+
 
 if __name__ == "__main__":
     unittest.main()
