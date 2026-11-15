@@ -533,6 +533,32 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         self.assertEqual(result["http_status"], 401)
         self.assertIn("HTTP 401", result["message"])
 
+    def test_gemini_38_connection_check_uses_current_model_without_temperature(self):
+        from llm import deep_analysis
+
+        response = SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"choices": [{
+                "message": {"content": '{"ok":true}'},
+            }]},
+        )
+        with patch.object(deep_analysis._sess, "post", return_value=response) as post:
+            result = deep_analysis.check_provider_connection(
+                "Gemini (Google, бесплатно)", "gemini-unit-test-key",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["model"], "gemini-3.8-flash")
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+        request = post.call_args.kwargs["json"]
+        self.assertEqual(request["model"], "gemini-3.8-flash")
+        self.assertNotIn("temperature", request)
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+
     def test_groq_gpt_oss_120b_connection_check_uses_supported_chat_model(self):
         from llm import deep_analysis
 
