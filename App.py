@@ -182,6 +182,8 @@ if _SETTLEMENT_READY_FALLBACK:
 DEFAULT_BANK = 10000.0
 AUTO_SETTLE_EVERY_SEC = AUTO_SETTLE_THROTTLE_SEC
 FORECAST_AUTO_SYNC_EVERY_SEC = 600
+FORECAST_AUTO_SYNC_MAX_FIXTURES = 8
+FORECAST_MANUAL_SYNC_MAX_FIXTURES = 60
 SETTLE_MIN_AGE = timedelta(hours=2, minutes=15)
 RETRY_EVERY = timedelta(minutes=60)
 STALE_AFTER = timedelta(hours=48)
@@ -725,7 +727,10 @@ def _sync_forecast_results(force: bool = False):
         with st.spinner("Автоматически сверяю прогнозы с завершёнными матчами…"):
             status = settle_due_forecasts(
                 db_path=DB_FILE,
-                max_fixtures=30 if force else 8,
+                max_fixtures=(
+                    FORECAST_MANUAL_SYNC_MAX_FIXTURES
+                    if force else FORECAST_AUTO_SYNC_MAX_FIXTURES
+                ),
                 token=score_token or None,
                 sstats_api_key=sstats_score_key or None,
                 force=force,
@@ -1077,8 +1082,15 @@ with st.sidebar:
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
                 unsafe_allow_html=True)
 
-    if st.button("🔃 Проверить все результаты", width="stretch",
-                 help="Принудительно сверяет виртуальные ставки, прогнозы модели/ИИ и рыночный журнал"):
+    if st.button(
+        "🔃 Проверить все результаты",
+        width="stretch",
+        help=(
+            "Проверяет до 60 уникальных завершённых матчей за запуск. "
+            "Один найденный счёт может закрыть несколько записей прогнозов. "
+            "Повторно не опрашивает один и тот же матч чаще чем раз в 10 минут."
+        ),
+    ):
         with st.spinner("Проверяю портфель и все журналы прогнозов…"):
             D2, n, tried = _auto_settle(D, force=True)
             forecast_sync = _sync_forecast_results(force=True)
@@ -1105,7 +1117,9 @@ with st.sidebar:
             f"матчей проверено {_sync_status.get('fixtures_checked', 0)} · "
             f"прогнозов закрыто {_sync_status.get('forecasts_settled', 0)} · "
             f"рыночных рекомендаций закрыто {_sync_status.get('market_forecasts_settled', 0)} · "
-            f"ожидают FT {_sync_status.get('pending_forecasts', 0)} · "
+            f"ожидают FT {_sync_status.get('pending_forecasts', 0)} записей · "
+            f"уникальных матчей {_sync_status.get('pending_unique_fixtures', 0)} · "
+            f"ещё не прошли 2ч15 {_sync_status.get('not_due_grace_fixtures', 0)} · "
             f"в начале очереди {_sync_status.get('eligible_fixtures', 0)} · "
             f"осталось матчей {_sync_status.get('eligible_fixtures_remaining', 0)} · "
             f"старше окна {_sync_status.get('age_limited_fixtures', 0)} · "

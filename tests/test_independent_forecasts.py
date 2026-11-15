@@ -396,6 +396,8 @@ class IndependentForecastTests(unittest.TestCase):
         }) as lookup:
             early = settle_due_forecasts(db_path=path, now=now)
             self.assertEqual(early["fixtures_checked"], 0)
+            self.assertEqual(early["pending_unique_fixtures"], 1)
+            self.assertEqual(early["not_due_grace_fixtures"], 1)
             lookup.assert_not_called()
 
             ready_at = now + timedelta(minutes=16)
@@ -610,6 +612,46 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(forced["forecasts_settled"], 1)
         self.assertEqual(forced["retry_deferred_fixtures"], 0)
         lookup.assert_called_once()
+
+    def test_force_reconciliation_respects_ten_minute_minimum_retry_cooldown(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="force-cooldown",
+            fixture_id="ind:2026-10-25:force-cooldown",
+            home_team="Home FC",
+            away_team="Away FC",
+            model_version="main-model-vX",
+            probabilities={"H": .5, "D": .3, "A": .2},
+            forecast_at=now - timedelta(hours=6),
+            kickoff_at=now - timedelta(hours=4),
+            league="L",
+        )
+        with patch("data.scores.find_match_score", return_value=None) as first_lookup:
+            first = settle_due_forecasts(db_path=path, now=now)
+        self.assertEqual(first["fixtures_checked"], 1)
+        first_lookup.assert_called_once()
+
+        with patch("data.scores.find_match_score") as too_soon_lookup:
+            too_soon = settle_due_forecasts(
+                db_path=path, now=now + timedelta(minutes=1), force=True,
+            )
+        self.assertEqual(too_soon["fixtures_checked"], 0)
+        self.assertEqual(too_soon["retry_deferred_fixtures"], 1)
+        too_soon_lookup.assert_not_called()
+
+        with patch("data.scores.find_match_score", return_value={
+            "home": 1, "away": 0, "status": "FT", "source": "ESPN",
+        }) as allowed_lookup:
+            allowed = settle_due_forecasts(
+                db_path=path, now=now + timedelta(minutes=11), force=True,
+            )
+        self.assertEqual(allowed["fixtures_checked"], 1)
+        self.assertEqual(allowed["forecasts_settled"], 1)
+        allowed_lookup.assert_called_once()
 
     def test_verified_regulation_time_score_from_aet_settles_1x2(self):
         tmp = tempfile.TemporaryDirectory()
