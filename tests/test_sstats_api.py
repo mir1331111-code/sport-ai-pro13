@@ -46,6 +46,7 @@ class SStatsTests(unittest.TestCase):
         from data import sources
         self.assertIs(sources.sstats_upcoming_matches, sstats.sstats_upcoming_matches)
         self.assertIs(sources.sstats_match_statistics, sstats.sstats_match_statistics)
+        self.assertIs(sources.sstats_match_result, sstats.sstats_match_result)
 
     def test_unwrap_api_response(self):
         self.assertEqual(
