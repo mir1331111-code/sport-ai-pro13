@@ -699,6 +699,18 @@ def merge_context_snapshots(existing: object, refreshed: object) -> dict:
         new.get("injuries_source_reliability")
         or old.get("injuries_source_reliability")
     )
+    old_glicko = old.get("glicko") if isinstance(old.get("glicko"), dict) else {}
+    new_glicko = new.get("glicko") if isinstance(new.get("glicko"), dict) else {}
+    if new_glicko.get("available") is True:
+        merged["glicko"] = dict(new_glicko)
+    elif old_glicko.get("available") is True:
+        # A failed refresh must not erase the last known valid forecast.
+        merged["glicko"] = dict(old_glicko)
+    elif new_glicko:
+        merged["glicko"] = dict(new_glicko)
+    elif old_glicko:
+        merged["glicko"] = dict(old_glicko)
+
     merged["sstats_event_id"] = (
         new.get("sstats_event_id") or old.get("sstats_event_id")
     )
