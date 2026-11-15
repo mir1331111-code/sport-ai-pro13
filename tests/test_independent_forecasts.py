@@ -212,6 +212,7 @@ class IndependentForecastTests(unittest.TestCase):
         }
         first = record_scan_forecasts(
             [card], provider="test provider", model="test-model",
+            resolved_model="provider-a/served-model-2026",
             db_path=tmp.name + "/forecasts.sqlite", now=now,
         )
         self.assertEqual(first["main_recorded"], 1)
@@ -221,8 +222,10 @@ class IndependentForecastTests(unittest.TestCase):
         ai_saved = next(row for row in saved if row["model_version"].startswith("independent-llm-"))
         self.assertEqual(main_saved["xg_used"], 1)
         self.assertIsNone(ai_saved["xg_used"])
+        self.assertIn("provider-a-served-model-2026", ai_saved["model_version"])
         second = record_scan_forecasts(
             [card], provider="test provider", model="test-model",
+            resolved_model="provider-a/served-model-2026",
             db_path=tmp.name + "/forecasts.sqlite", now=now,
         )
         self.assertEqual(second["main_recorded"], 0)
@@ -232,6 +235,22 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual({row["fixture_id"] for row in rows}, {rows[0]["fixture_id"]})
         self.assertTrue(all(row["result"] is None for row in rows))
         self.assertTrue(all(row["kickoff_at"] for row in rows))
+
+        # A different concrete backend returned by a router is a different AI
+        # forecaster and must not be collapsed into the configured alias row.
+        third = record_scan_forecasts(
+            [card], provider="test provider", model="test-model",
+            resolved_model="provider-b/served-model-2026",
+            db_path=tmp.name + "/forecasts.sqlite", now=now,
+        )
+        self.assertEqual(third["main_recorded"], 0)
+        self.assertEqual(third["ai_recorded"], 1)
+        rows = ForecastLedger(tmp.name + "/forecasts.sqlite").rows()
+        ai_models = {
+            row["model_version"] for row in rows
+            if row["model_version"].startswith("independent-llm-")
+        }
+        self.assertEqual(len(ai_models), 2)
 
     def test_scan_records_market_recommendation_once(self):
         tmp = tempfile.TemporaryDirectory()
