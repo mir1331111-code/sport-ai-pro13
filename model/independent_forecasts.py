@@ -626,8 +626,8 @@ def record_scan_forecasts(
     return stats
 
 
-def _load_result_lookup_state(db_path: str | Path) -> dict[str, str]:
-    """Load persisted retry deadlines so missing live scores are not polled every rerun."""
+def _load_result_lookup_state(db_path: str | Path) -> dict[str, dict[str, str]]:
+    """Load retry deadlines and last-attempt timestamps for each fixture."""
     if str(db_path) == ":memory:":
         return {}
     with sqlite3.connect(str(db_path), timeout=15) as conn:
@@ -640,9 +640,17 @@ def _load_result_lookup_state(db_path: str | Path) -> dict[str, str]:
             )"""
         )
         rows = conn.execute(
-            "SELECT fixture_id, retry_after FROM forecast_result_checks"
+            "SELECT fixture_id, checked_at, retry_after, last_status "
+            "FROM forecast_result_checks"
         ).fetchall()
-    return {str(fixture_id): str(retry_after) for fixture_id, retry_after in rows}
+    return {
+        str(fixture_id): {
+            "checked_at": str(checked_at or ""),
+            "retry_after": str(retry_after or ""),
+            "last_status": str(last_status or ""),
+        }
+        for fixture_id, checked_at, retry_after, last_status in rows
+    }
 
 
 def _save_result_lookup_state(
@@ -690,6 +698,7 @@ def settle_due_forecasts(
     max_age_days = max(0, int(max_age_days))
     grace = timedelta(hours=2, minutes=15)
     missing_retry = timedelta(hours=6)
+    force_retry_cooldown = timedelta(minutes=10)
     non_ft_retry = timedelta(days=1)
     confirmed_retry = timedelta(days=365)
     lookup_state = _load_result_lookup_state(db_path)
@@ -701,9 +710,14 @@ def settle_due_forecasts(
     pending_forecasts = len(pending_forecast_rows)
     groups: dict[str, list[dict]] = defaultdict(list)
     age_limited_fixture_ids: set[str] = set()
+    pending_unique_fixture_ids: set[str] = set()
+    not_due_grace_fixture_ids: set[str] = set()
     invalid_fixture_ids = 0
     future_fixtures = 0
     for row in pending_forecast_rows:
+        fixture_id = str(row.get("fixture_id") or "")
+        if fixture_id:
+            pending_unique_fixture_ids.add(fixture_id)
         if not row.get("kickoff_at"):
             invalid_fixture_ids += 1
             continue
@@ -715,8 +729,9 @@ def settle_due_forecasts(
                 invalid_fixture_ids += 1
                 continue
             if kickoff.astimezone(timezone.utc) + grace > now_utc:
+                if fixture_id:
+                    not_due_grace_fixture_ids.add(fixture_id)
                 continue
-            fixture_id = str(row.get("fixture_id") or "")
             parts = fixture_id.split(":", 2)
             if len(parts) < 3 or parts[0] != "ind":
                 invalid_fixture_ids += 1
@@ -792,16 +807,33 @@ def settle_due_forecasts(
             nonlocal sstats_lookups
             if fixture_id in score_cache:
                 return score_cache[fixture_id]
-            retry_value = lookup_state.get(fixture_id)
-            if retry_value and not force:
+            retry_info = lookup_state.get(fixture_id) or {}
+            retry_value = retry_info.get("retry_after")
+            if retry_value:
                 try:
-                    retry_at = datetime.fromisoformat(retry_value.replace("Z", "+00:00"))
+                    retry_at = datetime.fromisoformat(
+                        retry_value.replace("Z", "+00:00")
+                    )
                 except ValueError:
                     retry_at = now_utc
                 if retry_at.tzinfo is not None and retry_at > now_utc:
-                    retry_deferred_fixtures += 1
-                    score_cache[fixture_id] = None
-                    return None
+                    force_cooldown_active = False
+                    if force:
+                        checked_value = retry_info.get("checked_at") or ""
+                        try:
+                            checked_at = datetime.fromisoformat(
+                                checked_value.replace("Z", "+00:00")
+                            )
+                        except ValueError:
+                            checked_at = now_utc
+                        force_cooldown_active = (
+                            checked_at.tzinfo is not None
+                            and checked_at + force_retry_cooldown > now_utc
+                        )
+                    if not force or force_cooldown_active:
+                        retry_deferred_fixtures += 1
+                        score_cache[fixture_id] = None
+                        return None
             if looked_up >= max(0, int(max_fixtures)):
                 limit_deferred_fixtures += 1
                 score_cache[fixture_id] = None
@@ -858,7 +890,11 @@ def settle_due_forecasts(
             _save_result_lookup_state(
                 db_path, fixture_id, now_utc, next_check, status or "NOT_FOUND",
             )
-            lookup_state[fixture_id] = next_check.isoformat()
+            lookup_state[fixture_id] = {
+                "checked_at": now_utc.isoformat(),
+                "retry_after": next_check.isoformat(),
+                "last_status": status or "NOT_FOUND",
+            }
             score_cache[fixture_id] = score
             return score
 
@@ -948,6 +984,8 @@ def settle_due_forecasts(
         "fixtures_checked": looked_up,
         "forecasts_settled": settled,
         "pending_forecasts": max(0, pending_forecasts - settled),
+        "pending_unique_fixtures": len(pending_unique_fixture_ids),
+        "not_due_grace_fixtures": len(not_due_grace_fixture_ids),
         "eligible_fixtures": len(fixtures),
         "eligible_fixtures_remaining": len(remaining_fixture_ids),
         "age_limited_fixtures": len(age_limited_fixture_ids),
