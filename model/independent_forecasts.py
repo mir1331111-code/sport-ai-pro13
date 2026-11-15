@@ -698,7 +698,7 @@ def settle_due_forecasts(
     ]
     pending_forecasts = len(pending_forecast_rows)
     groups: dict[str, list[dict]] = defaultdict(list)
-    age_limited_fixtures = 0
+    age_limited_fixture_ids: set[str] = set()
     invalid_fixture_ids = 0
     future_fixtures = 0
     for row in pending_forecast_rows:
@@ -726,7 +726,7 @@ def settle_due_forecasts(
                 future_fixtures += 1
                 continue
             if age > max_age_days:
-                age_limited_fixtures += 1
+                age_limited_fixture_ids.add(fixture_id)
                 continue
             groups[fixture_id].append(row)
         except (ValueError, TypeError):
@@ -736,6 +736,7 @@ def settle_due_forecasts(
         groups.items(),
         key=lambda pair: min(str(row.get("kickoff_at") or "") for row in pair[1]),
     )
+    market_ledger = MarketForecastLedger(db_path)
     market_rows = market_ledger.rows()
     pending_market_rows = [
         row for row in market_rows
@@ -899,7 +900,7 @@ def settle_due_forecasts(
         "forecasts_settled": settled,
         "pending_forecasts": max(0, pending_forecasts - settled),
         "eligible_fixtures": len(fixtures),
-        "age_limited_fixtures": age_limited_fixtures,
+        "age_limited_fixtures": len(age_limited_fixture_ids),
         "invalid_fixture_ids": invalid_fixture_ids,
         "future_fixtures": future_fixtures,
         "retry_deferred_fixtures": retry_deferred_fixtures,
