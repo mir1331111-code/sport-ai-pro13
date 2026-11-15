@@ -883,7 +883,7 @@ def settle_due_forecasts(
     return {
         "fixtures_checked": looked_up,
         "forecasts_settled": settled,
-        "pending_forecasts": pending_forecasts,
+        "pending_forecasts": max(0, pending_forecasts - settled),
         "eligible_fixtures": len(fixtures),
         "age_limited_fixtures": age_limited_fixtures,
         "invalid_fixture_ids": invalid_fixture_ids,
