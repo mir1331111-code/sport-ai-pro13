@@ -113,7 +113,7 @@ def _load_seasonal_history(logs, update_loader):
                 rows = load_seasonal(division, season_str(year))
                 rows = sorted(
                     rows,
-                    key=lambda row: parse_date(row.get("Date", "")) or datetime.min,
+                    key=lambda row: (parse_date(row.get("Date", "")) or datetime.min).date(),
                 )
                 seasons.append(rows)
                 if rows:
@@ -193,7 +193,7 @@ def _train_engine(
             unique_rows.append(custom)
         if unique_rows:
             unique_rows.sort(
-                key=lambda row: parse_date(row.get("Date") or "") or datetime.min
+                key=lambda row: (parse_date(row.get("Date") or "") or datetime.min).date()
             )
             history.setdefault(division, []).append(unique_rows)
             if division not in train_divs:

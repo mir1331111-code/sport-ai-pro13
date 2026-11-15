@@ -16,6 +16,15 @@ class _Response:
 
 
 class SourceOptimizationTests(unittest.TestCase):
+    def test_parse_date_preserves_iso_timezone_offsets(self):
+        offset = sources.parse_date("2026-11-15T00:30:45.123+02:00")
+        utc = sources.parse_date("2026-11-15T22:15:00Z")
+        naive = sources.parse_date("2026-11-15T22:15:00")
+
+        self.assertEqual(offset.isoformat(), "2026-11-15T00:30:45.123000+02:00")
+        self.assertEqual(utc.utcoffset().total_seconds(), 0)
+        self.assertIsNone(naive.tzinfo)
+
     def test_active_season_cache_expires_faster_than_completed_seasons(self):
         nov_2026 = datetime(2026, 11, 15, tzinfo=timezone.utc)
         jan_2027 = datetime(2027, 1, 15, tzinfo=timezone.utc)

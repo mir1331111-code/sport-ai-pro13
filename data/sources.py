@@ -53,19 +53,24 @@ def _msk_time(utc_iso: str) -> str:
 
 
 def parse_date(s) -> Optional[datetime]:
-    """Парсит дату из строки. Нужна для App.py и scanner."""
+    """Parse source dates while preserving any explicit ISO timezone offset."""
     if s is None:
         return None
     src = str(s).strip()
     if not src:
         return None
+    if "T" in src:
+        try:
+            return datetime.fromisoformat(src.replace("Z", "+00:00"))
+        except (TypeError, ValueError, OverflowError):
+            pass
     for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d",
                 "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S",
                 "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            sc = src[:19] if "%z" in fmt or "T" in fmt else src
+            sc = src if "%z" in fmt else (src[:19] if "T" in fmt else src)
             return datetime.strptime(sc, fmt)
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             continue
     return None
 
