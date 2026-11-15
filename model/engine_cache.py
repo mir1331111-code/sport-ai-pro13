@@ -34,7 +34,7 @@ def engine_cache_fingerprint(
         })
 
     payload = {
-        "schema": "neuro-engine-cache-v2",
+        "schema": "neuro-engine-cache-v3",
         "app_version": str(app_version),
         "data_version": int(data_version),
         "matrix_n": int(matrix_n),
@@ -53,7 +53,7 @@ def engine_cache_fingerprint(
         default=str,
     ).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()[:24]
-    return f"neuro-engine-v2-{digest}"
+    return f"neuro-engine-v3-{digest}"
 
 
 
