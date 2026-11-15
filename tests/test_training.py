@@ -99,13 +99,15 @@ class ChronologicalTrainingTests(unittest.TestCase):
         seed = [{
             "home": "Seed", "away": "Opponent", "home_goals": 1, "away_goals": 0,
             "league": "E0", "match_date": datetime(2023, 12, 31),
-            "row": {"Div": "E0"},
+            "row": {"Div": "E0", "HC": 5, "AC": 4},
         }]
         new_day = [
             {"home": "A", "away": "B", "home_goals": 1, "away_goals": 0,
-             "league": "E0", "match_date": datetime(2024, 1, 1), "row": {"Div": "E0"}},
+             "league": "E0", "match_date": datetime(2024, 1, 1),
+             "row": {"Div": "E0", "HC": 5, "AC": 4}},
             {"home": "C", "away": "D", "home_goals": 0, "away_goals": 1,
-             "league": "SP1", "match_date": datetime(2024, 1, 1), "row": {"Div": "SP1"}},
+             "league": "SP1", "match_date": datetime(2024, 1, 1),
+             "row": {"Div": "SP1", "HC": 4, "AC": 6}},
         ]
         incremental_engine = Engine(matrix_n=8, league_rho_fitting=False)
         incremental_stats = HistoricalMatchStats()
@@ -148,6 +150,7 @@ class ChronologicalTrainingTests(unittest.TestCase):
         engine = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
         stats = HistoricalMatchStats()
         train_engine_chronologically(engine, stats, prepared)
+        engine.match_stats = stats
         checkpoint = {
             "schema": TRAINING_STATE_SCHEMA,
             "day_digests": digests,
