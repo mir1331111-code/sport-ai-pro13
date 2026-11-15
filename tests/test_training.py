@@ -5,6 +5,8 @@ from model.engine import Engine
 from model.historical_match_stats import HistoricalMatchStats
 from model.training import (
     prepare_completed_training_rows,
+    plan_incremental_training,
+    training_day_digests,
     train_engine_chronologically,
 )
 
@@ -92,6 +94,76 @@ class ChronologicalTrainingTests(unittest.TestCase):
         self.assertEqual(stats.trained_matches["SP1"], 1)
         self.assertEqual(progress[-1], (3, 3))
         self.assertEqual(skipped["missing_or_invalid_score"], 0)
+
+    def test_incremental_trainer_preserves_global_offsets_and_same_day_batching(self):
+        rows = [
+            {"home": "A", "away": "B", "home_goals": 1, "away_goals": 0,
+             "league": "E0", "match_date": datetime(2024, 1, 1), "row": {"Div": "E0"}},
+            {"home": "C", "away": "D", "home_goals": 0, "away_goals": 1,
+             "league": "SP1", "match_date": datetime(2024, 1, 1), "row": {"Div": "SP1"}},
+        ]
+        engine = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        stats = HistoricalMatchStats()
+        seed = [{
+            "home": "Seed", "away": "Opponent", "home_goals": 1, "away_goals": 0,
+            "league": "E0", "match_date": datetime(2023, 12, 31),
+            "row": {"Div": "E0"},
+        }]
+        train_engine_chronologically(engine, stats, seed)
+        summary = train_engine_chronologically(
+            engine, stats, rows, start_index=1, total_rows=3,
+        )
+        self.assertEqual(summary, {"trained": 3, "days": 1, "skipped": 0})
+        self.assertEqual(engine.trained_n, 3)
+        self.assertEqual(stats.trained_matches["E0"], 2)
+        self.assertEqual(stats.trained_matches["SP1"], 1)
+
+    def test_incremental_plan_accepts_only_unchanged_or_whole_new_days(self):
+        from model.training import TRAINING_STATE_SCHEMA
+
+        history = {
+            "E0": [
+                [self.row("01/01/2024", "A", "B", 1, 0)],
+                [self.row("02/01/2024", "C", "D", 0, 1)],
+            ]
+        }
+        prepared, _ = prepare_completed_training_rows(history, ("E0",))
+        digests = training_day_digests(prepared)
+        engine = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        stats = HistoricalMatchStats()
+        train_engine_chronologically(engine, stats, prepared)
+        checkpoint = {
+            "schema": TRAINING_STATE_SCHEMA,
+            "day_digests": digests,
+            "trained_rows": 2,
+            "engine": engine,
+        }
+        self.assertEqual(plan_incremental_training(checkpoint, digests)["mode"], "unchanged")
+
+        appended = dict(self.row("03/01/2024", "E", "F", 2, 0))
+        updated, _ = prepare_completed_training_rows(
+            {"E0": history["E0"] + [[appended]]}, ("E0",),
+        )
+        plan = plan_incremental_training(checkpoint, training_day_digests(updated))
+        self.assertEqual(plan["mode"], "append")
+        self.assertEqual(plan["start_index"], 2)
+
+        same_day_addition = dict(self.row("02/01/2024", "New", "Match", 1, 1))
+        changed, _ = prepare_completed_training_rows(
+            {"E0": history["E0"] + [[same_day_addition]]}, ("E0",),
+        )
+        changed_plan = plan_incremental_training(checkpoint, training_day_digests(changed))
+        self.assertEqual(changed_plan["mode"], "full")
+        self.assertEqual(changed_plan["reason"], "historical_prefix_changed")
+
+        corrected = dict(history["E0"][0][0])
+        corrected["FTHG"] = 3
+        corrected_history = {"E0": [[corrected], history["E0"][1][0:]]}
+        corrected_rows, _ = prepare_completed_training_rows(corrected_history, ("E0",))
+        self.assertEqual(
+            plan_incremental_training(checkpoint, training_day_digests(corrected_rows))["mode"],
+            "full",
+        )
 
     def test_single_match_wrapper_keeps_legacy_leakage_safe_contract(self):
         model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
