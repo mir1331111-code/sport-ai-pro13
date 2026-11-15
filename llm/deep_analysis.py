@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+import requests
 from typing import Any
 
 from betting.ranking import model_favorite, rank_model_favorites
@@ -785,17 +786,201 @@ def _normalize_analysis(raw: object, known: dict[str, dict]) -> dict | None:
     }
 
 
+_LAST_TOP_MATCHES_STATUS: dict[str, Any] = {}
+
+
+def last_top_matches_status() -> dict[str, Any]:
+    """Return the latest provider request status without exposing credentials."""
+    return dict(_LAST_TOP_MATCHES_STATUS)
+
+
+def _set_top_matches_status(**values) -> None:
+    _LAST_TOP_MATCHES_STATUS.clear()
+    _LAST_TOP_MATCHES_STATUS.update(values)
+
+
+def resolve_provider_model(provider: str, requested_model: str | None = None) -> str:
+    """Use the selected provider's configured model; discard stale cross-provider IDs."""
+    cfg = LLM_PROVIDERS.get(str(provider or ""))
+    if not cfg:
+        cfg = LLM_PROVIDERS["Groq (бесплатно, быстро)"]
+    configured = str(cfg.get("model") or "").strip()
+    requested = str(requested_model or "").strip()
+    if requested and requested != configured:
+        _log(
+            f"TOP MATCHES MODEL: ignored stale model '{requested}' for provider "
+            f"'{provider}'; using configured model '{configured}'."
+        )
+    return configured
+
+
+def _extract_responses_text(payload: object) -> str:
+    """Extract assistant output_text blocks from xAI/OpenAI Responses payloads."""
+    if not isinstance(payload, dict):
+        return ""
+    pieces = []
+    output = payload.get("output")
+    if not isinstance(output, list):
+        return ""
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        if str(item.get("role") or "assistant").casefold() != "assistant":
+            continue
+        blocks = item.get("content")
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            if isinstance(block, dict) and block.get("type") in {"output_text", "text"}:
+                value = str(block.get("text") or "").strip()
+                if value:
+                    pieces.append(value)
+    return "\n".join(pieces)
+
+
+def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
+    """Send a small user-triggered request to the selected provider's real API."""
+    cfg = LLM_PROVIDERS.get(str(provider or ""))
+    if not cfg:
+        return {"ok": False, "message": "Выбран неизвестный AI-провайдер."}
+    key = str(api_key or "").strip()
+    model = str(cfg.get("model") or "")
+    base = str(cfg.get("base") or "").rstrip("/")
+    if not key:
+        return {
+            "ok": False, "provider": str(provider), "model": model,
+            "message": "Ключ выбранного провайдера не задан.",
+        }
+    is_xai = "api.x.ai" in base.casefold()
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    if is_xai:
+        body = {
+            "model": model,
+            "input": [
+                {"role": "system", "content": "Return a valid JSON object matching the requested schema."},
+                {"role": "user", "content": "Connection check. Return exactly ok=true."},
+            ],
+            "max_output_tokens": 96,
+            "reasoning": {"effort": "low"},
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "store": False,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "connection_check",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"],
+                        "additionalProperties": False,
+                    },
+                    "strict": True,
+                }
+            },
+        }
+        url = f"{base}/responses"
+    else:
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Return only a valid JSON object."},
+                {"role": "user", "content": 'Return exactly: {"ok":true}'},
+            ],
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+        }
+        if "groq" in base.casefold() and model.casefold().startswith("openai/gpt-oss"):
+            body["max_completion_tokens"] = 128
+            body["reasoning_effort"] = "low"
+            body["reasoning_format"] = "hidden"
+        else:
+            body["max_tokens"] = 64
+        url = f"{base}/chat/completions"
+    try:
+        response = _sess.post(
+            url, headers=headers, json=body, timeout=30, proxies=NO_PROXY,
+        )
+    except requests.RequestException as exc:
+        return {
+            "ok": False, "provider": str(provider), "model": model,
+            "message": f"Сетевая ошибка: {type(exc).__name__}: {str(exc)[:180]}",
+        }
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code != 200:
+        detail = str(getattr(response, "text", "") or "").strip()
+        detail = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]+", r"\1[скрыт]", detail)
+        explanations = {
+            401: "Ключ отклонён провайдером. Проверь ключ XAI_API_KEY/выбранного сервиса.",
+            403: "У ключа нет доступа к этому API или модели.",
+            404: f"Модель '{model}' или API endpoint не найден.",
+            429: "Превышен лимит запросов или недостаточно квоты/баланса у провайдера.",
+        }
+        message = f"HTTP {status_code}: " + explanations.get(
+            status_code, "Провайдер не принял тестовый запрос."
+        )
+        return {
+            "ok": False, "provider": str(provider), "model": model,
+            "http_status": status_code,
+            "message": message + (f" Ответ API: {detail[:220]}" if detail else ""),
+        }
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        payload = {}
+    content = (
+        _extract_responses_text(payload)
+        if is_xai else _extract_chat_completion(payload)[0]
+    )
+    try:
+        decoded = json.loads(content) if content else None
+    except (TypeError, ValueError):
+        decoded = None
+    if not isinstance(decoded, dict) or decoded.get("ok") is not True:
+        return {
+            "ok": False, "provider": str(provider), "model": model,
+            "http_status": status_code,
+            "message": "HTTP 200 получен, но тестовый JSON не прошёл проверку.",
+        }
+    return {
+        "ok": True, "provider": str(provider), "model": model,
+        "http_status": status_code,
+        "message": f"Соединение установлено: {provider} · модель {model}.",
+    }
+
+
 def analyze_top_matches(ctx: dict) -> dict[str, dict]:
-    """Send one compact evidence-only batch request for up to seven shortlisted matches."""
+    """Run one independent structured batch request using the selected provider."""
     if not isinstance(ctx, dict):
+        _set_top_matches_status(
+            state="invalid_context",
+            message="Контекст AI-запроса некорректен.",
+        )
         return {}
     api_key = str(ctx.get("api_key") or "").strip()
     candidates = ctx.get("candidates")
-    if not api_key or not isinstance(candidates, list) or not candidates:
+    if not api_key:
+        _set_top_matches_status(
+            state="missing_key",
+            message="Не задан API-ключ выбранного провайдера.",
+        )
+        return {}
+    if not isinstance(candidates, list) or not candidates:
+        _set_top_matches_status(
+            state="no_candidates",
+            message="Нет матчей, прошедших фильтр независимой истории.",
+        )
         return {}
 
     dossiers = [item for item in candidates[:MAX_TOP_MATCHES] if isinstance(item, dict)]
     if not dossiers:
+        _set_top_matches_status(
+            state="no_dossiers",
+            message="Нет корректных досье для AI-запроса.",
+        )
         return {}
     known = {
         str(item.get("fixture_id") or "").strip(): item
@@ -803,14 +988,19 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         if str(item.get("fixture_id") or "").strip()
     }
     if not known:
+        _set_top_matches_status(
+            state="missing_fixture_ids",
+            message="У кандидатов отсутствуют идентификаторы матчей.",
+        )
         return {}
 
     provider = ctx.get("provider") or "Groq (бесплатно, быстро)"
     if provider not in LLM_PROVIDERS:
         provider = "Groq (бесплатно, быстро)"
     cfg = LLM_PROVIDERS[provider]
-    model = str(ctx.get("model") or cfg["model"])
-    base = cfg["base"]
+    model = resolve_provider_model(provider, ctx.get("model"))
+    base = str(cfg["base"]).rstrip("/")
+    is_xai = "api.x.ai" in base.casefold()
 
     cache_context = {
         "provider": provider,
@@ -820,15 +1010,26 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
     digest = hashlib.sha256(
         json.dumps(cache_context, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
-    cache_key = f"independent_multimarket_batch_v2_{digest}"
+    cache_key = f"independent_multimarket_batch_v3_{digest}"
     cached = cache_get(cache_key, DEEP_ANALYSIS_CACHE_TTL)
     if isinstance(cached, dict):
-        return {
+        result = {
             key: value for key, value in cached.items()
             if key in known and isinstance(value, dict)
         }
+        _set_top_matches_status(
+            state="cache_hit", provider=provider, model=model,
+            candidate_count=len(dossiers), analysis_count=len(result),
+            message=f"Получено из кэша: {len(result)}/{len(dossiers)} разборов.",
+        )
+        return result
 
     if usage.llm_remaining() <= 0:
+        _set_top_matches_status(
+            state="daily_limit", provider=provider, model=model,
+            candidate_count=len(dossiers), analysis_count=0,
+            message="Дневной лимит AI-запросов исчерпан.",
+        )
         return {}
 
     user_message = (
@@ -837,79 +1038,136 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         "ДОСЬЕ (JSON):\n"
         + json.dumps({"matches": dossiers}, ensure_ascii=False, separators=(",", ":"))
     )
-    is_groq = "groq" in str(base).casefold()
-    is_xai = "api.x.ai" in str(base).casefold()
+    is_groq = "groq" in base.casefold()
     is_gpt_oss = is_groq and model.casefold().startswith("openai/gpt-oss")
-    if is_gpt_oss:
-        messages = [{
-            "role": "user",
-            "content": f"{_DEEP_ANALYSIS_SYSTEM_PROMPT}\n\n{user_message}",
-        }]
-    else:
-        messages = [
+    messages = (
+        [{"role": "user", "content": f"{_DEEP_ANALYSIS_SYSTEM_PROMPT}\n\n{user_message}"}]
+        if is_gpt_oss else [
             {"role": "system", "content": _DEEP_ANALYSIS_SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ]
-
-    body = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.2,
-    }
-    if is_gpt_oss:
-        body["max_completion_tokens"] = 6144
-        body.update({
-            "reasoning_effort": "low",
-            "reasoning_format": "hidden",
-            "response_format": _DEEP_ANALYSIS_RESPONSE_FORMAT,
-        })
-    elif is_groq:
-        body["max_completion_tokens"] = 6144
-        body["response_format"] = {"type": "json_object"}
-    elif is_xai:
-        # xAI documents strict JSON Schema outputs on the OpenAI-compatible API.
-        body["max_tokens"] = 6144
-        body["response_format"] = _DEEP_ANALYSIS_RESPONSE_FORMAT
-    else:
-        body["max_tokens"] = 6144
-        body["response_format"] = {"type": "json_object"}
-
-    url = f"{base}/chat/completions"
+    )
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    if is_xai:
+        # xAI marks Responses as the primary API for Grok 4.7 and documents
+        # strict JSON schema output through text.format.
+        body = {
+            "model": model,
+            "input": messages,
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "reasoning": {"effort": "high"},
+            "max_output_tokens": 8192,
+            "store": False,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": _DEEP_ANALYSIS_RESPONSE_FORMAT["json_schema"]["name"],
+                    "schema": _DEEP_ANALYSIS_RESPONSE_FORMAT["json_schema"]["schema"],
+                    "strict": True,
+                }
+            },
+        }
+        url = f"{base}/responses"
+    else:
+        body = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.2,
+        }
+        if is_gpt_oss:
+            body["max_completion_tokens"] = 6144
+            body.update({
+                "reasoning_effort": "low",
+                "reasoning_format": "hidden",
+                "response_format": _DEEP_ANALYSIS_RESPONSE_FORMAT,
+            })
+        elif is_groq:
+            body["max_completion_tokens"] = 6144
+            body["response_format"] = {"type": "json_object"}
+        else:
+            body["max_tokens"] = 6144
+            body["response_format"] = {"type": "json_object"}
+        url = f"{base}/chat/completions"
+
+    endpoint_label = "/responses" if is_xai else "/chat/completions"
+    _set_top_matches_status(
+        state="requesting", provider=provider, model=model,
+        candidate_count=len(dossiers), analysis_count=0,
+        endpoint=endpoint_label,
+        message=f"Отправляю {len(dossiers)} досье в {provider} · {model}.",
+    )
     try:
         response = _sess.post(
-            url,
-            headers=headers,
-            json=body,
-            timeout=75,
-            proxies=NO_PROXY,
+            url, headers=headers, json=body,
+            timeout=900 if is_xai else 75, proxies=NO_PROXY,
         )
         usage.llm_increment(1)
         if response.status_code == 429:
             raise LLMRateLimitError(_retry_after_seconds(response))
         if response.status_code != 200:
+            detail = str(getattr(response, "text", "") or "").strip()
+            detail = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]+", r"\1[скрыт]", detail)
+            _set_top_matches_status(
+                state="http_error", provider=provider, model=model,
+                candidate_count=len(dossiers), analysis_count=0,
+                http_status=int(response.status_code),
+                endpoint=endpoint_label,
+                message=f"HTTP {response.status_code}: {detail[:220]}",
+            )
             _log(
-                f"TOP MATCHES ERROR: provider={provider}, HTTP {response.status_code}, "
-                f"response={str(getattr(response, 'text', '') or '')[:180]}"
+                f"TOP MATCHES ERROR: provider={provider}, model={model}, "
+                f"HTTP {response.status_code}, response={detail[:180]}"
             )
             return {}
-        content, diagnostics = _extract_chat_completion(response.json())
+
+        try:
+            response_payload = response.json()
+        except (TypeError, ValueError):
+            response_payload = {}
+        if is_xai:
+            content = _extract_responses_text(response_payload)
+            diagnostics = {
+                "status": response_payload.get("status") if isinstance(response_payload, dict) else None,
+                "incomplete_details": response_payload.get("incomplete_details") if isinstance(response_payload, dict) else None,
+                "error": response_payload.get("error") if isinstance(response_payload, dict) else None,
+            }
+        else:
+            content, diagnostics = _extract_chat_completion(response_payload)
         if not content:
+            _set_top_matches_status(
+                state="empty_response", provider=provider, model=model,
+                candidate_count=len(dossiers), analysis_count=0,
+                endpoint=endpoint_label, response_diagnostics=diagnostics,
+                message="Провайдер ответил без текстового JSON.",
+            )
             _log(
                 "TOP MATCHES ERROR: empty completion content; "
-                + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True)
+                + json.dumps(diagnostics, ensure_ascii=False, sort_keys=True, default=str)
             )
             return {}
         try:
             payload = json.loads(content.strip())
         except (TypeError, ValueError):
+            _set_top_matches_status(
+                state="invalid_json", provider=provider, model=model,
+                candidate_count=len(dossiers), analysis_count=0,
+                endpoint=endpoint_label,
+                message="Провайдер вернул текст, который не удалось разобрать как JSON.",
+            )
             _log("TOP MATCHES ERROR: provider returned non-JSON content.")
             return {}
         rows = payload.get("analyses") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
+            _set_top_matches_status(
+                state="invalid_shape", provider=provider, model=model,
+                candidate_count=len(dossiers), analysis_count=0,
+                endpoint=endpoint_label,
+                message="JSON получен, но в нём нет массива analyses.",
+            )
             _log("TOP MATCHES ERROR: response does not contain analyses array.")
             return {}
 
@@ -924,13 +1182,42 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
             normalized[fixture_id] = item
         if normalized:
             cache_put(cache_key, normalized)
+        _set_top_matches_status(
+            state="completed" if normalized else "no_valid_analyses",
+            provider=provider, model=model,
+            candidate_count=len(dossiers), analysis_count=len(normalized),
+            endpoint=endpoint_label,
+            message=f"Получено и проверено {len(normalized)}/{len(dossiers)} независимых разборов.",
+        )
         return normalized
-    except LLMRateLimitError:
+    except LLMRateLimitError as exc:
+        _set_top_matches_status(
+            state="rate_limited", provider=provider, model=model,
+            candidate_count=len(dossiers), analysis_count=0,
+            endpoint=endpoint_label,
+            message=(
+                f"Провайдер ограничил запрос; повтор через {exc.retry_after_seconds:.0f} сек."
+                if exc.retry_after_seconds is not None
+                else "Провайдер ограничил запрос (HTTP 429)."
+            ),
+        )
         raise
     except requests.RequestException as exc:
+        _set_top_matches_status(
+            state="network_error", provider=provider, model=model,
+            candidate_count=len(dossiers), analysis_count=0,
+            endpoint=endpoint_label,
+            message=f"Сетевая ошибка: {type(exc).__name__}: {str(exc)[:180]}",
+        )
         _log(f"TOP MATCHES ERROR: {type(exc).__name__}: {str(exc)[:180]}")
         return {}
     except Exception as exc:
+        _set_top_matches_status(
+            state="request_error", provider=provider, model=model,
+            candidate_count=len(dossiers), analysis_count=0,
+            endpoint=endpoint_label,
+            message=f"Ошибка запроса: {type(exc).__name__}: {str(exc)[:180]}",
+        )
         _log(f"TOP MATCHES ERROR: {type(exc).__name__}: {str(exc)[:180]}")
         return {}
 

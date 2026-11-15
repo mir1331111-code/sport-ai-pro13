@@ -397,7 +397,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
             })
         self.assertEqual(result, {})
 
-    def test_xai_grok_uses_current_model_and_strict_multimarket_schema(self):
+    def test_xai_grok_uses_responses_api_and_discards_a_stale_groq_model_id(self):
         from llm import deep_analysis
 
         dossier = build_match_dossier(make_card())
@@ -420,7 +420,11 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         }, ensure_ascii=False)
         response = SimpleNamespace(
             status_code=200, text=response_content,
-            json=lambda: {"choices": [{"message": {"content": response_content}}]},
+            json=lambda: {"output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": response_content}],
+            }]},
         )
         with (
             patch.object(deep_analysis, "cache_get", return_value=None),
@@ -432,16 +436,48 @@ class BatchGroqAnalysisTests(unittest.TestCase):
             result = deep_analysis.analyze_top_matches({
                 "api_key": "xai-unit-test-key",
                 "provider": "Grok (x.ai)",
-                "model": "grok-4.7",
+                # Regression: an older saved meta.llm_model may still be Groq's model.
+                "model": "openai/gpt-oss-20b",
                 "candidates": [dossier],
             })
         self.assertIn(dossier["fixture_id"], result)
         request = post.call_args.kwargs["json"]
-        self.assertEqual(post.call_args.args[0], "https://api.x.ai/v1/chat/completions")
+        self.assertEqual(post.call_args.args[0], "https://api.x.ai/v1/responses")
         self.assertEqual(request["model"], "grok-4.7")
-        self.assertEqual(request["response_format"]["type"], "json_schema")
-        self.assertEqual(request["response_format"]["json_schema"]["name"],
+        self.assertEqual(request["store"], False)
+        self.assertEqual(request["text"]["format"]["type"], "json_schema")
+        self.assertEqual(request["text"]["format"]["name"],
                          "top_match_independent_multimarket_analysis")
+        self.assertEqual(deep_analysis.last_top_matches_status()["state"], "completed")
+
+    def test_provider_connection_check_uses_the_selected_model_and_reports_auth_errors(self):
+        from llm import deep_analysis
+
+        success_response = SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": '{"ok":true}'}],
+            }]},
+        )
+        with patch.object(deep_analysis._sess, "post", return_value=success_response) as post:
+            result = deep_analysis.check_provider_connection(
+                "Grok (x.ai)", "xai-unit-test-key"
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["model"], "grok-4.7")
+        self.assertEqual(post.call_args.args[0], "https://api.x.ai/v1/responses")
+
+        unauthorized = SimpleNamespace(status_code=401, text='{"error":"invalid_api_key"}')
+        with patch.object(deep_analysis._sess, "post", return_value=unauthorized):
+            result = deep_analysis.check_provider_connection(
+                "Grok (x.ai)", "bad-unit-test-key"
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["http_status"], 401)
+        self.assertIn("HTTP 401", result["message"])
 
     def test_non_monotone_market_probabilities_are_discarded_without_losing_1x2(self):
         from llm.deep_analysis import _normalize_analysis

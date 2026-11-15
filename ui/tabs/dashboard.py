@@ -10,6 +10,7 @@ import streamlit as st
 from betting.ranking import model_favorite
 from betting.risk import risk_snapshot, MAX_MARKET_STAKE_PCT, MAX_MATCH_EXPOSURE_PCT, MAX_DAILY_EXPOSURE_PCT
 from data.fixture_time import app_timezone
+from config import LLM_PROVIDERS
 
 
 def esc(value):
@@ -29,6 +30,18 @@ def favorite(card):
         return model_favorite(card)
     except Exception:
         return None
+
+
+def ai_provider_label(data):
+    provider = str((data.get("meta") or {}).get("llm_provider") or "Groq (бесплатно, быстро)")
+    base = str(LLM_PROVIDERS.get(provider, {}).get("base") or "").casefold()
+    if "api.x.ai" in base:
+        return "Grok"
+    if "groq" in base:
+        return "Groq"
+    if "generativelanguage.googleapis.com" in base:
+        return "Gemini"
+    return provider.split(" (", 1)[0] or "AI"
 
 
 def has_prices(card):
@@ -119,13 +132,13 @@ def league_badge(url, name):
     return "<span class='sp-league-emblem fallback'>⚽</span>"
 
 
-def match_tile(card, rank):
+def match_tile(card, rank, ai_name="AI"):
     pred = favorite(card) or {}
     deep = card.get("deep_analysis") if isinstance(card.get("deep_analysis"), dict) else {}
-    groq = str(deep.get("independent_pick") or "")
-    groq_tag = (
-        f"<span class='sp-ai-tag'>GROQ · {esc(groq)}</span>"
-        if groq else "<span class='sp-ai-tag muted'>GROQ · ОЖИДАЕТ</span>"
+    ai_pick = str(deep.get("independent_pick") or "")
+    ai_tag = (
+        f"<span class='sp-ai-tag'>{esc(ai_name.upper())} · {esc(ai_pick)}</span>"
+        if ai_pick else f"<span class='sp-ai-tag muted'>{esc(ai_name.upper())} · ОЖИДАЕТ</span>"
     )
     return (
         "<div class='sp-match-tile'>"
@@ -139,7 +152,7 @@ def match_tile(card, rank):
         "<span class='sp-vs'>VS</span>"
         f"<div class='sp-team-side away'><b>{esc(card.get('away_team') or 'Гости')}</b>"
         f"{team_badge(card.get('away_badge'), card.get('away_team') or 'Гости')}</div></div>"
-        f"<div class='sp-match-bottom'><span class='sp-pick'>{esc(pred.get('pick') or '—')} · {float(pred.get('probability') or 0):.1%}</span>{groq_tag}</div>"
+        f"<div class='sp-match-bottom'><span class='sp-pick'>{esc(pred.get('pick') or '—')} · {float(pred.get('probability') or 0):.1%}</span>{ai_tag}</div>"
         + odds_html(card)
         + "</div>"
     )
@@ -148,6 +161,7 @@ def match_tile(card, rank):
 def render():
     data = st.session_state.get("data") or {}
     cards = [c for c in (data.get("cards") or []) if isinstance(c, dict)]
+    ai_name = ai_provider_label(data)
     cards.sort(key=lambda c: (str(c.get("date_iso") or "9999"), str(c.get("time") or "23:59")))
 
     ranked = []
@@ -156,7 +170,7 @@ def render():
         if pred:
             ranked.append((pred["probability"], card, pred))
     ranked.sort(key=lambda x: x[0], reverse=True)
-    groq_matches = [
+    ai_matches = [
         c for c in cards
         if (
             isinstance(c.get("deep_analysis"), dict)
@@ -165,7 +179,7 @@ def render():
             and isinstance(c["deep_analysis"].get("probabilities"), dict)
         )
     ]
-    groq_matches.sort(
+    ai_matches.sort(
         key=lambda c: (favorite(c) or {}).get("probability", 0.0),
         reverse=True,
     )
@@ -190,7 +204,7 @@ def render():
              and (c.get("verdict") or {}).get("value_passed"))
         for c in cards
     )
-    groq_count = sum(
+    ai_count = sum(
         isinstance(c.get("deep_analysis"), dict)
         and c["deep_analysis"].get("independent_pick") in {"П1", "X", "П2"}
         and isinstance(c["deep_analysis"].get("probabilities"), dict)
@@ -205,7 +219,7 @@ def render():
         "<div class='sp-dashboard-hero'><div class='sp-hero-copy'>"
         "<div class='sp-eyebrow'>OVERVIEW / MATCH INTELLIGENCE</div>"
         "<h1>Футбол. Данные. Решения.</h1>"
-        "<p>Единая панель предматчевой аналитики: основная модель, реальные котировки SStats и независимый разбор Groq.</p>"
+        f"<p>Единая панель предматчевой аналитики: основная модель, реальные котировки SStats и независимый разбор {esc(ai_name)}.</p>"
         "<div class='sp-hero-tags'><span>01 · MATCHES</span><span>02 · ODDS</span><span>03 · AI DOSSIER</span><span>04 · RISK CONTROL</span></div>"
         "</div><div class='sp-hero-mark'><div class='sp-pitch'><i></i><b></b><em></em></div>"
         "<div class='sp-hero-mark-caption'>NEURO<br/>INTELLIGENCE</div></div></div>",
@@ -215,8 +229,8 @@ def render():
     cols = st.columns(5)
     for col, label, metric in zip(
         cols,
-        ("МАТЧЕЙ В СКАНЕ", "С РЕАЛЬНЫМИ 1X2", "VALUE ПРОШЛИ", "GROQ РАЗБОРОВ", "АКТИВНЫЕ СТАВКИ"),
-        (len(cards), priced, value, groq_count, pending),
+        ("МАТЧЕЙ В СКАНЕ", "С РЕАЛЬНЫМИ 1X2", "VALUE ПРОШЛИ", f"{ai_name.upper()} РАЗБОРОВ", "АКТИВНЫЕ СТАВКИ"),
+        (len(cards), priced, value, ai_count, pending),
     ):
         col.metric(label, metric)
 
@@ -231,40 +245,68 @@ def render():
         )
         return
 
-    top = groq_matches[0] if groq_matches else (ranked[0][1] if ranked else cards[0])
+    top = ai_matches[0] if ai_matches else (ranked[0][1] if ranked else cards[0])
     pred = favorite(top) or {}
     deep = top.get("deep_analysis") if isinstance(top.get("deep_analysis"), dict) else {}
     ai_probs = deep.get("probabilities") or {}
     ai_pick = deep.get("independent_pick")
     ai_prob = num(ai_probs.get(ai_pick)) if ai_pick else None
     ai_text = str(deep.get("match_assessment") or top.get("llm_opinion") or "")[:340]
+    report_lines = [str(line) for line in (data.get("report") or [])]
+    ai_status_line = next(
+        (
+            line.split("TOP MATCHES · AI STATUS:", 1)[1].strip()
+            for line in reversed(report_lines)
+            if "TOP MATCHES · AI STATUS:" in line
+        ),
+        "",
+    )
+    shortlist_line = next(
+        (
+            line.split("TOP MATCHES · независимый shortlist:", 1)[1].strip()
+            for line in reversed(report_lines)
+            if "TOP MATCHES · независимый shortlist:" in line
+        ),
+        "",
+    )
+    ai_status_html = (
+        f"<div class='sp-ai-summary muted'><b>СТАТУС AI · {esc(ai_name.upper())}</b><p>{esc(ai_status_line)}</p></div>"
+        if ai_status_line else
+        "<div class='sp-ai-summary muted'><b>СТАТУС AI</b><p>После нового сканирования здесь будет показана причина, если разбор не получен.</p></div>"
+    )
+    shortlist_html = (
+        f"<div class='sp-ai-summary muted'><b>ОТБОР TOP MATCHES</b><p>{esc(shortlist_line)}</p></div>"
+        if shortlist_line else ""
+    )
     next_matches = cards[:6]
-    focus_matches = groq_matches[:7] if groq_matches else ([item[1] for item in ranked[:5]] or cards[:5])
-    focus_title = "TOP MATCHES · Groq + основная модель" if groq_matches else "Матчи в фокусе · основная модель"
+    focus_matches = ai_matches[:7] if ai_matches else ([item[1] for item in ranked[:5]] or cards[:5])
+    focus_title = f"TOP MATCHES · {ai_name} + основная модель" if ai_matches else "Матчи в фокусе · основная модель"
 
     left, mid, right = st.columns([1.08, 0.96, 0.88], gap="medium")
     with left:
         st.markdown(
             panel("UPCOMING MATCHES", focus_title, "До 7 матчей; слабые кандидаты не добавляются ради заполнения списка")
-            + "".join(match_tile(card, i + 1) for i, card in enumerate(focus_matches))
+            + "".join(match_tile(card, i + 1, ai_name) for i, card in enumerate(focus_matches))
             + "</section>",
             unsafe_allow_html=True,
         )
 
     with mid:
         ai_prob_text = f"{ai_prob:.1f}%" if ai_prob is not None else "—"
-        ai_caption = f"Независимый Groq · {ai_pick}" if ai_pick else "Независимый разбор пока не получен"
+        ai_caption = f"Независимый {ai_name} · {ai_pick}" if ai_pick else f"Независимый {ai_name} пока не вернул разбор"
         st.markdown(
             panel("AI PREDICTION", "Главный матч", match_name(top))
             + "<div class='sp-ai-score'>"
             f"<div><small>ОСНОВНАЯ МОДЕЛЬ</small><strong>{float(pred.get('probability') or 0):.0%}</strong><span>{esc(pred.get('pick') or '—')}</span></div>"
-            f"<div><small>GROQ · НЕЗАВИСИМО</small><strong>{esc(ai_prob_text)}</strong><span>{esc(ai_caption)}</span></div></div>"
+            f"<div><small>{esc(ai_name.upper())} · НЕЗАВИСИМО</small><strong>{esc(ai_prob_text)}</strong><span>{esc(ai_caption)}</span></div></div>"
             + probability_rows(top)
             + (
-                f"<div class='sp-ai-summary'><b>GROQ INSIGHT</b><p>{esc(ai_text)}</p></div>"
+                f"<div class='sp-ai-summary'><b>{esc(ai_name.upper())} INSIGHT</b><p>{esc(ai_text)}</p></div>"
                 if ai_text else
-                "<div class='sp-ai-summary muted'><b>GROQ INSIGHT</b><p>Разбор появится после пакетного анализа TOP MATCHES.</p></div>"
+                f"<div class='sp-ai-summary muted'><b>{esc(ai_name.upper())} INSIGHT</b><p>Разбор появится после успешного запроса к выбранному AI.</p></div>"
             )
+            + ai_status_html
+            + shortlist_html
             + "</section>",
             unsafe_allow_html=True,
         )

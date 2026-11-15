@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "14.4.6"
+APP_VERSION = "14.4.7"
 DATA_VERSION = 18
 
 # The favorites panel targets seven forecasts when the schedule contains them.
