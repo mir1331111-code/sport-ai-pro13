@@ -245,13 +245,39 @@ def render():
         )
         return
 
-    top = ai_matches[0] if groq_matches else (ranked[0][1] if ranked else cards[0])
+    top = ai_matches[0] if ai_matches else (ranked[0][1] if ranked else cards[0])
     pred = favorite(top) or {}
     deep = top.get("deep_analysis") if isinstance(top.get("deep_analysis"), dict) else {}
     ai_probs = deep.get("probabilities") or {}
     ai_pick = deep.get("independent_pick")
     ai_prob = num(ai_probs.get(ai_pick)) if ai_pick else None
     ai_text = str(deep.get("match_assessment") or top.get("llm_opinion") or "")[:340]
+    report_lines = [str(line) for line in (data.get("report") or [])]
+    ai_status_line = next(
+        (
+            line.split("TOP MATCHES · AI STATUS:", 1)[1].strip()
+            for line in reversed(report_lines)
+            if "TOP MATCHES · AI STATUS:" in line
+        ),
+        "",
+    )
+    shortlist_line = next(
+        (
+            line.split("TOP MATCHES · независимый shortlist:", 1)[1].strip()
+            for line in reversed(report_lines)
+            if "TOP MATCHES · независимый shortlist:" in line
+        ),
+        "",
+    )
+    ai_status_html = (
+        f"<div class='sp-ai-summary muted'><b>СТАТУС AI · {esc(ai_name.upper())}</b><p>{esc(ai_status_line)}</p></div>"
+        if ai_status_line else
+        "<div class='sp-ai-summary muted'><b>СТАТУС AI</b><p>После нового сканирования здесь будет показана причина, если разбор не получен.</p></div>"
+    )
+    shortlist_html = (
+        f"<div class='sp-ai-summary muted'><b>ОТБОР TOP MATCHES</b><p>{esc(shortlist_line)}</p></div>"
+        if shortlist_line else ""
+    )
     next_matches = cards[:6]
     focus_matches = groq_matches[:7] if groq_matches else ([item[1] for item in ranked[:5]] or cards[:5])
     focus_title = "TOP MATCHES · Groq + основная модель" if groq_matches else "Матчи в фокусе · основная модель"
@@ -279,6 +305,8 @@ def render():
                 if ai_text else
                 f"<div class='sp-ai-summary muted'><b>{esc(ai_name.upper())} INSIGHT</b><p>Разбор появится после успешного запроса к выбранному AI.</p></div>"
             )
+            + ai_status_html
+            + shortlist_html
             + "</section>",
             unsafe_allow_html=True,
         )
