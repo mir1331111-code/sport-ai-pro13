@@ -203,11 +203,77 @@ def _record_scores(record):
     return brier, loss, rps_sum / 2.0, float(max(classes, key=lambda k: probabilities[k]) == outcome)
 
 
+def _reliability_report(records, *, bins: int = 10):
+    """Return fixed-width class reliability bins, ECE and maximum calibration gap."""
+    bin_count = max(2, min(50, int(bins)))
+    class_names = ("H", "D", "A")
+    buckets = {
+        name: [[] for _ in range(bin_count)]
+        for name in class_names
+    }
+    outcomes = {
+        name: [[] for _ in range(bin_count)]
+        for name in class_names
+    }
+    for record in records or []:
+        probabilities, outcome = record[:2]
+        for name in class_names:
+            probability = float(probabilities[name])
+            if not math.isfinite(probability):
+                continue
+            probability = min(1.0, max(0.0, probability))
+            index = min(bin_count - 1, int(probability * bin_count))
+            buckets[name][index].append(probability)
+            outcomes[name][index].append(float(outcome == name))
+
+    result = {
+        "n": len(records or []),
+        "binning": "fixed_width",
+        "bin_count": bin_count,
+        "classes": {},
+    }
+    for name in class_names:
+        rows = []
+        weighted_gap = 0.0
+        max_gap = None
+        total = sum(len(values) for values in buckets[name])
+        for index in range(bin_count):
+            predicted = buckets[name][index]
+            observed = outcomes[name][index]
+            count = len(predicted)
+            lower = index / bin_count
+            upper = (index + 1) / bin_count
+            if count:
+                mean_predicted = sum(predicted) / count
+                observed_rate = sum(observed) / count
+                gap = abs(mean_predicted - observed_rate)
+                weighted_gap += (count / total) * gap if total else 0.0
+                max_gap = gap if max_gap is None else max(max_gap, gap)
+            else:
+                mean_predicted = observed_rate = gap = None
+            rows.append({
+                "lower": lower,
+                "upper": upper,
+                "count": count,
+                "mean_predicted": mean_predicted,
+                "observed_frequency": observed_rate,
+                "absolute_gap": gap,
+            })
+        result["classes"][name] = {
+            "n": total,
+            "ece": weighted_gap if total else None,
+            "mce": max_gap,
+            "bins": rows,
+        }
+    return result
+
+
 def _metrics(records, *, bootstrap_samples=1000, seed=1729):
     if not records:
         return {
             "n": 0, "brier": None, "log_loss": None, "rps_hda_order": None,
             "accuracy": None, "confidence_intervals_95": {},
+            "reliability": _reliability_report([]),
             "bootstrap_unit": "matchday", "cluster_count": 0,
         }
     scores = np.asarray([_record_scores(record) for record in records], dtype=float)
@@ -223,6 +289,7 @@ def _metrics(records, *, bootstrap_samples=1000, seed=1729):
         "n": len(records),
         **dict(zip(names, means)),
         "confidence_intervals_95": _intervals_from_samples(samples, names),
+        "reliability": _reliability_report(records),
         "bootstrap_unit": "matchday" if explicit_groups else "fixture_fallback",
         "cluster_count": len(set(groups)),
     }
