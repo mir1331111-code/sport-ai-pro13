@@ -160,6 +160,33 @@ class ChronologicalTrainingTests(unittest.TestCase):
         shot_rows, _ = prepare_completed_training_rows({"E0": [[shot_change]]}, ("E0",))
         self.assertNotEqual(base_digest, training_day_digests(shot_rows))
 
+    def test_training_digest_covers_all_historical_market_stat_inputs(self):
+        original = self.row(
+            "01/01/2024", "A", "B", 1, 0,
+            HC=5, AC=4, HY=1, AY=2, HR=0, AR=0,
+            HTHG=0, HTAG=0, HTHC=2, HTAC=1, Referee="Referee One",
+            HxG=1.2, AxG=0.8, xg_source="provider", xg_kind="provider",
+            xg_model_version="provider-v1", xg_training_sides=200,
+        )
+        prepared, _ = prepare_completed_training_rows({"E0": [[original]]}, ("E0",))
+        baseline = training_day_digests(prepared)
+
+        changes = {
+            "HC": 6, "AC": 5, "HY": 2, "AY": 3, "HR": 1, "AR": 1,
+            "HTHG": 1, "HTAG": 1, "HTHC": 3, "HTAC": 2,
+            "Referee": "Referee Two", "xg_source": "shot_model_v3",
+            "xg_kind": "modelled_proxy", "xg_model_version": "shot-v3",
+            "xg_training_sides": 240,
+        }
+        for field, changed_value in changes.items():
+            with self.subTest(field=field):
+                corrected = dict(original)
+                corrected[field] = changed_value
+                changed_rows, _ = prepare_completed_training_rows(
+                    {"E0": [[corrected]]}, ("E0",),
+                )
+                self.assertNotEqual(baseline, training_day_digests(changed_rows))
+
     def test_incremental_plan_accepts_only_unchanged_or_whole_new_days(self):
         from model.training import TRAINING_STATE_SCHEMA
 

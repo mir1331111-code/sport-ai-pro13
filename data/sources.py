@@ -74,6 +74,21 @@ def season_str(year: int) -> str:
     return f"{year % 100:02d}{(year + 1) % 100:02d}"
 
 
+def _seasonal_cache_ttl(season: str, *, now: datetime | None = None) -> int:
+    """Use a shorter cache for the active July-to-June season.
+
+    The scanner incrementally learns newly completed fixtures, so a multi-day
+    cache on the live season would delay their admission even on a fresh scan.
+    Older seasons retain the longer cache because their source files rarely change.
+    """
+    current = now or datetime.now(timezone.utc)
+    season_start_year = current.year if current.month >= 7 else current.year - 1
+    active_season = season_str(season_start_year)
+    if str(season or "").strip() == active_season:
+        return int(CACHE_TTL.get("seasonal_active", 6 * 3600))
+    return int(CACHE_TTL["seasonal"])
+
+
 def _norm_name(s: str) -> str:
     try:
         from data.team_names import normalize_team
@@ -486,7 +501,7 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
 # ============ FOOTBALL-DATA.CO.UK ============
 def load_seasonal(div: str, season: str) -> list:
     ck = f"fd_{div}_{season}"
-    cached = cache_get(ck, CACHE_TTL["seasonal"])
+    cached = cache_get(ck, _seasonal_cache_ttl(season))
     if cached is not None:
         return cached if isinstance(cached, list) else []
     url = f"https://www.football-data.co.uk/mmz4281/{season}/{div}.csv"

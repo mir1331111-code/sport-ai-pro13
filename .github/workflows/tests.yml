@@ -1,8 +1,12 @@
 name: tests
 
 on:
+  # Main CI owns the full two-version validation for main pushes and PRs.
+  # Keep this workflow on feature branches to avoid running the same suite twice.
   push:
+    branches-ignore: [main]
   pull_request:
+    branches-ignore: [main]
 
 jobs:
   unittest:
