@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS forecasts (
  odds_source TEXT,
  xg_used INTEGER CHECK(xg_used IS NULL OR xg_used IN (0,1)),
  result TEXT CHECK(result IS NULL OR result IN ('H','D','A')),
+ result_source TEXT,
  home_score INTEGER,
  away_score INTEGER,
  closing_odds_json TEXT,
@@ -104,6 +105,8 @@ class ForecastLedger:
                     "ALTER TABLE forecasts ADD COLUMN xg_used INTEGER "
                     "CHECK(xg_used IS NULL OR xg_used IN (0,1))"
                 )
+            if "result_source" not in columns:
+                conn.execute("ALTER TABLE forecasts ADD COLUMN result_source TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=15)
@@ -164,6 +167,8 @@ class ForecastLedger:
             stamp = _timestamp(item.get("forecast_at"))
             kickoff_value = item.get("kickoff_at")
             kickoff = _timestamp(kickoff_value) if kickoff_value is not None else None
+            if kickoff is not None and stamp >= kickoff:
+                raise ValueError("forecast_at must be strictly before kickoff_at")
             prices_json = json.dumps(prices, sort_keys=True) if prices is not None else None
             values = (
                 required["forecast_key"], required["fixture_id"], kickoff, stamp,
@@ -172,7 +177,7 @@ class ForecastLedger:
                 item.get("odds_source"), stored_xg, _timestamp(None),
             )
             expected = (
-                required["fixture_id"], stamp, required["model_version"],
+                kickoff, required["fixture_id"], stamp, required["model_version"],
                 required["home_team"], required["away_team"], item.get("league"),
                 json.dumps(probs, sort_keys=True), prices_json, item.get("odds_source"),
             )
@@ -186,7 +191,7 @@ class ForecastLedger:
              home_team,away_team,league,probabilities_json,entry_odds_json,
              odds_source,xg_used,created_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
-        select_sql = """SELECT forecast_key,id,fixture_id,forecast_at,model_version,
+        select_sql = """SELECT forecast_key,id,kickoff_at,fixture_id,forecast_at,model_version,
             home_team,away_team,league,probabilities_json,entry_odds_json,odds_source,xg_used
             FROM forecasts WHERE forecast_key IN ({})"""
 
@@ -208,7 +213,7 @@ class ForecastLedger:
                 if row is None:
                     raise RuntimeError("forecast insert was not visible in its transaction")
                 actual = (
-                    row["fixture_id"], row["forecast_at"], row["model_version"],
+                    row["kickoff_at"], row["fixture_id"], row["forecast_at"], row["model_version"],
                     row["home_team"], row["away_team"], row["league"],
                     row["probabilities_json"], row["entry_odds_json"], row["odds_source"],
                 )
@@ -236,6 +241,7 @@ class ForecastLedger:
         away_score: int | None = None, settled_at: datetime | str | None = None,
         closing_odds: Mapping[str, Any] | None = None,
         closing_odds_source: str | None = None,
+        result_source: str | None = None,
     ) -> bool:
         """Attach a final result and optional closing prices to a forecast."""
         result = str(result).upper()
@@ -254,9 +260,13 @@ class ForecastLedger:
             if derived != result:
                 raise ValueError("result does not match the supplied score")
         prices = _odds(closing_odds)
+        if result_source is not None:
+            if not isinstance(result_source, str) or not result_source.strip():
+                raise ValueError("result_source must be a non-empty string when supplied")
+            result_source = result_source.strip()
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT result,home_score,away_score FROM forecasts WHERE forecast_key=?",
+                "SELECT result,home_score,away_score,result_source FROM forecasts WHERE forecast_key=?",
                 (forecast_key,),
             ).fetchone()
             if row is None:
@@ -267,13 +277,16 @@ class ForecastLedger:
                 row["home_score"] != home_score or row["away_score"] != away_score
             ):
                 raise ValueError("conflicting settlement: scores are immutable once set")
+            if row["result_source"] and result_source and row["result_source"] != result_source:
+                raise ValueError("conflicting settlement source: provenance is immutable once set")
             conn.execute(
-                """UPDATE forecasts SET result=?,home_score=COALESCE(home_score,?),
+                """UPDATE forecasts SET result=?,result_source=COALESCE(result_source,?),
+                home_score=COALESCE(home_score,?),
                 away_score=COALESCE(away_score,?),
                 settled_at=COALESCE(settled_at,?),closing_odds_json=COALESCE(closing_odds_json,?),
                 closing_odds_source=COALESCE(closing_odds_source,?)
                 WHERE forecast_key=?""",
-                (result, home_score, away_score, _timestamp(settled_at),
+                (result, result_source, home_score, away_score, _timestamp(settled_at),
                  json.dumps(prices, sort_keys=True) if prices is not None else None,
                  closing_odds_source, forecast_key),
             )
