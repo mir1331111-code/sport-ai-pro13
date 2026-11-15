@@ -14,7 +14,7 @@ class LLMProviderRoutingTests(unittest.TestCase):
     def test_retired_groq_70b_selection_migrates_to_supported_gpt_oss_120b(self):
         provider_name = normalize_llm_provider("Groq 70B (бесплатно, мощнее)")
         self.assertEqual(
-            provider_name, "Groq GPT-OSS 120B (бесплатно, мощнее)"
+            provider_name, "Groq GPT-OSS 120B (мощнее)"
         )
         self.assertEqual(
             LLM_PROVIDERS[provider_name]["model"], "openai/gpt-oss-120b"
