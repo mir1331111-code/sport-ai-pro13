@@ -835,7 +835,7 @@ def _extract_responses_text(payload: object) -> str:
                 value = str(block.get("text") or "").strip()
                 if value:
                     pieces.append(value)
-    return "\\n".join(pieces)
+    return "\n".join(pieces)
 
 
 def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
@@ -904,7 +904,7 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
     status_code = int(getattr(response, "status_code", 0) or 0)
     if status_code != 200:
         detail = str(getattr(response, "text", "") or "").strip()
-        detail = re.sub(r"(?i)(bearer\\s+)[A-Za-z0-9._-]+", r"\\1[скрыт]", detail)
+        detail = re.sub(r"(?i)(bearer\\s+)[A-Za-z0-9._-]+", r"\1[скрыт]", detail)
         explanations = {
             401: "Ключ отклонён провайдером. Проверь ключ XAI_API_KEY/выбранного сервиса.",
             403: "У ключа нет доступа к этому API или модели.",
@@ -1024,14 +1024,14 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
 
     user_message = (
         "Проанализируй каждый матч отдельно. Верни ровно один объект на каждый fixture_id. "
-        "Не пропускай матч из-за отсутствующих сведений: явно обозначь пробелы.\\n"
-        "ДОСЬЕ (JSON):\\n"
+        "Не пропускай матч из-за отсутствующих сведений: явно обозначь пробелы.\n"
+        "ДОСЬЕ (JSON):\n"
         + json.dumps({"matches": dossiers}, ensure_ascii=False, separators=(",", ":"))
     )
     is_groq = "groq" in base.casefold()
     is_gpt_oss = is_groq and model.casefold().startswith("openai/gpt-oss")
     messages = (
-        [{"role": "user", "content": f"{_DEEP_ANALYSIS_SYSTEM_PROMPT}\\n\\n{user_message}"}]
+        [{"role": "user", "content": f"{_DEEP_ANALYSIS_SYSTEM_PROMPT}\n\n{user_message}"}]
         if is_gpt_oss else [
             {"role": "system", "content": _DEEP_ANALYSIS_SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
