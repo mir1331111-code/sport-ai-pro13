@@ -533,6 +533,18 @@ def _tsdb_league_meta(league_name: str):
     if "club world cup" in ln:
         return ("CLUB_WC", "club", False, False)
 
+    # Some UEFA youth competitions are inter-club tournaments, not
+    # national-team fixtures. Explicit club youth league names take priority
+    # over the governing-body marker (e.g. UEFA U19 Youth League).
+    age_club_competition = bool(age) and any(token in ln for token in (
+        "youth league", "academy league", "premier league", "elite league",
+    ))
+    if age_club_competition:
+        digest = hashlib.sha1(ln.encode("utf-8")).hexdigest()[:8].upper()
+        if women:
+            return (f"W_Y_U{age_code}_{digest}"[:24], "women_youth", True, False)
+        return (f"Y_U{age_code}_{digest}"[:24], "youth_club", False, False)
+
     age_international = bool(age) and any(token in ln for token in (
         "uefa", "fifa", "afc", "caf", "concacaf", "conmebol", "ofc",
     ))
