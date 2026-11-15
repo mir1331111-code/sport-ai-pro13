@@ -200,12 +200,11 @@ def _bounded_gzip_decompress(payload: bytes, *, max_bytes: int) -> bytes:
         raise ValueError("Uploaded SQLite backup must be gzip bytes")
     if isinstance(max_bytes, bool) or int(max_bytes) < 0:
         raise ValueError("Invalid SQLite backup size limit")
-    compressed = bytes(payload)
-    # A compressed stream should not be larger than the configured raw database
-    # limit by more than gzip framing overhead. Avoid accepting arbitrarily large
-    # upload bodies even before decompression starts.
-    if len(compressed) > int(max_bytes) + 1024 * 1024:
+    # Check the supplied buffer length before copying it into a bytes object.
+    # This avoids doubling memory use for an already oversized upload body.
+    if len(payload) > int(max_bytes) + 1024 * 1024:
         raise ValueError("Uploaded SQLite backup exceeds the safety limit")
+    compressed = bytes(payload)
     try:
         decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
         raw = decoder.decompress(compressed, int(max_bytes) + 1)
