@@ -61,7 +61,16 @@ unverified-snapshot warning.
 The command writes:
 - JSON: complete machine-readable report and experiment manifest;
 - Markdown: concise public-facing evaluation;
-- SVG: reliability diagrams for P1, X and P2.
+- SVG: reliability diagrams for P1, X and P2;
+- `model-lab-v1-gate.json`: a small fail-closed promotion marker consumed by the scanner.
+
+Before a strict PASS exists, the scanner keeps O/U 2.5 forecast-only and excludes it from
+automatic virtual-portfolio selection. After a PASS marker is present, O/U can be considered
+again only if its own exact-line paired bookmaker, quote-source, EV, edge and Kelly checks pass.
+BTTS, corners and cards remain forecast-only. The marker is written in the report output
+directory; if that directory differs from the app's working directory, set
+`MODEL_LAB_GATE_PATH` in the scanner deployment to the marker's path. Missing or malformed
+markers disable secondary-market promotion.
 
 The manifest records the dataset SHA-256, model revision, holdout dates, fixed leagues, model
 parameters, bookmaker fields, de-vig method and thresholds. Re-run on identical inputs and code
