@@ -264,7 +264,9 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(request_mock.call_args.kwargs["params"]["Date"], "2026-11-02")
         self.assertEqual(request_mock.call_args.kwargs["params"]["Ended"], "true")
         self.assertNotIn("private-key", repr(result))
-        cache_write.assert_called_once()
+        self.assertEqual(cache_write.call_count, 2)
+        self.assertTrue(cache_write.call_args_list[0].args[0].startswith("sstats_ft_day_v1_"))
+        self.assertTrue(cache_write.call_args_list[1].args[0].startswith("sstats_ft_result_v1_"))
 
     def test_completed_games_daily_payload_is_reused_across_fixture_lookups(self):
         payload = {
