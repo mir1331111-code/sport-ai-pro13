@@ -280,28 +280,22 @@ class Engine:
     ):
         N = self.matrix_n
 
+        # A Poisson marginal depends only on its own lambda and goal count.
+        # Compute each marginal once, not once for every cell in the score matrix.
+        home_probs = [self._p(lh, goals) for goals in range(N)]
+        away_probs = [self._p(la, goals) for goals in range(N)]
         matrix = [
-            [
-                self._p(lh, i) * self._p(la, j)
-                for j in range(N)
-            ]
-            for i in range(N)
+            [home_probability * away_probability for away_probability in away_probs]
+            for home_probability in home_probs
         ]
 
         # Dixon-Coles low-score correction (standard rho convention).
-        # Reference: tau(0,0)=1-lh*la*rho; tau(0,1)=1+lh*rho;
-        # tau(1,0)=1+la*rho; tau(1,1)=1-rho.
-        tau = {
-            (0, 0): 1 - lh * la * rho,
-            (1, 0): 1 + la * rho,
-            (0, 1): 1 + lh * rho,
-            (1, 1): 1 - rho,
-        }
-
-        for i in range(N):
-            for j in range(N):
-                if (i, j) in tau:
-                    matrix[i][j] *= tau[(i, j)]
+        # Apply only the four affected cells directly; avoid a dictionary lookup
+        # for every cell in the N x N score matrix.
+        matrix[0][0] *= 1 - lh * la * rho
+        matrix[1][0] *= 1 + la * rho
+        matrix[0][1] *= 1 + lh * rho
+        matrix[1][1] *= 1 - rho
 
         total = sum(map(sum, matrix)) or 1.0
 
