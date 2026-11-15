@@ -572,9 +572,6 @@ class SStatsTests(unittest.TestCase):
         )
         self.assertNotIn("private-key", repr(mapping))
         self.assertTrue(any("Glicko checked=1, valid=1" in line for line in logs))
-        self.assertTrue(any(
-            item[0] == "sstats_glicko_v1_777_" for item in []
-        ) is False)
 
     def test_injury_feed_requires_a_structured_list_response(self):
         from data.sstats import _sstats_context_injuries_confirmed
