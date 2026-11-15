@@ -75,6 +75,24 @@ class InternationalScheduleTests(unittest.TestCase):
         self.assertTrue(women[2])
         self.assertTrue(women[3])
 
+    def test_tsdb_keeps_domestic_youth_club_leagues_out_of_national_team_history(self):
+        youth = _tsdb_league_meta("England U21 Premier League")
+        self.assertTrue(youth[0].startswith("Y_U21_"))
+        self.assertEqual(youth[1], "youth_club")
+        self.assertFalse(youth[2])
+        self.assertFalse(youth[3])
+
+        women_youth = _tsdb_league_meta("Women's U21 Premier League")
+        self.assertTrue(women_youth[0].startswith("W_Y_U21_"))
+        self.assertEqual(women_youth[1], "women_youth")
+        self.assertTrue(women_youth[2])
+        self.assertFalse(women_youth[3])
+
+        # A clear governing-body marker still identifies a youth national event.
+        national_youth = _tsdb_league_meta("UEFA U21 Championship")
+        self.assertEqual(national_youth[0], "NT_U21")
+        self.assertTrue(national_youth[3])
+
     def test_tsdb_classifies_senior_youth_and_womens_national_competitions(self):
         self.assertEqual(_tsdb_league_meta("UEFA Nations League")[0], "NT_UNL")
         self.assertEqual(_tsdb_league_meta("International Friendlies")[0], "NT_FR")
