@@ -2521,8 +2521,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "Рынок": item["family_label"],
                         "Лучший исход": item["pick"],
                         "Вероятность": f"{item['probability']:.1%}",
+                        "База вероятности": (
+                            "полный + половинный выигрыш"
+                            if item["family"] == "handicap" else "вероятность выбранного исхода"
+                        ),
                         "Разбивка форы": item.get("outcome_detail") or "—",
                         "Коэффициент": odds_text,
+                        "Букмекер": item.get("bookmaker") or "не указан",
+                        "Источник": item.get("source") or "не указан",
                         "Справедливый кэф": fair_text,
                         "Модельный EV*": ev_text,
                         "Edge": edge_text,
