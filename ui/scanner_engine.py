@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import os
 import threading
+import time
 from datetime import datetime
 
 import streamlit as st
@@ -31,6 +32,13 @@ _PRIORITY_DIVS = (
     "D2", "F2", "N1", "B1", "P1", "T1", "R1",
 )
 
+# Source-level seasonal CSVs already have a three-day disk TTL. Keep one
+# process-local, read-only assembled snapshot for 15 minutes so repeated Streamlit
+# scans do not decompress, parse and sort every league-season archive again.
+_HISTORY_SNAPSHOT_TTL_SEC = 15 * 60
+_HISTORY_SNAPSHOT_CACHE = {}
+_HISTORY_SNAPSHOT_LOCK = threading.RLock()
+
 
 def _validation_divisions(train_divs):
     """Return priority validation leagues in stable order, limited to trained divisions."""
@@ -39,41 +47,88 @@ def _validation_divisions(train_divs):
 
 
 def _load_seasonal_history(logs, update_loader):
-    """Load one deterministic snapshot of the configured seasonal training feed."""
+    """Load a deterministic seasonal snapshot with a short-lived process cache."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     history_years = list(range(cur_year - 4, cur_year + 1))
     priority_divs = list(_PRIORITY_DIVS)
     supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
     train_divs = list(dict.fromkeys(priority_divs + supported_divs))
-    history = {}
-    for i, division in enumerate(train_divs):
-        pct = 0.04 + (i + 1) / max(1, len(train_divs)) * 0.14
-        update_loader(
-            f"Проверка истории [{i+1}/{len(train_divs)}] — {DIV_NAMES.get(division, division)}",
-            pct, logs,
-        )
-        seasons = []
-        for year in history_years:
-            rows = load_seasonal(division, season_str(year))
-            rows = sorted(
-                rows,
-                key=lambda row: parse_date(row.get("Date", "")) or datetime.min,
+    cache_key = (DATA_VERSION, tuple(history_years), tuple(train_divs))
+    now_mono = time.monotonic()
+
+    with _HISTORY_SNAPSHOT_LOCK:
+        cached = _HISTORY_SNAPSHOT_CACHE.get(cache_key)
+        if (
+            isinstance(cached, tuple)
+            and len(cached) == 2
+            and cached[0] > now_mono
+            and isinstance(cached[1], dict)
+        ):
+            history = cached[1]
+            logs.append(
+                "⚡ Исторический архив: собранный снимок из памяти процесса "
+                "(повторное чтение сезонных CSV пропущено)."
             )
-            seasons.append(rows)
-            if rows:
-                logs.append(f"  {season_str(year)}: {len(rows)} матчей")
-        history[division] = seasons
-        league_rows = [row for season_rows in seasons for row in season_rows]
-        logs.append(
-            f"OK {DIV_NAMES.get(division, division)}: {len(league_rows)} матчей "
-            f"за {len(history_years)} сезонов"
+            for i, division in enumerate(train_divs):
+                pct = 0.04 + (i + 1) / max(1, len(train_divs)) * 0.14
+                update_loader(
+                    f"История из памяти [{i+1}/{len(train_divs)}] — "
+                    f"{DIV_NAMES.get(division, division)}",
+                    pct, logs,
+                )
+                seasons = history.get(division, [])
+                for year, rows in zip(history_years, seasons):
+                    if rows:
+                        logs.append(
+                            f"  {season_str(year)}: {len(rows)} матчей (memory)"
+                        )
+                league_rows = sum(len(rows) for rows in seasons)
+                logs.append(
+                    f"OK {DIV_NAMES.get(division, division)}: {league_rows} матчей "
+                    f"за {len(history_years)} сезонов (memory)"
+                )
+            return {
+                "history_years": history_years,
+                "train_divs": train_divs,
+                "history": history,
+            }
+
+        history = {}
+        for i, division in enumerate(train_divs):
+            pct = 0.04 + (i + 1) / max(1, len(train_divs)) * 0.14
+            update_loader(
+                f"Проверка истории [{i+1}/{len(train_divs)}] — "
+                f"{DIV_NAMES.get(division, division)}",
+                pct, logs,
+            )
+            seasons = []
+            for year in history_years:
+                rows = load_seasonal(division, season_str(year))
+                rows = sorted(
+                    rows,
+                    key=lambda row: parse_date(row.get("Date", "")) or datetime.min,
+                )
+                seasons.append(rows)
+                if rows:
+                    logs.append(f"  {season_str(year)}: {len(rows)} матчей")
+            history[division] = seasons
+            league_rows = sum(len(rows) for rows in seasons)
+            logs.append(
+                f"OK {DIV_NAMES.get(division, division)}: {league_rows} матчей "
+                f"за {len(history_years)} сезонов"
+            )
+
+        _HISTORY_SNAPSHOT_CACHE.clear()
+        _HISTORY_SNAPSHOT_CACHE[cache_key] = (
+            time.monotonic() + _HISTORY_SNAPSHOT_TTL_SEC,
+            history,
         )
-    return {
-        "history_years": history_years,
-        "train_divs": train_divs,
-        "history": history,
-    }
+        return {
+            "history_years": history_years,
+            "train_divs": train_divs,
+            "history": history,
+        }
 
 
 def _train_engine(
