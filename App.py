@@ -35,6 +35,7 @@ st.set_page_config(page_title="NEURO BET PRO",
 
 from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
                     AUTO_SETTLE_THROTTLE_SEC, DB_FILE)
+from llm.deep_analysis import check_provider_connection  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
@@ -991,6 +992,18 @@ with st.sidebar:
         llm_key_label,
         value=llm_key_default,
         type="password", key=llm_key_session)
+    if st.button(
+        f"🔎 Проверить AI-подключение · {llm_prov}",
+        key="check_llm_provider_connection",
+        use_container_width=True,
+        help="Отправляет короткий тестовый запрос выбранной модели. Провайдер может списать несколько токенов.",
+    ):
+        with st.spinner(f"Проверяю реальное подключение к {llm_prov}…"):
+            _llm_check = check_provider_connection(llm_prov, llm_key)
+        if _llm_check.get("ok"):
+            st.success(_llm_check.get("message") or "AI API отвечает.")
+        else:
+            st.error(_llm_check.get("message") or "AI API не ответил.")
     # Save only UI-entered keys, separate from portfolio data and its Gist sync.
     _widget_key_map = {
         "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
@@ -1010,8 +1023,16 @@ with st.sidebar:
     _keys_saved = save_local_secrets(_keys_to_save)
     if not _keys_saved:
         st.caption("⚠️ Не удалось сохранить ключи на диске. Проверьте права записи хостинга.")
-    if llm_prov != D["meta"].get("llm_provider"):
+    # Keep provider and model in sync. Older saved sessions can retain a
+    # Groq model ID after changing the provider to Grok; that makes xAI return
+    # an empty/HTTP error and leaves every independent analysis at zero.
+    _configured_llm_model = str(llm_key_config.get("model") or "")
+    if (
+        llm_prov != D["meta"].get("llm_provider")
+        or _configured_llm_model != str(D["meta"].get("llm_model") or "")
+    ):
         D["meta"]["llm_provider"] = llm_prov
+        D["meta"]["llm_model"] = _configured_llm_model
         usage.set_local_data(D)
 
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
@@ -1032,7 +1053,7 @@ with st.sidebar:
     min_edge = st.slider("Мин. Edge %", 0, 15, 3, 1) / 100
     kelly_frac = 0.25
     st.caption("Риск-профиль зафиксирован: ¼ Kelly · максимум 1% банка на рынок · 2% на матч · 5% суммарно за день.")
-    st.caption(f"Версия приложения: {APP_VERSION} · build 2026-11-11")
+    st.caption(f"Версия приложения: {APP_VERSION} · build 2026-11-15")
     matrix_n = st.slider("Матрица", 6, 15, 12, 1)
 
     st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
