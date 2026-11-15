@@ -888,9 +888,14 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
                 {"role": "user", "content": 'Return exactly: {"ok":true}'},
             ],
             "temperature": 0,
-            "max_tokens": 64,
             "response_format": {"type": "json_object"},
         }
+        if "groq" in base.casefold() and model.casefold().startswith("openai/gpt-oss"):
+            body["max_completion_tokens"] = 128
+            body["reasoning_effort"] = "low"
+            body["reasoning_format"] = "hidden"
+        else:
+            body["max_tokens"] = 64
         url = f"{base}/chat/completions"
     try:
         response = _sess.post(
