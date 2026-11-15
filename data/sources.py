@@ -759,13 +759,20 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "national": national,
                     "kind": kind,
                 })
+            # Index provider events once. The previous per-fixture scan through
+            # the full events list made venue enrichment O(fixtures × events).
+            events_by_id = {
+                str(event.get("idEvent")): event
+                for event in ev
+                if isinstance(event, dict) and event.get("idEvent") not in (None, "")
+            }
+
             # Enrich a small number of unique venues per scan with official stadium photos.
             # Successful results are cached for 14 days; the limit keeps the free feed responsive.
             enriched_venues = 0
             for row in rows:
-                venue_id = str(next((event.get("idVenue") for event in ev
-                                     if isinstance(event, dict)
-                                     and str(event.get("idEvent") or "") == str(row.get("fixture_id") or "")), "") or "")
+                source_event = events_by_id.get(str(row.get("fixture_id") or ""))
+                venue_id = str((source_event or {}).get("idVenue") or "")
                 if venue_id and not row.get("stadium_image") and venue_lookup_budget > 0:
                     venue_meta = _tsdb_venue_metadata(venue_id, logs)
                     row.update({k: v for k, v in venue_meta.items() if v and not row.get(k)})

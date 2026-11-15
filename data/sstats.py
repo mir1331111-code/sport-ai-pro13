@@ -1714,22 +1714,28 @@ def sstats_context_enrich(
         return parsed.astimezone(dt_timezone.utc)
 
     current_utc = now.astimezone(dt_timezone.utc) if now.tzinfo else now.replace(tzinfo=dt_timezone.utc)
+    # Parse each kickoff once and use identity sets for membership. Repeated
+    # _kickoff parsing plus list membership previously added avoidable work for
+    # every fixture in the SStats context pass.
+    kickoff_by_identity = {id(row): _kickoff(row) for row in valid_rows}
     injury_candidates = sorted(
         [
             row for row in valid_rows
-            if _kickoff(row) is not None
-            and timedelta(0) <= _kickoff(row) - current_utc <= timedelta(hours=24)
+            if kickoff_by_identity[id(row)] is not None
+            and timedelta(0) <= kickoff_by_identity[id(row)] - current_utc <= timedelta(hours=24)
         ],
-        key=lambda row: _kickoff(row),
+        key=lambda row: kickoff_by_identity[id(row)],
     )[:max(0, int(max_injury_checks))]
     lineup_candidates = sorted(
         [
             row for row in valid_rows
-            if _kickoff(row) is not None
-            and timedelta(0) <= _kickoff(row) - current_utc <= timedelta(hours=6)
+            if kickoff_by_identity[id(row)] is not None
+            and timedelta(0) <= kickoff_by_identity[id(row)] - current_utc <= timedelta(hours=6)
         ],
-        key=lambda row: _kickoff(row),
+        key=lambda row: kickoff_by_identity[id(row)],
     )[:max(0, int(max_lineup_checks))]
+    injury_candidate_ids = {id(row) for row in injury_candidates}
+    lineup_candidate_ids = {id(row) for row in lineup_candidates}
 
     context_by_fixture = {}
     injury_checked = injury_found = info_checked = lineup_checked = lineup_confirmed = referee_confirmed = 0
@@ -1764,7 +1770,7 @@ def sstats_context_enrich(
             "injuries_timestamp": None, "injuries_source_reliability": None,
         }
 
-        if row in injury_candidates:
+        if id(row) in injury_candidate_ids:
             try:
                 injury_payload = _sstats_context_cache_get(
                     "Games/injuries", key,
@@ -1787,7 +1793,7 @@ def sstats_context_enrich(
                     f"⚠️ SStats injuries game={row.get('sstats_game_id')}: {type(exc).__name__}"
                 )
 
-        if row in lineup_candidates and ls_id:
+        if id(row) in lineup_candidate_ids and ls_id:
             try:
                 info_payload = _sstats_context_cache_get(
                     "Ls/GameInfo", key, {"id": ls_id}, ttl=60 * 60,

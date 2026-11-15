@@ -118,57 +118,118 @@ class ForecastLedger:
         odds_source: str | None = None, xg_used: bool | None = None,
     ) -> int:
         """Insert one immutable forecast. Repeated keys return the original id."""
-        required = {
-            "forecast_key": forecast_key, "fixture_id": fixture_id,
-            "home_team": home_team, "away_team": away_team,
+        return self.record_predictions_batch([{
+            "forecast_key": forecast_key,
+            "fixture_id": fixture_id,
+            "home_team": home_team,
+            "away_team": away_team,
             "model_version": model_version,
-        }
-        if any(not isinstance(v, str) or not v.strip() for v in required.values()):
-            raise ValueError("forecast_key, fixture_id, teams and model_version are required")
-        probs = _probabilities(probabilities)
-        prices = _odds(entry_odds)
-        if xg_used is not None and not isinstance(xg_used, bool):
-            raise ValueError("xg_used must be bool or None")
-        stored_xg = None if xg_used is None else int(xg_used)
-        stamp = _timestamp(forecast_at)
-        kickoff = _timestamp(kickoff_at) if kickoff_at is not None else None
-        with self._connect() as conn:
-            conn.execute(
-                """INSERT OR IGNORE INTO forecasts
-                (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,
-                 home_team,away_team,league,probabilities_json,entry_odds_json,
-                 odds_source,xg_used,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (forecast_key, fixture_id, kickoff, stamp, model_version,
-                 home_team, away_team, league, json.dumps(probs, sort_keys=True),
-                 json.dumps(prices, sort_keys=True) if prices is not None else None,
-                 odds_source, stored_xg, _timestamp(None)),
+            "probabilities": probabilities,
+            "forecast_at": forecast_at,
+            "kickoff_at": kickoff_at,
+            "league": league,
+            "entry_odds": entry_odds,
+            "odds_source": odds_source,
+            "xg_used": xg_used,
+        }])[0]
+
+    def record_predictions_batch(
+        self, records: Iterable[Mapping[str, Any]],
+    ) -> list[int]:
+        """Validate and write many immutable forecasts in one SQLite transaction."""
+        prepared = []
+        for item in records:
+            if not isinstance(item, Mapping):
+                raise ValueError("each forecast must be a mapping")
+            required = {
+                "forecast_key": item.get("forecast_key"),
+                "fixture_id": item.get("fixture_id"),
+                "home_team": item.get("home_team"),
+                "away_team": item.get("away_team"),
+                "model_version": item.get("model_version"),
+            }
+            if any(
+                not isinstance(value, str) or not value.strip()
+                for value in required.values()
+            ):
+                raise ValueError(
+                    "forecast_key, fixture_id, teams and model_version are required"
+                )
+            probs = _probabilities(item.get("probabilities"))
+            prices = _odds(item.get("entry_odds"))
+            xg_used = item.get("xg_used")
+            if xg_used is not None and not isinstance(xg_used, bool):
+                raise ValueError("xg_used must be bool or None")
+            stored_xg = None if xg_used is None else int(xg_used)
+            stamp = _timestamp(item.get("forecast_at"))
+            kickoff_value = item.get("kickoff_at")
+            kickoff = _timestamp(kickoff_value) if kickoff_value is not None else None
+            prices_json = json.dumps(prices, sort_keys=True) if prices is not None else None
+            values = (
+                required["forecast_key"], required["fixture_id"], kickoff, stamp,
+                required["model_version"], required["home_team"], required["away_team"],
+                item.get("league"), json.dumps(probs, sort_keys=True), prices_json,
+                item.get("odds_source"), stored_xg, _timestamp(None),
             )
-            row = conn.execute(
-                """SELECT id,fixture_id,forecast_at,model_version,home_team,away_team,
-                league,probabilities_json,entry_odds_json,odds_source,xg_used
-                FROM forecasts WHERE forecast_key=?""", (forecast_key,)
-            ).fetchone()
             expected = (
-                fixture_id, stamp, model_version, home_team, away_team, league,
-                json.dumps(probs, sort_keys=True),
-                json.dumps(prices, sort_keys=True) if prices is not None else None,
-                odds_source,
+                required["fixture_id"], stamp, required["model_version"],
+                required["home_team"], required["away_team"], item.get("league"),
+                json.dumps(probs, sort_keys=True), prices_json, item.get("odds_source"),
             )
-            actual = (
-                row["fixture_id"], row["forecast_at"], row["model_version"],
-                row["home_team"], row["away_team"], row["league"],
-                row["probabilities_json"], row["entry_odds_json"], row["odds_source"],
-            )
-            # Old immutable rows have xg_used=NULL because that feature was not
-            # recorded at forecast time. Never backfill or guess it on a rescan.
-            xg_conflict = (
-                stored_xg is not None and row["xg_used"] is not None
-                and int(row["xg_used"]) != stored_xg
-            )
-            if actual != expected or xg_conflict:
-                raise ValueError("forecast_key already exists with a different payload")
-            return int(row["id"])
+            prepared.append((required["forecast_key"], values, expected, stored_xg))
+
+        if not prepared:
+            return []
+
+        insert_sql = """INSERT OR IGNORE INTO forecasts
+            (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,
+             home_team,away_team,league,probabilities_json,entry_odds_json,
+             odds_source,xg_used,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+        select_sql = """SELECT forecast_key,id,fixture_id,forecast_at,model_version,
+            home_team,away_team,league,probabilities_json,entry_odds_json,odds_source,xg_used
+            FROM forecasts WHERE forecast_key IN ({})"""
+
+        with self._connect() as conn:
+            conn.executemany(insert_sql, [item[1] for item in prepared])
+            rows_by_key = {}
+            # Stay below SQLite's parameter limit for large matchday scans.
+            for offset in range(0, len(prepared), 400):
+                keys = [item[0] for item in prepared[offset:offset + 400]]
+                placeholders = ",".join("?" for _ in keys)
+                rows = conn.execute(
+                    select_sql.format(placeholders), keys,
+                ).fetchall()
+                rows_by_key.update({str(row["forecast_key"]): row for row in rows})
+
+            ids = []
+            for forecast_key, _values, expected, stored_xg in prepared:
+                row = rows_by_key.get(forecast_key)
+                if row is None:
+                    raise RuntimeError("forecast insert was not visible in its transaction")
+                actual = (
+                    row["fixture_id"], row["forecast_at"], row["model_version"],
+                    row["home_team"], row["away_team"], row["league"],
+                    row["probabilities_json"], row["entry_odds_json"], row["odds_source"],
+                )
+                xg_conflict = (
+                    stored_xg is not None and row["xg_used"] is not None
+                    and int(row["xg_used"]) != stored_xg
+                )
+                if actual != expected or xg_conflict:
+                    raise ValueError(
+                        "forecast_key already exists with a different payload"
+                    )
+                ids.append(int(row["id"]))
+        return ids
+
+    def keys(self) -> set[str]:
+        """Return idempotency keys only, without decoding forecast JSON payloads."""
+        with self._connect() as conn:
+            return {
+                str(row[0])
+                for row in conn.execute("SELECT forecast_key FROM forecasts")
+            }
 
     def settle(
         self, forecast_key: str, result: str, *, home_score: int | None = None,
@@ -377,47 +438,125 @@ class MarketForecastLedger:
         kickoff_at: datetime | str | None = None, league: str | None = None,
         odds_source: str | None = None, unit_stake: float = 1.0,
     ) -> int:
-        required = (forecast_key, fixture_id, home_team, away_team, model_version, selection)
-        if any(not isinstance(v, str) or not v.strip() for v in required):
-            raise ValueError("forecast key, fixture, teams, model and selection are required")
-        market = str(market or "").upper().strip()
-        if market not in self.VALID_MARKETS:
-            raise ValueError("unsupported market: " + market)
-        probability, entry_odds, unit_stake = map(float, (probability, entry_odds, unit_stake))
-        if not math.isfinite(probability) or not 0 < probability < 1:
-            raise ValueError("probability must be in (0, 1)")
-        if not math.isfinite(entry_odds) or entry_odds <= 1:
-            raise ValueError("entry odds must be > 1")
-        if not math.isfinite(unit_stake) or unit_stake <= 0:
-            raise ValueError("unit stake must be positive")
-        stamp = _timestamp(forecast_at)
-        kickoff = _timestamp(kickoff_at) if kickoff_at is not None else None
-        values = (
-            str(forecast_key), str(fixture_id), kickoff, stamp, str(model_version),
-            str(home_team), str(away_team), league, market, str(selection),
-            probability, entry_odds, odds_source, unit_stake,
-        )
-        with self._connect() as conn:
-            conn.execute(
-                """INSERT OR IGNORE INTO market_forecasts
-                (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,home_team,
-                 away_team,league,market,selection,probability,entry_odds,odds_source,
-                 unit_stake,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (*values, _timestamp(None)),
+        """Insert one immutable best-market recommendation."""
+        return self.record_recommendations_batch([{
+            "forecast_key": forecast_key,
+            "fixture_id": fixture_id,
+            "home_team": home_team,
+            "away_team": away_team,
+            "model_version": model_version,
+            "market": market,
+            "selection": selection,
+            "probability": probability,
+            "entry_odds": entry_odds,
+            "forecast_at": forecast_at,
+            "kickoff_at": kickoff_at,
+            "league": league,
+            "odds_source": odds_source,
+            "unit_stake": unit_stake,
+        }])[0]
+
+    def record_recommendations_batch(
+        self, records: Iterable[Mapping[str, Any]],
+    ) -> list[int]:
+        """Write a scan's recommendations through one connection and transaction."""
+        prepared = []
+        for item in records:
+            if not isinstance(item, Mapping):
+                raise ValueError("each recommendation must be a mapping")
+            required = (
+                item.get("forecast_key"), item.get("fixture_id"),
+                item.get("home_team"), item.get("away_team"),
+                item.get("model_version"), item.get("selection"),
             )
-            row = conn.execute(
-                """SELECT id,fixture_id,kickoff_at,forecast_at,model_version,home_team,
-                away_team,league,market,selection,probability,entry_odds,odds_source,unit_stake
-                FROM market_forecasts WHERE forecast_key=?""", (forecast_key,)
-            ).fetchone()
-            actual = tuple(row[k] for k in (
-                "fixture_id","kickoff_at","forecast_at","model_version","home_team",
-                "away_team","league","market","selection","probability","entry_odds",
-                "odds_source","unit_stake"
-            ))
-            if actual != values[1:]:
-                raise ValueError("forecast_key already exists with a different payload")
-            return int(row["id"])
+            if any(
+                not isinstance(value, str) or not value.strip()
+                for value in required
+            ):
+                raise ValueError(
+                    "forecast key, fixture, teams, model and selection are required"
+                )
+            market = str(item.get("market") or "").upper().strip()
+            if market not in self.VALID_MARKETS:
+                raise ValueError("unsupported market: " + market)
+            try:
+                probability, entry_odds, unit_stake = map(float, (
+                    item.get("probability"), item.get("entry_odds"),
+                    item.get("unit_stake", 1.0),
+                ))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("probability, odds and stake must be numeric") from exc
+            if not math.isfinite(probability) or not 0 < probability < 1:
+                raise ValueError("probability must be in (0, 1)")
+            if not math.isfinite(entry_odds) or entry_odds <= 1:
+                raise ValueError("entry odds must be > 1")
+            if not math.isfinite(unit_stake) or unit_stake <= 0:
+                raise ValueError("unit stake must be positive")
+            stamp = _timestamp(item.get("forecast_at"))
+            kickoff_value = item.get("kickoff_at")
+            kickoff = _timestamp(kickoff_value) if kickoff_value is not None else None
+            values = (
+                str(required[0]), str(required[1]), kickoff, stamp,
+                str(required[4]), str(required[2]), str(required[3]),
+                item.get("league"), market, str(required[5]),
+                probability, entry_odds, item.get("odds_source"), unit_stake,
+                _timestamp(None),
+            )
+            expected = values[1:14]
+            prepared.append((str(required[0]), values, expected))
+
+        if not prepared:
+            return []
+
+        insert_sql = """INSERT OR IGNORE INTO market_forecasts
+            (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,home_team,
+             away_team,league,market,selection,probability,entry_odds,odds_source,
+             unit_stake,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+        select_sql = """SELECT forecast_key,id,fixture_id,kickoff_at,forecast_at,
+            model_version,home_team,away_team,league,market,selection,probability,
+            entry_odds,odds_source,unit_stake
+            FROM market_forecasts WHERE forecast_key IN ({})"""
+
+        with self._connect() as conn:
+            conn.executemany(insert_sql, [item[1] for item in prepared])
+            rows_by_key = {}
+            for offset in range(0, len(prepared), 400):
+                keys = [item[0] for item in prepared[offset:offset + 400]]
+                placeholders = ",".join("?" for _ in keys)
+                rows = conn.execute(
+                    select_sql.format(placeholders), keys,
+                ).fetchall()
+                rows_by_key.update({str(row["forecast_key"]): row for row in rows})
+
+            ids = []
+            fields = (
+                "fixture_id", "kickoff_at", "forecast_at", "model_version",
+                "home_team", "away_team", "league", "market", "selection",
+                "probability", "entry_odds", "odds_source", "unit_stake",
+            )
+            for forecast_key, _values, expected in prepared:
+                row = rows_by_key.get(forecast_key)
+                if row is None:
+                    raise RuntimeError(
+                        "market forecast insert was not visible in its transaction"
+                    )
+                actual = tuple(row[field] for field in fields)
+                if actual != expected:
+                    raise ValueError(
+                        "forecast_key already exists with a different payload"
+                    )
+                ids.append(int(row["id"]))
+        return ids
+
+    def keys(self) -> set[str]:
+        """Return idempotency keys only, without loading full recommendation rows."""
+        with self._connect() as conn:
+            return {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT forecast_key FROM market_forecasts"
+                )
+            }
 
     def settle(
         self, forecast_key: str, result_status: str, *, result_score: str | None = None,

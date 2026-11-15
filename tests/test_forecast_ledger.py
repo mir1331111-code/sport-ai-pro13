@@ -35,6 +35,34 @@ class ForecastLedgerTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["probabilities"]["H"], 0.6)
 
+    def test_batch_insert_is_idempotent_and_rolls_back_on_payload_conflict(self):
+        records = [
+            {
+                "forecast_key": f"batch-{index}",
+                "fixture_id": f"fixture-{index}",
+                "home_team": "Home",
+                "away_team": "Away",
+                "model_version": "test-v1",
+                "probabilities": {"H": 0.6, "D": 0.25, "A": 0.15},
+                "forecast_at": self.t0,
+                "kickoff_at": self.t0 + timedelta(hours=4),
+                "entry_odds": {"H": 2.0, "D": 3.5, "A": 4.5},
+                "odds_source": "test-book",
+                "xg_used": bool(index % 2),
+            }
+            for index in range(3)
+        ]
+        first_ids = self.ledger.record_predictions_batch(records)
+        self.assertEqual(len(first_ids), 3)
+        self.assertEqual(self.ledger.record_predictions_batch(records), first_ids)
+        self.assertEqual(self.ledger.keys(), {"batch-0", "batch-1", "batch-2"})
+
+        conflicting = dict(records[0], probabilities={"H": 0.2, "D": 0.3, "A": 0.5})
+        new_record = dict(records[0], forecast_key="must-rollback", fixture_id="new-fixture")
+        with self.assertRaises(ValueError):
+            self.ledger.record_predictions_batch([new_record, conflicting])
+        self.assertNotIn("must-rollback", self.ledger.keys())
+
     def test_settlement_and_metrics(self):
         self.record()
         self.ledger.settle(

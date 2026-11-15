@@ -30,18 +30,45 @@ def _mean(values: list[Any]) -> float | None:
     return sum(clean) / len(clean) if clean else None
 
 
-def _matching_team_state(teams: Any, team: str, division: str) -> dict[str, Any]:
-    """Resolve a team's stored state by normalized name, without crossing leagues."""
+def _matching_team_state(engine: Any, team: str, division: str) -> dict[str, Any]:
+    """Resolve normalized names through a per-engine, per-division lookup index.
+
+    The model state is stable after chronological training. Previously every
+    independent dossier scanned every team again for each fixture; building the
+    index once reduces repeated lookup work from O(fixtures × teams) to
+    O(teams + fixtures).
+    """
     from model.engine import _norm, _team_state_key
 
-    if not hasattr(teams, "get") or not hasattr(teams, "items"):
+    teams = getattr(engine, "st", {})
+    if not hasattr(teams, "items"):
         return {}
     wanted = _norm(team)
     if not wanted:
         return {}
+    direct_key = _team_state_key(division, team)
 
-    direct = teams.get(_team_state_key(division, team), {})
-    candidates = [direct] if isinstance(direct, dict) else []
+    signature = (
+        id(teams),
+        len(teams) if hasattr(teams, "__len__") else None,
+        int(getattr(engine, "trained_n", 0) or 0),
+    )
+    cached = getattr(engine, "_independent_team_state_index", None)
+    if not isinstance(cached, dict):
+        cached = {}
+        try:
+            setattr(engine, "_independent_team_state_index", cached)
+        except Exception:
+            cached = {}
+
+    entry = cached.get(division)
+    if isinstance(entry, tuple) and len(entry) == 2 and entry[0] == signature:
+        return entry[1].get(wanted, {})
+
+    index: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+    history_fields = (
+        "hs", "hc", "as", "ac", "hs_xg", "as_xg", "hs_pxg", "as_pxg",
+    )
     for key, state in teams.items():
         if not isinstance(state, dict):
             continue
@@ -51,20 +78,21 @@ def _matching_team_state(teams: Any, team: str, division: str) -> dict[str, Any]
             state_division, state_team = "G", key
         if str(state_division or "G").strip().upper() != division:
             continue
-        if _norm(state_team) == wanted and all(state is not item for item in candidates):
-            candidates.append(state)
+        normalized = _norm(state_team)
+        if not normalized:
+            continue
+        history_count = sum(len(state.get(field) or []) for field in history_fields)
+        # Preserve the old direct-key tie-break: if two spellings normalize to
+        # the same club and have equal history, prefer the requested exact key.
+        rank = (history_count, int(key == direct_key))
+        previous = index.get(normalized)
+        if previous is None or rank > previous[0]:
+            index[normalized] = (rank, state)
 
-    if not candidates:
-        return {}
-    # A defaultdict may have created an empty exact-name entry during prediction.
-    # Prefer the matching spelling that actually contains the most history.
-    return max(
-        candidates,
-        key=lambda state: sum(
-            len(state.get(field) or [])
-            for field in ("hs", "hc", "as", "ac", "hs_xg", "as_xg", "hs_pxg", "as_pxg")
-        ),
-    )
+    resolved = {name: value[1] for name, value in index.items()}
+    if cached is not None:
+        cached[division] = (signature, resolved)
+    return resolved.get(wanted, {})
 
 
 def _history_day(value: Any) -> date | None:
@@ -162,8 +190,8 @@ def historical_features(
     """
     teams = getattr(engine, "st", {})
     division = str(league or "G").strip().upper() or "G"
-    home_stats = _matching_team_state(teams, home, division)
-    away_stats = _matching_team_state(teams, away, division)
+    home_stats = _matching_team_state(engine, home, division)
+    away_stats = _matching_team_state(engine, away, division)
     half_life = float(getattr(engine, "half_life_days", 180.0) or 180.0)
 
     home_scored, home_n = _history_mean(
@@ -233,8 +261,8 @@ def historical_xg_features(
     """
     teams = getattr(engine, "st", {})
     division = str(league or "G").strip().upper() or "G"
-    home_state = _matching_team_state(teams, home, division)
-    away_state = _matching_team_state(teams, away, division)
+    home_state = _matching_team_state(engine, home, division)
+    away_state = _matching_team_state(engine, away, division)
     half_life = float(getattr(engine, "half_life_days", 180.0) or 180.0)
 
     result: dict[str, Any] = {}
@@ -405,8 +433,13 @@ def record_scan_forecasts(
              "skipped_no_time": 0, "skipped_started": 0, "invalid": 0}
     ledger = ForecastLedger(db_path)
     market_ledger = MarketForecastLedger(db_path)
-    existing = {str(row["forecast_key"]) for row in ledger.rows()}
-    existing_market = {str(row["forecast_key"]) for row in market_ledger.rows()}
+    # Read only idempotency keys. Decoding every historical JSON forecast row
+    # on every scan was unnecessary and increasingly expensive as the ledger grew.
+    existing = ledger.keys()
+    existing_market = market_ledger.keys()
+    pending_main: list[dict[str, Any]] = []
+    pending_ai: list[dict[str, Any]] = []
+    pending_market: list[dict[str, Any]] = []
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must be timezone-aware")
@@ -452,30 +485,26 @@ def record_scan_forecasts(
         if main_probs is not None:
             key = f"{fixture_id}|{main_version}"
             if key not in existing:
-                try:
-                    ledger.record_prediction(
-                        forecast_key=key, model_version=main_version,
-                        probabilities=main_probs,
-                        xg_used=bool(card.get("xg_used")), **common,
-                    )
-                    existing.add(key)
-                    stats["main_recorded"] += 1
-                except (ValueError, TypeError):
-                    stats["invalid"] += 1
+                pending_main.append({
+                    "forecast_key": key,
+                    "model_version": main_version,
+                    "probabilities": main_probs,
+                    "xg_used": bool(card.get("xg_used")),
+                    **common,
+                })
+                existing.add(key)
 
         ai_probs = parse_llm_probabilities(card.get("llm_opinion") or "")
         if ai_probs is not None:
             key = f"{fixture_id}|{ai_version}"
             if key not in existing:
-                try:
-                    ledger.record_prediction(
-                        forecast_key=key, model_version=ai_version,
-                        probabilities=ai_probs, **common,
-                    )
-                    existing.add(key)
-                    stats["ai_recorded"] += 1
-                except (ValueError, TypeError):
-                    stats["invalid"] += 1
+                pending_ai.append({
+                    "forecast_key": key,
+                    "model_version": ai_version,
+                    "probabilities": ai_probs,
+                    **common,
+                })
+                existing.add(key)
 
         # Keep one immutable audit row for every independently selected market,
         # not just the global best pick for the fixture.
@@ -499,19 +528,26 @@ def record_scan_forecasts(
                     )
                     keys_by_market[str(family)] = key
                     if key not in existing_market:
-                        market_ledger.record_recommendation(
-                            forecast_key=key, fixture_id=fixture_id, home_team=home,
-                            away_team=away, league=league, model_version=main_version,
-                            market=market, selection=selection, probability=probability,
-                            entry_odds=price, forecast_at=now, kickoff_at=kickoff,
-                            odds_source=str(
+                        pending_market.append({
+                            "forecast_key": key,
+                            "fixture_id": fixture_id,
+                            "home_team": home,
+                            "away_team": away,
+                            "league": league,
+                            "model_version": main_version,
+                            "market": market,
+                            "selection": selection,
+                            "probability": probability,
+                            "entry_odds": price,
+                            "forecast_at": now,
+                            "kickoff_at": kickoff,
+                            "odds_source": str(
                                 card.get("market_odds_source_by_pick", {}).get(selection)
                                 or card.get("best_odds_source") or card.get("odds_source") or ""
                             ) or None,
-                            unit_stake=1.0,
-                        )
+                            "unit_stake": 1.0,
+                        })
                         existing_market.add(key)
-                        stats["market_recorded"] += 1
                     # Preserve the legacy scalar key only for the global best pick.
                     global_best = card.get("best")
                     if (
@@ -532,19 +568,61 @@ def record_scan_forecasts(
                     key = f"{fixture_id}|{main_version}|market|legacy_best"
                     card["market_forecast_key"] = key
                     if key not in existing_market:
-                        market_ledger.record_recommendation(
-                            forecast_key=key, fixture_id=fixture_id, home_team=home,
-                            away_team=away, league=league, model_version=main_version,
-                            market=market, selection=selection, probability=probability,
-                            entry_odds=price, forecast_at=now, kickoff_at=kickoff,
-                            odds_source=str(card.get("best_odds_source") or card.get("odds_source") or "") or None,
-                            unit_stake=1.0,
-                        )
+                        pending_market.append({
+                            "forecast_key": key,
+                            "fixture_id": fixture_id,
+                            "home_team": home,
+                            "away_team": away,
+                            "league": league,
+                            "model_version": main_version,
+                            "market": market,
+                            "selection": selection,
+                            "probability": probability,
+                            "entry_odds": price,
+                            "forecast_at": now,
+                            "kickoff_at": kickoff,
+                            "odds_source": str(
+                                card.get("best_odds_source") or card.get("odds_source") or ""
+                            ) or None,
+                            "unit_stake": 1.0,
+                        })
                         existing_market.add(key)
-                        stats["market_recorded"] += 1
                 except (ValueError, TypeError, IndexError):
                     stats["invalid"] += 1
 
+    def _flush_batch(
+        pending: list[dict[str, Any]],
+        batch_writer,
+        single_writer,
+        counter: str,
+    ) -> None:
+        if not pending:
+            return
+        try:
+            inserted = batch_writer(pending)
+            stats[counter] += len(inserted)
+        except (ValueError, TypeError):
+            # Preserve per-record error accounting if one malformed legacy card
+            # prevents a whole batch from passing its immutable-payload checks.
+            for record in pending:
+                try:
+                    single_writer(**record)
+                    stats[counter] += 1
+                except (ValueError, TypeError):
+                    stats["invalid"] += 1
+
+    _flush_batch(
+        pending_main, ledger.record_predictions_batch,
+        ledger.record_prediction, "main_recorded",
+    )
+    _flush_batch(
+        pending_ai, ledger.record_predictions_batch,
+        ledger.record_prediction, "ai_recorded",
+    )
+    _flush_batch(
+        pending_market, market_ledger.record_recommendations_batch,
+        market_ledger.record_recommendation, "market_recorded",
+    )
     return stats
 
 

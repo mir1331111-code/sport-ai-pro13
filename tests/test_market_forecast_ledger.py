@@ -31,6 +31,29 @@ class MarketForecastLedgerTests(unittest.TestCase):
             self.ledger.record_recommendation(**dict(self.common, probability=.61))
         self.assertEqual(len(self.ledger.rows()), 1)
 
+    def test_batch_recommendations_are_idempotent_and_atomic(self):
+        stamp = datetime(2026, 10, 1, 10, tzinfo=timezone.utc)
+        records = [
+            dict(
+                self.common,
+                forecast_key=f"batch-{index}",
+                fixture_id=f"fixture-{index}",
+                selection=f"Total {index}",
+                forecast_at=stamp,
+            )
+            for index in range(3)
+        ]
+        first_ids = self.ledger.record_recommendations_batch(records)
+        self.assertEqual(len(first_ids), 3)
+        self.assertEqual(self.ledger.record_recommendations_batch(records), first_ids)
+        self.assertEqual(self.ledger.keys(), {"batch-0", "batch-1", "batch-2"})
+
+        conflicting = dict(records[0], probability=0.7)
+        new_record = dict(records[0], forecast_key="must-rollback", fixture_id="new-fixture")
+        with self.assertRaises(ValueError):
+            self.ledger.record_recommendations_batch([new_record, conflicting])
+        self.assertNotIn("must-rollback", self.ledger.keys())
+
     def test_unit_stake_roi_clv_and_calibration_metrics(self):
         self.ledger.record_recommendation(**self.common)
         self.ledger.settle(
