@@ -1,7 +1,10 @@
 import unittest
 
-from data.fixture_merge import (enforce_sstats_market_card, enforce_sstats_odds_only,
-                                fixture_key, is_sstats_market_source, merge_fixture_sources)
+from data.fixture_merge import (
+    enrich_fixture_visual_metadata, enforce_sstats_market_card,
+    enforce_sstats_odds_only, fixture_key, is_sstats_market_source,
+    merge_fixture_sources,
+)
 
 
 class FixtureMergeTests(unittest.TestCase):
@@ -20,6 +23,86 @@ class FixtureMergeTests(unittest.TestCase):
         self.assertEqual(rows[0]["fixture_id"], 123)
         self.assertEqual(rows[0]["odds"], {"П1": 2.1})
         self.assertEqual(rows[0]["home_badge"], "badge.png")
+
+    def test_sstats_primary_fixtures_receive_visual_metadata_without_replacing_odds(self):
+        sstats_rows = [{
+            "Date": "2026-11-16 19:00:00",
+            "HomeTeam": "Arsenal FC",
+            "AwayTeam": "Chelsea",
+            "Div": "E0",
+            "League": "Premier League",
+            "fixture_id": "sstats:12345",
+            "sstats_game_id": 12345,
+            "source": "sstats",
+            "odds_source": "sstats",
+            "market_odds": {"П1": 1.90, "X": 3.50, "П2": 4.20},
+        }]
+        tsdb_rows = [
+            {
+                "Date": "2026-11-16",
+                "HomeTeam": "Arsenal",
+                "AwayTeam": "Chelsea FC",
+                "fixture_id": "tsdb:visual-only",
+                "home_badge": "https://assets.test/arsenal.png",
+                "away_badge": "https://assets.test/chelsea.png",
+                "league_badge": "https://assets.test/epl.png",
+                "stadium_image": "https://assets.test/emirates.jpg",
+                "venue": "Emirates Stadium",
+                # Metadata-only enrichment must ignore any secondary quote fields.
+                "market_odds": {"П1": 9.99},
+            },
+            {
+                "Date": "2026-11-16",
+                "HomeTeam": "Unrelated FC",
+                "AwayTeam": "Another FC",
+                "fixture_id": "tsdb:unrelated",
+                "home_badge": "https://assets.test/unrelated.png",
+            },
+        ]
+
+        rows, report = enrich_fixture_visual_metadata(sstats_rows, tsdb_rows)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["fixture_id"], "sstats:12345")
+        self.assertEqual(rows[0]["sstats_game_id"], 12345)
+        self.assertEqual(rows[0]["source"], "sstats")
+        self.assertEqual(rows[0]["odds_source"], "sstats")
+        self.assertEqual(
+            rows[0]["market_odds"],
+            {"П1": 1.90, "X": 3.50, "П2": 4.20},
+        )
+        self.assertEqual(rows[0]["home_badge"], "https://assets.test/arsenal.png")
+        self.assertEqual(rows[0]["away_badge"], "https://assets.test/chelsea.png")
+        self.assertEqual(rows[0]["league_badge"], "https://assets.test/epl.png")
+        self.assertEqual(rows[0]["stadium_image"], "https://assets.test/emirates.jpg")
+        self.assertEqual(rows[0]["venue"], "Emirates Stadium")
+        self.assertEqual(report["fixtures_matched"], 1)
+        self.assertEqual(report["assets_added"], 5)
+        self.assertEqual(report["fixtures_with_assets"], 1)
+
+    def test_visual_metadata_does_not_overwrite_existing_primary_assets(self):
+        primary = [{
+            "Date": "2026-11-16",
+            "HomeTeam": "Home FC",
+            "AwayTeam": "Away FC",
+            "home_badge": "primary-home.png",
+            "stadium_image": "primary-stadium.jpg",
+        }]
+        secondary = [{
+            "Date": "2026-11-16",
+            "HomeTeam": "Home",
+            "AwayTeam": "Away",
+            "home_badge": "secondary-home.png",
+            "away_badge": "secondary-away.png",
+            "stadium_image": "secondary-stadium.jpg",
+        }]
+
+        rows, report = enrich_fixture_visual_metadata(primary, secondary)
+
+        self.assertEqual(rows[0]["home_badge"], "primary-home.png")
+        self.assertEqual(rows[0]["stadium_image"], "primary-stadium.jpg")
+        self.assertEqual(rows[0]["away_badge"], "secondary-away.png")
+        self.assertEqual(report["assets_added"], 1)
 
     def test_specific_league_metadata_replaces_generic_soccer_placeholder(self):
         generic = [{
