@@ -1238,7 +1238,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         help="Ищет матчи на ближайшие 7 дней по умолчанию; можно расширить до 14."
     )
     scan = c2.button("⚡ Запустить сканирование", type="primary",
-                     use_container_width=True,
+                     width="stretch",
                      disabled=st.session_state.get("_scan_in_progress", False))
 
     with st.expander("📚 Данные контекста и исторические архивы", expanded=False):
@@ -2467,7 +2467,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "Сильный прогноз": item["strong_matches"],
             } for item in coverage]
             st.markdown("**Покрытие рынков в текущем скане**")
-            st.dataframe(coverage_table, use_container_width=True, hide_index=True)
+            st.dataframe(coverage_table, width="stretch", hide_index=True)
 
             events = build_best_market_events(market_pool, limit=50)
             if not events:
@@ -2539,7 +2539,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if event_table:
                     st.dataframe(
                         event_table,
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                         height=min(620, 42 + 36 * len(event_table)),
                     )

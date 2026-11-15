@@ -92,7 +92,7 @@ def render_learning_center():
                             "Факт": actual, "P факта": f"{probs.get(actual, 0):.1%}" if actual in probs else "—",
                             "Ошибка Brier": round(sum((probs.get(k,0)-float(k==actual))**2 for k in ("H","D","A")),4) if actual else None,
                             "Версия": row.get("model_version") or "—"})
-        st.dataframe(display, use_container_width=True, hide_index=True)
+        st.dataframe(display, width="stretch", hide_index=True)
     else:
         st.info("Пока нет подтверждённых завершённых прогнозов в ledger. Данные не подменяются статистикой портфеля.")
     st.subheader("Результаты по рынкам")
@@ -101,7 +101,7 @@ def render_learning_center():
         st.dataframe([{"Рынок": x.get("market"), "Прогнозов": x.get("n"),
                        "Brier": x.get("brier"), "Log loss": x.get("log_loss"),
                        "ROI": x.get("roi")} for x in market_rows],
-                     use_container_width=True, hide_index=True)
+                     width="stretch", hide_index=True)
     else:
         st.info("Рыночный ledger пока не содержит закрытых прогнозов.")
     st.info("Рекомендация системы: сначала накопить репрезентативную выборку и проверить улучшение walk-forward. Автоматическое переобучение и изменение коэффициентов отключено.")
@@ -136,7 +136,7 @@ def render_model_lab():
                        "N": x["n"], "Средняя P": round(x["mean_probability"],3),
                        "Факт": round(x["observed_frequency"],3),
                        "Разница": round(x["observed_minus_predicted"],3)}
-                      for x in reliability["rows"]], use_container_width=True, hide_index=True)
+                      for x in reliability["rows"]], width="stretch", hide_index=True)
     else:
         st.info("Недостаточно закрытых прогнозов для оценки калибровки.")
     st.subheader("Независимая проверка рынков")
@@ -164,7 +164,7 @@ def render_model_lab():
             "Закрыто": item.get("settled"), "Ожидает": item.get("pending"),
             "Brier": item.get("brier"), "Log loss": item.get("log_loss"),
             "ROI": item.get("roi"),
-        } for item in market_rows], use_container_width=True, hide_index=True)
+        } for item in market_rows], width="stretch", hide_index=True)
     else:
         st.info("В рыночном ledger пока нет записанных рекомендаций. Это не отменяет отдельный основной gate 1X2.")
 
@@ -181,13 +181,13 @@ def render_portfolio_risk():
         st.error("Экспозиция достигла 20% банка. Рассмотри сокращение новых позиций.")
     st.subheader("Концентрация на одном матче")
     st.dataframe([{"Матч / ID": k, "Открытый риск": round(v,2)} for k,v in report["fixture_top"]],
-                 use_container_width=True, hide_index=True) if report["fixture_top"] else st.info("Открытых позиций пока нет.")
+                 width="stretch", hide_index=True) if report["fixture_top"] else st.info("Открытых позиций пока нет.")
     st.subheader("Риск по лигам")
     st.dataframe([{"Лига": k, "Открытый риск": round(v,2)} for k,v in report["league_top"]],
-                 use_container_width=True, hide_index=True) if report["league_top"] else st.info("Нет открытых позиций.")
+                 width="stretch", hide_index=True) if report["league_top"] else st.info("Нет открытых позиций.")
     st.subheader("Риск по дням")
     st.dataframe([{"Дата": k, "Открытый риск": round(v,2)} for k,v in report["day_top"]],
-                 use_container_width=True, hide_index=True) if report["day_top"] else st.info("Нет открытых позиций.")
+                 width="stretch", hide_index=True) if report["day_top"] else st.info("Нет открытых позиций.")
     st.caption("Корреляция исходов одного матча пока не оценивается численно: без исторической совместной матрицы она не должна изображаться точной.")
 
 def render_api_center():
@@ -223,7 +223,7 @@ def render_api_center():
             {"Сервис": "football-data.org", "Остаток": usage.fdorg_remaining(), "Лимит": FOOTBALL_DATA_ORG_DAILY_LIMIT},
             {"Сервис": "Автопроверка результатов", "Остаток": usage.settle_remaining(), "Лимит": 999},
         ]
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+        st.dataframe(rows, width="stretch", hide_index=True)
     except Exception as exc:
         st.warning(f"Счётчики локального хранилища недоступны: {type(exc).__name__}")
     budget_path = Path(DISK_CACHE_DIR) / "api_football" / "daily_budget.json"

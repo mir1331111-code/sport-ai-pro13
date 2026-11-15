@@ -553,7 +553,7 @@ def render():
             else:
                 label = str(day_num)
             if col.button(label, key=f"pf_cal_day_{year}_{month}_{day_num}",
-                           use_container_width=True,
+                           width="stretch",
                            type="primary" if st.session_state.get("pf_selected_day") == day.isoformat() else "secondary"):
                 st.session_state.pf_selected_day = day.isoformat()
                 st.rerun()

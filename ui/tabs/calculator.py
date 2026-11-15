@@ -77,4 +77,4 @@ def render(matrix_n):
                          "EV": f"{ev*100:+.1f}%",
                          "Kelly": f"{k*100:.1f}%",
                          "Ставка": f"{stake:.2f}"})
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+        st.dataframe(rows, width="stretch", hide_index=True)

@@ -663,7 +663,7 @@ def render(matrix_n):
 
     st.dataframe(
         log[-50:],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
