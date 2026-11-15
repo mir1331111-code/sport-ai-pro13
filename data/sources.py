@@ -886,10 +886,11 @@ def espn_matches(days: int, logs=None) -> list:
     return out
 
 def tsdb_match_result(match_id, logs=None) -> Optional[dict]:
-    """Финальный счёт TSDB event."""
+    """Return a score only when TSDB explicitly labels ordinary full time."""
     if not match_id:
         return None
-    ck = f"tsdb_result_v2_{match_id}"
+    # v3 invalidates v2 entries that incorrectly cached extra-time scores as FT.
+    ck = f"tsdb_result_v3_{match_id}"
     cached = cache_get(ck, 86400)
     if cached is not None:
         return cached or None
@@ -903,17 +904,21 @@ def tsdb_match_result(match_id, logs=None) -> Optional[dict]:
         event = ((r.json() or {}).get("events") or [None])[0]
         if not event:
             return None
-        status = str(event.get("strStatus") or "").lower()
+        status = str(event.get("strStatus") or "").strip().casefold()
+        if status in {"after extra time", "after penalties"}:
+            result_status = "AET"
+        elif status in {"match finished", "finished", "ft"}:
+            result_status = "FT"
+        else:
+            # Missing/unknown status is not proof that a match is complete.
+            return None
         hg, ag = event.get("intHomeScore"), event.get("intAwayScore")
         if hg is None or ag is None:
             return None
-        if status not in ("match finished", "finished", "ft", "after extra time", "after penalties"):
-            # TSDB sometimes leaves status empty but has final scores.
-            if not event.get("strStatus") and event.get("strResult"):
-                pass
-            elif status and "finish" not in status and status not in ("ft",):
-                return None
-        res = {"home": int(hg), "away": int(ag), "status": "FT"}
+        home_score, away_score = int(hg), int(ag)
+        if home_score < 0 or away_score < 0:
+            return None
+        res = {"home": home_score, "away": away_score, "status": result_status}
         cache_put(ck, res)
         return res
     except Exception as e:
@@ -922,14 +927,36 @@ def tsdb_match_result(match_id, logs=None) -> Optional[dict]:
         return None
 
 
+def _source_espn_non_regulation_status(status_type: dict) -> bool:
+    """Recognize ESPN extra-time and shootout states in event-ID lookups."""
+    if not isinstance(status_type, dict):
+        return False
+    try:
+        status_id = int(str(status_type.get("id") or "").strip())
+    except (TypeError, ValueError, OverflowError):
+        status_id = None
+    if status_id in {44, 45, 46, 47, 48, 49}:
+        return True
+    details = " ".join(
+        str(status_type.get(field) or "")
+        for field in ("name", "description", "detail", "shortDetail", "abbreviation", "text")
+    ).casefold()
+    return any(token in details for token in (
+        "aet", "after extra", "extra time", "after golden",
+        "after penalty", "after penalties", "penalty shootout",
+        "penalties", "shootout", "ft-pens", "ft pens",
+    ))
+
+
 def espn_match_result(fixture_id, date_iso="", logs=None) -> Optional[dict]:
-    """Ищет финальный счёт ESPN по event id."""
+    """Find an ESPN score by event ID without confusing ET/shootouts with 90-min FT."""
     event_id = str(fixture_id or "")
     if event_id.startswith("espn:"):
         event_id = event_id.split(":", 1)[1]
     if not event_id:
         return None
-    ck = f"espn_result_v2_{event_id}"
+    # v3 invalidates v2 entries that labeled every completed event as FT.
+    ck = f"espn_result_v3_{event_id}"
     cached = cache_get(ck, 86400)
     if cached is not None:
         return cached or None
@@ -965,7 +992,13 @@ def espn_match_result(fixture_id, date_iso="", logs=None) -> Optional[dict]:
                 hs, aws = home.get("score"), away.get("score")
                 if hs is None or aws is None:
                     return None
-                res = {"home": int(float(hs)), "away": int(float(aws)), "status": "FT"}
+                result_status = (
+                    "AET" if _source_espn_non_regulation_status(status) else "FT"
+                )
+                res = {
+                    "home": int(float(hs)), "away": int(float(aws)),
+                    "status": result_status,
+                }
                 cache_put(ck, res)
                 return res
     except Exception as e:
