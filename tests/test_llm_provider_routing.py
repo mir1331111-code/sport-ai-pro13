@@ -1,6 +1,6 @@
 import unittest
 
-from config import LLM_PROVIDERS
+from config import LLM_PROVIDERS, normalize_llm_provider
 
 
 class LLMProviderRoutingTests(unittest.TestCase):
@@ -10,6 +10,19 @@ class LLMProviderRoutingTests(unittest.TestCase):
             provider["base"], "https://api.groq.com/openai/v1"
         )
         self.assertEqual(provider["model"], "openai/gpt-oss-20b")
+
+    def test_retired_groq_70b_selection_migrates_to_supported_gpt_oss_120b(self):
+        provider_name = normalize_llm_provider("Groq 70B (бесплатно, мощнее)")
+        self.assertEqual(
+            provider_name, "Groq GPT-OSS 120B (бесплатно, мощнее)"
+        )
+        self.assertEqual(
+            LLM_PROVIDERS[provider_name]["model"], "openai/gpt-oss-120b"
+        )
+        self.assertNotIn(
+            "llama-3.3-70b-versatile",
+            {provider["model"] for provider in LLM_PROVIDERS.values()},
+        )
 
     def test_grok_uses_current_xai_model_and_dedicated_credential(self):
         from config import llm_provider_key_config
