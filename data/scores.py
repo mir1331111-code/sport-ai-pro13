@@ -227,31 +227,109 @@ def _espn_day(date_iso: str) -> list:
     return out
 
 
-def _find_espn(home: str, away: str, date_iso: str) -> Optional[dict]:
-    """ESPN. Near-miss логирование для диагностики NOT FOUND."""
-    for d_str in _day_offsets(date_iso):
-        events = _espn_day(d_str)
-        for e in events:
-            if _same_team(home, e["home"]) and _same_team(away, e["away"]):
-                return {"home": e["hs"], "away": e["as"],
-                        "status": e["status"], "source": "espn"}
-        # Диагностика — только когда дата = сегодня (не спамим на -1/+1)
-        if d_str != date_iso:
+def _unique_exact_day_fixture(
+    candidates: list[dict], home: str, away: str, date_iso: str,
+) -> Optional[dict]:
+    """Return one unambiguous, ordered-team fixture on the exact local day.
+
+    Adjacent provider-day requests are used to account for UTC/local midnight,
+    but a row is eligible only when its normalized event date equals the
+    requested fixture date. Multiple distinct fixture IDs are treated as
+    ambiguous rather than selecting the first score from a different match.
+    """
+    matches = []
+    for event in candidates or []:
+        if not isinstance(event, dict):
             continue
-        try:
-            ht, _ = _tokens(home)
-            at, _ = _tokens(away)
-            near = []
-            for e in events:
-                eh_t, _ = _tokens(e["home"])
-                ea_t, _ = _tokens(e["away"])
-                if (ht & eh_t) or (at & ea_t):
-                    near.append(f"{e['home']} vs {e['away']}")
-            if near:
-                log.info("NEAR MISS: want '%s vs %s' | ESPN has: %s",
-                         home, away, "; ".join(near[:5]))
-        except Exception:
-            pass
+        event_day = _source_local_day(event.get("date"))
+        if event_day != date_iso:
+            continue
+        if not _same_team(home, str(event.get("home") or "")):
+            continue
+        if not _same_team(away, str(event.get("away") or "")):
+            continue
+        matches.append(event)
+
+    by_identity = {}
+    for event in matches:
+        fixture_id = str(event.get("fixture_id") or "").strip()
+        if fixture_id:
+            identity = ("id", fixture_id)
+        else:
+            # Old cached rows may lack provider IDs. Deduplicate only exact
+            # copies; differing scores/leagues remain ambiguous and fail closed.
+            identity = (
+                "row",
+                str(event.get("league") or "").casefold(),
+                str(event.get("home") or "").casefold(),
+                str(event.get("away") or "").casefold(),
+                event.get("hs", event.get("home")),
+                event.get("as", event.get("away")),
+            )
+        existing = by_identity.get(identity)
+        if existing is not None:
+            old_score = (
+                existing.get("hs", existing.get("home")),
+                existing.get("as", existing.get("away")),
+                str(existing.get("status") or "").upper(),
+            )
+            new_score = (
+                event.get("hs", event.get("home")),
+                event.get("as", event.get("away")),
+                str(event.get("status") or "").upper(),
+            )
+            if old_score != new_score:
+                return None
+        else:
+            by_identity[identity] = event
+
+    if len(by_identity) != 1:
+        return None
+    return next(iter(by_identity.values()))
+
+
+def _find_espn(home: str, away: str, date_iso: str) -> Optional[dict]:
+    """Find one exact-local-date ESPN fixture; reject adjacent-day/ambiguous matches."""
+    candidates = []
+    target_day_events = []
+    for d_str in _day_offsets(date_iso):
+        events = _espn_day(d_str) or []
+        candidates.extend(events)
+        if d_str == date_iso:
+            target_day_events = events
+
+    match = _unique_exact_day_fixture(candidates, home, away, date_iso)
+    if match is not None:
+        return {
+            "home": match["hs"],
+            "away": match["as"],
+            "status": match["status"],
+            "source": "espn",
+            "fixture_id": str(match.get("fixture_id") or ""),
+            "date": date_iso,
+        }
+
+    # Diagnostics inspect only the requested day and never influence matching.
+    try:
+        ht, _ = _tokens(home)
+        at, _ = _tokens(away)
+        near = []
+        for event in target_day_events:
+            if not isinstance(event, dict):
+                continue
+            eh_t, _ = _tokens(str(event.get("home") or ""))
+            ea_t, _ = _tokens(str(event.get("away") or ""))
+            if (ht & eh_t) or (at & ea_t):
+                near.append(
+                    f"{event.get('home', '')} vs {event.get('away', '')}"
+                )
+        if near:
+            log.info(
+                "NEAR MISS: want '%s vs %s' | ESPN has: %s",
+                home, away, "; ".join(near[:5]),
+            )
+    except Exception:
+        pass
     return None
 
 
@@ -348,24 +426,12 @@ def _fdorg_range(date_iso: str, token: str | None = None) -> list:
     return out
 
 
-def _closest(cands: list, date_iso: str) -> Optional[dict]:
-    d = _parse_day(date_iso)
-    best, best_gap = None, None
-    for e in cands:
-        ed = _parse_day(e.get("date", ""))
-        gap = abs((ed - d).days) if (ed and d) else 99
-        if gap <= 1 and (best_gap is None or gap < best_gap):
-            best, best_gap = e, gap
-    return best
-
-
 def _find_fdorg(
     home: str, away: str, date_iso: str, token: str | None = None,
 ) -> Optional[dict]:
     """Match a date-scoped football-data.org result with the caller's token."""
-    cands = [e for e in _fdorg_range(date_iso, token=token)
-             if _same_team(home, e["home"]) and _same_team(away, e["away"])]
-    e = _closest(cands, date_iso)
+    cands = _fdorg_range(date_iso, token=token)
+    e = _unique_exact_day_fixture(cands, home, away, date_iso)
     if not e:
         return None
     return {
@@ -456,14 +522,20 @@ def _find_olb(home: str, away: str, date_iso: str) -> Optional[dict]:
     season = _olb_season(date_iso)
     if season is None:
         return None
+    candidates = []
     for league in ("bl1", "bl2", "bl3"):
-        cands = [e for e in _olb_league(league, season)
-                 if _same_team(home, e["home"]) and _same_team(away, e["away"])]
-        e = _closest(cands, date_iso)
-        if e:
-            return {"home": e["hs"], "away": e["as"],
-                    "status": e["status"], "source": "openligadb"}
-    return None
+        candidates.extend(_olb_league(league, season) or [])
+    event = _unique_exact_day_fixture(candidates, home, away, date_iso)
+    if event is None:
+        return None
+    return {
+        "home": event["hs"],
+        "away": event["as"],
+        "status": event["status"],
+        "source": "openligadb",
+        "fixture_id": str(event.get("fixture_id") or ""),
+        "date": date_iso,
+    }
 
 
 # ============ ПУБЛИЧНАЯ ФУНКЦИЯ ============
