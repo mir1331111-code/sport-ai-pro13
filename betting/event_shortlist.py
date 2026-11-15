@@ -105,8 +105,6 @@ def _source(card: dict, family: str) -> str:
     }.get(family)
     value = str(card.get(field) or "") if field else ""
     # SStats is the only live provider whose quotes enter the automatic scanner.
-    if not value and _market_quote(card, family, "Ф1 0.5") is not None:
-        return "SStats"
     if not value and family == "handicap" and card.get("asian_handicap_market_odds"):
         return "SStats"
     return value
