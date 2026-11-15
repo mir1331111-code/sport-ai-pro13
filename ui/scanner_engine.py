@@ -213,8 +213,11 @@ def _train_engine(
     # 15 main leagues × latest 500 complete fixtures retains >500 observations
     # across competitions for each supported market while limiting CPU time.
     validation_divs = _validation_divisions(train_divs)
+    # Keep a broad multi-league validation set, but avoid replaying 7k+
+    # fixtures through eight chronological model arms on the first cold start.
+    # The global >=500 paired-observation promotion gates remain unchanged.
     validation_rows = select_validation_rows(
-        history, validation_divs, max_rows_per_league=500,
+        history, validation_divs, max_rows_per_league=250,
     )
     from security import cache_get, cache_put
     from model.walk_forward import walk_forward_compare, totals_market_is_validated
@@ -235,17 +238,37 @@ def _train_engine(
             f"Историческая проверка рынков: подготовлено {len(validation_rows)} матчей",
             0.52, logs,
         )
+
+        def _walk_forward_progress(processed, total):
+            ratio = processed / max(1, total)
+            update_loader(
+                f"Проверка 1X2 / тоталов / xG: {processed}/{total} матчей",
+                0.52 + 0.10 * ratio,
+                logs,
+            )
+
+        def _stat_market_progress(processed, total):
+            ratio = processed / max(1, total)
+            update_loader(
+                f"Проверка угловых / карточек: {processed}/{total} матчей",
+                0.63 + 0.10 * ratio,
+                logs,
+            )
+
         try:
             totals_backtest = walk_forward_compare(
                 validation_rows, matrix_n=matrix_n, bootstrap_samples=0,
                 totals_bootstrap_samples=1000, market_bootstrap_samples=1000,
+                progress_callback=_walk_forward_progress,
             )
             update_loader(
-                "Проверка угловых и карточек (хронологический тест)",
-                0.68, logs,
+                "Хронологическая проверка угловых и карточек",
+                0.63, logs,
             )
             stat_report = walk_forward_market_validation(
-                validation_rows, min_history=30, min_n=500, bootstrap_samples=1000,
+                validation_rows, min_history=30, min_n=500,
+                bootstrap_samples=1000,
+                progress_callback=_stat_market_progress,
             )
             cache_put(validation_key, {
                 "totals_backtest": totals_backtest,
