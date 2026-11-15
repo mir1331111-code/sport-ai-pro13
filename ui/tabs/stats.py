@@ -56,6 +56,8 @@ def _scan_summary(cards: object) -> dict[str, int]:
         # Count every independently approved market, not only the one
         # global pick retained in card["best"]. A fixture can have multiple
         # separately validated market-family recommendations.
+        approved_picks = set()
+        card_value_count = 0
         for family in ("winner", "goals", "btts", "corners", "cards"):
             recommendation = (card.get("best_by_market") or {}).get(family)
             if not isinstance(recommendation, dict):
@@ -66,7 +68,32 @@ def _scan_summary(cards: object) -> dict[str, int]:
                 isinstance(best, (tuple, list)) and len(best) >= 6
                 and bool(verdict.get("value_passed"))
             ):
-                value_signals += 1
+                approved_picks.add(str(best[1]))
+                card_value_count += 1
+
+        # Backward compatibility for older saved cards that predate per-family
+        # recommendations. A global pick is added only when it is not already
+        # represented by a validated family candidate.
+        if not card_value_count:
+            verdict = card.get("verdict") or {}
+            best = card.get("best")
+            if (
+                isinstance(best, (tuple, list)) and len(best) >= 6
+                and verdict.get("real_odds") and verdict.get("value_passed")
+            ):
+                approved_picks.add(str(best[1]))
+                card_value_count += 1
+        else:
+            verdict = card.get("verdict") or {}
+            best = card.get("best")
+            if (
+                isinstance(best, (tuple, list)) and len(best) >= 6
+                and verdict.get("real_odds") and verdict.get("value_passed")
+                and str(best[1]) not in approved_picks
+            ):
+                card_value_count += 1
+
+        value_signals += card_value_count
         opinion = str(card.get("llm_opinion") or "").strip()
         if opinion:
             ai_opinions += 1
