@@ -781,7 +781,8 @@ def settle_due_forecasts(
         from data.scores import find_match_score
 
         def _score_for_fixture(fixture_id: str, sample: dict, date_iso: str):
-            nonlocal looked_up, errors
+            nonlocal looked_up, errors, retry_deferred_fixtures
+            nonlocal not_found_fixtures, non_ft_fixtures, limit_deferred_fixtures
             if fixture_id in score_cache:
                 return score_cache[fixture_id]
             retry_value = lookup_state.get(fixture_id)
