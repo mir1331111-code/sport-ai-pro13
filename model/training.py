@@ -15,7 +15,10 @@ TRAINING_STATE_SCHEMA = "neuro-engine-training-state-v1"
 _TRAINING_DIGEST_FIELDS = (
     "Date", "date", "Div", "HomeTeam", "home_team", "AwayTeam", "away_team",
     "FTHG", "home_goals", "FTAG", "away_goals",
-    "HxG", "AxG", "xg_source", "xg_kind", "xg_model_version",
+    "HxG", "AxG", "home_xg", "away_xg", "homeXG", "awayXG",
+    "xG_home", "xG_away", "xg_home", "xg_away", "HomeXG", "AwayXG",
+    "home_expected_goals", "away_expected_goals", "xG", "xGA", "xg", "xga",
+    "xg_source", "xg_kind", "xg_model_version",
     "xg_training_sides", "HS", "HST", "AS", "AST",
     "HC", "AC", "HY", "AY", "HR", "AR",
     "HTHG", "HTAG", "HTHC", "HTAC",
