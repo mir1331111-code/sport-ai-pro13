@@ -19,6 +19,73 @@ def fixture_key(row: dict) -> tuple:
     )
 
 
+_FIXTURE_VISUAL_FIELDS = (
+    "home_badge",
+    "away_badge",
+    "league_badge",
+    "stadium_image",
+    "venue_image",
+    "venue",
+    "stadium",
+)
+
+
+def enrich_fixture_visual_metadata(
+    primary_rows, metadata_rows,
+) -> tuple[list[dict], dict[str, int]]:
+    """Overlay only visual fixture metadata without adding/replacing fixtures.
+
+    The primary feed remains authoritative for fixture identity, kickoff,
+    competition and bookmaker odds. Secondary feeds can fill only known image
+    and venue fields on an exact normalized date/team match.
+    """
+    metadata_by_fixture: dict[tuple, list[dict]] = {}
+    for row in metadata_rows or []:
+        if not isinstance(row, dict):
+            continue
+        key = fixture_key(row)
+        if all(key):
+            metadata_by_fixture.setdefault(key, []).append(row)
+
+    result = []
+    fixtures_matched = 0
+    assets_added = 0
+    fixtures_with_assets = 0
+    for row in primary_rows or []:
+        if not isinstance(row, dict):
+            continue
+        clean = dict(row)
+        key = fixture_key(row)
+        candidates = metadata_by_fixture.get(key, []) if all(key) else []
+        if candidates:
+            fixtures_matched += 1
+            # Prefer the matching provider event with the broadest visual
+            # coverage when a feed contains duplicate rows for the same game.
+            source = max(
+                candidates,
+                key=lambda candidate: sum(
+                    bool(candidate.get(field)) for field in _FIXTURE_VISUAL_FIELDS
+                ),
+            )
+            for field in _FIXTURE_VISUAL_FIELDS:
+                if clean.get(field) in (None, "", {}, []) and source.get(field) not in (
+                    None, "", {}, [],
+                ):
+                    clean[field] = source[field]
+                    assets_added += 1
+        if any(clean.get(field) not in (None, "", {}, []) for field in _FIXTURE_VISUAL_FIELDS):
+            fixtures_with_assets += 1
+        result.append(clean)
+
+    return result, {
+        "primary_fixtures": len(result),
+        "metadata_fixtures": len(metadata_by_fixture),
+        "fixtures_matched": fixtures_matched,
+        "assets_added": assets_added,
+        "fixtures_with_assets": fixtures_with_assets,
+    }
+
+
 def _generic_div(value) -> bool:
     return str(value or "").strip().casefold() in {"", "g", "general", "unknown", "other"}
 
