@@ -300,6 +300,11 @@ def evaluate_fixed_holdout(
         "proxy": {"rows_available": 0, "forecasts_using_xg": 0},
         "unlabelled_legacy": {"rows_available": 0, "forecasts_using_xg": 0},
     }
+    # Track provenance in the historical state already ingested by each
+    # competition. The current fixture's xG is never used in its own forecast.
+    xg_history_origins = defaultdict(lambda: {
+        "provider": 0, "proxy": 0, "unlabelled_legacy": 0,
+    })
     timestamp_audit = {
         "configured": bool(odds_timestamp_field and kickoff_timestamp_field),
         "verified": 0,
@@ -354,10 +359,19 @@ def evaluate_fixed_holdout(
 
                 full_prediction = predictions["full"]
                 if full_prediction.get("xg_used"):
-                    used_origin = (
-                        "proxy" if full_prediction.get("xg_modelled_used")
-                        else origin or "unlabelled_legacy"
-                    )
+                    if full_prediction.get("xg_modelled_used"):
+                        used_origin = "proxy"
+                    else:
+                        prior_origins = xg_history_origins[league]
+                        # Engine's legacy provider bucket also contains xG rows
+                        # without provenance. Do not overstate those as provider
+                        # xG if any ambiguous legacy values could have contributed.
+                        if prior_origins["unlabelled_legacy"]:
+                            used_origin = "unlabelled_legacy"
+                        elif prior_origins["provider"]:
+                            used_origin = "provider"
+                        else:
+                            used_origin = "unlabelled_legacy"
                     xg_usage[used_origin]["forecasts_using_xg"] += 1
 
                 market_probabilities = _strict_market_probs(row, market_source)
@@ -400,10 +414,10 @@ def evaluate_fixed_holdout(
                             "A": predictions[arm]["p2"],
                         }, outcome)
 
-            pending.append((league, home, away, hg, ag, row, no_xg_row, match_date, predictions, outcome))
+            pending.append((league, home, away, hg, ag, row, no_xg_row, match_date, predictions, outcome, origin))
         
         # Ingest today's outcomes after all predictions for this date are fixed.
-        for league, home, away, hg, ag, row, no_xg_row, match_date, predictions, outcome in pending:
+        for league, home, away, hg, ag, row, no_xg_row, match_date, predictions, outcome, origin in pending:
             training_rows = {
                 "full": row,
                 "without_h2h": row,
@@ -416,6 +430,8 @@ def evaluate_fixed_holdout(
                     home, away, hg, ag, training_rows[arm],
                     match_num=index, total=len(prepared), match_date=match_date.isoformat(),
                 )
+            if origin:
+                xg_history_origins[league][origin] += 1
             index += 1
 
     bootstrap_strata = min(bootstrap_samples, 250)
