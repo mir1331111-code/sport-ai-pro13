@@ -919,7 +919,9 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
             404: f"Модель '{model}' или API endpoint не найден.",
             429: "Превышен лимит запросов или недостаточно квоты/баланса у провайдера.",
         }
-        message = explanations.get(status_code, f"Провайдер вернул HTTP {status_code}.")
+        message = f"HTTP {status_code}: " + explanations.get(
+            status_code, "Провайдер не принял тестовый запрос."
+        )
         return {
             "ok": False, "provider": str(provider), "model": model,
             "http_status": status_code,
