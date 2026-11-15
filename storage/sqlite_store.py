@@ -191,14 +191,24 @@ def insert_decision_snapshots(snapshots: Iterable) -> int:
     if not rows:
         return 0
     with _db() as c:
-        c.executemany("""
-            INSERT OR IGNORE INTO decision_snapshots (
-                snapshot_key, fixture_id, match, match_ru, league, market, pick,
-                decision, decision_reason, model_prob, fair_odd, market_odd,
-                edge, ev, kelly_pct, confidence, value_score, odds_source, date_iso
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, rows)
-    return len(rows)
+        before = c.total_changes
+        c.execute("BEGIN")
+        try:
+            c.executemany("""
+                INSERT OR IGNORE INTO decision_snapshots (
+                    snapshot_key, fixture_id, match, match_ru, league, market, pick,
+                    decision, decision_reason, model_prob, fair_odd, market_odd,
+                    edge, ev, kelly_pct, confidence, value_score, odds_source, date_iso
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, rows)
+            inserted = int(c.total_changes - before)
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+    if inserted:
+        invalidate_caches()
+    return inserted
 
 @_cache(ttl=30, show_spinner=False)
 def fetch_decision_snapshots(decision: Optional[str] = None, limit: int = 100000) -> list:

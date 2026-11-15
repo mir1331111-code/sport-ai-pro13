@@ -25,3 +25,14 @@ jobs:
       - run: if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       - run: python -m compileall -q .
       - run: python -m unittest discover -s tests -v
+      - name: Smoke-test Streamlit app script
+        run: |
+          python - <<'PY'
+          from streamlit.testing.v1 import AppTest
+          app = AppTest.from_file("App.py").run(timeout=45)
+          if app.exception:
+              for error in app.exception:
+                  print(error.message)
+              raise SystemExit("App.py raised an exception in Streamlit AppTest")
+          print("App.py rendered without Streamlit exceptions")
+          PY
