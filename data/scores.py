@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 import time as _time
 import unicodedata
 from datetime import datetime, timedelta
@@ -336,13 +337,17 @@ def _find_espn(home: str, away: str, date_iso: str) -> Optional[dict]:
 # ============ FOOTBALL-DATA.ORG ============
 _LAST_FDORG_CALL = [0.0]
 _FDORG_COOLDOWN_UNTIL = [0.0]
+_FDORG_RATE_LOCK = threading.Lock()
 
 
 def _fdorg_rate_limit() -> None:
-    delta = _time.time() - _LAST_FDORG_CALL[0]
-    if delta < 6.5:
-        _time.sleep(6.5 - delta)
-    _LAST_FDORG_CALL[0] = _time.time()
+    """Serialize calls so concurrent Streamlit sessions cannot bypass the quota gap."""
+    with _FDORG_RATE_LOCK:
+        now = _time.monotonic()
+        delta = now - _LAST_FDORG_CALL[0]
+        if delta < 6.5:
+            _time.sleep(6.5 - delta)
+        _LAST_FDORG_CALL[0] = _time.monotonic()
 
 
 def _fdorg_range(date_iso: str, token: str | None = None) -> list:
