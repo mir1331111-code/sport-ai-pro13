@@ -27,6 +27,14 @@ def _pending(bet: object) -> bool:
     return isinstance(bet, dict) and str(bet.get("status") or "pending").casefold() == "pending"
 
 
+def _stake_amount(value: object) -> float:
+    """Count only finite, strictly positive stakes in exposure calculations."""
+    if isinstance(value, bool):
+        return 0.0
+    amount = _safe_float(value, -1.0)
+    return amount if amount > 0.0 else 0.0
+
+
 def _normal_match_name(item: dict[str, Any]) -> str:
     match = str(item.get("match") or item.get("match_ru") or "").casefold()
     return " ".join(match.split())
@@ -89,11 +97,11 @@ def risk_snapshot(
     current = now or datetime.now()
     all_rows = [b for b in bets if isinstance(b, dict)] if isinstance(bets, list) else []
     rows = [b for b in all_rows if _pending(b)]
-    pending = sum(_safe_float(b.get("stake")) for b in rows)
+    pending = sum(_stake_amount(b.get("stake")) for b in rows)
     bankroll = max(0.0, _safe_float(bank) + pending)
     # Daily risk is cumulative turnover at risk, not just still-open exposure.
     daily = sum(
-        _safe_float(b.get("stake"))
+        _stake_amount(b.get("stake"))
         for b in all_rows
         if _placed_day(b, current.date() if _pending(b) else date.min) == current.date()
     )
@@ -101,10 +109,10 @@ def risk_snapshot(
     for bet in rows:
         for index, (representative, exposure) in enumerate(match_groups):
             if _same_fixture(representative, bet):
-                match_groups[index] = (representative, exposure + _safe_float(bet.get("stake")))
+                match_groups[index] = (representative, exposure + _stake_amount(bet.get("stake")))
                 break
         else:
-            match_groups.append((bet, _safe_float(bet.get("stake"))))
+            match_groups.append((bet, _stake_amount(bet.get("stake"))))
     max_match = max((exposure for _, exposure in match_groups), default=0.0)
     return {
         "bankroll_basis": bankroll,
@@ -179,7 +187,7 @@ def size_bet(
     match_used = 0.0
     daily_used = 0.0
     for bet in rows:
-        stake = _safe_float(bet.get("stake"))
+        stake = _stake_amount(bet.get("stake"))
         same_fixture = _same_fixture(candidate, bet)
         if same_fixture:
             match_used += stake
