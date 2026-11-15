@@ -7,6 +7,7 @@ import json
 import math
 import re
 import requests
+from contextvars import ContextVar
 from typing import Any
 
 from betting.ranking import model_favorite, rank_model_favorites
@@ -786,17 +787,21 @@ def _normalize_analysis(raw: object, known: dict[str, dict]) -> dict | None:
     }
 
 
-_LAST_TOP_MATCHES_STATUS: dict[str, Any] = {}
+_TOP_MATCHES_STATUS: ContextVar[dict[str, Any]] = ContextVar(
+    "top_matches_status", default={},
+)
 
 
 def last_top_matches_status() -> dict[str, Any]:
-    """Return the latest provider request status without exposing credentials."""
-    return dict(_LAST_TOP_MATCHES_STATUS)
+    """Return this execution context's latest provider status, without credentials."""
+    return dict(_TOP_MATCHES_STATUS.get())
 
 
 def _set_top_matches_status(**values) -> None:
-    _LAST_TOP_MATCHES_STATUS.clear()
-    _LAST_TOP_MATCHES_STATUS.update(values)
+    # Streamlit serves multiple users in one process. A module-global mutable
+    # dict lets concurrent scans overwrite each other's provider/model status.
+    # ContextVar keeps each request's status isolated across execution contexts.
+    _TOP_MATCHES_STATUS.set(dict(values))
 
 
 def resolve_provider_model(provider: str, requested_model: str | None = None) -> str:
