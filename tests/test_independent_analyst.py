@@ -474,5 +474,62 @@ class IndependentAnalystTests(unittest.TestCase):
         post.assert_not_called()
 
 
+    def test_gemini_38_flash_analyst_request_omits_legacy_temperature(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import llm.analyst as analyst
+
+        content = '''{
+          "independent_pick": "П1",
+          "probabilities": {"П1": 48, "X": 28, "П2": 24},
+          "goal_markets": null,
+          "corner_markets": null,
+          "card_markets": null,
+          "opinion": "Небольшое преимущество хозяев.",
+          "risks": "Нет подтверждённых составов.",
+          "data_quality": "medium"
+        }'''
+        response = SimpleNamespace(
+            status_code=200,
+            text=content,
+            json=lambda: {"choices": [{
+                "message": {"content": content},
+                "finish_reason": "stop",
+            }]},
+        )
+        ctx = {
+            "api_key": "gemini-unit-test-key",
+            "provider": "Gemini (Google, бесплатно)",
+            "model": "gemini-2.0-flash-exp",
+            "home": "Home FC", "away": "Away FC", "league": "Test League",
+            "date": "2026-11-03", "fh": "ВВПВВ", "fa": "ППВНП",
+            "independent_features": {
+                "home_scored_at_home_avg": 1.2,
+                "home_conceded_at_home_avg": 0.8,
+                "away_scored_away_avg": 1.0,
+                "away_conceded_away_avg": 1.3,
+                "home_home_sample": 5, "away_away_sample": 5,
+            },
+        }
+        with (
+            patch.object(analyst, "cache_get", return_value=None),
+            patch.object(analyst, "cache_put"),
+            patch.object(analyst.usage, "llm_remaining", return_value=5),
+            patch.object(analyst.usage, "llm_increment"),
+            patch.object(analyst._sess, "post", return_value=response) as post,
+        ):
+            result = analyst.analyze_match(ctx)
+
+        self.assertIsNotNone(result)
+        request = post.call_args.kwargs["json"]
+        self.assertEqual(request["model"], "gemini-3.8-flash")
+        self.assertNotIn("temperature", request)
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()

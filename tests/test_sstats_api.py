@@ -264,7 +264,57 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(request_mock.call_args.kwargs["params"]["Date"], "2026-11-02")
         self.assertEqual(request_mock.call_args.kwargs["params"]["Ended"], "true")
         self.assertNotIn("private-key", repr(result))
-        cache_write.assert_called_once()
+        self.assertEqual(cache_write.call_count, 2)
+        self.assertTrue(cache_write.call_args_list[0].args[0].startswith("sstats_ft_day_v1_"))
+        self.assertTrue(cache_write.call_args_list[1].args[0].startswith("sstats_ft_result_v1_"))
+
+    def test_completed_games_daily_payload_is_reused_across_fixture_lookups(self):
+        payload = {
+            "status": "success",
+            "data": [
+                {
+                    "id": 9876,
+                    "date": "2026-11-02T18:00:00",
+                    "homeTeam": {"name": "Arsenal"},
+                    "awayTeam": {"name": "Chelsea"},
+                    "status": 8, "homeResult": 2, "awayResult": 1,
+                },
+                {
+                    "id": 9877,
+                    "date": "2026-11-02T20:00:00",
+                    "homeTeam": {"name": "Liverpool"},
+                    "awayTeam": {"name": "Manchester City"},
+                    "status": 8, "homeResult": 1, "awayResult": 1,
+                },
+            ],
+        }
+        cache = {}
+
+        def cache_get(key, _ttl):
+            return cache.get(key)
+
+        def cache_put(key, value):
+            cache[key] = value
+
+        with (
+            patch.object(sstats, "cache_get", side_effect=cache_get),
+            patch.object(sstats, "cache_put", side_effect=cache_put),
+            patch.object(sstats, "_sstats_timezone", return_value=(None, 2)),
+            patch.object(
+                sstats, "_sstats_request", return_value=_Response(200, payload),
+            ) as request_mock,
+        ):
+            first = sstats.sstats_match_result(
+                "2026-11-02", "Arsenal", "Chelsea", "private-key",
+            )
+            second = sstats.sstats_match_result(
+                "2026-11-02", "Liverpool", "Manchester City", "private-key",
+            )
+
+        self.assertEqual((first["home"], first["away"]), (2, 1))
+        self.assertEqual((second["home"], second["away"]), (1, 1))
+        self.assertEqual(request_mock.call_count, 1)
+        self.assertTrue(any(key.startswith("sstats_ft_day_v1_") for key in cache))
 
     def test_sstats_completed_result_rejects_non_ft_and_ambiguous_fixture(self):
         base = {

@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 
-APP_VERSION = "14.4.14"
+APP_VERSION = "14.4.15"
 DATA_VERSION = 18
 
 # The favorites panel targets seven forecasts when the schedule contains them.
@@ -52,7 +52,7 @@ LLM_PROVIDERS = {
     },
     "Gemini (Google, бесплатно)": {
         "base": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "model": "gemini-2.0-flash-exp",
+        "model": "gemini-3.8-flash",
         "key_url": "https://aistudio.google.com/apikey",
     },
     "Grok (x.ai)": {

@@ -24,25 +24,61 @@ def _as_date(value):
 
 
 def weighted_mean(values, dates, as_of, default=1.0, half_life_days=180.0):
-    """Exponential-decay mean. Missing/invalid dates safely fall back to mean."""
+    """Exponential-decay mean with strict as-of filtering when a cutoff is known.
+
+    Undated observations are never mixed into a dated pre-match sample: their
+    chronology cannot be proven, so including them could reintroduce look-ahead
+    leakage. If no dated observation survives the cutoff, return the neutral
+    prior instead of silently using an unweighted mean.
+    """
     if not values:
         return float(default)
-    pairs = []
-    for value, stamp in zip(values, dates or []):
-        d = _as_date(stamp)
-        if d is not None:
-            pairs.append((float(value), d))
     cutoff = _as_date(as_of)
-    if cutoff is None or len(pairs) != len(values) or half_life_days <= 0:
-        return sum(float(v) for v in values) / len(values)
-    # A future-dated observation is excluded, never allowed to leak backward.
-    pairs = [(v, d) for v, d in pairs if d <= cutoff]
-    if not pairs:
+    if cutoff is None:
+        # Preserve legacy behavior for callers that explicitly provide no
+        # prediction date; the walk-forward/production path always supplies one.
+        numeric = []
+        for value in values:
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(number):
+                numeric.append(number)
+        return sum(numeric) / len(numeric) if numeric else float(default)
+
+    observations = []
+    date_values = list(dates or [])
+    for index, value in enumerate(values):
+        stamp = date_values[index] if index < len(date_values) else None
+        day = _as_date(stamp)
+        if day is None or day > cutoff:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(number):
+            observations.append((number, day))
+
+    if not observations:
         return float(default)
+    if half_life_days <= 0:
+        return sum(value for value, _day in observations) / len(observations)
+
     decay = math.log(2.0) / float(half_life_days)
-    weights = [math.exp(-decay * max(0, (cutoff - d).days)) for _, d in pairs]
-    total = sum(weights)
-    return sum(v * w for (v, _), w in zip(pairs, weights)) / total if total else float(default)
+    weighted = [
+        (
+            value,
+            math.exp(-decay * max(0, (cutoff - day).days)),
+        )
+        for value, day in observations
+    ]
+    total = sum(weight for _value, weight in weighted)
+    return (
+        sum(value * weight for value, weight in weighted) / total
+        if total else float(default)
+    )
 
 
 def days_since_last_match(last_match, as_of):

@@ -28,6 +28,17 @@ class ScoreProviderOrderTests(unittest.TestCase):
         self.assertEqual(result["source"], "football-data.org")
         olb.assert_not_called()
 
+    def test_fdorg_rate_limiter_enforces_gap_with_monotonic_clock(self):
+        with (
+            patch.object(scores, "_LAST_FDORG_CALL", [0.0]),
+            patch.object(scores._time, "monotonic", side_effect=[100.0, 100.0, 101.0, 106.5]),
+            patch.object(scores._time, "sleep") as sleep_mock,
+        ):
+            scores._fdorg_rate_limit()
+            scores._fdorg_rate_limit()
+
+        sleep_mock.assert_called_once_with(5.5)
+
     def test_default_order_remains_backward_compatible(self):
         calls = []
 

@@ -450,6 +450,60 @@ class BatchGroqAnalysisTests(unittest.TestCase):
                          "top_match_independent_multimarket_analysis")
         self.assertEqual(deep_analysis.last_top_matches_status()["state"], "completed")
 
+    def test_gemini_38_flash_uses_supported_openai_compatible_payload(self):
+        from llm import deep_analysis
+
+        dossier = build_match_dossier(make_card())
+        response_content = json.dumps({
+            "analyses": [{
+                "fixture_id": dossier["fixture_id"],
+                "independent_pick": "X",
+                "probabilities": {"П1": 30, "X": 45, "П2": 25},
+                "goal_markets": None,
+                "corner_markets": None,
+                "card_markets": None,
+                "lineup_assessment": "Составы не подтверждены.",
+                "injury_assessment": "Нет подтверждённых записей.",
+                "referee_assessment": "Назначение не подтверждено.",
+                "form_assessment": "Исторические выборки доступны.",
+                "match_assessment": "Матч выглядит равным.",
+                "risks": "Нет подтверждённых составов и судьи.",
+                "data_quality": "medium",
+            }]
+        }, ensure_ascii=False)
+        response = SimpleNamespace(
+            status_code=200,
+            text=response_content,
+            json=lambda: {"choices": [{
+                "message": {"content": response_content},
+                "finish_reason": "stop",
+            }]},
+        )
+        with (
+            patch.object(deep_analysis, "cache_get", return_value=None),
+            patch.object(deep_analysis, "cache_put"),
+            patch.object(deep_analysis.usage, "llm_remaining", return_value=10),
+            patch.object(deep_analysis.usage, "llm_increment"),
+            patch.object(deep_analysis._sess, "post", return_value=response) as post,
+        ):
+            result = deep_analysis.analyze_top_matches({
+                "api_key": "gemini-unit-test-key",
+                "provider": "Gemini (Google, бесплатно)",
+                # Older saved model ids must not override the selected provider.
+                "model": "gemini-2.0-flash-exp",
+                "candidates": [dossier],
+            })
+
+        self.assertIn(dossier["fixture_id"], result)
+        request = post.call_args.kwargs["json"]
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+        self.assertEqual(request["model"], "gemini-3.8-flash")
+        self.assertNotIn("temperature", request)
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+
     def test_provider_connection_check_uses_the_selected_model_and_reports_auth_errors(self):
         from llm import deep_analysis
 
@@ -478,6 +532,32 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["http_status"], 401)
         self.assertIn("HTTP 401", result["message"])
+
+    def test_gemini_38_connection_check_uses_current_model_without_temperature(self):
+        from llm import deep_analysis
+
+        response = SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"choices": [{
+                "message": {"content": '{"ok":true}'},
+            }]},
+        )
+        with patch.object(deep_analysis._sess, "post", return_value=response) as post:
+            result = deep_analysis.check_provider_connection(
+                "Gemini (Google, бесплатно)", "gemini-unit-test-key",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["model"], "gemini-3.8-flash")
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+        request = post.call_args.kwargs["json"]
+        self.assertEqual(request["model"], "gemini-3.8-flash")
+        self.assertNotIn("temperature", request)
+        self.assertEqual(request["response_format"], {"type": "json_object"})
 
     def test_groq_gpt_oss_120b_connection_check_uses_supported_chat_model(self):
         from llm import deep_analysis

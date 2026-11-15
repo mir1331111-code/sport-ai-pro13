@@ -852,6 +852,7 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
             "message": "Ключ выбранного провайдера не задан.",
         }
     is_xai = "api.x.ai" in base.casefold()
+    is_gemini = "generativelanguage.googleapis.com" in base.casefold()
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
@@ -890,9 +891,10 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
                 {"role": "system", "content": "Return only a valid JSON object."},
                 {"role": "user", "content": 'Return exactly: {"ok":true}'},
             ],
-            "temperature": 0,
             "response_format": {"type": "json_object"},
         }
+        if not is_gemini:
+            body["temperature"] = 0
         if "groq" in base.casefold() and model.casefold().startswith("openai/gpt-oss"):
             body["max_completion_tokens"] = 128
             body["reasoning_effort"] = "low"
@@ -1040,6 +1042,7 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
     )
     is_groq = "groq" in base.casefold()
     is_gpt_oss = is_groq and model.casefold().startswith("openai/gpt-oss")
+    is_gemini = "generativelanguage.googleapis.com" in base.casefold()
     messages = (
         [{"role": "user", "content": f"{_DEEP_ANALYSIS_SYSTEM_PROMPT}\n\n{user_message}"}]
         if is_gpt_oss else [
@@ -1076,8 +1079,9 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         body = {
             "model": model,
             "messages": messages,
-            "temperature": 0.2,
         }
+        if not is_gemini:
+            body["temperature"] = 0.2
         if is_gpt_oss:
             body["max_completion_tokens"] = 6144
             body.update({

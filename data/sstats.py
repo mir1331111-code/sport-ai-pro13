@@ -1172,6 +1172,49 @@ def sstats_find_match_id(
     return resolved
 
 
+def _sstats_completed_games_for_day(
+    date_text: str, api_key: str, logs=None,
+) -> Optional[list]:
+    """Fetch/cache the completed SStats schedule once per date and credential."""
+    key = str(api_key or "").strip()
+    if not key:
+        return None
+    token_tag = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    cache_key = f"sstats_ft_day_v1_{date_text}_{token_tag}"
+    cached = cache_get(cache_key, 15 * 60)
+    if isinstance(cached, list):
+        return cached
+
+    _now, timezone_offset = _sstats_timezone()
+    try:
+        response = _sstats_request(
+            "Games/list", key,
+            params={
+                "Date": date_text,
+                "Ended": "true",
+                "Limit": 1000,
+                "Offset": 0,
+                "TimeZone": timezone_offset,
+            },
+            timeout=(5, 25),
+        )
+        if response.status_code != 200:
+            if logs is not None:
+                logs.append(
+                    f"⚠️ SStats result lookup: HTTP {response.status_code}"
+                )
+            return None
+        records = _sstats_unwrap(response.json() or {})
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ SStats result lookup: {type(exc).__name__}")
+        return None
+    if not isinstance(records, list):
+        return None
+    cache_put(cache_key, records)
+    return records
+
+
 def sstats_match_result(
     date_iso: str, home_team: str, away_team: str, api_key: str, logs=None,
 ) -> Optional[dict]:
@@ -1201,31 +1244,8 @@ def sstats_match_result(
     if isinstance(cached, dict):
         return cached
 
-    _now, timezone_offset = _sstats_timezone()
-    try:
-        response = _sstats_request(
-            "Games/list", key,
-            params={
-                "Date": date_text,
-                "Ended": "true",
-                "Limit": 1000,
-                "Offset": 0,
-                "TimeZone": timezone_offset,
-            },
-            timeout=(5, 25),
-        )
-        if response.status_code != 200:
-            if logs is not None:
-                logs.append(
-                    f"⚠️ SStats result lookup: HTTP {response.status_code}"
-                )
-            return None
-        records = _sstats_unwrap(response.json() or {})
-    except Exception as exc:
-        if logs is not None:
-            logs.append(f"⚠️ SStats result lookup: {type(exc).__name__}")
-        return None
-    if not isinstance(records, list):
+    records = _sstats_completed_games_for_day(date_text, key, logs=logs)
+    if records is None:
         return None
 
     matches = []
