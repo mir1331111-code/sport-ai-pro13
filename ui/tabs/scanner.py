@@ -2607,7 +2607,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         espn_rows = []
         fdorg_rows = []
         sstats_rows = []
-        source_counts = {"TheSportsDB": 0, "ESPN": 0, "football-data.org": 0, "SStats": 0}
+        source_counts = {
+            "TheSportsDB": 0,
+            "TheSportsDB visuals": 0,
+            "ESPN": 0,
+            "football-data.org": 0,
+            "SStats": 0,
+        }
 
         # SStats is the primary match-and-odds source. Do not call several
         # other schedule APIs for the same horizon when SStats already returned
@@ -2629,7 +2635,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             enriched_sstats_rows = sstats_rows
             try:
                 tsdb_rows = tsdb_matches(days, logs)
-                source_counts["TheSportsDB"] = len(tsdb_rows)
+                source_counts["TheSportsDB visuals"] = len(tsdb_rows)
                 enriched_sstats_rows, visual_stats = enrich_fixture_visual_metadata(
                     sstats_rows, tsdb_rows,
                 )
@@ -2638,7 +2644,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"совпало матчей {visual_stats['fixtures_matched']}/"
                     f"{visual_stats['primary_fixtures']}, "
                     f"добавлено полей {visual_stats['assets_added']}, "
-                    f"матчей с эмблемами/стадионом "
+                    f"матчей с визуальными данными "
                     f"{visual_stats['fixtures_with_assets']}. "
                     "Расписание и коэффициенты SStats не заменялись."
                 )
