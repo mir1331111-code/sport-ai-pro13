@@ -803,7 +803,7 @@ def resolve_provider_model(provider: str, requested_model: str | None = None) ->
     """Use the selected provider's configured model; discard stale cross-provider IDs."""
     cfg = LLM_PROVIDERS.get(str(provider or ""))
     if not cfg:
-        cfg = LLM_PROVIDERS["Groq (бесплатно, быстро)"]
+        cfg = LLM_PROVIDERS["Groq GPT-OSS 20B (оплата по токенам)"]
     configured = str(cfg.get("model") or "").strip()
     requested = str(requested_model or "").strip()
     if requested and requested != configured:
@@ -994,9 +994,9 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         )
         return {}
 
-    provider = ctx.get("provider") or "Groq (бесплатно, быстро)"
+    provider = ctx.get("provider") or "Groq GPT-OSS 20B (оплата по токенам)"
     if provider not in LLM_PROVIDERS:
-        provider = "Groq (бесплатно, быстро)"
+        provider = "Groq GPT-OSS 20B (оплата по токенам)"
     cfg = LLM_PROVIDERS[provider]
     model = resolve_provider_model(provider, ctx.get("model"))
     base = str(cfg["base"]).rstrip("/")
