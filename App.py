@@ -34,7 +34,7 @@ st.set_page_config(page_title="NEURO BET PRO",
                    initial_sidebar_state="collapsed")
 
 from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
-                    AUTO_SETTLE_THROTTLE_SEC, DB_FILE)
+                    AUTO_SETTLE_THROTTLE_SEC, DB_FILE, normalize_llm_provider)
 from llm.deep_analysis import check_provider_connection  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
 from storage import usage  # noqa: E402
@@ -974,7 +974,7 @@ with st.sidebar:
         "margin-bottom:6px;'>🤖 LLM-аналитик</div>",
         unsafe_allow_html=True)
     prov_keys = list(LLM_PROVIDERS.keys())
-    cur = D["meta"].get("llm_provider", prov_keys[0])
+    cur = normalize_llm_provider(D["meta"].get("llm_provider", prov_keys[0]))
     llm_prov = st.selectbox("Провайдер", prov_keys,
                             index=prov_keys.index(cur) if cur in prov_keys else 0)
     llm_key_config = LLM_PROVIDERS.get(llm_prov, {})
