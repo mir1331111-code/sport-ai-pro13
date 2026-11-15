@@ -667,13 +667,16 @@ def _save_result_lookup_state(
 
 def settle_due_forecasts(
     *, db_path: str | Path = DB_FILE, timezone_name: str | None = None,
-    now: datetime | None = None, max_fixtures: int = 20, max_age_days: int = 14,
+    now: datetime | None = None, max_fixtures: int = 20,
+    max_age_days: int = 365, token: str | None = None, force: bool = False,
 ) -> dict[str, int]:
-    """Settle only matched, completed FT scores after a conservative post-kickoff grace.
+    """Settle verified FT scores, including a bounded historical backlog.
 
-    Provider feeds contain completed matches only. Wait 2h15 after kickoff before
-    querying, check oldest fixtures first, and persist a retry deadline after a
-    miss so Streamlit reruns do not hammer the score providers every ten minutes.
+    Wait 2h15 after kickoff, check oldest fixtures first, pass the caller's
+    football-data.org token explicitly, and persist retry deadlines. A manual
+    force check bypasses retry deadlines but keeps provider-call limits. The
+    default historical window is 365 days rather than silently abandoning
+    forecasts after 14 days.
     """
     ledger = ForecastLedger(db_path)
     now = now or datetime.now(timezone.utc)
@@ -681,61 +684,98 @@ def settle_due_forecasts(
         raise ValueError("now must be timezone-aware")
     now_utc = now.astimezone(timezone.utc)
     local_today = now_utc.astimezone(_timezone(timezone_name)).date()
+    token = str(token or "").strip()
+    max_age_days = max(0, int(max_age_days))
     grace = timedelta(hours=2, minutes=15)
     missing_retry = timedelta(hours=6)
     non_ft_retry = timedelta(days=1)
     confirmed_retry = timedelta(days=365)
     lookup_state = _load_result_lookup_state(db_path)
 
+    ledger_rows = ledger.rows()
+    pending_forecast_rows = [
+        row for row in ledger_rows if row.get("result") is None
+    ]
+    pending_forecasts = len(pending_forecast_rows)
     groups: dict[str, list[dict]] = defaultdict(list)
-    for row in ledger.rows():
-        if row.get("result") is not None or not row.get("kickoff_at"):
+    age_limited_fixtures = 0
+    invalid_fixture_ids = 0
+    future_fixtures = 0
+    for row in pending_forecast_rows:
+        if not row.get("kickoff_at"):
+            invalid_fixture_ids += 1
             continue
         try:
-            kickoff = datetime.fromisoformat(str(row["kickoff_at"]).replace("Z", "+00:00"))
-            if kickoff.tzinfo is None or kickoff.astimezone(timezone.utc) + grace > now_utc:
+            kickoff = datetime.fromisoformat(
+                str(row["kickoff_at"]).replace("Z", "+00:00")
+            )
+            if kickoff.tzinfo is None:
+                invalid_fixture_ids += 1
+                continue
+            if kickoff.astimezone(timezone.utc) + grace > now_utc:
                 continue
             fixture_id = str(row.get("fixture_id") or "")
             parts = fixture_id.split(":", 2)
             if len(parts) < 3 or parts[0] != "ind":
+                invalid_fixture_ids += 1
                 continue
             date_iso = parts[1]
             date_obj = datetime.strptime(date_iso, "%Y-%m-%d").date()
             age = (local_today - date_obj).days
-            if age < 0 or age > max_age_days:
+            if age < 0:
+                future_fixtures += 1
+                continue
+            if age > max_age_days:
+                age_limited_fixtures += 1
                 continue
             groups[fixture_id].append(row)
         except (ValueError, TypeError):
-            continue
+            invalid_fixture_ids += 1
 
     fixtures = sorted(
         groups.items(),
-        key=lambda pair: min(str(r.get("kickoff_at") or "") for r in pair[1]),
+        key=lambda pair: min(str(row.get("kickoff_at") or "") for row in pair[1]),
     )
-    market_ledger = MarketForecastLedger(db_path)
+    market_rows = market_ledger.rows()
+    pending_market_rows = [
+        row for row in market_rows
+        if row.get("result_status") is None
+        and str(row.get("market") or "").upper() != "STAT"
+    ]
+    stat_market_pending = sum(
+        row.get("result_status") is None
+        and str(row.get("market") or "").upper() == "STAT"
+        for row in market_rows
+    )
     market_groups: dict[str, list[dict]] = defaultdict(list)
-    for row in market_ledger.rows():
-        if row.get("result_status") is not None or not row.get("kickoff_at"):
-            continue
-        # A match score cannot settle corners or cards.
-        if str(row.get("market") or "").upper() == "STAT":
+    market_age_limited_fixtures = set()
+    for row in pending_market_rows:
+        if not row.get("kickoff_at"):
             continue
         try:
-            kickoff = datetime.fromisoformat(str(row["kickoff_at"]).replace("Z", "+00:00"))
+            kickoff = datetime.fromisoformat(
+                str(row["kickoff_at"]).replace("Z", "+00:00")
+            )
             if kickoff.tzinfo is None or kickoff.astimezone(timezone.utc) + grace > now_utc:
                 continue
             fixture_id = str(row.get("fixture_id") or "")
             parts = fixture_id.split(":", 2)
             if len(parts) < 3 or parts[0] != "ind":
                 continue
-            age = (local_today - datetime.strptime(parts[1], "%Y-%m-%d").date()).days
-            if 0 <= age <= max_age_days:
-                market_groups[fixture_id].append(row)
+            date_obj = datetime.strptime(parts[1], "%Y-%m-%d").date()
+            age = (local_today - date_obj).days
+            if age < 0 or age > max_age_days:
+                if age > max_age_days:
+                    market_age_limited_fixtures.add(fixture_id)
+                continue
+            market_groups[fixture_id].append(row)
         except (ValueError, TypeError):
             continue
 
     looked_up = settled = errors = 0
     market_checked = market_settled = 0
+    retry_deferred_fixtures = not_found_fixtures = non_ft_fixtures = 0
+    limit_deferred_fixtures = 0
     score_cache: dict[str, dict | None] = {}
     if fixtures or market_groups:
         from data.scores import find_match_score
@@ -745,26 +785,33 @@ def settle_due_forecasts(
             if fixture_id in score_cache:
                 return score_cache[fixture_id]
             retry_value = lookup_state.get(fixture_id)
-            if retry_value:
+            if retry_value and not force:
                 try:
                     retry_at = datetime.fromisoformat(retry_value.replace("Z", "+00:00"))
                 except ValueError:
                     retry_at = now_utc
                 if retry_at.tzinfo is not None and retry_at > now_utc:
+                    retry_deferred_fixtures += 1
                     score_cache[fixture_id] = None
                     return None
             if looked_up >= max(0, int(max_fixtures)):
+                limit_deferred_fixtures += 1
                 score_cache[fixture_id] = None
                 return None
             looked_up += 1
             try:
                 score = find_match_score(
                     str(sample["home_team"]), str(sample["away_team"]), date_iso,
+                    token=token or None,
                 )
             except Exception:
                 errors += 1
                 score = None
             status = str((score or {}).get("status") or "").upper()
+            if score is None:
+                not_found_fixtures += 1
+            elif status != "FT":
+                non_ft_fixtures += 1
             try:
                 if status == "FT":
                     int(score["home"])
@@ -833,9 +880,23 @@ def settle_due_forecasts(
                 errors += 1
 
     return {
-        "fixtures_checked": looked_up, "forecasts_settled": settled,
+        "fixtures_checked": looked_up,
+        "forecasts_settled": settled,
+        "pending_forecasts": pending_forecasts,
+        "eligible_fixtures": len(fixtures),
+        "age_limited_fixtures": age_limited_fixtures,
+        "invalid_fixture_ids": invalid_fixture_ids,
+        "future_fixtures": future_fixtures,
+        "retry_deferred_fixtures": retry_deferred_fixtures,
+        "lookup_limit_deferred_fixtures": limit_deferred_fixtures,
+        "not_found_fixtures": not_found_fixtures,
+        "non_ft_fixtures": non_ft_fixtures,
+        "market_pending_fixtures": len(market_groups),
+        "market_age_limited_fixtures": len(market_age_limited_fixtures),
+        "stat_market_pending": stat_market_pending,
         "market_fixtures_checked": market_checked,
-        "market_forecasts_settled": market_settled, "errors": errors,
+        "market_forecasts_settled": market_settled,
+        "errors": errors,
     }
 
 
