@@ -46,6 +46,7 @@ class SStatsTests(unittest.TestCase):
         from data import sources
         self.assertIs(sources.sstats_upcoming_matches, sstats.sstats_upcoming_matches)
         self.assertIs(sources.sstats_match_statistics, sstats.sstats_match_statistics)
+        self.assertIs(sources.sstats_match_result, sstats.sstats_match_result)
 
     def test_unwrap_api_response(self):
         self.assertEqual(
@@ -229,6 +230,80 @@ class SStatsTests(unittest.TestCase):
         self.assertIsNone(sstats.sstats_find_match_id(
             "2026-11-02", "Arsenal", "Chelsea", "private-key"
         ))
+
+    def test_sstats_completed_result_requires_exact_finished_fixture(self):
+        payload = {
+            "status": "success",
+            "data": [{
+                "id": 9876,
+                "date": "2026-11-02T18:00:00",
+                "homeTeam": {"name": "Arsenal"},
+                "awayTeam": {"name": "Chelsea"},
+                "status": 8,
+                "homeResult": 2,
+                "awayResult": 1,
+            }],
+        }
+        with (
+            patch.object(sstats, "cache_get", return_value=None),
+            patch.object(sstats, "cache_put") as cache_write,
+            patch.object(sstats, "_sstats_timezone", return_value=(None, 2)),
+            patch.object(sstats, "_sstats_request", return_value=_Response(200, payload)) as request_mock,
+        ):
+            result = sstats.sstats_match_result(
+                "2026-11-02", "Arsenal FC", "Chelsea", "private-key",
+            )
+
+        self.assertEqual(result["home"], 2)
+        self.assertEqual(result["away"], 1)
+        self.assertEqual(result["status"], "FT")
+        self.assertTrue(result["regulation_time"])
+        self.assertEqual(result["source"], "sstats")
+        self.assertEqual(result["fixture_id"], "9876")
+        self.assertEqual(request_mock.call_args.args[0], "Games/list")
+        self.assertEqual(request_mock.call_args.kwargs["params"]["Date"], "2026-11-02")
+        self.assertEqual(request_mock.call_args.kwargs["params"]["Ended"], "true")
+        self.assertNotIn("private-key", repr(result))
+        cache_write.assert_called_once()
+
+    def test_sstats_completed_result_rejects_non_ft_and_ambiguous_fixture(self):
+        base = {
+            "id": 9876,
+            "date": "2026-11-02T18:00:00",
+            "homeTeam": {"name": "Arsenal"},
+            "awayTeam": {"name": "Chelsea"},
+            "status": 6,
+            "homeResult": 2,
+            "awayResult": 1,
+        }
+        with (
+            patch.object(sstats, "cache_get", return_value=None),
+            patch.object(sstats, "cache_put"),
+            patch.object(sstats, "_sstats_timezone", return_value=(None, 2)),
+            patch.object(
+                sstats, "_sstats_request",
+                return_value=_Response(200, {"status": "success", "data": [base]}),
+            ),
+        ):
+            self.assertIsNone(sstats.sstats_match_result(
+                "2026-11-02", "Arsenal", "Chelsea", "private-key",
+            ))
+
+        finished = dict(base, status=8)
+        with (
+            patch.object(sstats, "cache_get", return_value=None),
+            patch.object(sstats, "cache_put"),
+            patch.object(sstats, "_sstats_timezone", return_value=(None, 2)),
+            patch.object(
+                sstats, "_sstats_request",
+                return_value=_Response(200, {
+                    "status": "success", "data": [finished, dict(finished, id=9877)],
+                }),
+            ),
+        ):
+            self.assertIsNone(sstats.sstats_match_result(
+                "2026-11-02", "Arsenal", "Chelsea", "private-key",
+            ))
 
     @patch.object(sstats, "_sstats_request")
     @patch.object(sstats, "cache_put")

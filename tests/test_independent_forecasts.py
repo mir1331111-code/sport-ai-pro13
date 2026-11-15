@@ -468,6 +468,83 @@ class IndependentForecastTests(unittest.TestCase):
             token="user-entered-fdorg-token",
         )
 
+    def test_settlement_prefers_exact_sstats_result_before_public_fallbacks(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="sstats-priority",
+            fixture_id="ind:2026-10-25:sstats-priority",
+            home_team="Home FC",
+            away_team="Away FC",
+            model_version="main-model-vX",
+            probabilities={"H": .5, "D": .3, "A": .2},
+            forecast_at=now - timedelta(hours=5),
+            kickoff_at=now - timedelta(hours=3),
+            league="Regional League",
+        )
+        with (
+            patch("data.sstats.sstats_match_result", return_value={
+                "home": 2, "away": 0, "status": "FT",
+                "regulation_time": True, "source": "sstats",
+            }) as sstats_lookup,
+            patch("data.scores.find_match_score") as fallback,
+        ):
+            result = settle_due_forecasts(
+                db_path=path, now=now, sstats_api_key="user-sstats-token",
+            )
+
+        self.assertEqual(result["fixtures_checked"], 1)
+        self.assertEqual(result["forecasts_settled"], 1)
+        self.assertEqual(result["pending_forecasts"], 0)
+        self.assertEqual(result["sstats_lookups"], 1)
+        self.assertEqual(result["result_sources"], {"sstats": 1})
+        sstats_lookup.assert_called_once_with(
+            "2026-10-25", "Home FC", "Away FC", "user-sstats-token",
+        )
+        fallback.assert_not_called()
+        saved = ledger.rows(settled_only=True)[0]
+        self.assertEqual(saved["home_score"], 2)
+        self.assertEqual(saved["away_score"], 0)
+        self.assertEqual(saved["result"], "H")
+
+    def test_settlement_falls_back_to_public_sources_when_sstats_has_no_result(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        ledger = ForecastLedger(path)
+        now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+        ledger.record_prediction(
+            forecast_key="sstats-fallback",
+            fixture_id="ind:2026-10-25:sstats-fallback",
+            home_team="Home FC",
+            away_team="Away FC",
+            model_version="main-model-vX",
+            probabilities={"H": .5, "D": .3, "A": .2},
+            forecast_at=now - timedelta(hours=5),
+            kickoff_at=now - timedelta(hours=3),
+            league="Regional League",
+        )
+        with (
+            patch("data.sstats.sstats_match_result", return_value=None) as sstats_lookup,
+            patch("data.scores.find_match_score", return_value={
+                "home": 0, "away": 1, "status": "FT", "source": "espn",
+            }) as fallback,
+        ):
+            result = settle_due_forecasts(
+                db_path=path, now=now, token="football-data-token",
+                sstats_api_key="user-sstats-token",
+            )
+        self.assertEqual(result["forecasts_settled"], 1)
+        self.assertEqual(result["result_sources"], {"espn": 1})
+        sstats_lookup.assert_called_once()
+        fallback.assert_called_once_with(
+            "Home FC", "Away FC", "2026-10-25", token="football-data-token",
+        )
+
+
     def test_forecasts_older_than_fourteen_days_are_backfilled(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

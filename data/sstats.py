@@ -1172,6 +1172,134 @@ def sstats_find_match_id(
     return resolved
 
 
+def sstats_match_result(
+    date_iso: str, home_team: str, away_team: str, api_key: str, logs=None,
+) -> Optional[dict]:
+    """Return a verified regulation-time result from SStats Games/list.
+
+    The request is constrained to one local calendar date and Ended=true. A
+    result is accepted only for one exact ordered home/away name match with
+    SStats status 8 (normal full time) and two explicit non-negative integer
+    homeResult/awayResult fields. Ambiguous, live, extra-time and incomplete
+    rows are never settled.
+    """
+    key = str(api_key or "").strip()
+    date_text = str(date_iso or "")[:10]
+    try:
+        datetime.strptime(date_text, "%Y-%m-%d")
+    except ValueError:
+        return None
+    home_key, away_key = _norm_name(home_team), _norm_name(away_team)
+    if not key or not home_key or not away_key:
+        return None
+
+    cache_key = (
+        f"sstats_ft_result_v1_{date_text}_{home_key}_{away_key}_"
+        f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+    )
+    cached = cache_get(cache_key, 24 * 60 * 60)
+    if isinstance(cached, dict):
+        return cached
+
+    _now, timezone_offset = _sstats_timezone()
+    try:
+        response = _sstats_request(
+            "Games/list", key,
+            params={
+                "Date": date_text,
+                "Ended": "true",
+                "Limit": 1000,
+                "Offset": 0,
+                "TimeZone": timezone_offset,
+            },
+            timeout=(5, 25),
+        )
+        if response.status_code != 200:
+            if logs is not None:
+                logs.append(
+                    f"⚠️ SStats result lookup: HTTP {response.status_code}"
+                )
+            return None
+        records = _sstats_unwrap(response.json() or {})
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ SStats result lookup: {type(exc).__name__}")
+        return None
+    if not isinstance(records, list):
+        return None
+
+    matches = []
+    for game in records:
+        if not isinstance(game, dict):
+            continue
+        if str(game.get("date") or "")[:10] != date_text:
+            continue
+        home_obj = game.get("homeTeam") or {}
+        away_obj = game.get("awayTeam") or {}
+        if not isinstance(home_obj, dict) or not isinstance(away_obj, dict):
+            continue
+        candidate_home = _norm_name(
+            str(home_obj.get("name") or game.get("homeTeamName") or "")
+        )
+        candidate_away = _norm_name(
+            str(away_obj.get("name") or game.get("awayTeamName") or "")
+        )
+        if candidate_home != home_key or candidate_away != away_key:
+            continue
+        if game.get("id") in (None, ""):
+            continue
+        matches.append(game)
+
+    unique_by_id = {
+        str(game.get("id")): game
+        for game in matches
+    }
+    # Never guess when the provider has more than one same-team fixture that day.
+    if len(unique_by_id) != 1:
+        return None
+    game = next(iter(unique_by_id.values()))
+    try:
+        status = int(game.get("status"))
+    except (TypeError, ValueError):
+        status = None
+    # The existing SStats statistics integration defines status 8 as normal FT.
+    # Other statuses can include extra time/penalties and must not settle 1X2.
+    if status != 8:
+        return None
+
+    def _score(value):
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = float(str(value).strip().replace(",", "."))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or number < 0 or not number.is_integer():
+            return None
+        return int(number)
+
+    home_score = _score(game.get("homeResult"))
+    away_score = _score(game.get("awayResult"))
+    if home_score is None or away_score is None:
+        return None
+
+    result = {
+        "home": home_score,
+        "away": away_score,
+        "status": "FT",
+        "regulation_time": True,
+        "source": "sstats",
+        "fixture_id": str(game.get("id")),
+    }
+    cache_put(cache_key, result)
+    if logs is not None:
+        logs.append(
+            f"SStats FT найден: {date_text} · "
+            f"{home_team} {home_score}:{away_score} {away_team}."
+        )
+    return result
+
+
 def sstats_match_statistics(game_id, api_key: str, logs=None) -> Optional[dict]:
     """Fetch final verified corners/cards from the SStats full-match endpoint.
 

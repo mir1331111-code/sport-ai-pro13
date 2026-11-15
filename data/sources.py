@@ -2936,6 +2936,7 @@ from data.sstats import (
     sstats_account_check,
     sstats_upcoming_matches,
     sstats_find_match_id,
+    sstats_match_result,
     sstats_match_statistics,
     sstats_context_enrich,
     sstats_odds_fixture,

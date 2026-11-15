@@ -668,7 +668,8 @@ def _save_result_lookup_state(
 def settle_due_forecasts(
     *, db_path: str | Path = DB_FILE, timezone_name: str | None = None,
     now: datetime | None = None, max_fixtures: int = 20,
-    max_age_days: int = 365, token: str | None = None, force: bool = False,
+    max_age_days: int = 365, token: str | None = None,
+    sstats_api_key: str | None = None, force: bool = False,
 ) -> dict[str, int]:
     """Settle verified FT scores, including a bounded historical backlog.
 
@@ -685,6 +686,7 @@ def settle_due_forecasts(
     now_utc = now.astimezone(timezone.utc)
     local_today = now_utc.astimezone(_timezone(timezone_name)).date()
     token = str(token or "").strip()
+    sstats_api_key = str(sstats_api_key or "").strip()
     max_age_days = max(0, int(max_age_days))
     grace = timedelta(hours=2, minutes=15)
     missing_retry = timedelta(hours=6)
@@ -777,13 +779,17 @@ def settle_due_forecasts(
     market_checked = market_settled = 0
     retry_deferred_fixtures = not_found_fixtures = non_ft_fixtures = 0
     limit_deferred_fixtures = 0
+    source_counts: dict[str, int] = defaultdict(int)
+    sstats_lookups = 0
     score_cache: dict[str, dict | None] = {}
     if fixtures or market_groups:
         from data.scores import find_match_score
+        from data.sstats import sstats_match_result
 
         def _score_for_fixture(fixture_id: str, sample: dict, date_iso: str):
             nonlocal looked_up, errors, retry_deferred_fixtures
             nonlocal not_found_fixtures, non_ft_fixtures, limit_deferred_fixtures
+            nonlocal sstats_lookups
             if fixture_id in score_cache:
                 return score_cache[fixture_id]
             retry_value = lookup_state.get(fixture_id)
@@ -801,15 +807,34 @@ def settle_due_forecasts(
                 score_cache[fixture_id] = None
                 return None
             looked_up += 1
-            try:
-                score = find_match_score(
-                    str(sample["home_team"]), str(sample["away_team"]), date_iso,
-                    token=token or None,
-                )
-            except Exception:
-                errors += 1
-                score = None
+            home_team = str(sample["home_team"])
+            away_team = str(sample["away_team"])
+            score = None
+            # SStats is the scanner's primary fixture source. Resolve its
+            # completed result against the exact local date and ordered teams
+            # before falling back to broad public score feeds.
+            if sstats_api_key:
+                sstats_lookups += 1
+                try:
+                    score = sstats_match_result(
+                        date_iso, home_team, away_team, sstats_api_key,
+                    )
+                except Exception:
+                    errors += 1
+                    score = None
+            if score is None:
+                try:
+                    score = find_match_score(
+                        home_team, away_team, date_iso,
+                        token=token or None,
+                    )
+                except Exception:
+                    errors += 1
+                    score = None
             status = str((score or {}).get("status") or "").upper()
+            if score:
+                source_name = str(score.get("source") or "unknown").strip().casefold()
+                source_counts[source_name] += 1
             regulation_ft = bool(
                 status == "AET" and (score or {}).get("regulation_time") is True
             )
@@ -907,6 +932,8 @@ def settle_due_forecasts(
         "lookup_limit_deferred_fixtures": limit_deferred_fixtures,
         "not_found_fixtures": not_found_fixtures,
         "non_ft_fixtures": non_ft_fixtures,
+        "sstats_lookups": sstats_lookups,
+        "result_sources": dict(source_counts),
         "market_pending_fixtures": len(market_groups),
         "market_age_limited_fixtures": len(market_age_limited_fixtures),
         "stat_market_pending": stat_market_pending,
