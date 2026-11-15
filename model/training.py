@@ -236,10 +236,10 @@ def train_engine_chronologically(
         raise ValueError("training slice exceeds the declared full-history row count")
     days = 0
     cursor = 0
-    while cursor < total:
+    while cursor < len(rows):
         match_day = rows[cursor]["match_date"].date()
         end = cursor + 1
-        while end < total and rows[end]["match_date"].date() == match_day:
+        while end < len(rows) and rows[end]["match_date"].date() == match_day:
             end += 1
         batch = rows[cursor:end]
         for offset, item in enumerate(batch):
