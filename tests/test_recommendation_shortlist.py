@@ -3,6 +3,7 @@ import unittest
 from ui.tabs.scanner import (
     _is_actionable_recommendation, _qualified_bet_cards,
     _portfolio_auto_recommendation, _runtime_int,
+    _secondary_market_gate_passed,
 )
 
 
@@ -127,6 +128,11 @@ class RecommendationShortlistTests(unittest.TestCase):
         ])
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["best"][1], "П1")
+
+    def test_secondary_market_gate_fails_closed_for_missing_or_false_card_flag(self):
+        self.assertFalse(_secondary_market_gate_passed({}))
+        self.assertFalse(_secondary_market_gate_passed({"fixed_holdout_1x2_passed": False}))
+        self.assertTrue(_secondary_market_gate_passed({"fixed_holdout_1x2_passed": True}))
 
     def test_portfolio_autopick_blocks_over25_until_fixed_1x2_holdout_passes(self):
         winner = {
