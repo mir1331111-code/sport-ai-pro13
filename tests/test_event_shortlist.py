@@ -166,6 +166,14 @@ class UnifiedMarketEventShortlistTests(unittest.TestCase):
         self.assertTrue(all(not item["value_verified"] for item in events))
         self.assertTrue(all(item["model_ev"] is None for item in events))
 
+    def test_asian_handicap_event_carries_sstats_source_and_explicit_probability_basis(self):
+        card = _base_card()
+        events = build_best_market_events([card], limit=30)
+        handicap = next(item for item in events if item["family"] == "handicap")
+        self.assertEqual(handicap["source"], "SStats")
+        self.assertEqual(handicap["probability_basis"], "win + half-win")
+        self.assertIsNone(handicap["fair_odds"])
+
     def test_market_coverage_counts_unique_matches_by_family(self):
         card = _base_card()
         coverage = {item["family"]: item for item in build_market_coverage([card])}
