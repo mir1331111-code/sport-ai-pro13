@@ -1889,7 +1889,11 @@ def _sstats_glicko_fixture(game_id, api_key: str, *, now=None, logs=None):
         return None
     key_tag = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
     cache_key = f"sstats_glicko_v1_{raw_id}_{key_tag}"
-    cached = cache_get(cache_key, 3 * 60 * 60)
+    try:
+        cached = cache_get(cache_key, 3 * 60 * 60)
+    except Exception:
+        # A cache outage must not disable the independent shortlist or base scan.
+        cached = None
     if isinstance(cached, dict) and cached.get("source") == "sstats_games_glicko":
         return cached
 
