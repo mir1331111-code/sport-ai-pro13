@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -8,6 +9,7 @@ from model.holdout import (
     render_markdown_report,
     render_reliability_svg,
     write_model_lab_artifacts,
+    load_fixed_holdout_gate_status,
 )
 
 
@@ -133,8 +135,31 @@ class FixedHoldoutModelLabTests(unittest.TestCase):
         self.assertIn("<svg", svg)
         with tempfile.TemporaryDirectory() as directory:
             paths = write_model_lab_artifacts(report, directory)
-            for key in ("json", "markdown", "reliability_svg"):
+            for key in ("json", "markdown", "reliability_svg", "promotion_gate"):
                 self.assertTrue(Path(paths[key]).exists(), key)
+            self.assertFalse(load_fixed_holdout_gate_status(paths["promotion_gate"])["passed"])
+
+    def test_secondary_market_gate_fails_closed_until_valid_pass_marker_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            gate_path = Path(directory) / "model-lab-v1-gate.json"
+            self.assertFalse(load_fixed_holdout_gate_status(gate_path)["passed"])
+
+            gate_path.write_text(json.dumps({
+                "schema": "sport-ai-model-lab-gate-v1",
+                "status": "PASS",
+                "strict_holdout_gate_passed": True,
+                "experiment_id": "b" * 64,
+                "dataset_sha256": "a" * 64,
+                "holdout_start": "2025-08-01",
+                "holdout_end": "2026-05-31",
+                "generated_at_utc": "2026-11-15T16:00:00+00:00",
+            }), encoding="utf-8")
+            self.assertTrue(load_fixed_holdout_gate_status(gate_path)["passed"])
+
+            invalid_payload = json.loads(gate_path.read_text(encoding="utf-8"))
+            invalid_payload["dataset_sha256"] = "not-a-hash"
+            gate_path.write_text(json.dumps(invalid_payload), encoding="utf-8")
+            self.assertFalse(load_fixed_holdout_gate_status(gate_path)["passed"])
 
 
 if __name__ == "__main__":
