@@ -112,8 +112,12 @@ Important operating rules:
   calibration improves both Brier score and log loss. The history threshold is
   a safety gate, not evidence that calibration improves performance.
 - A caller must only settle a match after checking a trusted provider's final
-  status and score. `settle_verified` requires a non-empty source label, but
-  the caller remains responsible for actually verifying the provider response.
+  status and score. `settle_verified` requires a non-empty source label and
+  persists it in `result_source`; the first recorded source is immutable.
+- If `kickoff_at` is supplied, `forecast_at` must be strictly earlier. Reusing
+  a `forecast_key` with a different kickoff timestamp is treated as a payload conflict.
+- The stored source label records provenance supplied by the caller; it does
+  not independently verify that the provider response was trustworthy.
 - The service only adjusts probabilities; it does not retrain the underlying
   Poisson/Elo model weights and does not establish positive betting ROI.
 - Use a persistent file-backed SQLite database, not `:memory:`, for this
