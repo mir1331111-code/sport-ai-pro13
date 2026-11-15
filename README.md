@@ -48,6 +48,24 @@ The model accepts paired fields such as `HxG`/`AxG`, `home_xg`/`away_xg`, and `x
 
 For a model promotion decision, use an untouched later-period holdout and, where available, compare with pre-kickoff bookmaker probabilities. This diagnostic walk-forward is not a profit guarantee.
 
+
+## Fixed Holdout Model Lab v1
+
+Run a reproducible 1X2 holdout with one fixed bookmaker source:
+
+~~~bash
+python -m model.holdout path/to/top5_history.csv \
+  --holdout-start YYYY-MM-DD \
+  --holdout-end YYYY-MM-DD \
+  --market-source B365 \
+  --output-dir reports/model_lab
+~~~
+
+The command writes JSON, Markdown and P1/X/P2 reliability SVG reports. See
+[docs/MODEL_LAB.md](docs/MODEL_LAB.md) for the frozen league set, timestamp requirements,
+paired-market methodology and promotion gates. Market comparison is diagnostic-only unless
+bookmaker capture and kickoff timestamps are verified as timezone-aware and pre-kickoff.
+
 ## Runtime ledger diagnostics
 
 The main-model forecast ledger reports ten-bin reliability tables separately for P1, draw and P2, using only forecasts with a verified settled result. It also stores `xg_used` for new main-model forecasts and reports the share among rows where that flag was actually recorded. Legacy rows created before the flag existed remain untracked; their xG use is not inferred retrospectively. The independent LLM comparison reports paired per-fixture Brier/log-loss error correlations; this is a diversity diagnostic only, not an implemented weighted ensemble.
