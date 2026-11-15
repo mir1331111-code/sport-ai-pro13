@@ -2160,6 +2160,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                     now=refresh_now,
                                     max_injury_checks=MAX_TOP_MATCHES,
                                     max_lineup_checks=MAX_TOP_MATCHES,
+                                    max_glicko_checks=MAX_TOP_MATCHES,
                                     timezone_offset=offset_hours,
                                 )
                             except Exception as exc:
@@ -3438,6 +3439,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         now=scan_now,
                         max_injury_checks=MAX_TOP_MATCHES,
                         max_lineup_checks=MAX_TOP_MATCHES,
+                        max_glicko_checks=MAX_TOP_MATCHES,
                         timezone_offset=(
                             int(round(scan_now.utcoffset().total_seconds() / 3600))
                             if scan_now.utcoffset() else 0
