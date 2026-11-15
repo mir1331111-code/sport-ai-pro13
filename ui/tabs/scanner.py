@@ -27,8 +27,10 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
                           parse_date, tsdb_matches, espn_matches,
                           sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
                           footballapi_xg_history)
-from data.fixture_merge import (enforce_sstats_market_card, enforce_sstats_odds_only,
-                                is_sstats_market_source, merge_fixture_sources)
+from data.fixture_merge import (
+    enforce_sstats_market_card, enforce_sstats_odds_only,
+    enrich_fixture_visual_metadata, is_sstats_market_source, merge_fixture_sources,
+)
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from data.context_data import (
     fixture_row_key,
@@ -2619,12 +2621,37 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         sstats_is_primary = bool(sstats_rows)
         if sstats_is_primary:
-            # SStats is the one authoritative match feed whenever it returns
-            # fixtures. Other schedule providers are not queried in parallel.
-            fixture_sources.extend(sstats_rows)
+            # SStats remains authoritative for fixture IDs, kickoff and all
+            # bookmaker prices. TheSportsDB is still queried as a metadata-only
+            # source so team/league badges and venue photos do not disappear.
+            # Only visual fields are overlaid onto exact SStats fixtures; extra
+            # TSDB fixtures and all secondary-source odds are never admitted.
+            enriched_sstats_rows = sstats_rows
+            try:
+                tsdb_rows = tsdb_matches(days, logs)
+                source_counts["TheSportsDB"] = len(tsdb_rows)
+                enriched_sstats_rows, visual_stats = enrich_fixture_visual_metadata(
+                    sstats_rows, tsdb_rows,
+                )
+                logs.append(
+                    "🖼 TheSportsDB — визуальные данные: "
+                    f"совпало матчей {visual_stats['fixtures_matched']}/"
+                    f"{visual_stats['primary_fixtures']}, "
+                    f"добавлено полей {visual_stats['assets_added']}, "
+                    f"матчей с эмблемами/стадионом "
+                    f"{visual_stats['fixtures_with_assets']}. "
+                    "Расписание и коэффициенты SStats не заменялись."
+                )
+            except Exception as exc:
+                logs.append(
+                    f"ℹ️ TheSportsDB visual metadata unavailable: {type(exc).__name__}; "
+                    "SStats fixtures continue without secondary images."
+                )
+            fixture_sources.extend(enriched_sstats_rows)
             logs.append(
                 f"✅ SStats — единственный источник расписания и коэффициентов: "
-                f"{len(sstats_rows)} матчей; резервные расписания пропущены."
+                f"{len(sstats_rows)} матчей; ESPN и football-data.org пропущены, "
+                "TheSportsDB используется только для эмблем и стадионов."
             )
         else:
             if sstats_key:
