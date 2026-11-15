@@ -920,11 +920,36 @@ def settle_due_forecasts(
             except (KeyError, TypeError, ValueError):
                 errors += 1
 
+    # Re-read the ledger after settlement so the UI can distinguish the
+    # queue size at the beginning of this run from fixtures still awaiting a
+    # verified result afterwards.
+    remaining_fixture_ids: set[str] = set()
+    for row in ledger.rows():
+        if row.get("result") is not None or not row.get("kickoff_at"):
+            continue
+        try:
+            kickoff = datetime.fromisoformat(
+                str(row["kickoff_at"]).replace("Z", "+00:00")
+            )
+            if kickoff.tzinfo is None or kickoff.astimezone(timezone.utc) + grace > now_utc:
+                continue
+            fixture_id = str(row.get("fixture_id") or "")
+            parts = fixture_id.split(":", 2)
+            if len(parts) < 3 or parts[0] != "ind":
+                continue
+            fixture_date = datetime.strptime(parts[1], "%Y-%m-%d").date()
+            age = (local_today - fixture_date).days
+            if 0 <= age <= max_age_days:
+                remaining_fixture_ids.add(fixture_id)
+        except (TypeError, ValueError):
+            continue
+
     return {
         "fixtures_checked": looked_up,
         "forecasts_settled": settled,
         "pending_forecasts": max(0, pending_forecasts - settled),
         "eligible_fixtures": len(fixtures),
+        "eligible_fixtures_remaining": len(remaining_fixture_ids),
         "age_limited_fixtures": len(age_limited_fixture_ids),
         "invalid_fixture_ids": invalid_fixture_ids,
         "future_fixtures": future_fixtures,
