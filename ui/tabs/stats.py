@@ -9,6 +9,7 @@ from data.scores import completed_matches_for_day
 from data.fixture_time import app_timezone
 from storage import sqlite_store as db
 from storage.user_datasets import export_user_datasets
+from betting.event_shortlist import build_market_coverage
 from config import DB_FILE
 from model.independent_forecasts import (
     comparison_report, settle_due_forecasts, parse_llm_probabilities,
@@ -52,13 +53,47 @@ def _scan_summary(cards: object) -> dict[str, int]:
             )
         ):
             quoted_any += 1
-        verdict = card.get("verdict") or {}
-        best = card.get("best")
-        if (
-            isinstance(best, (tuple, list)) and len(best) >= 6
-            and verdict.get("real_odds") and verdict.get("value_passed")
-        ):
-            value_signals += 1
+        # Count every independently approved market, not only the one
+        # global pick retained in card["best"]. A fixture can have multiple
+        # separately validated market-family recommendations.
+        approved_picks = set()
+        card_value_count = 0
+        for family in ("winner", "goals", "btts", "corners", "cards"):
+            recommendation = (card.get("best_by_market") or {}).get(family)
+            if not isinstance(recommendation, dict):
+                continue
+            verdict = recommendation.get("verdict") or {}
+            best = recommendation.get("best")
+            if (
+                isinstance(best, (tuple, list)) and len(best) >= 6
+                and bool(verdict.get("value_passed"))
+            ):
+                approved_picks.add(str(best[1]))
+                card_value_count += 1
+
+        # Backward compatibility for older saved cards that predate per-family
+        # recommendations. A global pick is added only when it is not already
+        # represented by a validated family candidate.
+        if not card_value_count:
+            verdict = card.get("verdict") or {}
+            best = card.get("best")
+            if (
+                isinstance(best, (tuple, list)) and len(best) >= 6
+                and verdict.get("real_odds") and verdict.get("value_passed")
+            ):
+                approved_picks.add(str(best[1]))
+                card_value_count += 1
+        else:
+            verdict = card.get("verdict") or {}
+            best = card.get("best")
+            if (
+                isinstance(best, (tuple, list)) and len(best) >= 6
+                and verdict.get("real_odds") and verdict.get("value_passed")
+                and str(best[1]) not in approved_picks
+            ):
+                card_value_count += 1
+
+        value_signals += card_value_count
         opinion = str(card.get("llm_opinion") or "").strip()
         if opinion:
             ai_opinions += 1
@@ -83,10 +118,10 @@ def _render_forecast_journal(D):
     else:
         columns = st.columns(5)
         columns[0].metric("Матчей проанализировано", summary["matches"])
-        columns[1].metric("Прогнозов 1X2", summary["forecasted"])
+        columns[1].metric("Прогнозов модели 1X2", summary["forecasted"])
         columns[2].metric("Прогнозов ИИ", summary["ai_forecasted"])
-        columns[3].metric("Матчей с кэфами 1X2", summary["quoted_1x2"])
-        columns[4].metric("Value-проходов", summary["value_signals"])
+        columns[3].metric("Матчей с котировками 1X2", summary["quoted_1x2"])
+        columns[4].metric("Подтверждённых Value-событий", summary["value_signals"])
         if summary["ai_opinions"] > summary["ai_forecasted"]:
             st.caption(
                 f"Текстовых мнений ИИ: {summary['ai_opinions']}; "
@@ -95,6 +130,27 @@ def _render_forecast_journal(D):
         st.caption(
             f"Котировки хотя бы одного рынка есть у {summary['quoted_any']} матчей. "
             "Прогнозы и котировки не равны ставкам в портфеле."
+        )
+
+    market_coverage = build_market_coverage(D.get("cards") or [])
+    if summary["matches"] and market_coverage:
+        st.markdown("**Охват всех рынков — не только 1X2**")
+        st.caption(
+            "«Матчи с прогнозом» — модель рассчитала исход; «есть котировка» — источник "
+            "вернул цену именно на этот рынок; «Value подтверждён» — рынок прошёл отдельную "
+            "рыночную проверку. Эти числа не нужно складывать: один матч может иметь несколько рынков."
+        )
+        st.dataframe(
+            [{
+                "Рынок": item["market"],
+                "Прогнозы": item["forecast_matches"],
+                "Котировки": item["quoted_matches"],
+                "Value подтверждён": item["value_matches"],
+                "Только прогноз": item["forecast_only_matches"],
+                "Сильные ≥65%": item["strong_matches"],
+            } for item in market_coverage],
+            use_container_width=True,
+            hide_index=True,
         )
 
     funnel = D.get("funnel") or {}
