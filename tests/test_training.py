@@ -1,3 +1,4 @@
+import pickle
 import unittest
 from datetime import date, datetime
 
@@ -174,11 +175,14 @@ class ChronologicalTrainingTests(unittest.TestCase):
         stats = HistoricalMatchStats()
         train_engine_chronologically(engine, stats, prepared)
         engine.match_stats = stats
+        # The on-disk checkpoint stores the full Engine, including online
+        # market-stat state. Verify the same state survives pickle round-trip.
+        restored_engine = pickle.loads(pickle.dumps(engine))
         checkpoint = {
             "schema": TRAINING_STATE_SCHEMA,
             "day_digests": digests,
             "trained_rows": 2,
-            "engine": engine,
+            "engine": restored_engine,
         }
         self.assertEqual(plan_incremental_training(checkpoint, digests)["mode"], "unchanged")
 
