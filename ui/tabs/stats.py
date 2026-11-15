@@ -53,13 +53,20 @@ def _scan_summary(cards: object) -> dict[str, int]:
             )
         ):
             quoted_any += 1
-        verdict = card.get("verdict") or {}
-        best = card.get("best")
-        if (
-            isinstance(best, (tuple, list)) and len(best) >= 6
-            and verdict.get("real_odds") and verdict.get("value_passed")
-        ):
-            value_signals += 1
+        # Count every independently approved market, not only the one
+        # global pick retained in card["best"]. A fixture can have multiple
+        # separately validated market-family recommendations.
+        for family in ("winner", "goals", "btts", "corners", "cards"):
+            recommendation = (card.get("best_by_market") or {}).get(family)
+            if not isinstance(recommendation, dict):
+                continue
+            verdict = recommendation.get("verdict") or {}
+            best = recommendation.get("best")
+            if (
+                isinstance(best, (tuple, list)) and len(best) >= 6
+                and bool(verdict.get("value_passed"))
+            ):
+                value_signals += 1
         opinion = str(card.get("llm_opinion") or "").strip()
         if opinion:
             ai_opinions += 1
@@ -84,10 +91,10 @@ def _render_forecast_journal(D):
     else:
         columns = st.columns(5)
         columns[0].metric("Матчей проанализировано", summary["matches"])
-        columns[1].metric("Прогнозов 1X2", summary["forecasted"])
+        columns[1].metric("Прогнозов модели 1X2", summary["forecasted"])
         columns[2].metric("Прогнозов ИИ", summary["ai_forecasted"])
-        columns[3].metric("Матчей с кэфами 1X2", summary["quoted_1x2"])
-        columns[4].metric("Value-проходов", summary["value_signals"])
+        columns[3].metric("Матчей с котировками 1X2", summary["quoted_1x2"])
+        columns[4].metric("Подтверждённых Value-событий", summary["value_signals"])
         if summary["ai_opinions"] > summary["ai_forecasted"]:
             st.caption(
                 f"Текстовых мнений ИИ: {summary['ai_opinions']}; "
@@ -99,7 +106,7 @@ def _render_forecast_journal(D):
         )
 
     market_coverage = build_market_coverage(D.get("cards") or [])
-    if market_coverage:
+    if summary["matches"] and market_coverage:
         st.markdown("**Охват всех рынков — не только 1X2**")
         st.caption(
             "«Матчи с прогнозом» — модель рассчитала исход; «есть котировка» — источник "
