@@ -352,6 +352,66 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         increment.assert_called_once_with(1)
         cache_write.assert_called_once()
 
+    def test_openrouter_records_actual_model_in_status_and_cache(self):
+        from llm import deep_analysis
+
+        dossier = build_match_dossier(make_card())
+        response_content = json.dumps({
+            "analyses": [{
+                "fixture_id": dossier["fixture_id"],
+                "independent_pick": "X",
+                "probabilities": {"П1": 32, "X": 38, "П2": 30},
+                "goal_markets": None,
+                "corner_markets": None,
+                "card_markets": None,
+                "lineup_assessment": "Составы не подтверждены.",
+                "injury_assessment": "Данные об отсутствующих не подтверждены.",
+                "referee_assessment": "Арбитр не подтверждён.",
+                "form_assessment": "Выборки доступны.",
+                "match_assessment": "Матч близкий.",
+                "risks": "Недостаточно предматчевого контекста.",
+                "data_quality": "medium",
+            }]
+        }, ensure_ascii=False)
+        actual_model = "provider-a/served-model-2026"
+        response = SimpleNamespace(
+            status_code=200, text=response_content,
+            json=lambda: {
+                "model": actual_model,
+                "choices": [{"message": {"content": response_content}}],
+            },
+        )
+        context = {
+            "api_key": "openrouter-unit-test-key",
+            "provider": "OpenRouter (Llama 3.3)",
+            "model": "meta-llama/llama-3.3-70b-instruct:free",
+            "candidates": [dossier],
+        }
+        with (
+            patch.object(deep_analysis, "cache_get", return_value=None),
+            patch.object(deep_analysis, "cache_put") as cache_write,
+            patch.object(deep_analysis.usage, "llm_remaining", return_value=10),
+            patch.object(deep_analysis.usage, "llm_increment"),
+            patch.object(deep_analysis._sess, "post", return_value=response),
+        ):
+            result = deep_analysis.analyze_top_matches(context)
+
+        self.assertIn(dossier["fixture_id"], result)
+        status = deep_analysis.last_top_matches_status()
+        self.assertEqual(status["model"], "meta-llama/llama-3.3-70b-instruct:free")
+        self.assertEqual(status["resolved_model"], actual_model)
+        cached_payload = cache_write.call_args.args[1]
+        self.assertEqual(cached_payload["__meta__"]["resolved_model"], actual_model)
+
+        # A cache hit retains the served-model identity rather than pretending
+        # the configured alias is always the concrete model that ran.
+        with patch.object(deep_analysis, "cache_get", return_value=cached_payload):
+            cached = deep_analysis.analyze_top_matches(context)
+        self.assertIn(dossier["fixture_id"], cached)
+        cached_status = deep_analysis.last_top_matches_status()
+        self.assertEqual(cached_status["state"], "cache_hit")
+        self.assertEqual(cached_status["resolved_model"], actual_model)
+
     def test_drops_unknown_fixture_ids_and_rejects_bad_probability_distributions(self):
         from llm import deep_analysis
 
