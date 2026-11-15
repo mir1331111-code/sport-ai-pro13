@@ -151,6 +151,31 @@ class UnifiedMarketEventShortlistTests(unittest.TestCase):
         self.assertEqual(goals["status"], "forecast_with_price")
         self.assertIsNone(goals["edge"])
 
+    def test_approved_alternative_pick_is_kept_even_when_not_the_probability_favourite(self):
+        card = _base_card()
+        card["p1"], card["px"], card["p2"] = 0.58, 0.18, 0.24
+        card["best_by_market"] = {
+            "winner": {
+                "score": 0.83,
+                "best": ("1X2", "П2", 4.40, 0.12, 0.30, 4.0),
+                "verdict": {
+                    "value_passed": True,
+                    "prob": 0.30,
+                    "model_prob": 0.24,
+                    "ev": 0.12,
+                    "edge": 0.07,
+                    "kelly_pct": 0.01,
+                    "label": "Победа гостей (П2)",
+                },
+            }
+        }
+        events = build_best_market_events([card], limit=30)
+        winner = next(item for item in events if item["family"] == "winner")
+        self.assertEqual(winner["pick"], "П2")
+        self.assertTrue(winner["value_verified"])
+        self.assertEqual(winner["status"], "value_verified")
+        self.assertAlmostEqual(winner["probability"], 0.30)
+
     def test_no_bookmaker_price_never_creates_value_or_fabricated_odds(self):
         card = _base_card()
         card["market_odds"] = {}
