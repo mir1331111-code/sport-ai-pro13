@@ -304,6 +304,36 @@ def _train_engine(
                 "Непроверенные рынки закрыты для рекомендаций."
             )
 
+    if isinstance(totals_backtest, dict):
+        reliability = (
+            (totals_backtest.get("candidate") or {}).get("reliability") or {}
+        )
+        for code, label in (("H", "П1"), ("D", "X"), ("A", "П2")):
+            class_report = (reliability.get("classes") or {}).get(code) or {}
+            populated = [
+                item for item in (class_report.get("bins") or [])
+                if int(item.get("count") or 0) > 0
+            ]
+            summary = "; ".join(
+                f"{float(item['lower']):.1f}–{float(item['upper']):.1f}: "
+                f"n={int(item['count'])}, "
+                f"прогноз={float(item['mean_predicted']):.1%}, "
+                f"факт={float(item['observed_frequency']):.1%}"
+                for item in populated
+            ) or "нет заполненных диапазонов"
+            ece = class_report.get("ece")
+            mce = class_report.get("mce")
+            logs.append(
+                f"🎯 Калибровка 1X2 {label}: n={class_report.get('n', 0)}, "
+                f"ECE={float(ece):.4f}" if ece is not None else
+                f"🎯 Калибровка 1X2 {label}: n={class_report.get('n', 0)}, ECE=нет данных"
+            )
+            logs.append(
+                f"   Надёжность {label}: MCE={float(mce):.4f}; {summary}"
+                if mce is not None
+                else f"   Надёжность {label}: MCE=нет данных; {summary}"
+            )
+
     xg_ablation_report = (
         totals_backtest.get("xg_ablation") if isinstance(totals_backtest, dict) else None
     ) or {}
