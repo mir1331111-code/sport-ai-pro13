@@ -68,6 +68,22 @@ class InternationalScheduleTests(unittest.TestCase):
         self.assertTrue(_tsdb_league_meta("A League")[0].startswith("AU_"))
         self.assertTrue(_tsdb_league_meta("Australia A-League")[0].startswith("AU_"))
 
+    def test_tsdb_keeps_uefa_youth_league_club_teams_out_of_national_history(self):
+        youth = _tsdb_league_meta("UEFA U19 Youth League")
+        self.assertTrue(youth[0].startswith("Y_U19_"))
+        self.assertEqual(youth[1], "youth_club")
+        self.assertFalse(youth[3])
+
+        women_youth = _tsdb_league_meta("UEFA Women's U19 Youth League")
+        self.assertTrue(women_youth[0].startswith("W_Y_U19_"))
+        self.assertEqual(women_youth[1], "women_youth")
+        self.assertTrue(women_youth[2])
+        self.assertFalse(women_youth[3])
+
+        national = _tsdb_league_meta("UEFA U21 Championship")
+        self.assertEqual(national[0], "NT_U21")
+        self.assertTrue(national[3])
+
     def test_tsdb_keeps_fifa_club_world_cup_out_of_national_team_history(self):
         club_world_cup = _tsdb_league_meta("FIFA Club World Cup")
         self.assertEqual(club_world_cup, ("CLUB_WC", "club", False, False))
