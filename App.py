@@ -715,8 +715,11 @@ def _sync_forecast_results(force: bool = False):
         or os.environ.get("FDORG_TOKEN", "")
         or _configured_secret("FDORG_TOKEN", "fdorg_token")
     ).strip()
-    sstats_score_key = _api_key_default(
-        "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
+    sstats_score_key = (
+        st.session_state.get("sstats_api_key_input", "")
+        or _api_key_default(
+            "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
+        )
     ).strip()
     try:
         with st.spinner("Автоматически сверяю прогнозы с завершёнными матчами…"):
