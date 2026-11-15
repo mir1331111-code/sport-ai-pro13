@@ -56,6 +56,24 @@ def _card_id(card: dict) -> str:
     )
 
 
+def _canonical_pick(value: Any) -> str:
+    text = re.sub(r"\\s+", " ", str(value or "").strip())
+    total = _TOTAL_RE.fullmatch(text)
+    if total:
+        return f"Т{total.group(1).upper()} {float(total.group(2).replace(',', '.')):g}"
+    stat = _STAT_RE.fullmatch(text)
+    if stat:
+        prefix = "Угл" if stat.group(1).casefold() == "угл" else "Карты"
+        return f"{prefix} Т{stat.group(2).upper()} {float(stat.group(3).replace(',', '.')):g}"
+    btts = re.fullmatch(r"BTTS\\s+(да|yes|нет|no)", text, re.I)
+    if btts:
+        return "BTTS Да" if btts.group(1).casefold() in {"да", "yes"} else "BTTS Нет"
+    handicap = _AH_RE.fullmatch(text)
+    if handicap:
+        return f"Ф{handicap.group(1)} {float(handicap.group(2).replace(',', '.')):g}"
+    return text
+
+
 def _market_quote(card: dict, family: str, pick: str) -> float | None:
     sources = {
         "winner": card.get("market_odds"),
@@ -69,10 +87,9 @@ def _market_quote(card: dict, family: str, pick: str) -> float | None:
     if not isinstance(mapping, dict):
         return None
     # Canonical case and line formatting for provider labels.
-    if pick in mapping:
-        return _valid_odds(mapping[pick])
+    canonical = _canonical_pick(pick)
     for raw_pick, raw_price in mapping.items():
-        if str(raw_pick).strip().casefold() == str(pick).strip().casefold():
+        if _canonical_pick(raw_pick) == canonical:
             return _valid_odds(raw_price)
     return None
 
@@ -123,7 +140,10 @@ def _base_row(
     recommendation = _recommendation(card, family)
     value_verdict = (recommendation or {}).get("verdict") or {}
     value_best = (recommendation or {}).get("best") or ()
-    verified = recommendation is not None and str(value_best[1]) == str(pick)
+    verified = (
+        recommendation is not None
+        and _canonical_pick(value_best[1]) == _canonical_pick(pick)
+    )
 
     if verified:
         probability = _finite(value_verdict.get("prob")) or probability
@@ -157,6 +177,7 @@ def _base_row(
         "pick": pick,
         "label": label,
         "probability": probability,
+        "probability_basis": "win + half-win" if family == "handicap" else "модельная вероятность исхода",
         "odds": odds,
         "fair_odds": fair_odds,
         "model_ev": model_ev,
