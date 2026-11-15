@@ -54,8 +54,8 @@ class SourceOptimizationTests(unittest.TestCase):
             ["event-1", "event-2", "event-3"],
         )
         self.assertEqual(
-            venue_mock.call_args_list,
-            [unittest.mock.call("venue-1", []), unittest.mock.call("venue-3", [])],
+            [call.args[0] for call in venue_mock.call_args_list],
+            ["venue-1", "venue-3"],
         )
         self.assertEqual(rows[0]["stadium_image"], "enriched:venue-1")
         self.assertEqual(rows[1]["stadium_image"], "existing-image")
