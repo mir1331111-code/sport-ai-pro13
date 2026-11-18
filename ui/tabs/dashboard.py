@@ -8,7 +8,7 @@ import re
 
 import streamlit as st
 
-from betting.ranking import model_favorite
+from betting.ranking import model_favorite, rank_best_fixtures
 from data.fixture_time import app_timezone
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
 from ui.cards import _LEAGUE_FLAGS
@@ -400,37 +400,6 @@ def _kpi(label, value, note="", tone="", series=None, color="#39d49b"):
     )
 
 
-def _card_kickoff(card):
-    raw = card.get("kickoff_at") or card.get("date_iso") or card.get("date")
-    if isinstance(raw, datetime):
-        parsed = raw
-    else:
-        raw_text = str(raw or "").strip()
-        parsed = None
-        if raw_text:
-            try:
-                parsed = datetime.fromisoformat(raw_text.replace("Z", "+00:00"))
-            except ValueError:
-                for fmt in ("%d.%m.%Y", "%d.%m.%y", "%Y/%m/%d"):
-                    try:
-                        parsed = datetime.strptime(raw_text, fmt)
-                        break
-                    except ValueError:
-                        continue
-        if parsed is not None and parsed.time().replace(tzinfo=None).hour == 0 and parsed.minute == 0:
-            time_match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", str(card.get("time") or ""))
-            if time_match:
-                parsed = parsed.replace(hour=int(time_match.group(1)), minute=int(time_match.group(2)))
-    if parsed is None:
-        return None
-    tz = app_timezone()
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=tz)
-    else:
-        parsed = parsed.astimezone(tz)
-    return parsed
-
-
 def _quality_panel(cards):
     total = len(cards)
     summaries = [context_summary(card) for card in cards]
@@ -625,8 +594,15 @@ def render():
         )
     with filter_period:
         selected_period = st.selectbox(
-            "Период", ["Все матчи", "Ближайшие 24 ч"], index=0,
-            label_visibility="collapsed", key="dashboard_period_filter",
+            "Период",
+            [
+                "Сегодня · лучшие события",
+                "Ближайшие 24 часа · лучшие события",
+                "Весь горизонт скана · лучшие события",
+            ],
+            index=0,
+            label_visibility="collapsed",
+            key="dashboard_period_filter_v2",
         )
     with filter_refresh:
         refresh_dashboard = st.button(
@@ -642,13 +618,34 @@ def render():
             card for card in filtered_cards
             if str(card.get("league") or card.get("div") or "").strip() == selected_league
         ]
-    if selected_period == "Ближайшие 24 ч":
+
+    # The default view evaluates the full remaining local calendar day. It no
+    # longer takes the first five fixtures merely because they kick off first.
+    if selected_period == "Сегодня · лучшие события":
+        period_end = datetime.combine(
+            now.date() + timedelta(days=1),
+            datetime.min.time(),
+            tzinfo=now.tzinfo,
+        )
+        table_title = "Лучшие события сегодня · 1X2"
+    elif selected_period == "Ближайшие 24 часа · лучшие события":
         period_end = now + timedelta(hours=24)
-        filtered_cards = [
-            card for card in filtered_cards
-            if (kickoff := _card_kickoff(card)) is not None
-            and now <= kickoff <= period_end
-        ]
+        table_title = "Лучшие события ближайших 24 часов · 1X2"
+    else:
+        period_end = None
+        table_title = "Лучшие события всего горизонта · 1X2"
+
+    ranked_events = rank_best_fixtures(
+        filtered_cards,
+        now=now,
+        period_end=period_end,
+        limit=None,
+        min_sample_games=5,
+        min_probability=0.52,
+    )
+    selected_event_cards = [
+        item["card"] for item in ranked_events[:5]
+    ]
 
     brier = f"{metrics['brier']:.3f}" if metrics.get("brier") is not None else "—"
     log_loss = f"{metrics['log_loss']:.3f}" if metrics.get("log_loss") is not None else "—"
@@ -688,25 +685,27 @@ def render():
 
     left, right = st.columns([1.68, 1.0], gap="medium")
     with left:
-        table_rows = "".join(_match_table_row(card) for card in filtered_cards[:5])
+        table_rows = "".join(_match_table_row(card) for card in selected_event_cards)
         if not table_rows:
             table_rows = (
                 "<tr><td colspan='10' class='neo-empty-cell'>"
-                "Нет матчей для выбранных фильтров. Измени турнир или период либо обнови сканер."
+                "Нет событий, которые одновременно имеют будущий старт, корректный прогноз 1X2 "
+                "и минимум 5 домашних наблюдений хозяев и 5 выездных наблюдений гостей. "
+                "Слабые матчи не добавляются ради заполнения списка."
                 "</td></tr>"
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>MATCH INTELLIGENCE</span>"
-            "<h3>Ближайшие матчи — прогнозы модели</h3></div>"
-            f"<span class='neo-count-pill'>{len(filtered_cards)} матчей</span></div>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>MATCH INTELLIGENCE · DAILY RANKING</span>"
+            f"<h3>{esc(table_title)}</h3></div>"
+            f"<span class='neo-count-pill'>{len(ranked_events)} событий</span></div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
             "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Вариант</th>"
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {min(5, len(filtered_cards))} из {len(filtered_cards)} матчей в выбранном фильтре · котировки выводятся только при полной реальной линии.</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} лучших из {len(ranked_events)} прошедших фильтры событий · ранжирование: вероятность → отрыв от второго исхода → домашняя/выездная история · только предстоящие матчи. Котировки отображаются только при полной реальной линии.</div>"
             "</section>",
             unsafe_allow_html=True,
         )

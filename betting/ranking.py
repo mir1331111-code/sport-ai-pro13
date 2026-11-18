@@ -16,6 +16,8 @@ import math
 import hashlib
 import json
 import re
+from datetime import datetime
+from data.fixture_time import app_timezone, fixture_kickoff_local
 from data.team_names import normalize_team
 from typing import Optional
 
@@ -334,15 +336,20 @@ def model_favorite(card: object) -> dict | None:
     probability = probabilities[best_idx]
     margin = max(0.0, probability - probabilities[second_idx])
 
-    sample_games = _number(card.get("games"), 0.0) or 0.0
-    if sample_games <= 0:
-        features = card.get("independent_features") or {}
-        if not isinstance(features, dict):
-            features = {}
-        home_sample = _number(features.get("home_home_sample"), 0.0) or 0.0
-        away_sample = _number(features.get("away_away_sample"), 0.0) or 0.0
-        sample_games = min(home_sample, away_sample)
-    sample_games = max(0.0, sample_games)
+    features = card.get("independent_features") or {}
+    if not isinstance(features, dict):
+        features = {}
+    # Scanner cards carry true venue-specific support. Do not replace zero or
+    # sparse home/away samples with the broader all-venue Engine.games count.
+    if "home_home_sample" in features or "away_away_sample" in features:
+        home_sample = max(0.0, _number(features.get("home_home_sample"), 0.0) or 0.0)
+        away_sample = max(0.0, _number(features.get("away_away_sample"), 0.0) or 0.0)
+    else:
+        # Backward compatibility for older persisted cards and simple callers.
+        legacy_sample = max(0.0, _number(card.get("games"), 0.0) or 0.0)
+        home_sample = legacy_sample
+        away_sample = legacy_sample
+    sample_games = min(home_sample, away_sample)
     # Probability is the strict primary key. Separation and sample size are
     # used only as tie-breakers; a lower-probability event never jumps above a
     # higher-probability event because it has more historical matches.
@@ -371,10 +378,110 @@ def model_favorite(card: object) -> dict | None:
         "probability": probability,
         "probability_margin": margin,
         "sample_games": int(sample_games),
+        "home_sample": int(home_sample),
+        "away_sample": int(away_sample),
         "sample_support": sample_support,
         "rank_score": rank_score,
         "strength": strength,
     }
+
+
+def rank_best_fixtures(
+    cards: object,
+    *,
+    now: datetime | None = None,
+    period_end: datetime | None = None,
+    limit: int | None = 5,
+    min_sample_games: int = 5,
+    min_probability: float = 0.52,
+) -> list[dict]:
+    """Rank the best upcoming fixtures in a time window, not by kickoff order.
+
+    The selection is forecast-only: it requires a valid 1X2 distribution,
+    at least five dated home-at-home observations for the home team and
+    away-at-away observations for the away team, and a non-draw-like favourite.
+    Bookmaker Value/EV/Edge/Kelly approval remains an independent process.
+    """
+    if not isinstance(cards, list):
+        return []
+
+    tz = app_timezone()
+    local_now = datetime.now(tz) if now is None else (
+        now.replace(tzinfo=tz) if now.tzinfo is None else now.astimezone(tz)
+    )
+    local_end = None
+    if period_end is not None:
+        local_end = (
+            period_end.replace(tzinfo=tz)
+            if period_end.tzinfo is None
+            else period_end.astimezone(tz)
+        )
+        if local_end <= local_now:
+            return []
+
+    try:
+        history_floor = max(0, int(min_sample_games))
+    except (TypeError, ValueError, OverflowError):
+        history_floor = 5
+    try:
+        probability_floor = float(min_probability)
+    except (TypeError, ValueError, OverflowError):
+        probability_floor = 0.52
+    if not math.isfinite(probability_floor):
+        probability_floor = 0.52
+    probability_floor = min(1.0, max(0.0, probability_floor))
+
+    timezone_name = getattr(tz, "key", None)
+    unique: dict[tuple, dict] = {}
+    for index, card in enumerate(cards):
+        if not isinstance(card, dict):
+            continue
+        kickoff = fixture_kickoff_local(card, timezone_name=timezone_name)
+        if kickoff is None or kickoff <= local_now:
+            continue
+        if local_end is not None and kickoff >= local_end:
+            continue
+
+        features = card.get("independent_features")
+        if (
+            not isinstance(features, dict)
+            or "home_home_sample" not in features
+            or "away_away_sample" not in features
+        ):
+            # A legacy total-games counter is not proof of venue-specific history.
+            continue
+        prediction = model_favorite(card)
+        if prediction is None:
+            continue
+        if (
+            prediction["home_sample"] < history_floor
+            or prediction["away_sample"] < history_floor
+        ):
+            continue
+        if prediction["probability"] < probability_floor:
+            continue
+
+        key = _fixture_key(card, index)
+        candidate = {"card": card, **prediction, "kickoff": kickoff}
+        current = unique.get(key)
+        if current is None or _duplicate_quality(card) > _duplicate_quality(current["card"]):
+            unique[key] = candidate
+
+    ranked = list(unique.values())
+    ranked.sort(key=lambda item: (
+        -item["probability"],
+        -item["probability_margin"],
+        -item["sample_games"],
+        -int(bool(item["card"].get("xg_used"))),
+        item["kickoff"],
+        str(item["card"].get("match") or item["card"].get("match_ru") or ""),
+    ))
+    if limit is not None:
+        try:
+            ranked = ranked[:max(0, int(limit))]
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return ranked
 
 
 def rank_model_favorites_with_minimum(

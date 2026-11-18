@@ -1,7 +1,9 @@
 import unittest
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from betting.ranking import (
-    model_favorite, rank_model_favorites,
+    model_favorite, rank_best_fixtures, rank_model_favorites,
     rank_model_favorites_with_minimum,
 )
 
@@ -223,6 +225,99 @@ class ModelFavoriteTests(unittest.TestCase):
         ranked = rank_model_favorites_with_minimum(cards, minimum=7, limit=10)
         self.assertEqual(ranked[0]["card"]["match"], "Team 6 vs Opponent")
         self.assertFalse(ranked[0]["history_sufficient"])
+
+
+    def test_venue_history_overrides_total_match_count(self):
+        result = model_favorite({
+            "home": "Home FC", "away": "Away FC",
+            "p1": 0.66, "px": 0.21, "p2": 0.13,
+            "games": 22,
+            "independent_features": {
+                "home_home_sample": 3,
+                "away_away_sample": 8,
+            },
+        })
+        self.assertEqual(result["home_sample"], 3)
+        self.assertEqual(result["away_sample"], 8)
+        self.assertEqual(result["sample_games"], 3)
+
+    def test_daily_shortlist_ranks_best_forecasts_across_the_whole_day(self):
+        tz = ZoneInfo("Europe/Warsaw")
+        now = datetime(2026, 11, 18, 8, 0, tzinfo=tz)
+        next_day = datetime(2026, 11, 19, 0, 0, tzinfo=tz)
+        def card(home, away, kickoff, probability, home_n=7, away_n=7, games=18):
+            return {
+                "home": home, "away": away,
+                "match": f"{home} vs {away}",
+                "date": f"18.11 {kickoff}",
+                "date_iso": "2026-11-18",
+                "time": kickoff,
+                "p1": probability,
+                "px": 0.20,
+                "p2": 0.80 - probability,
+                "games": games,
+                "independent_features": {
+                    "home_home_sample": home_n,
+                    "away_away_sample": away_n,
+                },
+            }
+
+        early = card("Early FC", "Side FC", "09:00", 0.61)
+        late_best = card("Late United", "Opponent FC", "18:30", 0.74)
+        weak_history = card("Unknown FC", "Other FC", "19:00", 0.79,
+                            home_n=0, away_n=0, games=30)
+        low_probability = card("Even FC", "Other Side", "20:00", 0.50)
+        legacy_without_venue_samples = card(
+            "Legacy FC", "Other FC", "21:00", 0.88,
+        )
+        legacy_without_venue_samples.pop("independent_features")
+        yesterday = {
+            **card("Past FC", "Other FC", "23:00", 0.90),
+            "date": "17.11 23:00",
+            "date_iso": "2026-11-17",
+        }
+        tomorrow = {
+            **card("Tomorrow FC", "Other FC", "01:00", 0.95),
+            "date": "19.11 01:00",
+            "date_iso": "2026-11-19",
+        }
+
+        ranked = rank_best_fixtures(
+            [
+                early, late_best, weak_history, low_probability,
+                legacy_without_venue_samples, yesterday, tomorrow,
+            ],
+            now=now, period_end=next_day, limit=None,
+            min_sample_games=5, min_probability=0.52,
+        )
+        self.assertEqual(
+            [item["card"]["match"] for item in ranked],
+            ["Late United vs Opponent FC", "Early FC vs Side FC"],
+        )
+        self.assertGreater(ranked[0]["kickoff"], ranked[1]["kickoff"])
+
+    def test_daily_shortlist_respects_requested_window_and_limit(self):
+        tz = ZoneInfo("Europe/Warsaw")
+        now = datetime(2026, 11, 18, 8, 0, tzinfo=tz)
+        cards = [
+            {
+                "home": f"Home {i}", "away": f"Away {i}",
+                "match": f"Home {i} vs Away {i}",
+                "date_iso": "2026-11-18", "time": f"{10 + i:02d}:00",
+                "p1": 0.60 + i * 0.02, "px": 0.20, "p2": 0.20 - i * 0.02,
+                "independent_features": {
+                    "home_home_sample": 6, "away_away_sample": 6,
+                },
+            }
+            for i in range(5)
+        ]
+        end = datetime(2026, 11, 18, 12, 0, tzinfo=tz)
+        ranked = rank_best_fixtures(
+            cards, now=now, period_end=end, limit=2,
+        )
+        self.assertEqual(len(ranked), 2)
+        self.assertTrue(all(item["kickoff"] < end for item in ranked))
+        self.assertEqual(ranked[0]["card"]["match"], "Home 1 vs Away 1")
 
 
 if __name__ == "__main__":

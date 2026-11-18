@@ -66,7 +66,7 @@ def fixture_kickoff_local(
         except (TypeError, ValueError, OverflowError):
             pass
 
-    fixture_date = _parse_local_date(row.get("Date") or row.get("date"))
+    fixture_date = _parse_local_date(row.get("Date") or row.get("date_iso") or row.get("date"))
     fixture_time = _parse_clock(row.get("Time") or row.get("time"))
     if fixture_date is None or fixture_time is None:
         return None
