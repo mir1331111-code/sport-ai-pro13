@@ -45,6 +45,20 @@ class FixtureKickoffTimeTests(unittest.TestCase):
         self.assertIsNotNone(kickoff)
         self.assertGreater(kickoff, now)
 
+    def test_iso_fixture_date_takes_precedence_over_human_display_label(self):
+        kickoff = fixture_kickoff_local(
+            {
+                "date": "18.11 18:30",
+                "date_iso": "2026-11-18",
+                "time": "18:30",
+            },
+            timezone_name="Europe/Warsaw",
+        )
+        self.assertEqual(
+            kickoff,
+            datetime(2026, 11, 18, 18, 30, tzinfo=ZoneInfo("Europe/Warsaw")),
+        )
+
     def test_naive_kickoff_utc_is_treated_as_utc(self):
         kickoff = fixture_kickoff_local(
             {"kickoff_utc": "2026-11-06T22:00:00"},
