@@ -28,6 +28,10 @@ _FIXTURE_VISUAL_FIELDS = (
     "venue",
     "stadium",
 )
+_FIXTURE_PROVIDER_ID_FIELDS = (
+    "home_team_tsdb_id",
+    "away_team_tsdb_id",
+)
 
 
 def enrich_fixture_visual_metadata(
@@ -61,18 +65,20 @@ def enrich_fixture_visual_metadata(
             fixtures_matched += 1
             # Prefer the matching provider event with the broadest visual
             # coverage when a feed contains duplicate rows for the same game.
+            metadata_fields = _FIXTURE_VISUAL_FIELDS + _FIXTURE_PROVIDER_ID_FIELDS
             source = max(
                 candidates,
                 key=lambda candidate: sum(
-                    bool(candidate.get(field)) for field in _FIXTURE_VISUAL_FIELDS
+                    bool(candidate.get(field)) for field in metadata_fields
                 ),
             )
-            for field in _FIXTURE_VISUAL_FIELDS:
+            for field in metadata_fields:
                 if clean.get(field) in (None, "", {}, []) and source.get(field) not in (
                     None, "", {}, [],
                 ):
                     clean[field] = source[field]
-                    assets_added += 1
+                    if field in _FIXTURE_VISUAL_FIELDS:
+                        assets_added += 1
         if any(clean.get(field) not in (None, "", {}, []) for field in _FIXTURE_VISUAL_FIELDS):
             fixtures_with_assets += 1
         result.append(clean)
