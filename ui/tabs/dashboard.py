@@ -355,6 +355,7 @@ def _history_panel(snapshot, roi, profit, turnover):
     brier_text = f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—"
     log_text = f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—"
     roi_text = f"{roi:+.1f}%" if turnover > 0 else "—"
+    profit_text = f"{profit:+.2f}" if turnover > 0 else "—"
     return (
         "<section class='neo-panel neo-bottom-panel'>"
         "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>HISTORY & COVERAGE</span>"
@@ -375,7 +376,7 @@ def _history_panel(snapshot, roi, profit, turnover):
         "<div class='neo-history-foot'>"
         f"<span>Период {esc(first_date)} — {esc(last_date)}</span>"
         f"<span>Brier {esc(brier_text)} · Log Loss {esc(log_text)}</span>"
-        f"<span>ROI виртуального портфеля {esc(roi_text)} · прибыль {profit:+.2f}</span>"
+        f"<span>ROI виртуального портфеля {esc(roi_text)} · прибыль {esc(profit_text)}</span>"
         "<b class='neo-baseline-note'>Baseline: отдельный эталонный снимок ещё не зафиксирован</b>"
         "</div></section>"
     )
