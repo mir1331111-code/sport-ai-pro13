@@ -86,6 +86,8 @@ class SourceOptimizationTests(unittest.TestCase):
                 "idEvent": "event-1", "idVenue": "venue-1",
                 "strSport": "Soccer", "strLeague": "Premier League",
                 "strHomeTeam": "Home One", "strAwayTeam": "Away One",
+                "strHomeTeamBadge": "https://assets.test/home-one.png",
+                "strAwayTeamBadge": "https://assets.test/away-one.png",
                 "dateEvent": "2026-11-16", "strVenueThumb": "",
             },
             {
@@ -119,6 +121,13 @@ class SourceOptimizationTests(unittest.TestCase):
         self.assertEqual(rows[0]["stadium_image"], "enriched:venue-1")
         self.assertEqual(rows[1]["stadium_image"], "existing-image")
         self.assertEqual(rows[2]["stadium_image"], "enriched:venue-3")
+        self.assertEqual(rows[0]["home_badge"], "https://assets.test/home-one.png")
+        self.assertEqual(rows[0]["away_badge"], "https://assets.test/away-one.png")
+        self.assertIn("/api/v1/json/123/eventsday.php", get_mock.call_args.args[0])
+        self.assertTrue(any(
+            call.args[0].startswith("tsdb_day_v12_")
+            for call in _cache_put.call_args_list
+        ))
 
 
 if __name__ == "__main__":
