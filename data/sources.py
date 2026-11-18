@@ -2463,13 +2463,13 @@ def team_logo_url(team_name: str) -> Optional[str]:
         return None
 
     cache_token = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
-    found_key = f"tsdb_team_logo_v2_found_{cache_token}"
+    found_key = f"tsdb_team_logo_v3_found_{cache_token}"
     cached = cache_get(found_key, _TEAM_LOGO_CACHE_TTL)
     if isinstance(cached, dict):
         url = str(cached.get("url") or "").strip()
         return url if url.startswith("https://") else None
 
-    miss_key = f"tsdb_team_logo_v2_miss_{cache_token}"
+    miss_key = f"tsdb_team_logo_v3_miss_{cache_token}"
     if cache_get(miss_key, _TEAM_LOGO_MISS_TTL) is not None:
         return None
 
@@ -2493,7 +2493,12 @@ def team_logo_url(team_name: str) -> Optional[str]:
             if sport and sport not in {"soccer", "football"}:
                 continue
             name = str(team.get("strTeam") or "").strip()
-            badge = str(team.get("strTeamBadge") or team.get("strTeamLogo") or "").strip()
+            badge = str(
+                team.get("strBadge")
+                or team.get("strTeamBadge")
+                or team.get("strTeamLogo")
+                or ""
+            ).strip()
             if not badge.startswith("https://"):
                 continue
             score = _team_logo_match_score(requested, name)
