@@ -26,7 +26,7 @@ from storage import user_datasets
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches,
                           sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
-                          footballapi_xg_history, team_logo_url)
+                          footballapi_xg_history, team_badge_url_by_id)
 from data.fixture_merge import (
     enforce_sstats_market_card, enforce_sstats_odds_only,
     enrich_fixture_visual_metadata, is_sstats_market_source, merge_fixture_sources,
@@ -2730,38 +2730,41 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             rows = _safe_filter(fixture_sources)
         rows = enforce_sstats_odds_only(rows)
 
-        # Secondary schedule feeds sometimes fail to match the primary SStats
-        # fixture names exactly. Resolve missing club crests individually as a
-        # bounded fallback; positive and negative answers are cached by team.
-        logo_by_team = {}
+        # Team-name search is restricted on TheSportsDB's free tier.
+        # Use the exact provider team IDs attached to matching event records.
+        logo_by_team_id = {}
         logo_lookup_budget = 12
         logo_lookups = 0
         logo_fields_added = 0
         for fixture_row in rows:
-            for team_field, badge_field in (
-                ("HomeTeam", "home_badge"),
-                ("AwayTeam", "away_badge"),
+            for badge_field, id_field in (
+                ("home_badge", "home_team_tsdb_id"),
+                ("away_badge", "away_team_tsdb_id"),
             ):
                 if fixture_row.get(badge_field):
                     continue
-                team_name = str(fixture_row.get(team_field) or "").strip()
-                if not team_name:
+                team_id = str(fixture_row.get(id_field) or "").strip()
+                if not team_id or not team_id.isdigit():
                     continue
-                team_key = normalize_team(team_name) or team_name.casefold()
-                if team_key not in logo_by_team:
+                if team_id not in logo_by_team_id:
                     if logo_lookups >= logo_lookup_budget:
                         continue
-                    logo_by_team[team_key] = team_logo_url(team_name, logs=logs)
+                    logo_by_team_id[team_id] = team_badge_url_by_id(team_id, logs=logs)
                     logo_lookups += 1
-                badge_url = logo_by_team.get(team_key)
+                badge_url = logo_by_team_id.get(team_id)
                 if badge_url:
                     fixture_row[badge_field] = badge_url
                     logo_fields_added += 1
         if logo_lookups:
             logs.append(
-                "🛡 Эмблемы команд — TheSportsDB: "
-                f"проверено {logo_lookups} названий, добавлено изображений {logo_fields_added}; "
-                "результаты поиска кэшируются."
+                "🛡 Эмблемы команд — TheSportsDB lookupteam по ID: "
+                f"проверено {logo_lookups} ID, добавлено изображений {logo_fields_added}; "
+                "результаты кэшируются на 30 дней."
+            )
+        else:
+            logs.append(
+                "ℹ️ Эмблемы команд: в текущих визуальных данных нет ID TheSportsDB; "
+                "добавление эмблем пропущено без поиска по названию."
             )
 
         # SStats rows carry their own game IDs and bookmaker prices. When SStats
@@ -3440,6 +3443,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "context_forecasts": context_forecasts,
                 "home_badge": r.get("home_badge") or "",
                 "away_badge": r.get("away_badge") or "",
+                "home_team_tsdb_id": r.get("home_team_tsdb_id") or "",
+                "away_team_tsdb_id": r.get("away_team_tsdb_id") or "",
                 "league_badge": r.get("league_badge") or "",
                 "venue": r.get("venue") or r.get("stadium") or "",
                 "stadium_image": r.get("stadium_image") or r.get("venue_image") or "",
