@@ -42,7 +42,8 @@ class SourceOptimizationTests(unittest.TestCase):
             ]
         })
 
-        badge = sources.team_logo_url("Arnavutkoy Belediyespor")
+        logs = []
+        badge = sources.team_logo_url("Arnavutkoy Belediyespor", logs=logs)
 
         self.assertEqual(badge, "https://assets.test/arnavutkoy.png")
         self.assertEqual(get_mock.call_args.args[0], sources._TSDB_TEAM_SEARCH_URL)
@@ -50,6 +51,7 @@ class SourceOptimizationTests(unittest.TestCase):
         self.assertEqual(get_mock.call_args.kwargs["params"], {"t": "Arnavutkoy Belediyespor"})
         self.assertTrue(cache_put_mock.called)
         self.assertTrue(any("tsdb_team_logo_v3_found_" in call.args[0] for call in cache_put_mock.call_args_list))
+        self.assertTrue(any("найдена" in line for line in logs))
 
     @patch("data.sources.cache_get", side_effect=[None, None])
     @patch("data.sources.cache_put")
