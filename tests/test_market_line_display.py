@@ -51,6 +51,39 @@ class MarketLineDisplayTests(unittest.TestCase):
         self.assertIn(">2.15</b>", rendered)
         self.assertNotIn("Реального кэфа для выбранного исхода нет", rendered)
 
+    def test_partial_sstats_line_is_explained_without_being_called_real(self):
+        card = {
+            "match": "Home FC vs Away FC",
+            "match_ru": "Home FC — Away FC",
+            "date": "18.11",
+            "div": "E0",
+            "league": "Premier League",
+            "games": 2,
+            "odds_source": "sstats",
+            "market_odds": {},
+            "one_x_two_diagnostics": {
+                "status": "partial",
+                "reason": "Нет котировки на П2.",
+                "quotes_by_bookmaker": [{
+                    "bookmaker": "Book A",
+                    "quotes": {"П1": 2.1, "X": 3.4},
+                    "missing_outcomes": ["П2"],
+                }],
+            },
+            "verdict": {
+                "label": "Победа хозяев", "pick": "П1", "prob": 0.5,
+                "odd": None, "real_odds": False, "confidence": "низкая",
+                "conf_color": "#f87171", "reasons": [], "alternatives": [],
+                "is_action": False,
+            },
+        }
+        rendered = render_verdict_card(card, 0.60)
+        self.assertIn("SStats", rendered)
+        self.assertIn("частичная линия", rendered)
+        self.assertIn("Book A", rendered)
+        self.assertIn("нет: П2", rendered)
+        self.assertNotIn("Реальная линия 1X2", rendered)
+
     def test_invalid_market_line_is_not_rendered(self):
         card = {
             "match": "Arsenal vs Chelsea",

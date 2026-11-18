@@ -32,6 +32,48 @@ class SStatsMarketParserTests(unittest.TestCase):
             parsed["bookmaker_by_pick"],
             {"П1": "Book A", "X": "Book A", "П2": "Book A"},
         )
+        self.assertEqual(parsed["one_x_two_diagnostics"]["status"], "confirmed")
+
+    def test_reports_partial_1x2_outcomes_without_publishing_a_market_line(self):
+        parsed = _sstats_parse_markets([{
+            "bookmakerName": "Book A",
+            "odds": [{
+                "marketName": "Match Result",
+                "odds": [
+                    {"name": "Home", "value": "2.10"},
+                    {"name": "Draw", "value": "3.40"},
+                ],
+            }],
+        }])
+        self.assertNotIn("П1", parsed)
+        self.assertNotIn("X", parsed)
+        self.assertNotIn("П2", parsed)
+        diagnostic = parsed["one_x_two_diagnostics"]
+        self.assertEqual(diagnostic["status"], "partial")
+        self.assertEqual(diagnostic["quotes_by_bookmaker"][0]["missing_outcomes"], ["П2"])
+
+    def test_reports_invalid_or_anonymous_complete_1x2_lines(self):
+        invalid = _sstats_parse_markets([
+            bookmaker("Bad Book", "Match Result", 8.25, 15.00, 7.60),
+        ])
+        self.assertEqual(invalid["one_x_two_diagnostics"]["status"], "invalid_overround")
+
+        anonymous = _sstats_parse_markets([{
+            "odds": [{
+                "marketName": "Match Result",
+                "odds": [
+                    {"name": "Home", "value": "2.10"},
+                    {"name": "Draw", "value": "3.40"},
+                    {"name": "Away", "value": "3.60"},
+                ],
+            }],
+        }])
+        self.assertEqual(anonymous["one_x_two_diagnostics"]["status"], "unverified_bookmaker")
+        self.assertNotIn("П1", anonymous)
+
+    def test_reports_missing_1x2_market_explicitly(self):
+        parsed = _sstats_parse_markets([])
+        self.assertEqual(parsed["one_x_two_diagnostics"]["status"], "missing")
 
     def test_rejects_ambiguous_winner_and_first_half_markets(self):
         parsed = _sstats_parse_markets([

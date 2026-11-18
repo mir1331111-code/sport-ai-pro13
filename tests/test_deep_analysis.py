@@ -176,6 +176,23 @@ class TopMatchSelectionTests(unittest.TestCase):
         card["asian_handicap_market_odds"] = {}
         self.assertEqual(len(select_top_matches([card])), 1)
 
+    def test_low_history_fallback_keeps_fixtures_for_cautious_ai_review(self):
+        card = make_card(home_sample=1, away_sample=2)
+        features = card["independent_features"]
+        for field in (
+            "home_scored_at_home_avg", "home_conceded_at_home_avg",
+            "away_scored_away_avg", "away_conceded_away_avg",
+        ):
+            features.pop(field, None)
+
+        self.assertEqual(select_top_matches([card]), [])
+        selected = select_top_matches([card], allow_low_history=True)
+        self.assertEqual(len(selected), 1)
+        self.assertFalse(selected[0]["history_ready"])
+        self.assertEqual(selected[0]["history_status"], "insufficient")
+        self.assertIn("ознакомительный", selected[0]["label"])
+        self.assertEqual(build_match_dossier(card)["quality_cap"], "low")
+
     def test_diagnostics_explain_history_and_market_coverage(self):
         cards = [
             make_card(),
@@ -342,6 +359,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         request = post.call_args.kwargs["json"]
         self.assertEqual(request["reasoning_effort"], "low")
         self.assertEqual(request["reasoning_format"], "hidden")
+        self.assertFalse(request["include_reasoning"])
         self.assertEqual(request["response_format"]["type"], "json_schema")
         prompt = request["messages"][0]["content"]
         self.assertIn("Referee Example", prompt)

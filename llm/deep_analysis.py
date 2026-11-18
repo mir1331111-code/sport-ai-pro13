@@ -212,11 +212,14 @@ def select_top_matches(
     *,
     limit: int = MAX_TOP_MATCHES,
     min_team_history: int = MIN_TOP_TEAM_HISTORY,
+    allow_low_history: bool = False,
 ) -> list[dict]:
-    """Select the best-documented matches, not just the statistical model's favourites.
+    """Select evidence-rich fixtures, optionally retaining low-history matches for cautious AI review.
 
-    Selection uses venue-specific history, xG coverage and independently observed
-    corners/cards data. It does not require a SStats odds line or a 65% model pick.
+    The default remains strict for callers that require a statistically supported
+    shortlist. The scanner may opt into low-history fallback so an independent AI
+    can explain uncertainty instead of silently skipping every fixture. Such
+    fallback dossiers are quality-capped to low and never bypass betting gates.
     """
     try:
         max_items = min(MAX_TOP_MATCHES, max(0, int(limit)))
@@ -226,27 +229,42 @@ def select_top_matches(
         return []
 
     unique: dict[str, dict] = {}
+    history_ready_by_identity: dict[str, bool] = {}
     for card in cards:
         if not isinstance(card, dict):
             continue
+        home, away = _split_teams(card)
+        if not home or not away or home == "Команда не указана" or away == "Команда не указана":
+            continue
+        if not str(card.get("fixture_id") or card.get("sstats_game_id") or "").strip() and not str(card.get("date_iso") or "").strip():
+            continue
         features = card.get("independent_features") or {}
-        if not has_sufficient_history(features):
-            continue
-        try:
-            home_n = int(features.get("home_home_sample") or 0)
-            away_n = int(features.get("away_away_sample") or 0)
-        except (TypeError, ValueError):
-            continue
-        if min(home_n, away_n) < int(min_team_history):
+        features = features if isinstance(features, dict) else {}
+        home_n = max(0, int(_number(features.get("home_home_sample")) or 0))
+        away_n = max(0, int(_number(features.get("away_away_sample")) or 0))
+        history_ready = (
+            has_sufficient_history(features)
+            and min(home_n, away_n) >= int(min_team_history)
+        )
+        if not history_ready and not allow_low_history:
             continue
         identity = _candidate_identity(card)
+        if not identity or identity == "||":
+            continue
         previous = unique.get(identity)
-        if previous is None or _candidate_evidence(card) > _candidate_evidence(previous):
+        previous_ready = history_ready_by_identity.get(identity, False)
+        if previous is None or (
+            history_ready, _candidate_evidence(card)
+        ) > (
+            previous_ready, _candidate_evidence(previous)
+        ):
             unique[identity] = card
+            history_ready_by_identity[identity] = history_ready
 
     ranked = sorted(
         unique.values(),
         key=lambda card: (
+            history_ready_by_identity.get(_candidate_identity(card), False),
             _candidate_evidence(card),
             str(card.get("date_iso") or ""),
             _candidate_identity(card),
@@ -256,15 +274,22 @@ def select_top_matches(
     result = []
     for card in ranked[:max_items]:
         features = card.get("independent_features") or {}
-        home_n = int(features.get("home_home_sample") or 0)
-        away_n = int(features.get("away_away_sample") or 0)
+        features = features if isinstance(features, dict) else {}
+        home_n = max(0, int(_number(features.get("home_home_sample")) or 0))
+        away_n = max(0, int(_number(features.get("away_away_sample")) or 0))
+        history_ready = history_ready_by_identity.get(_candidate_identity(card), False)
         result.append({
             "card": card,
             "sample_games": min(home_n, away_n),
             "home_sample_games": home_n,
             "away_sample_games": away_n,
             "evidence_score": _candidate_evidence(card),
-            "label": "максимум доступной истории",
+            "history_ready": history_ready,
+            "history_status": "sufficient" if history_ready else "insufficient",
+            "label": (
+                "достаточная независимая история" if history_ready
+                else "ознакомительный AI-разбор · история ограничена"
+            ),
         })
     return result
 
@@ -407,7 +432,10 @@ def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
     context_complete = (
         home_confirmed and away_confirmed and referee_confirmed and injury_feed_confirmed
     )
-    if context_complete and min(home_sample, away_sample) >= 8:
+    goal_history_complete = has_sufficient_history(features)
+    if not goal_history_complete:
+        quality_cap = "low"
+    elif context_complete and min(home_sample, away_sample) >= 8:
         quality_cap = "high"
     elif min(home_sample, away_sample) >= MIN_TOP_TEAM_HISTORY:
         quality_cap = "medium"
@@ -501,6 +529,7 @@ _DEEP_ANALYSIS_SYSTEM_PROMPT = """Ты — независимый предмат
 - Угловые: ожидаемые угловые хозяев/гостей и ТБ 8.5/9.5/10.5/11.5. Используй только переданную историю угловых.
 - Карточки: ожидаемые карточки хозяев/гостей и ТБ 2.5/3.5/4.5/5.5. Используй только переданную историю карточек.
 Если для рынка нет достаточной фактической выборки, верни null для всей группы рынка. Не переноси средние одного рынка на другой. Вероятности Over должны быть монотонными: чем выше линия, тем ниже или равна вероятность.
+Если история команд неполная или отсутствует, всё равно дай осторожную оценку 1X2, но явно укажи, что статистической основы недостаточно и data_quality должно быть low. Не используй репутацию клуба, название лиги или догадки как замену истории; не создавай уверенный прогноз. Выбирай близкое к нейтральному распределение и перечисли недостающие показатели в risks.
 - составы: оценивай влияние только игроков из подтверждённого стартового XI; неподтверждённый состав обозначай как неизвестный;
 - травмы/дисквалификации: используй только переданные записи. Пустой или неподтверждённый фид не доказывает отсутствие травм;
 - судья: анализируй только подтверждённое назначение и переданную статистику;
@@ -899,6 +928,7 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
             body["max_completion_tokens"] = 128
             body["reasoning_effort"] = "low"
             body["reasoning_format"] = "hidden"
+            body["include_reasoning"] = False
         else:
             body["max_tokens"] = 64
         url = f"{base}/chat/completions"
@@ -1083,10 +1113,11 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         if not is_gemini:
             body["temperature"] = 0.2
         if is_gpt_oss:
-            body["max_completion_tokens"] = 6144
+            body["max_completion_tokens"] = 8192
             body.update({
                 "reasoning_effort": "low",
                 "reasoning_format": "hidden",
+                "include_reasoning": False,
                 "response_format": _DEEP_ANALYSIS_RESPONSE_FORMAT,
             })
         elif is_groq:

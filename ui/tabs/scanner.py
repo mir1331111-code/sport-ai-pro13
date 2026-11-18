@@ -2899,6 +2899,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             market_odds = dict(r.get("market_odds") or {})
             odds_source = str(r.get("odds_source") or ("sstats" if market_odds else "no_market"))
             bookmaker_by_pick = dict(r.get("bookmaker_by_pick") or {})
+            one_x_two_diagnostics = dict(r.get("one_x_two_diagnostics") or {})
             if market_odds and odds_source in {"", "no_market", "model_only"}:
                 odds_source = "sstats"
             total_market_odds = dict(r.get("total_market_odds") or {})
@@ -2947,21 +2948,40 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 for key in ("П1", "X", "П2")
                                 if detailed.get(key) is not None
                             }
-                            # Full odds are bookmaker-specific; prefer the best
-                            # available decimal price over the compact close price,
-                            # and keep the bookmaker name paired with that best price.
                             detailed_bookmakers = detailed.get("bookmaker_by_pick") or {}
-                            for key, value in detailed_1x2.items():
-                                current = float(market_odds.get(key) or 0)
-                                if float(value) >= current:
-                                    market_odds[key] = float(value)
-                                    if detailed_bookmakers.get(key):
-                                        bookmaker_by_pick[key] = detailed_bookmakers[key]
-                            if detailed_1x2:
+                            detailed_diagnostic = detailed.get("one_x_two_diagnostics") or {}
+                            # Never maximize each outcome independently: that would
+                            # stitch prices from different books into a fake 1X2 line.
+                            # Replace compact quotes only with one confirmed named line.
+                            if (
+                                detailed_diagnostic.get("status") == "confirmed"
+                                and all(key in detailed_1x2 for key in ("П1", "X", "П2"))
+                                and all(detailed_bookmakers.get(key) for key in ("П1", "X", "П2"))
+                                and len({
+                                    str(detailed_bookmakers.get(key)).strip().casefold()
+                                    for key in ("П1", "X", "П2")
+                                }) == 1
+                            ):
+                                market_odds = {
+                                    key: float(detailed_1x2[key])
+                                    for key in ("П1", "X", "П2")
+                                }
+                                selected_book = str(detailed_bookmakers["П1"]).strip()
+                                bookmaker_by_pick = {
+                                    key: selected_book for key in ("П1", "X", "П2")
+                                }
                                 odds_source = "sstats"
-                                # SStats detailed quotes are the selected primary line.
-                                # Do not mix in a different provider's line below.
+                                one_x_two_diagnostics = detailed_diagnostic
                                 candidates = []
+                            else:
+                                status_rank = {
+                                    "missing": 0, "partial": 1, "unverified_bookmaker": 2,
+                                    "invalid_overround": 3, "confirmed": 4,
+                                }
+                                if status_rank.get(detailed_diagnostic.get("status"), 0) > status_rank.get(
+                                    one_x_two_diagnostics.get("status"), 0
+                                ):
+                                    one_x_two_diagnostics = detailed_diagnostic
                             for group in (
                                 "total_market_odds", "btts_market_odds",
                                 "stat_market_odds", "asian_handicap_market_odds",
@@ -3293,6 +3313,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "odds_source": odds_source,
                 "market_odds": dict(market_odds),
                 "bookmaker_by_pick": dict(bookmaker_by_pick),
+                "one_x_two_diagnostics": dict(one_x_two_diagnostics),
                 "total_market_odds": dict(total_market_odds),
                 "total_market_book_count": dict(total_market_book_count),
                 "total_market_confirmed": dict(total_market_confirmed),
@@ -3386,7 +3407,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
         top_match_items = select_top_matches(
             cards, limit=MAX_TOP_MATCHES, min_team_history=5,
+            allow_low_history=True,
         )
+        strict_top_count = sum(bool(item.get("history_ready")) for item in top_match_items)
+        low_history_top_count = len(top_match_items) - strict_top_count
         logs.append(
             "🏆 TOP MATCHES · независимый shortlist: "
             f"история команд ≥5: {top_diagnostics['enough_venue_history']}; "
@@ -3395,6 +3419,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"xG-история: {top_diagnostics['with_xg_history']}; "
             f"угловые: {top_diagnostics['with_corners_history']}; "
             f"карточки: {top_diagnostics['with_cards_history']}; "
+            f"строгий shortlist {strict_top_count}; "
+            f"ознакомительный AI-shortlist без достаточной истории {low_history_top_count}; "
             f"отобрано {len(top_match_items)}/{MAX_TOP_MATCHES}."
         )
         coverage = top_diagnostics.get("division_coverage") or []
@@ -3556,9 +3582,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         )
         else:
             reason = (
-                "Нет матчей с достаточной независимой историей: нужны минимум 5 "
-                "домашних игр хозяев и 5 выездных игр гостей, а также исторические "
-                "средние голов. Это ограничение данных, не ошибка API."
+                "Нет корректных матчей для независимого AI-разбора: нужны названия "
+                "обеих команд и идентифицируемая дата/игровое событие. Недостаточная "
+                "история сама по себе больше не блокирует ознакомительный разбор."
             )
             logs.append("🏆 TOP MATCHES: " + reason)
             logs.append(
