@@ -19,57 +19,47 @@ class SourceOptimizationTests(unittest.TestCase):
     @patch("data.sources.cache_get", side_effect=[None, None])
     @patch("data.sources.cache_put")
     @patch("data.sources._sess.get")
-    def test_team_logo_lookup_returns_only_matching_soccer_badge(
+    def test_team_badge_lookup_uses_provider_id_and_reads_str_badge(
         self, get_mock, cache_put_mock, _cache_get
     ):
         get_mock.return_value = _Response({
-            "teams": [
-                {
-                    "strTeam": "Arnavutköy Belediyespor",
-                    "strSport": "Soccer",
-                    "strBadge": "https://assets.test/arnavutkoy.png",
-                },
-                {
-                    "strTeam": "Arnavutköy Belediyespor U19",
-                    "strSport": "Soccer",
-                    "strBadge": "https://assets.test/arnavutkoy-u19.png",
-                },
-                {
-                    "strTeam": "Arnavutköy Basketball",
-                    "strSport": "Basketball",
-                    "strBadge": "https://assets.test/basketball.png",
-                },
-            ]
+            "teams": [{
+                "idTeam": "146458",
+                "strTeam": "Arnavutköy Belediyespor",
+                "strSport": "Soccer",
+                "strBadge": "https://assets.test/arnavutkoy.png",
+            }]
         })
-
         logs = []
-        badge = sources.team_logo_url("Arnavutkoy Belediyespor", logs=logs)
+
+        badge = sources.team_badge_url_by_id("146458", logs=logs)
 
         self.assertEqual(badge, "https://assets.test/arnavutkoy.png")
-        self.assertEqual(get_mock.call_args.args[0], sources._TSDB_TEAM_SEARCH_URL)
-        self.assertIn("/123/searchteams.php", get_mock.call_args.args[0])
-        self.assertEqual(get_mock.call_args.kwargs["params"], {"t": "Arnavutkoy Belediyespor"})
-        self.assertTrue(cache_put_mock.called)
-        self.assertTrue(any("tsdb_team_logo_v3_found_" in call.args[0] for call in cache_put_mock.call_args_list))
-        self.assertTrue(any("найдена" in line for line in logs))
+        self.assertEqual(get_mock.call_args.args[0], sources._TSDB_TEAM_LOOKUP_URL)
+        self.assertIn("/123/lookupteam.php", get_mock.call_args.args[0])
+        self.assertEqual(get_mock.call_args.kwargs["params"], {"id": "146458"})
+        self.assertTrue(any(
+            "tsdb_team_id_badge_v1_found_146458" == call.args[0]
+            for call in cache_put_mock.call_args_list
+        ))
+        self.assertTrue(any("эмблема найдена" in line for line in logs))
 
-    @patch("data.sources.cache_get", side_effect=[None, None])
+    @patch("data.sources.cache_get", return_value=None)
     @patch("data.sources.cache_put")
     @patch("data.sources._sess.get")
-    def test_team_logo_lookup_never_uses_senior_crest_for_youth_team(
+    def test_team_badge_lookup_refuses_a_different_provider_team_id(
         self, get_mock, cache_put_mock, _cache_get
     ):
         get_mock.return_value = _Response({
-            "teams": [
-                {
-                    "strTeam": "Manchester United",
-                    "strSport": "Soccer",
-                    "strTeamBadge": "https://assets.test/man-utd.png",
-                }
-            ]
+            "teams": [{
+                "idTeam": "999999",
+                "strTeam": "Arnavutköy Belediyespor",
+                "strSport": "Soccer",
+                "strBadge": "https://assets.test/wrong-team.png",
+            }]
         })
 
-        badge = sources.team_logo_url("Manchester United U19")
+        badge = sources.team_badge_url_by_id("146458")
 
         self.assertIsNone(badge)
         self.assertTrue(cache_put_mock.called)
@@ -88,6 +78,7 @@ class SourceOptimizationTests(unittest.TestCase):
                 "strHomeTeam": "Home One", "strAwayTeam": "Away One",
                 "strHomeTeamBadge": "https://assets.test/home-one.png",
                 "strAwayTeamBadge": "https://assets.test/away-one.png",
+                "idHomeTeam": "133604", "idAwayTeam": "133602",
                 "dateEvent": "2026-11-16", "strVenueThumb": "",
             },
             {
@@ -123,9 +114,11 @@ class SourceOptimizationTests(unittest.TestCase):
         self.assertEqual(rows[2]["stadium_image"], "enriched:venue-3")
         self.assertEqual(rows[0]["home_badge"], "https://assets.test/home-one.png")
         self.assertEqual(rows[0]["away_badge"], "https://assets.test/away-one.png")
+        self.assertEqual(rows[0]["home_team_tsdb_id"], "133604")
+        self.assertEqual(rows[0]["away_team_tsdb_id"], "133602")
         self.assertIn("/api/v1/json/123/eventsday.php", get_mock.call_args.args[0])
         self.assertTrue(any(
-            call.args[0].startswith("tsdb_day_v12_")
+            call.args[0].startswith("tsdb_day_v13_")
             for call in _cache_put.call_args_list
         ))
 

@@ -45,6 +45,8 @@ class FixtureMergeTests(unittest.TestCase):
                 "fixture_id": "tsdb:visual-only",
                 "home_badge": "https://assets.test/arsenal.png",
                 "away_badge": "https://assets.test/chelsea.png",
+                "home_team_tsdb_id": "133604",
+                "away_team_tsdb_id": "133602",
                 "league_badge": "https://assets.test/epl.png",
                 "stadium_image": "https://assets.test/emirates.jpg",
                 "venue": "Emirates Stadium",
@@ -73,6 +75,8 @@ class FixtureMergeTests(unittest.TestCase):
         )
         self.assertEqual(rows[0]["home_badge"], "https://assets.test/arsenal.png")
         self.assertEqual(rows[0]["away_badge"], "https://assets.test/chelsea.png")
+        self.assertEqual(rows[0]["home_team_tsdb_id"], "133604")
+        self.assertEqual(rows[0]["away_team_tsdb_id"], "133602")
         self.assertEqual(rows[0]["league_badge"], "https://assets.test/epl.png")
         self.assertEqual(rows[0]["stadium_image"], "https://assets.test/emirates.jpg")
         self.assertEqual(rows[0]["venue"], "Emirates Stadium")

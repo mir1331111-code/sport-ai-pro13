@@ -6,7 +6,6 @@ but they are not imported by the automatic scanner.
 """
 from __future__ import annotations
 import csv, io, re, logging, os, hashlib, math
-from difflib import SequenceMatcher
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -703,7 +702,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     for off in range(total_days):
         d = today + timedelta(days=off)
         dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_day_v12_{dstr}"
+        ck = f"tsdb_day_v13_{dstr}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -730,7 +729,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                 a = e.get("strAwayTeam")
                 if not h or not a:
                     continue
-                # Validate sport explicitly; invalidate old cache via v9 key.
+                # Validate sport explicitly before retaining event metadata.
                 sport_name = str(e.get("strSport") or "").strip().lower()
                 league = str(e.get("strLeague") or "Матч")
                 league_lower = league.lower()
@@ -751,6 +750,8 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "HomeTeam": h,
                     "AwayTeam": a,
                     "fixture_id": e.get("idEvent"),
+                    "home_team_tsdb_id": str(e.get("idHomeTeam") or "").strip(),
+                    "away_team_tsdb_id": str(e.get("idAwayTeam") or "").strip(),
                     "venue": e.get("strVenue") or "",
                     "stadium_image": e.get("strVenueThumb") or "",
                     "home_badge": e.get("strHomeTeamBadge"),
@@ -2414,124 +2415,86 @@ def odds_api_fixture(sport_key: str, home: str, away: str,
 
 
 # ============ LOGOS ============
-_TSDB_TEAM_SEARCH_URL = "https://www.thesportsdb.com/api/v1/json/123/searchteams.php"
+# The free TheSportsDB plan restricts searchteams.php to a limited team-name query.
+# The scanner therefore resolves crests only from exact team IDs exposed by eventsday.php.
 _TEAM_LOGO_CACHE_TTL = 30 * 24 * 60 * 60
 _TEAM_LOGO_MISS_TTL = 24 * 60 * 60
 
 
-def _team_level_marker(name: str) -> tuple[str, ...]:
-    """Prevent a senior-team logo from being assigned to a reserve/youth side."""
-    value = str(name or "").casefold()
-    markers = []
-    for match in re.finditer(
-        r"\bu\s*[- ]?(\d{2})\b|\bunder\s*[- ]?(\d{2})\b",
-        value,
-    ):
-        markers.append("u" + str(match.group(1) or match.group(2)))
-    if re.search(r"\b(?:ii|iii|iv|b team|c team|reserves?|academy|youth|castilla)\b", value):
-        markers.append("reserve")
-    return tuple(sorted(set(markers)))
+_TSDB_TEAM_LOOKUP_URL = "https://www.thesportsdb.com/api/v1/json/123/lookupteam.php"
 
 
-def _team_logo_match_score(requested: str, candidate: str) -> float:
-    """Match exact canonical club names first; allow only a conservative spelling variant."""
-    if not requested or not candidate:
-        return 0.0
-    requested_level = _team_level_marker(requested)
-    candidate_level = _team_level_marker(candidate)
-    if requested_level != candidate_level:
-        return 0.0
-    requested_key = _norm_name(requested)
-    candidate_key = _norm_name(candidate)
-    if requested_key and requested_key == candidate_key:
-        return 1.0
-    return SequenceMatcher(None, requested_key, candidate_key).ratio()
+def team_badge_url_by_id(team_id: str | int, logs=None) -> Optional[str]:
+    """Resolve a team crest through its TheSportsDB ID (free-tier-safe).
 
-
-def team_logo_url(team_name: str, logs=None) -> Optional[str]:
-    """Resolve one team crest from TheSportsDB and cache positive/negative results.
-
-    The free V1 endpoint accepts a single team name per request. The scanner
-    caps fallback lookups per run, so missing artwork never creates an
-    unbounded burst of API requests.
+    Search-by-name is restricted on TheSportsDB's free tier; lookup-by-ID
+    returns exactly one team and its strBadge URL. IDs come from the event feed,
+    not from fuzzy text matching.
     """
-    requested = str(team_name or "").strip()
-    if not requested:
-        return None
-    normalized = _norm_name(requested)
-    if not normalized:
+    requested_id = str(team_id or "").strip()
+    if not requested_id or not requested_id.isdigit():
         return None
 
-    cache_token = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
     def note(message):
         if isinstance(logs, list):
-            logs.append(f"🖼 Эмблема {requested}: {message}")
+            logs.append(f"🖼 TheSportsDB team ID {requested_id}: {message}")
 
-    found_key = f"tsdb_team_logo_v3_found_{cache_token}"
+    found_key = f"tsdb_team_id_badge_v1_found_{requested_id}"
     cached = cache_get(found_key, _TEAM_LOGO_CACHE_TTL)
     if isinstance(cached, dict):
         url = str(cached.get("url") or "").strip()
         if url.startswith("https://"):
-            note("найдена в кэше")
+            note("эмблема найдена в кэше")
             return url
 
-    miss_key = f"tsdb_team_logo_v3_miss_{cache_token}"
+    miss_key = f"tsdb_team_id_badge_v1_miss_{requested_id}"
     if cache_get(miss_key, _TEAM_LOGO_MISS_TTL) is not None:
-        note("в кэше сохранено отсутствие подходящей эмблемы")
+        note("подходящая эмблема ранее не найдена")
         return None
 
     try:
         response = _sess.get(
-            _TSDB_TEAM_SEARCH_URL,
-            params={"t": requested},
+            _TSDB_TEAM_LOOKUP_URL,
+            params={"id": requested_id},
             timeout=(3, 8),
             proxies=NO_PROXY,
         )
         if response.status_code != 200:
-            note(f"TheSportsDB HTTP {response.status_code}")
-            cache_put(miss_key, {"missing": True})
+            note(f"lookupteam HTTP {response.status_code}; повторный запрос не блокируется кэшем")
             return None
         payload = response.json() or {}
         teams = payload.get("teams") or []
-        candidates = []
-        for team in teams:
-            if not isinstance(team, dict):
-                continue
-            sport = str(team.get("strSport") or "").strip().casefold()
-            if sport and sport not in {"soccer", "football"}:
-                continue
-            name = str(team.get("strTeam") or "").strip()
-            badge = str(
-                team.get("strBadge")
-                or team.get("strTeamBadge")
-                or team.get("strTeamLogo")
-                or ""
-            ).strip()
-            if not badge.startswith("https://"):
-                continue
-            score = _team_logo_match_score(requested, name)
-            if score >= 0.80:
-                candidates.append((score, name, badge))
-
-        if candidates:
-            candidates.sort(key=lambda item: item[0], reverse=True)
-            best_score, best_name, best_url = candidates[0]
-            # Reject equally plausible alternative club records rather than
-            # attach the wrong badge to a fixture.
-            if len(candidates) == 1 or best_score - candidates[1][0] >= 0.04:
-                cache_put(found_key, {"url": best_url, "team": best_name})
-                note(f"найдена: {best_name}")
-                return best_url
-
-        note(
-            f"нет однозначной эмблемы (ответов API: {len(teams)}, "
-            f"подходящих кандидатов: {len(candidates)})"
+        team = next(
+            (
+                item for item in teams
+                if isinstance(item, dict)
+                and str(item.get("idTeam") or "").strip() == requested_id
+                and str(item.get("strSport") or "").strip().casefold() in {"soccer", "football"}
+            ),
+            None,
         )
+        badge = str(
+            (team or {}).get("strBadge")
+            or (team or {}).get("strTeamBadge")
+            or ""
+        ).strip()
+        if badge.startswith("https://"):
+            cache_put(
+                found_key,
+                {"url": badge, "team": str((team or {}).get("strTeam") or "")},
+            )
+            note(f"эмблема найдена: {(team or {}).get('strTeam') or 'команда'}")
+            return badge
+
         cache_put(miss_key, {"missing": True})
+        note("API не вернул strBadge для этого ID")
         return None
     except Exception as exc:
         note(f"ошибка запроса: {type(exc).__name__}")
-        log.debug("TheSportsDB team logo lookup failed for %s: %s", requested, type(exc).__name__)
+        log.debug(
+            "TheSportsDB team lookup failed for ID %s: %s",
+            requested_id, type(exc).__name__,
+        )
         return None
 
 
