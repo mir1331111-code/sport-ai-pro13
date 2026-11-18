@@ -15,6 +15,60 @@ class _Response:
 
 
 class SourceOptimizationTests(unittest.TestCase):
+
+    @patch("data.sources.cache_get", side_effect=[None, None])
+    @patch("data.sources.cache_put")
+    @patch("data.sources._sess.get")
+    def test_team_logo_lookup_returns_only_matching_soccer_badge(
+        self, get_mock, cache_put_mock, _cache_get
+    ):
+        get_mock.return_value = _Response({
+            "teams": [
+                {
+                    "strTeam": "Arnavutköy Belediyespor",
+                    "strSport": "Soccer",
+                    "strTeamBadge": "https://assets.test/arnavutkoy.png",
+                },
+                {
+                    "strTeam": "Arnavutköy Belediyespor U19",
+                    "strSport": "Soccer",
+                    "strTeamBadge": "https://assets.test/arnavutkoy-u19.png",
+                },
+                {
+                    "strTeam": "Arnavutköy Basketball",
+                    "strSport": "Basketball",
+                    "strTeamBadge": "https://assets.test/basketball.png",
+                },
+            ]
+        })
+
+        badge = sources.team_logo_url("Arnavutkoy Belediyespor")
+
+        self.assertEqual(badge, "https://assets.test/arnavutkoy.png")
+        self.assertEqual(get_mock.call_args.kwargs["params"], {"t": "Arnavutkoy Belediyespor"})
+        self.assertTrue(cache_put_mock.called)
+
+    @patch("data.sources.cache_get", side_effect=[None, None])
+    @patch("data.sources.cache_put")
+    @patch("data.sources._sess.get")
+    def test_team_logo_lookup_never_uses_senior_crest_for_youth_team(
+        self, get_mock, cache_put_mock, _cache_get
+    ):
+        get_mock.return_value = _Response({
+            "teams": [
+                {
+                    "strTeam": "Manchester United",
+                    "strSport": "Soccer",
+                    "strTeamBadge": "https://assets.test/man-utd.png",
+                }
+            ]
+        })
+
+        badge = sources.team_logo_url("Manchester United U19")
+
+        self.assertIsNone(badge)
+        self.assertTrue(cache_put_mock.called)
+
     @patch("data.sources.cache_get", return_value=None)
     @patch("data.sources.cache_put")
     @patch("data.sources._sess.get")
