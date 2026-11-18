@@ -267,6 +267,10 @@ class ModelFavoriteTests(unittest.TestCase):
         weak_history = card("Unknown FC", "Other FC", "19:00", 0.79,
                             home_n=0, away_n=0, games=30)
         low_probability = card("Even FC", "Other Side", "20:00", 0.50)
+        legacy_without_venue_samples = card(
+            "Legacy FC", "Other FC", "21:00", 0.88,
+        )
+        legacy_without_venue_samples.pop("independent_features")
         yesterday = {
             **card("Past FC", "Other FC", "23:00", 0.90),
             "date": "17.11 23:00",
@@ -279,7 +283,10 @@ class ModelFavoriteTests(unittest.TestCase):
         }
 
         ranked = rank_best_fixtures(
-            [early, late_best, weak_history, low_probability, yesterday, tomorrow],
+            [
+                early, late_best, weak_history, low_probability,
+                legacy_without_venue_samples, yesterday, tomorrow,
+            ],
             now=now, period_end=next_day, limit=None,
             min_sample_games=5, min_probability=0.52,
         )
