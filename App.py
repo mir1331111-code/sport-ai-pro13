@@ -31,7 +31,7 @@ if os.environ.get("NEURO_KEEP_PROXY") != "1":
 
 st.set_page_config(page_title="NEURO BET PRO",
                    page_icon="🏟", layout="wide",
-                   initial_sidebar_state="collapsed")
+                   initial_sidebar_state="expanded")
 
 from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
                     AUTO_SETTLE_THROTTLE_SEC, DB_FILE, normalize_llm_provider)
@@ -904,22 +904,6 @@ def _model_health(D):
 
 model_health = _model_health(D)
 
-# ==================== PRODUCT HEADER ====================
-bank_now = float(D.get("bank", DEFAULT_BANK))
-mode_label = str(D.get("mode", "paper")).upper()
-st.markdown(f"""
-<div class="sp-appbar">
-  <div class="sp-brandmark">N<span>●</span></div>
-  <div>
-    <div class="sp-brandname">NEURO BET <em>PRO</em></div>
-    <div class="sp-brand-sub">FOOTBALL INTELLIGENCE · DATA FIRST</div>
-  </div>
-  <div class="sp-appbar-spacer"></div>
-  <div class="sp-appbar-chip"><i></i> PRE-MATCH · {mode_label}</div>
-  <div class="sp-appbar-bank">БАНК {bank_now:,.0f} у.е.</div>
-</div>
-""", unsafe_allow_html=True)
-
 if model_health["status"] == "ATTENTION":
     _health_items = " · ".join(f"{x[1]} ({x[2]})" for x in model_health["details"])
     st.warning(
@@ -941,497 +925,522 @@ if stale_count:
         "Стейк по ним заморожен, в статистику они не входят. Проверьте результат "
         "вручную во вкладке «Портфель» или верните стейки кнопкой в боковой панели.")
 
-# ==================== SIDEBAR ====================
-with st.sidebar:
-    st.markdown(
-        "<div style='font-size:1.1rem;font-weight:800;color:#e6eaf2;"
-        "margin-bottom:12px;'>🔑 API ключи</div>",
-        unsafe_allow_html=True)
-
-    fdorg_token = st.text_input(
-        "football-data.org token",
-        value=_api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token"),
-        type="password", key="fdorg_token_input")
-    sstats_key = st.text_input(
-        "SStats.net API key (бесплатные футбольные коэффициенты)",
-        value=_api_key_default("sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"),
-        type="password", key="sstats_api_key_input",
-        help="Ключ SStats.net. Сканирование получает рынки; после FT API также закрывает ставки на угловые и карточки по фактической статистике.")
-
-    footballapi_key = st.text_input(
-        "Football API key (xG · бесплатно, текущий сезон АПЛ)",
-        value=_api_key_default("footballapi_key", "FOOTBALLAPI_KEY", "footballapi_key"),
-        type="password", key="footballapi_key_input",
-        help="Даёт xG обеих команд для завершённых матчей текущего сезона Премьер-лиги. Бесплатный тариф: 50 запросов в день.")
-
-    st.caption("SStats — единственный источник списка матчей и букмекерских коэффициентов. Контекст (составы, травмы и судьи) запрашивается у SStats там, где API подтверждает эти данные.")
-
-    if st.button("🔎 Проверить подключение xG Football API", key="check_footballapi_xg",
-                 width="stretch"):
-        with st.spinner("Проверяю ключ и дневную квоту Football API…"):
-            _footballapi_check = footballapi_xg_connection_check(footballapi_key)
-        if _footballapi_check.get("ok"):
-            st.success(_footballapi_check.get("message", "Football API подключён."))
-            st.caption("xG доступен только в рамках покрытия текущего сезона АПЛ на бесплатном тарифе.")
-        else:
-            st.error(_footballapi_check.get("message", "Не удалось проверить Football API."))
-    if st.button("🔎 Проверить подключение SStats.net", key="check_sstats_api",
-                 width="stretch"):
-        with st.spinner("Проверяю ключ SStats, расписание и Odds…"):
-            _sstats_check = sstats_account_check(sstats_key)
-        if (_sstats_check.get("ok") and _sstats_check.get("games_ok")
-                and _sstats_check.get("total_line_count", 0) > 0):
-            st.success(_sstats_check.get("message", "SStats подключён; подтверждённые тоталы найдены."))
-        elif _sstats_check.get("ok") and _sstats_check.get("games_ok"):
-            st.warning(_sstats_check.get(
-                "message",
-                "Ключ и расписание работают, но подтверждённые тоталы в тестовой выборке не найдены."
-            ))
-        elif _sstats_check.get("ok"):
-            st.warning(_sstats_check.get("message", "Ключ SStats подтверждён, но данные матчей недоступны."))
-        else:
-            st.error(_sstats_check.get("message", "Не удалось подключиться к SStats.net."))
-
-    st.markdown(
-        "<div style='font-size:.72rem;color:#8b93a7;margin-top:14px;"
-        "margin-bottom:6px;'>🤖 LLM-аналитик</div>",
-        unsafe_allow_html=True)
-    prov_keys = list(LLM_PROVIDERS.keys())
-    cur = normalize_llm_provider(D["meta"].get("llm_provider", prov_keys[0]))
-    llm_prov = st.selectbox("Провайдер", prov_keys,
-                            index=prov_keys.index(cur) if cur in prov_keys else 0)
-    llm_key_config = LLM_PROVIDERS.get(llm_prov, {})
-    llm_key_env = str(llm_key_config.get("key_env") or "LLM_API_KEY")
-    llm_key_storage = str(llm_key_config.get("key_storage") or "llm_api_key")
-    llm_key_session = str(llm_key_config.get("key_session") or "llm_api_key_input")
-    llm_key_label = "XAI_API_KEY · Grok" if llm_key_env == "XAI_API_KEY" else "LLM API key"
-    llm_key_default = _api_key_default(
-        llm_key_storage, llm_key_env, llm_key_env, llm_key_storage,
-    )
-    # Compatibility with deployments that previously stored a Grok key as LLM_API_KEY.
-    if llm_key_env == "XAI_API_KEY" and not llm_key_default:
-        llm_key_default = _api_key_default("llm_api_key", "LLM_API_KEY", "llm_api_key")
-    llm_key = st.text_input(
-        llm_key_label,
-        value=llm_key_default,
-        type="password", key=llm_key_session)
-    if st.button(
-        f"🔎 Проверить AI-подключение · {llm_prov}",
-        key="check_llm_provider_connection",
-        width="stretch",
-        help="Отправляет короткий тестовый запрос выбранной модели. Провайдер может списать несколько токенов.",
-    ):
-        with st.spinner(f"Проверяю реальное подключение к {llm_prov}…"):
-            _llm_check = check_provider_connection(llm_prov, llm_key)
-        if _llm_check.get("ok"):
-            st.success(_llm_check.get("message") or "AI API отвечает.")
-        else:
-            st.error(_llm_check.get("message") or "AI API не ответил.")
-    # Save only UI-entered keys, separate from portfolio data and its Gist sync.
-    _widget_key_map = {
-        "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
-        "sstats_api_key": ("sstats_api_key_input", ("SSTATS_API_KEY",), ("SSTATS_API_KEY", "sstats_api_key")),
-        "footballapi_key": ("footballapi_key_input", ("FOOTBALLAPI_KEY",), ("FOOTBALLAPI_KEY", "footballapi_key")),
-        "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
-        "xai_api_key": ("xai_api_key_input", ("XAI_API_KEY",), ("XAI_API_KEY", "xai_api_key")),
-    }
-    _user_entered_keys = {}
-    for _storage_key, (_widget_key, _env_names, _secret_names) in _widget_key_map.items():
-        _current = str(st.session_state.get(_widget_key, "") or "").strip()
-        _configured = _configured_key_value(_env_names, _secret_names)
-        if _current and _current != _configured:
-            _user_entered_keys[_storage_key] = _current
-    # Preserve credentials for providers not selected in this rerun.
-    _keys_to_save = {**_saved_ui_secrets, **_user_entered_keys}
-    _keys_saved = save_local_secrets(_keys_to_save)
-    if not _keys_saved:
-        st.caption("⚠️ Не удалось сохранить ключи на диске. Проверьте права записи хостинга.")
-    # Keep provider and model in sync. Older saved sessions can retain a
-    # Groq model ID after changing the provider to Grok; that makes xAI return
-    # an empty/HTTP error and leaves every independent analysis at zero.
-    _configured_llm_model = str(llm_key_config.get("model") or "")
-    if (
-        llm_prov != D["meta"].get("llm_provider")
-        or _configured_llm_model != str(D["meta"].get("llm_model") or "")
-    ):
-        D["meta"]["llm_provider"] = llm_prov
-        D["meta"]["llm_model"] = _configured_llm_model
-        usage.set_local_data(D)
-
-    st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
-                unsafe_allow_html=True)
-    st.markdown(
-        "<div style='font-size:.72rem;color:#8b93a7;margin-bottom:6px;'>"
-        "🎯 Параметры</div>",
-        unsafe_allow_html=True)
-    min_prob = st.slider(
-        "Мин. P для отбора Value %",
-        30, 85, 40, 1,
-        help=(
-            "Минимум вероятности для Value-кандидатов. Отдельная метка «Сильный прогноз» "
-            "присваивается при вероятности от 65%; этот порог не заменяет историческую "
-            "проверку рынка, Edge, EV и Kelly."
-        ),
-    ) / 100
-    min_edge = st.slider("Мин. Edge %", 0, 15, 3, 1) / 100
-    kelly_frac = 0.25
-    st.caption("Риск-профиль зафиксирован: ¼ Kelly · максимум 1% банка на рынок · 2% на матч · 5% суммарно за день.")
-    st.caption(f"Версия приложения: {APP_VERSION} · build 2026-11-15")
-    matrix_n = st.slider("Матрица", 6, 15, 12, 1)
-
-    st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
-                unsafe_allow_html=True)
-
-    if st.button(
-        "🔃 Проверить все результаты",
-        width="stretch",
-        help=(
-            "Проверяет до 60 уникальных завершённых матчей за запуск. "
-            "Один найденный счёт может закрыть несколько записей прогнозов. "
-            "Повторно не опрашивает один и тот же матч чаще чем раз в 10 минут."
-        ),
-    ):
-        with st.spinner("Проверяю портфель и все журналы прогнозов…"):
-            D2, n, tried = _auto_settle(D, force=True)
-            forecast_sync = _sync_forecast_results(force=True)
-        _apply_settle_result(D2, n, tried, "manual_check")
-        forecast_sync = forecast_sync or {}
-        st.success(
-            f"Закрыто ставок: {n} · подтверждено прогнозов модели/ИИ: "
-            f"{forecast_sync.get('forecasts_settled', 0)} · "
-            f"закрыто рыночных рекомендаций: {forecast_sync.get('market_forecasts_settled', 0)} · "
-            f"проверено матчей: {forecast_sync.get('fixtures_checked', 0)} · "
-            f"осталось прогнозов: {forecast_sync.get('pending_forecasts', 0)}"
-        )
-        st.rerun()
-
-    _automatic_result_sync_widget()
-    _automatic_sqlite_backup_widget()
-
-    _sync_status = st.session_state.get("_forecast_ledger_sync_status") or {}
-    if _sync_status.get("error"):
-        st.caption("Сверка прогнозов: ошибка — " + str(_sync_status["error"]))
-    elif _sync_status:
-        st.caption(
-            "Последняя сверка журналов: "
-            f"матчей проверено {_sync_status.get('fixtures_checked', 0)} · "
-            f"прогнозов закрыто {_sync_status.get('forecasts_settled', 0)} · "
-            f"рыночных рекомендаций закрыто {_sync_status.get('market_forecasts_settled', 0)} · "
-            f"ожидают FT {_sync_status.get('pending_forecasts', 0)} записей · "
-            f"уникальных матчей {_sync_status.get('pending_unique_fixtures', 0)} · "
-            f"ещё не прошли 2ч15 {_sync_status.get('not_due_grace_fixtures', 0)} · "
-            f"в начале очереди {_sync_status.get('eligible_fixtures', 0)} · "
-            f"осталось матчей {_sync_status.get('eligible_fixtures_remaining', 0)} · "
-            f"старше окна {_sync_status.get('age_limited_fixtures', 0)} · "
-            f"ожидают повтора {_sync_status.get('retry_deferred_fixtures', 0)} · "
-            f"не найден результат {_sync_status.get('not_found_fixtures', 0)} · "
-            f"SStats запросов {_sync_status.get('sstats_lookups', 0)} · "
-            f"источники {', '.join(f'{name}:{count}' for name, count in sorted((_sync_status.get('result_sources') or {}).items())) or 'нет'} · "
-            f"ошибок {_sync_status.get('errors', 0)}"
-        )
-
-    if stale_count and st.button(f"↩️ Вернуть стейки по устаревшим ({stale_count})",
-                                 width="stretch",
-                                 help="Помечает ставки как void и возвращает стейк в банк"):
-        D2, n = _void_stale(D)
-        _apply_settle_result(D2, n, 0, "void_stale")
-        usage.set_local_data(D2)
-        st.toast(f"Возвращены стейки: {n}")
-        st.rerun()
-
-    if st.button("🔄 Очистить карточки", width="stretch"):
-        D["cards"] = []
-        D["funnel"] = None
-        D["report"] = []
-        usage.set_local_data(D)
-        st.toast("Карточки очищены")
-        st.rerun()
-
-    if st.button("♻️ Сбросить счётчики", width="stretch"):
-        usage.settle_reset()
-        usage.llm_reset()
-        usage.odds_reset()
-        usage.fdorg_reset()
-        st.toast("Счётчики сброшены")
-        st.rerun()
-
-    st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
-                unsafe_allow_html=True)
-    st.markdown(
-        "<div style='font-size:.72rem;color:#8b93a7;margin-bottom:6px;'>"
-        "💾 Бэкап (API-ключи не включаются)</div>",
-        unsafe_allow_html=True)
-
-    # Local SQLite is independent from neuro_local.json and is not included in
-    # the ordinary portfolio JSON backup. Offer a direct encrypted-file export
-    # even before a remote Gist is configured.
-    with st.expander("🛡️ Защита журнала прогнозов SQLite", expanded=False):
-        _restore_state = st.session_state.get("_sqlite_restore_status") or {}
-        if _restore_state.get("restored"):
-            st.success(
-                "SQLite восстановлена из зашифрованной резервной копии. "
-                "Проверьте число строк и последние результаты."
-            )
-        elif _restore_state.get("state") == "local_data_present":
-            st.caption("Локальная SQLite содержит записи; автоматическое восстановление её не заменяло.")
-        elif _restore_state.get("state") == "not_configured":
-            st.warning(
-                "Удалённая копия SQLite пока не настроена. Локальная база на Streamlit Cloud "
-                "может исчезнуть при пересоздании контейнера."
-            )
-        elif _restore_state.get("state") == "restore_error":
-            st.error(str(_restore_state.get("message") or "Не удалось проверить резервную копию."))
-
-        _remote_state = st.session_state.get("_sqlite_backup_status") or {}
-        if _remote_state.get("ok"):
-            st.success(
-                "Зашифрованная копия: "
-                + str(_remote_state.get("backup_at") or "сохранена")
-                + " · "
-                + str(_remote_state.get("bytes") or 0)
-                + " байт"
-            )
-        elif _remote_state.get("state") == "backup_error":
-            st.error(str(_remote_state.get("message") or "Ошибка резервного копирования."))
-
-        st.caption(
-            "Для автоматической резервной копии достаточно одного секрета Streamlit: "
-            "GITHUB_TOKEN. Приложение само создаст непубличный Secret Gist, найдёт его при "
-            "следующих запусках и выведет ключ шифрования из токена. Нужен Fine-grained token "
-            "только с правом Gists: Read and write. Храни токен в менеджере паролей и не меняй "
-            "его без предварительного переноса/восстановления архива: он также используется "
-            "для расшифровки старых копий."
-        )
-
-        _b1, _b2 = st.columns(2)
-        if _b1.button("Проверить удалённую копию", key="check_neuro_remote_backup"):
-            st.session_state["_sqlite_remote_status_check"] = remote_backup_status()
-        _checked_remote = st.session_state.get("_sqlite_remote_status_check") or {}
-        if _checked_remote:
-            if _checked_remote.get("ok"):
-                st.success(str(_checked_remote.get("message") or "Удалённая копия доступна."))
-            else:
-                st.warning(str(_checked_remote.get("message") or "Удалённая копия не настроена."))
-
-        if _b2.button("Сохранить SQLite в Secret Gist", key="backup_neuro_sqlite_now"):
-            with st.spinner("Создаю и проверяю зашифрованную копию SQLite…"):
-                st.session_state["_sqlite_backup_status"] = backup_database_to_gist(DB_FILE)
-        if st.button("Подготовить резервную копию SQLite для скачивания", key="prepare_neuro_sqlite_download"):
-            try:
-                st.session_state["_sqlite_manual_backup_bytes"] = create_sqlite_backup_bytes(DB_FILE)
-                st.session_state["_sqlite_manual_backup_name"] = (
-                    f"neuro_db_{datetime.now():%Y%m%d_%H%M}.sqlite.gz"
-                )
-            except Exception as _sqlite_export_exc:
-                st.error(
-                    "Не удалось подготовить SQLite-бэкап: "
-                    + type(_sqlite_export_exc).__name__
-                )
-        if st.session_state.get("_sqlite_manual_backup_bytes"):
-            st.download_button(
-                "⬇️ Скачать полную резервную копию SQLite",
-                data=st.session_state["_sqlite_manual_backup_bytes"],
-                file_name=st.session_state.get("_sqlite_manual_backup_name") or "neuro_db.sqlite.gz",
-                mime="application/gzip",
-                key="download_neuro_sqlite_backup",
-                width="stretch",
-            )
-
-        _sqlite_upload = st.file_uploader(
-            "Восстановить SQLite из .sqlite.gz (только в пустую базу)",
-            type=["gz"], key="restore_neuro_sqlite_upload",
-        )
-        if _sqlite_upload is not None and st.button(
-            "Восстановить пустой журнал SQLite",
-            key="restore_neuro_sqlite_button",
-        ):
-            try:
-                _restored_sqlite = restore_sqlite_backup_bytes(
-                    _sqlite_upload.getvalue(), DB_FILE, overwrite=False,
-                )
-                db.db_init()
-                db.invalidate_caches()
-                st.session_state["_sqlite_restore_status"] = {
-                    "restored": True, "state": "restored",
-                    "message": "SQLite восстановлена из локального бэкапа.",
-                }
-                st.success(
-                    "SQLite восстановлена. Таблиц с данными: "
-                    + str(len(_restored_sqlite.get("tables") or {}))
-                )
-            except Exception as _restore_sqlite_exc:
-                st.error(
-                    "Восстановление SQLite отменено: "
-                    + str(_restore_sqlite_exc)[:180]
-                )
-
-        _audit_upload = st.file_uploader(
-            "Восстановить журнал из архива ledger .zip",
-            type=["zip"], key="restore_neuro_audit_zip",
-        )
-        if _audit_upload is not None and st.button(
-            "Восстановить прогнозы, рынок и историю банка из audit ZIP",
-            key="restore_neuro_audit_zip_button",
-        ):
-            try:
-                _audit_restored = restore_audit_export_bytes(
-                    _audit_upload.getvalue(), DB_FILE,
-                )
-                db.db_init()
-                db.invalidate_caches()
-                st.session_state["_sqlite_restore_status"] = {
-                    "restored": True, "state": "restored",
-                    "message": "Журнал восстановлен из audit ZIP.",
-                }
-                st.success(
-                    "Журнал восстановлен без перезаписи существующих данных: "
-                    f"прогнозы {_audit_restored['forecasts']}, "
-                    f"рынки {_audit_restored['market_forecasts']}, "
-                    f"ставки {_audit_restored['paper_bets']}, "
-                    f"банк {_audit_restored['bank_history']}, "
-                    f"снимки решений {_audit_restored['decision_snapshots']}, "
-                    f"исторические архивы {_audit_restored.get('user_datasets', 0)} "
-                    f"({_audit_restored.get('user_dataset_rows', 0)} строк)."
-                )
-            except Exception as _audit_restore_exc:
-                st.error(
-                    "Восстановление audit ZIP отменено: "
-                    + str(_audit_restore_exc)[:220]
-                )
-
-        st.caption(
-            "Secret Gist — это непубличная ссылка, а не приватный диск: любой с URL может его открыть. "
-            "Портфель и SQLite шифруются NEURO_BACKUP_KEY; сам Streamlit app также следует "
-            "ограничить в Share/Manage access."
-        )
-
-    _backup = json.dumps(_strip_secrets(D), ensure_ascii=False, indent=2, default=str)
-    st.download_button("📥 Скачать", _backup,
-                       file_name=f"neuro_data_{datetime.now():%Y%m%d_%H%M}.json",
-                       mime="application/json",
-                       width="stretch")
-
-    _up = st.file_uploader("📤 Загрузить", type=["json"],
-                           key="restore_upload",
-                           label_visibility="collapsed")
-    if _up is not None:
-        _up_id = f"{_up.name}:{_up.size}"
-        if st.session_state.get("_restored_id") != _up_id:
-            st.session_state["_restored_id"] = _up_id
-            try:
-                _r = _validate_data(json.loads(_up.read().decode("utf-8")))
-                for _sk in SECRET_KEYS:
-                    if D["meta"].get(_sk):
-                        _r["meta"][_sk] = D["meta"][_sk]
-                st.session_state.data = _r
-                usage.set_local_data(_r)
-                db.invalidate_caches()
-                st.success("✅ Восстановлено!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Не удалось восстановить: {e}")
-
-    if "confirm_clear" not in st.session_state:
-        st.session_state.confirm_clear = False
-
-    if not st.session_state.confirm_clear:
-        if st.button("🗑️ Очистить портфель", width="stretch"):
-            st.session_state.confirm_clear = True
-            st.rerun()
-    else:
-        st.warning("Удалить ВСЕ ставки?")
-        cc1, cc2 = st.columns(2)
-        if cc1.button("Да", key="confirm_yes"):
-            D["bets"] = []
-            D["cards"] = []
-            D["bank"] = DEFAULT_BANK
-            D["stats"] = {"won": 0, "lost": 0, "profit": 0, "push": 0, "void": 0}
-            D["meta"]["initial_bank"] = DEFAULT_BANK
-            usage.set_local_data(D)
-            db.invalidate_caches()
-            st.session_state.confirm_clear = False
-            st.rerun()
-        if cc2.button("Нет", key="confirm_no"):
-            st.session_state.confirm_clear = False
-            st.rerun()
-
-# ==================== ANALYTICS TERMINAL ====================
-# One active workspace at a time: compact terminal navigation, no stacked pages.
 TERMINAL_SECTIONS = {
-    "🏠 DASHBOARD": (
+    "🏠 Дашборд": (
         "SPORTS INTELLIGENCE", "OVERVIEW",
-        "Главная панель: матчи в фокусе, прогнозы, коэффициенты SStats и качество контекста.", "OVERVIEW DESK",
+        "Главная панель: прогнозы, журнал результатов и качество модели.", "SYSTEM ONLINE",
     ),
-    "🏟 LIVE SCANNER": (
+    "🏟 Сканер матчей": (
         "MATCH INTELLIGENCE", "LIVE SCANNER",
         "Поиск матчей, проверка источников и предматчевая аналитика.", "LIVE WORKSPACE",
     ),
-    "📊 AI FORECASTS": (
+    "📊 Прогнозы": (
         "MODEL OUTPUT", "AI FORECASTS",
-        "Вероятности основной модели, статистика прогнозов и подтверждённые результаты.", "FORECAST DESK",
+        "Вероятности основной модели и подтверждённые результаты.", "FORECAST DESK",
     ),
-    "💎 VALUE / PORTFOLIO": (
+    "💎 Value / портфель": (
         "MARKET EDGE", "VALUE / PORTFOLIO",
-        "Только реальные котировки, проверка Edge и управление виртуальным портфелем.", "VALUE CONTROL",
+        "Реальные котировки, Edge и управление виртуальным портфелем.", "VALUE CONTROL",
     ),
-    "🧭 DATA QUALITY": (
+    "🧭 Качество данных": (
         "SOURCE MONITOR", "DATA QUALITY",
-        "Составы, травмы, судьи, линии и свежесть данных по каждому матчу.", "DATA AUDIT",
+        "Составы, травмы, судьи, линии и свежесть данных.", "DATA AUDIT",
     ),
-    "🧠 AI LEARNING": (
+    "🧠 Обучение": (
         "PERFORMANCE REVIEW", "AI LEARNING CENTER",
-        "Разбор ошибок по закрытым прогнозам без автоматического изменения модели.", "LEARNING AUDIT",
+        "Разбор ошибок на подтверждённых результатах.", "LEARNING AUDIT",
     ),
-    "🛡️ RISK CONTROL": (
+    "🛡️ Риск": (
         "EXPOSURE MONITOR", "RISK CONTROL",
-        "Экспозиция, концентрация по матчам и лигам, дневной риск и просадка.", "RISK DESK",
+        "Экспозиция, концентрация и дневные лимиты.", "RISK DESK",
     ),
-    "🧪 MODEL LAB": (
+    "🧪 Model Lab": (
         "VALIDATION WORKBENCH", "MODEL LAB",
-        "Калибровка, Brier, Log Loss и независимая проверка каждого рынка.", "RESEARCH ONLY",
+        "Brier, Log Loss, калибровка и независимая проверка.", "RESEARCH ONLY",
     ),
-    "⚙️ API CENTER": (
+    "⚙️ API Center": (
         "INTEGRATION HEALTH", "API CENTER",
-        "Статус ключей, дневные квоты и подключённые источники данных.", "API MONITOR",
+        "Статус ключей, дневные квоты и подключения источников.", "API MONITOR",
     ),
-    "🧰 TOOLS": (
+    "🧰 Инструменты": (
         "ANALYST TOOLKIT", "TOOLS",
         "Калькулятор вероятностей, банкролла и исторический бэктест.", "TOOLBOX",
     ),
 }
-active_section = st.radio(
-    "Рабочая область", list(TERMINAL_SECTIONS.keys()),
-    horizontal=True, label_visibility="collapsed", key="terminal_navigation_v15",
-)
-section_kicker, section_title, section_subtitle, section_status = TERMINAL_SECTIONS[active_section]
-st.markdown(f"""
-<div class="terminal-section-head">
-  <div>
-    <div class="terminal-section-kicker">{section_kicker} / NEURO BET PRO v{APP_VERSION}</div>
-    <div class="terminal-section-title">{section_title}</div>
-    <div class="terminal-section-subtitle">{section_subtitle}</div>
-  </div>
-  <div class="terminal-section-status">● {section_status}</div>
-</div>
-""", unsafe_allow_html=True)
 
-if active_section == "🏠 DASHBOARD":
+# ==================== SIDEBAR NAVIGATION & SETTINGS ====================
+with st.sidebar:
+    st.markdown(
+        "<div class='neo-side-brand'><div class='neo-side-mark'>⚽</div>"
+        "<div><b>Sport-AI-Pro13</b><span>NEURO BET PRO · AI FOOTBALL</span></div></div>",
+        unsafe_allow_html=True,
+    )
+    active_section = st.radio(
+        "Рабочая область", list(TERMINAL_SECTIONS.keys()),
+        label_visibility="collapsed", key="terminal_navigation_v16",
+    )
+    _backup_ok = bool(
+        (st.session_state.get("_sqlite_backup_status") or {}).get("ok")
+        or (st.session_state.get("_sqlite_remote_status_check") or {}).get("ok")
+    )
+    _model_health_label = {
+        "OK": "Модель · контроль в норме",
+        "ATTENTION": "Модель · требуется внимание",
+        "MONITORING": "Модель · накопление выборки",
+    }.get(str(model_health.get("status") or ""), "Модель · статус неизвестен")
+    _backup_label = "Резервная копия · подтверждена" if _backup_ok else "Резервная копия · нет свежего подтверждения"
+    st.markdown(
+        "<div class='neo-side-status'><div class='neo-side-status-head'>"
+        "<i class='neo-side-status-dot'></i> Система активна</div>"
+        f"<small>{esc(_model_health_label)}<br/>Матчей в скане: {len(D.get('cards') or [])}"
+        f"<br/>{esc(_backup_label)}<br/>Версия: {esc(APP_VERSION)}</small></div>",
+        unsafe_allow_html=True,
+    )
+    with st.expander("⚙️ Настройки и обслуживание", expanded=False):
+        st.markdown(
+            "<div style='font-size:1.1rem;font-weight:800;color:#e6eaf2;"
+            "margin-bottom:12px;'>🔑 API ключи</div>",
+            unsafe_allow_html=True)
+
+        fdorg_token = st.text_input(
+            "football-data.org token",
+            value=_api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token"),
+            type="password", key="fdorg_token_input")
+        sstats_key = st.text_input(
+            "SStats.net API key (бесплатные футбольные коэффициенты)",
+            value=_api_key_default("sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"),
+            type="password", key="sstats_api_key_input",
+            help="Ключ SStats.net. Сканирование получает рынки; после FT API также закрывает ставки на угловые и карточки по фактической статистике.")
+
+        footballapi_key = st.text_input(
+            "Football API key (xG · бесплатно, текущий сезон АПЛ)",
+            value=_api_key_default("footballapi_key", "FOOTBALLAPI_KEY", "footballapi_key"),
+            type="password", key="footballapi_key_input",
+            help="Даёт xG обеих команд для завершённых матчей текущего сезона Премьер-лиги. Бесплатный тариф: 50 запросов в день.")
+
+        st.caption("SStats — единственный источник списка матчей и букмекерских коэффициентов. Контекст (составы, травмы и судьи) запрашивается у SStats там, где API подтверждает эти данные.")
+
+        if st.button("🔎 Проверить подключение xG Football API", key="check_footballapi_xg",
+                     width="stretch"):
+            with st.spinner("Проверяю ключ и дневную квоту Football API…"):
+                _footballapi_check = footballapi_xg_connection_check(footballapi_key)
+            if _footballapi_check.get("ok"):
+                st.success(_footballapi_check.get("message", "Football API подключён."))
+                st.caption("xG доступен только в рамках покрытия текущего сезона АПЛ на бесплатном тарифе.")
+            else:
+                st.error(_footballapi_check.get("message", "Не удалось проверить Football API."))
+        if st.button("🔎 Проверить подключение SStats.net", key="check_sstats_api",
+                     width="stretch"):
+            with st.spinner("Проверяю ключ SStats, расписание и Odds…"):
+                _sstats_check = sstats_account_check(sstats_key)
+            if (_sstats_check.get("ok") and _sstats_check.get("games_ok")
+                    and _sstats_check.get("total_line_count", 0) > 0):
+                st.success(_sstats_check.get("message", "SStats подключён; подтверждённые тоталы найдены."))
+            elif _sstats_check.get("ok") and _sstats_check.get("games_ok"):
+                st.warning(_sstats_check.get(
+                    "message",
+                    "Ключ и расписание работают, но подтверждённые тоталы в тестовой выборке не найдены."
+                ))
+            elif _sstats_check.get("ok"):
+                st.warning(_sstats_check.get("message", "Ключ SStats подтверждён, но данные матчей недоступны."))
+            else:
+                st.error(_sstats_check.get("message", "Не удалось подключиться к SStats.net."))
+
+        st.markdown(
+            "<div style='font-size:.72rem;color:#8b93a7;margin-top:14px;"
+            "margin-bottom:6px;'>🤖 LLM-аналитик</div>",
+            unsafe_allow_html=True)
+        prov_keys = list(LLM_PROVIDERS.keys())
+        cur = normalize_llm_provider(D["meta"].get("llm_provider", prov_keys[0]))
+        llm_prov = st.selectbox("Провайдер", prov_keys,
+                                index=prov_keys.index(cur) if cur in prov_keys else 0)
+        llm_key_config = LLM_PROVIDERS.get(llm_prov, {})
+        llm_key_env = str(llm_key_config.get("key_env") or "LLM_API_KEY")
+        llm_key_storage = str(llm_key_config.get("key_storage") or "llm_api_key")
+        llm_key_session = str(llm_key_config.get("key_session") or "llm_api_key_input")
+        llm_key_label = "XAI_API_KEY · Grok" if llm_key_env == "XAI_API_KEY" else "LLM API key"
+        llm_key_default = _api_key_default(
+            llm_key_storage, llm_key_env, llm_key_env, llm_key_storage,
+        )
+        # Compatibility with deployments that previously stored a Grok key as LLM_API_KEY.
+        if llm_key_env == "XAI_API_KEY" and not llm_key_default:
+            llm_key_default = _api_key_default("llm_api_key", "LLM_API_KEY", "llm_api_key")
+        llm_key = st.text_input(
+            llm_key_label,
+            value=llm_key_default,
+            type="password", key=llm_key_session)
+        if st.button(
+            f"🔎 Проверить AI-подключение · {llm_prov}",
+            key="check_llm_provider_connection",
+            width="stretch",
+            help="Отправляет короткий тестовый запрос выбранной модели. Провайдер может списать несколько токенов.",
+        ):
+            with st.spinner(f"Проверяю реальное подключение к {llm_prov}…"):
+                _llm_check = check_provider_connection(llm_prov, llm_key)
+            if _llm_check.get("ok"):
+                st.success(_llm_check.get("message") or "AI API отвечает.")
+            else:
+                st.error(_llm_check.get("message") or "AI API не ответил.")
+        # Save only UI-entered keys, separate from portfolio data and its Gist sync.
+        _widget_key_map = {
+            "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
+            "sstats_api_key": ("sstats_api_key_input", ("SSTATS_API_KEY",), ("SSTATS_API_KEY", "sstats_api_key")),
+            "footballapi_key": ("footballapi_key_input", ("FOOTBALLAPI_KEY",), ("FOOTBALLAPI_KEY", "footballapi_key")),
+            "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
+            "xai_api_key": ("xai_api_key_input", ("XAI_API_KEY",), ("XAI_API_KEY", "xai_api_key")),
+        }
+        _user_entered_keys = {}
+        for _storage_key, (_widget_key, _env_names, _secret_names) in _widget_key_map.items():
+            _current = str(st.session_state.get(_widget_key, "") or "").strip()
+            _configured = _configured_key_value(_env_names, _secret_names)
+            if _current and _current != _configured:
+                _user_entered_keys[_storage_key] = _current
+        # Preserve credentials for providers not selected in this rerun.
+        _keys_to_save = {**_saved_ui_secrets, **_user_entered_keys}
+        _keys_saved = save_local_secrets(_keys_to_save)
+        if not _keys_saved:
+            st.caption("⚠️ Не удалось сохранить ключи на диске. Проверьте права записи хостинга.")
+        # Keep provider and model in sync. Older saved sessions can retain a
+        # Groq model ID after changing the provider to Grok; that makes xAI return
+        # an empty/HTTP error and leaves every independent analysis at zero.
+        _configured_llm_model = str(llm_key_config.get("model") or "")
+        if (
+            llm_prov != D["meta"].get("llm_provider")
+            or _configured_llm_model != str(D["meta"].get("llm_model") or "")
+        ):
+            D["meta"]["llm_provider"] = llm_prov
+            D["meta"]["llm_model"] = _configured_llm_model
+            usage.set_local_data(D)
+
+        st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
+                    unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-size:.72rem;color:#8b93a7;margin-bottom:6px;'>"
+            "🎯 Параметры</div>",
+            unsafe_allow_html=True)
+        min_prob = st.slider(
+            "Мин. P для отбора Value %",
+            30, 85, 40, 1,
+            help=(
+                "Минимум вероятности для Value-кандидатов. Отдельная метка «Сильный прогноз» "
+                "присваивается при вероятности от 65%; этот порог не заменяет историческую "
+                "проверку рынка, Edge, EV и Kelly."
+            ),
+        ) / 100
+        min_edge = st.slider("Мин. Edge %", 0, 15, 3, 1) / 100
+        kelly_frac = 0.25
+        st.caption("Риск-профиль зафиксирован: ¼ Kelly · максимум 1% банка на рынок · 2% на матч · 5% суммарно за день.")
+        st.caption(f"Версия приложения: {APP_VERSION} · build 2026-11-15")
+        matrix_n = st.slider("Матрица", 6, 15, 12, 1)
+
+        st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
+                    unsafe_allow_html=True)
+
+        if st.button(
+            "🔃 Проверить все результаты",
+            width="stretch",
+            help=(
+                "Проверяет до 60 уникальных завершённых матчей за запуск. "
+                "Один найденный счёт может закрыть несколько записей прогнозов. "
+                "Повторно не опрашивает один и тот же матч чаще чем раз в 10 минут."
+            ),
+        ):
+            with st.spinner("Проверяю портфель и все журналы прогнозов…"):
+                D2, n, tried = _auto_settle(D, force=True)
+                forecast_sync = _sync_forecast_results(force=True)
+            _apply_settle_result(D2, n, tried, "manual_check")
+            forecast_sync = forecast_sync or {}
+            st.success(
+                f"Закрыто ставок: {n} · подтверждено прогнозов модели/ИИ: "
+                f"{forecast_sync.get('forecasts_settled', 0)} · "
+                f"закрыто рыночных рекомендаций: {forecast_sync.get('market_forecasts_settled', 0)} · "
+                f"проверено матчей: {forecast_sync.get('fixtures_checked', 0)} · "
+                f"осталось прогнозов: {forecast_sync.get('pending_forecasts', 0)}"
+            )
+            st.rerun()
+
+        _automatic_result_sync_widget()
+        _automatic_sqlite_backup_widget()
+
+        _sync_status = st.session_state.get("_forecast_ledger_sync_status") or {}
+        if _sync_status.get("error"):
+            st.caption("Сверка прогнозов: ошибка — " + str(_sync_status["error"]))
+        elif _sync_status:
+            st.caption(
+                "Последняя сверка журналов: "
+                f"матчей проверено {_sync_status.get('fixtures_checked', 0)} · "
+                f"прогнозов закрыто {_sync_status.get('forecasts_settled', 0)} · "
+                f"рыночных рекомендаций закрыто {_sync_status.get('market_forecasts_settled', 0)} · "
+                f"ожидают FT {_sync_status.get('pending_forecasts', 0)} записей · "
+                f"уникальных матчей {_sync_status.get('pending_unique_fixtures', 0)} · "
+                f"ещё не прошли 2ч15 {_sync_status.get('not_due_grace_fixtures', 0)} · "
+                f"в начале очереди {_sync_status.get('eligible_fixtures', 0)} · "
+                f"осталось матчей {_sync_status.get('eligible_fixtures_remaining', 0)} · "
+                f"старше окна {_sync_status.get('age_limited_fixtures', 0)} · "
+                f"ожидают повтора {_sync_status.get('retry_deferred_fixtures', 0)} · "
+                f"не найден результат {_sync_status.get('not_found_fixtures', 0)} · "
+                f"SStats запросов {_sync_status.get('sstats_lookups', 0)} · "
+                f"источники {', '.join(f'{name}:{count}' for name, count in sorted((_sync_status.get('result_sources') or {}).items())) or 'нет'} · "
+                f"ошибок {_sync_status.get('errors', 0)}"
+            )
+
+        if stale_count and st.button(f"↩️ Вернуть стейки по устаревшим ({stale_count})",
+                                     width="stretch",
+                                     help="Помечает ставки как void и возвращает стейк в банк"):
+            D2, n = _void_stale(D)
+            _apply_settle_result(D2, n, 0, "void_stale")
+            usage.set_local_data(D2)
+            st.toast(f"Возвращены стейки: {n}")
+            st.rerun()
+
+        if st.button("🔄 Очистить карточки", width="stretch"):
+            D["cards"] = []
+            D["funnel"] = None
+            D["report"] = []
+            usage.set_local_data(D)
+            st.toast("Карточки очищены")
+            st.rerun()
+
+        if st.button("♻️ Сбросить счётчики", width="stretch"):
+            usage.settle_reset()
+            usage.llm_reset()
+            usage.odds_reset()
+            usage.fdorg_reset()
+            st.toast("Счётчики сброшены")
+            st.rerun()
+
+        st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",
+                    unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-size:.72rem;color:#8b93a7;margin-bottom:6px;'>"
+            "💾 Бэкап (API-ключи не включаются)</div>",
+            unsafe_allow_html=True)
+
+        # Local SQLite is independent from neuro_local.json and is not included in
+        # the ordinary portfolio JSON backup. Offer a direct encrypted-file export
+        # even before a remote Gist is configured.
+        with st.expander("🛡️ Защита журнала прогнозов SQLite", expanded=False):
+            _restore_state = st.session_state.get("_sqlite_restore_status") or {}
+            if _restore_state.get("restored"):
+                st.success(
+                    "SQLite восстановлена из зашифрованной резервной копии. "
+                    "Проверьте число строк и последние результаты."
+                )
+            elif _restore_state.get("state") == "local_data_present":
+                st.caption("Локальная SQLite содержит записи; автоматическое восстановление её не заменяло.")
+            elif _restore_state.get("state") == "not_configured":
+                st.warning(
+                    "Удалённая копия SQLite пока не настроена. Локальная база на Streamlit Cloud "
+                    "может исчезнуть при пересоздании контейнера."
+                )
+            elif _restore_state.get("state") == "restore_error":
+                st.error(str(_restore_state.get("message") or "Не удалось проверить резервную копию."))
+
+            _remote_state = st.session_state.get("_sqlite_backup_status") or {}
+            if _remote_state.get("ok"):
+                st.success(
+                    "Зашифрованная копия: "
+                    + str(_remote_state.get("backup_at") or "сохранена")
+                    + " · "
+                    + str(_remote_state.get("bytes") or 0)
+                    + " байт"
+                )
+            elif _remote_state.get("state") == "backup_error":
+                st.error(str(_remote_state.get("message") or "Ошибка резервного копирования."))
+
+            st.caption(
+                "Для автоматической резервной копии достаточно одного секрета Streamlit: "
+                "GITHUB_TOKEN. Приложение само создаст непубличный Secret Gist, найдёт его при "
+                "следующих запусках и выведет ключ шифрования из токена. Нужен Fine-grained token "
+                "только с правом Gists: Read and write. Храни токен в менеджере паролей и не меняй "
+                "его без предварительного переноса/восстановления архива: он также используется "
+                "для расшифровки старых копий."
+            )
+
+            _b1, _b2 = st.columns(2)
+            if _b1.button("Проверить удалённую копию", key="check_neuro_remote_backup"):
+                st.session_state["_sqlite_remote_status_check"] = remote_backup_status()
+            _checked_remote = st.session_state.get("_sqlite_remote_status_check") or {}
+            if _checked_remote:
+                if _checked_remote.get("ok"):
+                    st.success(str(_checked_remote.get("message") or "Удалённая копия доступна."))
+                else:
+                    st.warning(str(_checked_remote.get("message") or "Удалённая копия не настроена."))
+
+            if _b2.button("Сохранить SQLite в Secret Gist", key="backup_neuro_sqlite_now"):
+                with st.spinner("Создаю и проверяю зашифрованную копию SQLite…"):
+                    st.session_state["_sqlite_backup_status"] = backup_database_to_gist(DB_FILE)
+            if st.button("Подготовить резервную копию SQLite для скачивания", key="prepare_neuro_sqlite_download"):
+                try:
+                    st.session_state["_sqlite_manual_backup_bytes"] = create_sqlite_backup_bytes(DB_FILE)
+                    st.session_state["_sqlite_manual_backup_name"] = (
+                        f"neuro_db_{datetime.now():%Y%m%d_%H%M}.sqlite.gz"
+                    )
+                except Exception as _sqlite_export_exc:
+                    st.error(
+                        "Не удалось подготовить SQLite-бэкап: "
+                        + type(_sqlite_export_exc).__name__
+                    )
+            if st.session_state.get("_sqlite_manual_backup_bytes"):
+                st.download_button(
+                    "⬇️ Скачать полную резервную копию SQLite",
+                    data=st.session_state["_sqlite_manual_backup_bytes"],
+                    file_name=st.session_state.get("_sqlite_manual_backup_name") or "neuro_db.sqlite.gz",
+                    mime="application/gzip",
+                    key="download_neuro_sqlite_backup",
+                    width="stretch",
+                )
+
+            _sqlite_upload = st.file_uploader(
+                "Восстановить SQLite из .sqlite.gz (только в пустую базу)",
+                type=["gz"], key="restore_neuro_sqlite_upload",
+            )
+            if _sqlite_upload is not None and st.button(
+                "Восстановить пустой журнал SQLite",
+                key="restore_neuro_sqlite_button",
+            ):
+                try:
+                    _restored_sqlite = restore_sqlite_backup_bytes(
+                        _sqlite_upload.getvalue(), DB_FILE, overwrite=False,
+                    )
+                    db.db_init()
+                    db.invalidate_caches()
+                    st.session_state["_sqlite_restore_status"] = {
+                        "restored": True, "state": "restored",
+                        "message": "SQLite восстановлена из локального бэкапа.",
+                    }
+                    st.success(
+                        "SQLite восстановлена. Таблиц с данными: "
+                        + str(len(_restored_sqlite.get("tables") or {}))
+                    )
+                except Exception as _restore_sqlite_exc:
+                    st.error(
+                        "Восстановление SQLite отменено: "
+                        + str(_restore_sqlite_exc)[:180]
+                    )
+
+            _audit_upload = st.file_uploader(
+                "Восстановить журнал из архива ledger .zip",
+                type=["zip"], key="restore_neuro_audit_zip",
+            )
+            if _audit_upload is not None and st.button(
+                "Восстановить прогнозы, рынок и историю банка из audit ZIP",
+                key="restore_neuro_audit_zip_button",
+            ):
+                try:
+                    _audit_restored = restore_audit_export_bytes(
+                        _audit_upload.getvalue(), DB_FILE,
+                    )
+                    db.db_init()
+                    db.invalidate_caches()
+                    st.session_state["_sqlite_restore_status"] = {
+                        "restored": True, "state": "restored",
+                        "message": "Журнал восстановлен из audit ZIP.",
+                    }
+                    st.success(
+                        "Журнал восстановлен без перезаписи существующих данных: "
+                        f"прогнозы {_audit_restored['forecasts']}, "
+                        f"рынки {_audit_restored['market_forecasts']}, "
+                        f"ставки {_audit_restored['paper_bets']}, "
+                        f"банк {_audit_restored['bank_history']}, "
+                        f"снимки решений {_audit_restored['decision_snapshots']}, "
+                        f"исторические архивы {_audit_restored.get('user_datasets', 0)} "
+                        f"({_audit_restored.get('user_dataset_rows', 0)} строк)."
+                    )
+                except Exception as _audit_restore_exc:
+                    st.error(
+                        "Восстановление audit ZIP отменено: "
+                        + str(_audit_restore_exc)[:220]
+                    )
+
+            st.caption(
+                "Secret Gist — это непубличная ссылка, а не приватный диск: любой с URL может его открыть. "
+                "Портфель и SQLite шифруются NEURO_BACKUP_KEY; сам Streamlit app также следует "
+                "ограничить в Share/Manage access."
+            )
+
+        _backup = json.dumps(_strip_secrets(D), ensure_ascii=False, indent=2, default=str)
+        st.download_button("📥 Скачать", _backup,
+                           file_name=f"neuro_data_{datetime.now():%Y%m%d_%H%M}.json",
+                           mime="application/json",
+                           width="stretch")
+
+        _up = st.file_uploader("📤 Загрузить", type=["json"],
+                               key="restore_upload",
+                               label_visibility="collapsed")
+        if _up is not None:
+            _up_id = f"{_up.name}:{_up.size}"
+            if st.session_state.get("_restored_id") != _up_id:
+                st.session_state["_restored_id"] = _up_id
+                try:
+                    _r = _validate_data(json.loads(_up.read().decode("utf-8")))
+                    for _sk in SECRET_KEYS:
+                        if D["meta"].get(_sk):
+                            _r["meta"][_sk] = D["meta"][_sk]
+                    st.session_state.data = _r
+                    usage.set_local_data(_r)
+                    db.invalidate_caches()
+                    st.success("✅ Восстановлено!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Не удалось восстановить: {e}")
+
+        if "confirm_clear" not in st.session_state:
+            st.session_state.confirm_clear = False
+
+        if not st.session_state.confirm_clear:
+            if st.button("🗑️ Очистить портфель", width="stretch"):
+                st.session_state.confirm_clear = True
+                st.rerun()
+        else:
+            st.warning("Удалить ВСЕ ставки?")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("Да", key="confirm_yes"):
+                D["bets"] = []
+                D["cards"] = []
+                D["bank"] = DEFAULT_BANK
+                D["stats"] = {"won": 0, "lost": 0, "profit": 0, "push": 0, "void": 0}
+                D["meta"]["initial_bank"] = DEFAULT_BANK
+                usage.set_local_data(D)
+                db.invalidate_caches()
+                st.session_state.confirm_clear = False
+                st.rerun()
+            if cc2.button("Нет", key="confirm_no"):
+                st.session_state.confirm_clear = False
+                st.rerun()
+    # API keys, risk settings, settlement and backup controls remain available here.
+
+# ==================== ACTIVE WORKSPACE ====================
+section_kicker, section_title, section_subtitle, section_status = TERMINAL_SECTIONS[active_section]
+if active_section != "🏠 Дашборд":
+    st.markdown(f"""
+    <div class="terminal-section-head">
+      <div>
+        <div class="terminal-section-kicker">{section_kicker} / NEURO BET PRO v{APP_VERSION}</div>
+        <div class="terminal-section-title">{section_title}</div>
+        <div class="terminal-section-subtitle">{section_subtitle}</div>
+      </div>
+      <div class="terminal-section-status">● {section_status}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+if active_section == "🏠 Дашборд":
     dashboard.render()
-elif active_section == "🏟 LIVE SCANNER":
+elif active_section == "🏟 Сканер матчей":
     scanner.render(min_prob, kelly_frac, matrix_n, min_edge)
-elif active_section == "📊 AI FORECASTS":
+elif active_section == "📊 Прогнозы":
     stats.render()
-elif active_section == "💎 VALUE / PORTFOLIO":
+elif active_section == "💎 Value / портфель":
     portfolio.render()
-elif active_section == "🧭 DATA QUALITY":
+elif active_section == "🧭 Качество данных":
     analytics.render_data_quality()
-elif active_section == "🧠 AI LEARNING":
+elif active_section == "🧠 Обучение":
     analytics.render_learning_center()
-elif active_section == "🛡️ RISK CONTROL":
+elif active_section == "🛡️ Риск":
     analytics.render_portfolio_risk()
-elif active_section == "🧪 MODEL LAB":
+elif active_section == "🧪 Model Lab":
     analytics.render_model_lab()
-elif active_section == "⚙️ API CENTER":
+elif active_section == "⚙️ API Center":
     analytics.render_api_center()
 else:
     calculator.render(matrix_n)
