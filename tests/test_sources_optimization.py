@@ -78,6 +78,7 @@ class SourceOptimizationTests(unittest.TestCase):
                 "strHomeTeam": "Home One", "strAwayTeam": "Away One",
                 "strHomeTeamBadge": "https://assets.test/home-one.png",
                 "strAwayTeamBadge": "https://assets.test/away-one.png",
+                "idHomeTeam": "133604", "idAwayTeam": "133602",
                 "dateEvent": "2026-11-16", "strVenueThumb": "",
             },
             {
@@ -113,6 +114,8 @@ class SourceOptimizationTests(unittest.TestCase):
         self.assertEqual(rows[2]["stadium_image"], "enriched:venue-3")
         self.assertEqual(rows[0]["home_badge"], "https://assets.test/home-one.png")
         self.assertEqual(rows[0]["away_badge"], "https://assets.test/away-one.png")
+        self.assertEqual(rows[0]["home_team_tsdb_id"], "133604")
+        self.assertEqual(rows[0]["away_team_tsdb_id"], "133602")
         self.assertIn("/api/v1/json/123/eventsday.php", get_mock.call_args.args[0])
         self.assertTrue(any(
             call.args[0].startswith("tsdb_day_v12_")
