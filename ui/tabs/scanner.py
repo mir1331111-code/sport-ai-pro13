@@ -2684,8 +2684,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             fixture_sources.extend(enriched_sstats_rows)
             logs.append(
                 f"✅ SStats — единственный источник расписания и коэффициентов: "
-                f"{len(sstats_rows)} матчей; ESPN и football-data.org пропущены, "
-                "TheSportsDB используется только для эмблем и стадионов."
+                f"{len(sstats_rows)} матчей. TSDB, ESPN и football-data.org "
+                "используются только для визуальных метаданных и не добавляют "
+                "матчи или букмекерские котировки."
             )
         else:
             if sstats_key:
