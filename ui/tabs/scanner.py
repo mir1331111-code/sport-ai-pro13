@@ -2637,31 +2637,56 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             # Only visual fields are overlaid onto exact SStats fixtures; extra
             # TSDB fixtures and all secondary-source odds are never admitted.
             enriched_sstats_rows = sstats_rows
+            visual_metadata_rows = []
             try:
                 tsdb_rows = tsdb_matches(days, logs)
                 source_counts["TheSportsDB visuals"] = len(tsdb_rows)
-                enriched_sstats_rows, visual_stats = enrich_fixture_visual_metadata(
-                    sstats_rows, tsdb_rows,
-                )
-                logs.append(
-                    "🖼 TheSportsDB — визуальные данные: "
-                    f"совпало матчей {visual_stats['fixtures_matched']}/"
-                    f"{visual_stats['primary_fixtures']}, "
-                    f"добавлено полей {visual_stats['assets_added']}, "
-                    f"матчей с визуальными данными "
-                    f"{visual_stats['fixtures_with_assets']}. "
-                    "Расписание и коэффициенты SStats не заменялись."
-                )
+                visual_metadata_rows.extend(tsdb_rows)
             except Exception as exc:
                 logs.append(
-                    f"ℹ️ TheSportsDB visual metadata unavailable: {type(exc).__name__}; "
-                    "SStats fixtures continue without secondary images."
+                    f"ℹ️ TheSportsDB visual metadata unavailable: {type(exc).__name__}."
+                )
+            try:
+                espn_rows = espn_matches(days, logs)
+                source_counts["ESPN"] = len(espn_rows)
+                visual_metadata_rows.extend(espn_rows)
+            except Exception as exc:
+                logs.append(f"ℹ️ ESPN visual metadata unavailable: {type(exc).__name__}.")
+            if token:
+                try:
+                    fdorg_rows = fdorg_matches(days, token, logs)
+                    source_counts["football-data.org"] = len(fdorg_rows)
+                    visual_metadata_rows.extend(fdorg_rows)
+                except Exception as exc:
+                    logs.append(
+                        f"ℹ️ football-data.org visual metadata unavailable: {type(exc).__name__}."
+                    )
+            try:
+                enriched_sstats_rows, visual_stats = enrich_fixture_visual_metadata(
+                    sstats_rows, visual_metadata_rows,
+                )
+                logs.append(
+                    "🖼 Визуальные метаданные без подмены расписания/котировок: "
+                    f"совпадений {visual_stats['fixtures_matched']}/"
+                    f"{visual_stats['primary_fixtures']}, "
+                    f"добавлено изображений и полей {visual_stats['assets_added']}, "
+                    f"матчей с визуальными данными "
+                    f"{visual_stats['fixtures_with_assets']}; "
+                    f"источники TSDB={len(tsdb_rows)}, ESPN={len(espn_rows)}, "
+                    f"football-data.org={len(fdorg_rows)}."
+                )
+            except Exception as exc:
+                enriched_sstats_rows = sstats_rows
+                logs.append(
+                    f"ℹ️ Visual metadata merge unavailable: {type(exc).__name__}; "
+                    "SStats fixtures continue unchanged."
                 )
             fixture_sources.extend(enriched_sstats_rows)
             logs.append(
                 f"✅ SStats — единственный источник расписания и коэффициентов: "
-                f"{len(sstats_rows)} матчей; ESPN и football-data.org пропущены, "
-                "TheSportsDB используется только для эмблем и стадионов."
+                f"{len(sstats_rows)} матчей. TSDB, ESPN и football-data.org "
+                "используются только для визуальных метаданных и не добавляют "
+                "матчи или букмекерские котировки."
             )
         else:
             if sstats_key:
@@ -2726,7 +2751,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if team_key not in logo_by_team:
                     if logo_lookups >= logo_lookup_budget:
                         continue
-                    logo_by_team[team_key] = team_logo_url(team_name)
+                    logo_by_team[team_key] = team_logo_url(team_name, logs=logs)
                     logo_lookups += 1
                 badge_url = logo_by_team.get(team_key)
                 if badge_url:

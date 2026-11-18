@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from model.forecast_ledger import ForecastLedger, MarketForecastLedger
 from storage import sqlite_store
 from storage.user_datasets import save_user_dataset
 
@@ -185,6 +184,11 @@ def restore_audit_export_bytes(
     os.close(temporary_fd)
     temporary = Path(temporary_name)
     try:
+        # Import ledger classes only when a restore is actually requested.
+        # This avoids loading model.forecast_ledger during the main Streamlit
+        # startup/hot-reload import graph.
+        from model.forecast_ledger import ForecastLedger, MarketForecastLedger
+
         _ensure_sqlite_schema(temporary)
         ForecastLedger(temporary)
         MarketForecastLedger(temporary)
