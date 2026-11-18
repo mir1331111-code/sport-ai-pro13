@@ -442,10 +442,21 @@ def rank_best_fixtures(
         if local_end is not None and kickoff >= local_end:
             continue
 
+        features = card.get("independent_features")
+        if (
+            not isinstance(features, dict)
+            or "home_home_sample" not in features
+            or "away_away_sample" not in features
+        ):
+            # A legacy total-games counter is not proof of venue-specific history.
+            continue
         prediction = model_favorite(card)
         if prediction is None:
             continue
-        if prediction["sample_games"] < history_floor:
+        if (
+            prediction["home_sample"] < history_floor
+            or prediction["away_sample"] < history_floor
+        ):
             continue
         if prediction["probability"] < probability_floor:
             continue
