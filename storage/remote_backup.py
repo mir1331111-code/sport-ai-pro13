@@ -6,6 +6,7 @@ only when the local database is missing or contains no user rows.
 """
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
 import json
@@ -32,6 +33,12 @@ MAX_PARTS = 64
 MAX_SQLITE_BYTES = 200 * 1024 * 1024
 MAX_ENCRYPTED_BYTES = PART_BYTES * MAX_PARTS
 REQUEST_TIMEOUT = (5, 20)
+MANAGED_GIST_DESCRIPTION = "Sport-AI-Pro13 encrypted history backup"
+MANAGED_GIST_MARKER = "sport_ai_pro13_backup_marker.txt"
+MANAGED_GIST_MARKER_CONTENT = (
+    "Managed automatically by Sport-AI-Pro13. Keep this Secret Gist non-public."
+)
+BACKUP_KEY_CONTEXT = b"Sport-AI-Pro13/remote-backup/v1:"
 
 
 def _secret(name: str) -> str:
@@ -51,7 +58,17 @@ def generate_backup_key() -> str:
 
 
 def _credentials() -> tuple[str, str, str]:
-    return _secret("GIST_ID"), _secret("GITHUB_TOKEN"), _secret("NEURO_BACKUP_KEY")
+    """Read legacy settings or derive a stable encryption key from the sole token."""
+    gist_id = _secret("GIST_ID")
+    token = _secret("GITHUB_TOKEN")
+    key = _secret("NEURO_BACKUP_KEY")
+    if not key and token:
+        # In one-secret mode, the fine-grained Gist token is also the key material.
+        # Keep the token stable: rotating it changes the derived key and old backups
+        # cannot be decrypted. Legacy explicit NEURO_BACKUP_KEY remains supported.
+        digest = hashlib.sha256(BACKUP_KEY_CONTEXT + token.encode("utf-8")).digest()
+        key = base64.urlsafe_b64encode(digest).decode("ascii")
+    return gist_id, token, key
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -61,6 +78,73 @@ def _headers(token: str) -> dict[str, str]:
         "X-GitHub-Api-Version": "2022-11-28",
         "Content-Type": "application/json",
     }
+
+
+def _find_managed_gist(token: str) -> dict[str, Any] | None:
+    """Find this app's Secret Gist without requiring a separately stored GIST_ID."""
+    page = 1
+    while page <= 10:
+        response = requests.get(
+            f"{GITHUB_API}/gists",
+            headers=_headers(token),
+            params={"per_page": 100, "page": page},
+            timeout=REQUEST_TIMEOUT,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"GitHub Gist list failed: HTTP {response.status_code}")
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise RuntimeError("GitHub Gist list returned an invalid response")
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            files = item.get("files") or {}
+            if (
+                item.get("public") is False
+                and item.get("description") == MANAGED_GIST_DESCRIPTION
+                and MANAGED_GIST_MARKER in files
+                and item.get("id")
+            ):
+                return item
+        if len(payload) < 100:
+            return None
+        page += 1
+    raise RuntimeError("More than 1,000 Gists found; set GIST_ID explicitly")
+
+
+def _create_managed_gist(token: str) -> str:
+    """Create the app's own unlisted Gist once the user supplies a Gist token."""
+    response = requests.post(
+        f"{GITHUB_API}/gists",
+        headers=_headers(token),
+        json={
+            "description": MANAGED_GIST_DESCRIPTION,
+            "public": False,
+            "files": {
+                MANAGED_GIST_MARKER: {"content": MANAGED_GIST_MARKER_CONTENT},
+            },
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+    if response.status_code != 201:
+        raise RuntimeError(f"GitHub Secret Gist creation failed: HTTP {response.status_code}")
+    payload = response.json()
+    gist_id = str(payload.get("id") or "").strip() if isinstance(payload, dict) else ""
+    if not gist_id or payload.get("public") is not False:
+        raise PermissionError("GitHub did not confirm the new Gist is non-public")
+    return gist_id
+
+
+def _resolve_gist_id(gist_id: str, token: str, *, create: bool = False) -> str:
+    """Use a configured legacy ID, discover an existing managed Gist, or create one."""
+    if gist_id:
+        return gist_id
+    existing = _find_managed_gist(token)
+    if existing:
+        return str(existing["id"])
+    if create:
+        return _create_managed_gist(token)
+    return ""
 
 
 def _get_gist(gist_id: str, token: str) -> dict[str, Any]:
@@ -317,15 +401,10 @@ def _restore_from_gist(gist: dict, token: str, key: str, db_path: str | os.PathL
 def restore_database_if_empty(db_path: str | os.PathLike = DB_FILE) -> dict[str, Any]:
     """Restore only into a missing/empty DB; never replace existing user records."""
     gist_id, token, key = _credentials()
-    if not gist_id or not token or not key:
-        missing = [
-            name for name, value in (
-                ("GIST_ID", gist_id), ("GITHUB_TOKEN", token), ("NEURO_BACKUP_KEY", key)
-            ) if not value
-        ]
+    if not token or not key:
         return {
             "restored": False, "state": "not_configured",
-            "message": "Remote SQLite backup not configured; missing " + ", ".join(missing),
+            "message": "Remote SQLite backup requires the GITHUB_TOKEN Streamlit Secret",
         }
     if _database_has_user_rows(db_path):
         return {
@@ -333,19 +412,24 @@ def restore_database_if_empty(db_path: str | os.PathLike = DB_FILE) -> dict[str,
             "message": "Local SQLite database contains rows; remote restore skipped",
         }
     try:
-        gist = _get_gist(gist_id, token)
+        resolved_gist_id = _resolve_gist_id(gist_id, token, create=False)
+        if not resolved_gist_id:
+            return {
+                "restored": False, "state": "no_remote_backup",
+                "message": "No managed Secret Gist exists yet; the first successful backup will create it",
+            }
+        gist = _get_gist(resolved_gist_id, token)
         return _restore_from_gist(gist, token, key, db_path)
     except PermissionError as exc:
         error_type = type(exc).__name__
         message = (
-            "SQLite restore refused: Gist is public or its visibility is unknown. "
-            "Create a non-public Secret Gist and update GIST_ID."
+            "SQLite restore refused: the configured Gist is public or its visibility is unknown."
         )
     except InvalidToken as exc:
         error_type = type(exc).__name__
         message = (
-            "SQLite restore refused: NEURO_BACKUP_KEY does not decrypt the existing backup. "
-            "Use the exact key that was used when it was created."
+            "SQLite restore refused: the backup key does not match. In one-secret mode, "
+            "use the same GITHUB_TOKEN that was used when the backup was created."
         )
     except Exception as exc:
         error_type = type(exc).__name__
@@ -359,17 +443,13 @@ def backup_database_to_gist(
 ) -> dict[str, Any]:
     """Upload a compressed, encrypted, chunked SQLite snapshot to an unlisted Gist."""
     gist_id, token, key = _credentials()
-    if not gist_id or not token or not key:
-        missing = [
-            name for name, value in (
-                ("GIST_ID", gist_id), ("GITHUB_TOKEN", token), ("NEURO_BACKUP_KEY", key)
-            ) if not value
-        ]
+    if not token or not key:
         return {
             "ok": False, "state": "not_configured",
-            "message": "Remote SQLite backup not configured; missing " + ", ".join(missing),
+            "message": "Add the GITHUB_TOKEN Streamlit Secret to enable remote SQLite backups",
         }
     try:
+        gist_id = _resolve_gist_id(gist_id, token, create=True)
         raw = _snapshot_sqlite(db_path)
         counts = _validate_sqlite_bytes(raw)
         raw_sha = hashlib.sha256(raw).hexdigest()
@@ -448,14 +528,13 @@ def backup_database_to_gist(
     except PermissionError as exc:
         error_type = type(exc).__name__
         message = (
-            "SQLite backup refused: Gist is public or its visibility is unknown. "
-            "Create a non-public Secret Gist and update GIST_ID."
+            "SQLite backup refused: GitHub did not confirm that the configured Gist is non-public."
         )
     except InvalidToken as exc:
         error_type = type(exc).__name__
         message = (
-            "SQLite backup refused: NEURO_BACKUP_KEY cannot decrypt the existing remote copy. "
-            "The old copy was preserved; use the original key."
+            "SQLite backup refused: the backup key cannot decrypt the existing copy. "
+            "The old copy was preserved; in one-secret mode keep the original GITHUB_TOKEN."
         )
     except Exception as exc:
         error_type = type(exc).__name__
@@ -467,17 +546,18 @@ def backup_database_to_gist(
 def remote_backup_status() -> dict[str, Any]:
     """Return non-secret status for the application settings panel."""
     gist_id, token, key = _credentials()
-    missing = [
-        name for name, value in (
-            ("GIST_ID", gist_id), ("GITHUB_TOKEN", token), ("NEURO_BACKUP_KEY", key)
-        ) if not value
-    ]
-    if missing:
+    if not token or not key:
         return {
             "ok": False, "state": "not_configured",
-            "message": "Missing Streamlit Secrets: " + ", ".join(missing),
+            "message": "Add the GITHUB_TOKEN Streamlit Secret to enable remote backups",
         }
     try:
+        gist_id = _resolve_gist_id(gist_id, token, create=False)
+        if not gist_id:
+            return {
+                "ok": False, "state": "not_initialized",
+                "message": "GitHub token is configured; the app will create its Secret Gist on the first backup",
+            }
         gist = _get_gist(gist_id, token)
         try:
             raw, manifest, counts = _decode_remote_snapshot(gist, token, key)
@@ -497,14 +577,13 @@ def remote_backup_status() -> dict[str, Any]:
     except PermissionError as exc:
         error_type = type(exc).__name__
         message = (
-            "Gist is public or its visibility is unknown. Create a non-public Secret Gist "
-            "and update GIST_ID before storing portfolio or SQLite data."
+            "Gist is public or its visibility is unknown; the app refused to write backup data."
         )
     except InvalidToken as exc:
         error_type = type(exc).__name__
         message = (
-            "NEURO_BACKUP_KEY does not decrypt the existing remote copy. "
-            "Use the original key; do not overwrite the current Gist."
+            "The backup key does not decrypt the existing remote copy. "
+            "In one-secret mode, restore the original GITHUB_TOKEN; do not overwrite the Gist."
         )
     except Exception as exc:
         error_type = type(exc).__name__
