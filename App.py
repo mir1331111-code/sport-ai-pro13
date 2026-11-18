@@ -41,7 +41,7 @@ from storage import usage  # noqa: E402
 from storage.secret_store import load_local_secrets, save_local_secrets  # noqa: E402
 from storage.remote_backup import (
     backup_database_to_gist, create_sqlite_backup_bytes,
-    generate_backup_key, remote_backup_status, restore_database_if_empty,
+    remote_backup_status, restore_database_if_empty,
     restore_sqlite_backup_bytes,
 )  # noqa: E402
 from model.audit_restore import restore_audit_export_bytes  # noqa: E402
@@ -1195,18 +1195,13 @@ with st.sidebar:
             st.error(str(_remote_state.get("message") or "Ошибка резервного копирования."))
 
         st.caption(
-            "Для автоматического хранения портфеля и SQLite создай Secret Gist (не Public) "
-            "и добавь в Streamlit → Manage app → Settings → Secrets: GIST_ID, GITHUB_TOKEN, "
-            "NEURO_BACKUP_KEY. Оба файла шифруются этим ключом; не добавляй его в GitHub."
+            "Для автоматической резервной копии достаточно одного секрета Streamlit: "
+            "GITHUB_TOKEN. Приложение само создаст непубличный Secret Gist, найдёт его при "
+            "следующих запусках и выведет ключ шифрования из токена. Нужен Fine-grained token "
+            "только с правом Gists: Read and write. Храни токен в менеджере паролей и не меняй "
+            "его без предварительного переноса/восстановления архива: он также используется "
+            "для расшифровки старых копий."
         )
-        if st.button("🔐 Сгенерировать ключ шифрования", key="generate_neuro_backup_key"):
-            st.session_state["_new_neuro_backup_key"] = generate_backup_key()
-        if st.session_state.get("_new_neuro_backup_key"):
-            st.code(st.session_state["_new_neuro_backup_key"])
-            st.caption(
-                "Скопируй ключ в Streamlit Secrets как NEURO_BACKUP_KEY. "
-                "Он шифрует и портфель, и SQLite; потеря ключа сделает обе удалённые копии невосстановимыми."
-            )
 
         _b1, _b2 = st.columns(2)
         if _b1.button("Проверить удалённую копию", key="check_neuro_remote_backup"):
