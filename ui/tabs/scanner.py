@@ -2733,7 +2733,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Team-name search is restricted on TheSportsDB's free tier.
         # Use the exact provider team IDs attached to matching event records.
         logo_by_team_id = {}
-        logo_lookup_budget = 12
+        logo_lookup_budget = 10
         logo_lookups = 0
         logo_fields_added = 0
         for fixture_row in rows:
