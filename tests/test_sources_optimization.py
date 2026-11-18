@@ -118,7 +118,7 @@ class SourceOptimizationTests(unittest.TestCase):
         self.assertEqual(rows[0]["away_team_tsdb_id"], "133602")
         self.assertIn("/api/v1/json/123/eventsday.php", get_mock.call_args.args[0])
         self.assertTrue(any(
-            call.args[0].startswith("tsdb_day_v12_")
+            call.args[0].startswith("tsdb_day_v13_")
             for call in _cache_put.call_args_list
         ))
 
