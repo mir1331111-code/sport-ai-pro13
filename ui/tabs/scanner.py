@@ -26,11 +26,12 @@ from storage import user_datasets
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches,
                           sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
-                          footballapi_xg_history)
+                          footballapi_xg_history, team_logo_url)
 from data.fixture_merge import (
     enforce_sstats_market_card, enforce_sstats_odds_only,
     enrich_fixture_visual_metadata, is_sstats_market_source, merge_fixture_sources,
 )
+from data.team_names import normalize_team
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from data.context_data import (
     fixture_row_key,
@@ -2703,6 +2704,40 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             # Keep scanner usable even if cross-provider deduplication fails.
             rows = _safe_filter(fixture_sources)
         rows = enforce_sstats_odds_only(rows)
+
+        # Secondary schedule feeds sometimes fail to match the primary SStats
+        # fixture names exactly. Resolve missing club crests individually as a
+        # bounded fallback; positive and negative answers are cached by team.
+        logo_by_team = {}
+        logo_lookup_budget = 12
+        logo_lookups = 0
+        logo_fields_added = 0
+        for fixture_row in rows:
+            for team_field, badge_field in (
+                ("HomeTeam", "home_badge"),
+                ("AwayTeam", "away_badge"),
+            ):
+                if fixture_row.get(badge_field):
+                    continue
+                team_name = str(fixture_row.get(team_field) or "").strip()
+                if not team_name:
+                    continue
+                team_key = normalize_team(team_name) or team_name.casefold()
+                if team_key not in logo_by_team:
+                    if logo_lookups >= logo_lookup_budget:
+                        continue
+                    logo_by_team[team_key] = team_logo_url(team_name)
+                    logo_lookups += 1
+                badge_url = logo_by_team.get(team_key)
+                if badge_url:
+                    fixture_row[badge_field] = badge_url
+                    logo_fields_added += 1
+        if logo_lookups:
+            logs.append(
+                "🛡 Эмблемы команд — TheSportsDB: "
+                f"проверено {logo_lookups} названий, добавлено изображений {logo_fields_added}; "
+                "результаты поиска кэшируются."
+            )
 
         # SStats rows carry their own game IDs and bookmaker prices. When SStats
         # is unavailable, public feeds are schedule-only and every price-like

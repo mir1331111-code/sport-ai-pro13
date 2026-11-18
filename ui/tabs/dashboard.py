@@ -11,6 +11,7 @@ import streamlit as st
 from betting.ranking import model_favorite
 from data.fixture_time import app_timezone
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
+from ui.cards import _LEAGUE_FLAGS
 from model.forecast_ledger import ForecastLedger
 
 
@@ -264,17 +265,20 @@ def _reliability_svg(report):
         + "</svg>" + legend + "</div>"
     )
 
-def _team_badge_html(name, url="", size=22):
+def _team_badge_html(name, url="", size=24):
     safe_url = str(url or "").strip()
     initial = esc((str(name or "?").strip()[:1] or "?").upper())
-    if safe_url.startswith(("https://", "http://")):
-        inner = (
+    inner = initial
+    if safe_url.startswith("https://"):
+        inner += (
             f"<img src='{esc(safe_url)}' alt='{esc(name)}' loading='lazy' "
-            "referrerpolicy='no-referrer'/>"
+            "decoding='async' referrerpolicy='no-referrer' "
+            "onerror=\"this.style.display='none'\"/>"
         )
-    else:
-        inner = initial
-    return f"<span class='neo-team-badge' style='--badge-size:{int(size)}px'>{inner}</span>"
+    return (
+        f"<span class='neo-team-badge' style='--badge-size:{int(size)}px' "
+        f"aria-label='{esc(name)}'>{inner}</span>"
+    )
 
 
 def _match_table_row(card):
@@ -301,10 +305,13 @@ def _match_table_row(card):
     value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
 
     league = str(card.get("league") or card.get("div") or "Футбол")
+    league_code = str(card.get("div") or "")
     league_logo = str(card.get("league_badge") or "")
-    league_image = (
-        f"<img src='{esc(league_logo)}' alt='' loading='lazy' referrerpolicy='no-referrer'/>"
-        if league_logo.startswith(("https://", "http://")) else ""
+    league_mark = (
+        f"<img src='{esc(league_logo)}' alt='' loading='lazy' decoding='async' "
+        "referrerpolicy='no-referrer' onerror=\"this.style.display='none'\"/>"
+        if league_logo.startswith("https://")
+        else f"<span class='neo-league-flag'>{esc(_LEAGUE_FLAGS.get(league_code, '⚽'))}</span>"
     )
     time_text = str(card.get("time") or "").strip()
     date_text = str(card.get("date") or card.get("date_iso") or "").strip()
@@ -318,7 +325,7 @@ def _match_table_row(card):
     return (
         "<tr>"
         f"<td class='neo-time'>{esc(kickoff_text or '—')}</td>"
-        f"<td><span class='neo-league'>{league_image}{esc(league)}</span></td>"
+        f"<td><span class='neo-league'>{league_mark}{esc(league)}</span></td>"
         "<td class='neo-fixture'><div class='neo-fixture-line'>"
         "<span class='neo-team'>"
         + _team_badge_html(home_name, card.get("home_badge"), 21)
@@ -365,12 +372,25 @@ def _sparkline_svg(values, color="#39d49b"):
 
 def _kpi(label, value, note="", tone="", series=None, color="#39d49b"):
     sparkline = _sparkline_svg(series, color=color)
+    trend_ready = len([item for item in (series or []) if num(item) is not None]) >= 2
+    if not sparkline:
+        sparkline = (
+            "<div class='neo-spark-empty' aria-label='Недостаточно истории для динамики'>"
+            "<span>НЕТ ИСТОРИИ</span><b>—</b></div>"
+        )
+    status = "" if trend_ready else (
+        "НЕТ ОБОРОТА" if "ROI" in str(label).upper() else "НЕТ ВЫБОРКИ"
+    )
+    status_html = (
+        f"<span class='neo-kpi-status'>{esc(status)}</span>"
+        if status else "<span class='neo-kpi-mark' aria-hidden='true'></span>"
+    )
     return (
         f"<div class='neo-kpi {esc(tone)}'>"
         "<div class='neo-kpi-label-row'>"
         f"<div class='neo-kpi-label'>{esc(label)}</div>"
-        f"<span class='neo-kpi-mark' aria-hidden='true'></span>"
-        "</div>"
+        + status_html
+        + "</div>"
         "<div class='neo-kpi-main'>"
         f"<div class='neo-kpi-value'>{esc(value)}</div>"
         f"<div class='neo-kpi-spark'>{sparkline}</div>"
@@ -666,7 +686,7 @@ def render():
         unsafe_allow_html=True,
     )
 
-    left, right = st.columns([2.08, 1.0], gap="medium")
+    left, right = st.columns([1.68, 1.0], gap="medium")
     with left:
         table_rows = "".join(_match_table_row(card) for card in filtered_cards[:5])
         if not table_rows:
