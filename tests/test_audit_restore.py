@@ -133,6 +133,19 @@ class AuditArchiveRestoreTests(unittest.TestCase):
             ]
         return build_audit_export(payload)
 
+
+    def test_importing_audit_restore_does_not_eagerly_import_forecast_ledger(self):
+        import subprocess
+        import sys
+
+        script = (
+            "import sys; "
+            "sys.modules.pop('model.forecast_ledger', None); "
+            "import model.audit_restore; "
+            "assert 'model.forecast_ledger' not in sys.modules"
+        )
+        subprocess.run([sys.executable, "-c", script], check=True)
+
     def test_legacy_current_audit_zip_restores_all_audit_tables(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "neuro.db"
