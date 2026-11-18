@@ -16,6 +16,35 @@ SStats also supplies optional match context through its own Games/injuries, Ls/G
 
    UI-entered credentials are saved in the private, git-ignored .neuro_secrets.json file with owner-only permissions and are kept outside portfolio data and downloadable backups. This is local app-host storage, not durable cloud secret storage: Streamlit Community Cloud does not guarantee local-file persistence across reboot/redeploy. If that host clears its filesystem, re-enter the SStats key in the same sidebar field. A durable guarantee requires an external persistent secret store; the app does not copy API keys to GitHub, Gist, or backups.
 
+### Durable forecast and learning history
+
+All pre-match main-model forecasts, independent AI forecasts, market recommendations,
+verified results and calibration decisions are stored in the same SQLite file
+(`DB_FILE`). The scanner attempts an encrypted backup after each scan, and the
+application checks for changed SQLite data periodically while it remains open.
+On a fresh container, the encrypted remote database is restored only if the local
+database is empty. Existing local rows are never silently overwritten.
+
+To protect the history across Streamlit Community Cloud restarts and redeploys,
+create a **private Secret Gist** and add these values in **Manage app → Settings → Secrets**:
+
+```toml
+GIST_ID = "..."
+GITHUB_TOKEN = "..."
+NEURO_BACKUP_KEY = "..."
+```
+
+Generate `NEURO_BACKUP_KEY` in the app's SQLite backup panel. Keep the same key
+permanently and store it safely outside Streamlit; losing it makes the remote
+backup unrecoverable. Never publish the Gist or put the key in the repository.
+Without all three secrets, statistics still accumulate in the current local
+SQLite file, but Streamlit Cloud may erase them when its container is replaced.
+
+The online learner uses only earlier settled **main-model** forecasts. It records
+shadow probabilities first; future probability corrections are applied only
+after at least 200 eligible shadow decisions improve both Brier and Log Loss by
+at least 1%. It does not rewrite Poisson/Elo weights, Value gates or staking rules.
+
 5. Run the scanner. It uses the SStats numeric game ID for Games/injuries and resolves the Flashscore string event ID for Ls/GameInfo and Ls/GameLineups. The Ls/List request uses Upcoming/Limit filters, matches by ordered teams and exact source/app-local/UTC date candidates, and never sends numeric SStats IDs to the Flashscore detail endpoints.
 
 Streamlit Community Cloud reads requirements.txt and installs the Python dependencies. Once deployed, pushes to the connected GitHub branch are reflected in the app; dependency changes trigger a full redeploy. On hosts with ephemeral filesystems, a provider or host restart may clear the local key file; in that case paste the SStats key into the same sidebar field again.

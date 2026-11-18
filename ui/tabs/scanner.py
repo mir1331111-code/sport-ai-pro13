@@ -40,6 +40,9 @@ from data.history_import import parse_historical_matches_csv
 from model.context_model import (
     assess_context_quality, context_probabilities, walk_forward_context_ablation,
 )
+from model.forecast_ledger import ForecastLedger
+from model.error_learner import OnlineErrorLearner
+from model.learning_service import ForecastLearningService
 from model.market_models import (
     asian_handicap_probabilities,
     adjust_corners_for_game_state,
@@ -2764,6 +2767,25 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
 
         update_loader("🧠 Анализ матчей...", 0.80, logs)
+        scan_learning_service = None
+        try:
+            scan_forecast_ledger = ForecastLedger(DB_FILE)
+            scan_learning_service = ForecastLearningService(
+                scan_forecast_ledger,
+                OnlineErrorLearner(
+                    scan_forecast_ledger, model_version_prefix="main-model-",
+                ),
+                enabled=False,
+                min_history=100,
+                auto_promote=True,
+                promotion_min_samples=200,
+                promotion_min_relative_improvement=0.01,
+            )
+        except Exception as learning_exc:
+            logs.append(
+                f"ℹ️ Онлайн-калибровка недоступна ({type(learning_exc).__name__}); "
+                "сканирование продолжится с исходными вероятностями."
+            )
         cards = []
         matches_with_best = 0
         xg_used_count = 0
@@ -2849,11 +2871,35 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if P.get("xg_used"):
                 xg_used_count += 1
 
+            # Keep the untouched base probabilities for the audit ledger.
+            # The calibrator only changes the served probability vector, and
+            # only after the chronological shadow gate has passed.
+            raw_model_probabilities = {
+                "H": float(P["p1"]), "D": float(P["x"]), "A": float(P["p2"]),
+            }
+            P_decision = dict(P)
+            learning_preview = None
+            if scan_learning_service is not None:
+                try:
+                    learning_preview = scan_learning_service.preview(
+                        raw_model_probabilities, as_of=scan_now,
+                        league=str(r.get("League") or lg),
+                    )
+                    served = learning_preview["probabilities"]
+                    P_decision["p1"] = float(served["H"])
+                    P_decision["x"] = float(served["D"])
+                    P_decision["p2"] = float(served["A"])
+                except Exception as learning_exc:
+                    logs.append(
+                        f"ℹ️ Калибровка {h_ru} — {a_ru} пропущена "
+                        f"({type(learning_exc).__name__}); использованы исходные вероятности."
+                    )
+
             fh = engine.form_str(h_en, lg)
             fa = engine.form_str(a_en, lg)
             verdict, rows_, _ = build_verdict(
-                P, min_prob, D["bank"], kelly_frac,
-                h_ru, a_ru, fh, fa, P.get("h2h_n", 0))
+                P_decision, min_prob, D["bank"], kelly_frac,
+                h_ru, a_ru, fh, fa, P_decision.get("h2h_n", 0))
 
             api_context = context_by_fixture.get(
                 fixture_row_key(h_en, a_en, d.strftime("%Y-%m-%d")), {}
@@ -2877,7 +2923,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     logs.append(f"⚠️ Context snapshot не сохранён: {type(exc).__name__}")
             context_quality = assess_context_quality(api_context)
             context_forecasts = context_probabilities(
-                {"H": P["p1"], "D": P["x"], "A": P["p2"]},
+                {"H": P_decision["p1"], "D": P_decision["x"], "A": P_decision["p2"]},
                 api_context,
                 model=st.session_state.get("_context_blender"),
             )
@@ -3308,7 +3354,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "xg_modelled_away_samples": int(P.get("xg_modelled_away_samples") or 0),
                 "xg_modelled_league_samples": int(P.get("xg_modelled_league_samples") or 0),
                 "total_market_validation_report": getattr(engine, "total_market_validation_report", {}),
-                "p1": P["p1"], "px": P["x"], "p2": P["p2"],
+                "p1": P_decision["p1"], "px": P_decision["x"], "p2": P_decision["p2"],
+                "raw_model_probabilities": raw_model_probabilities,
+                "learning_decision": learning_preview,
                 "over": P["over"], "btts": P["btts"],
                 "odds_source": odds_source,
                 "market_odds": dict(market_odds),
@@ -3596,11 +3644,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         try:
             tracked = record_scan_forecasts(
                 cards, provider=llm_prov, model=llm_model, db_path=DB_FILE,
+                timezone_name=getattr(scan_timezone, "key", "UTC"),
+                now=scan_now,
             )
             logs.append(
                 "📚 Журнал прогнозов: "
                 f"модель +{tracked['main_recorded']}, ИИ +{tracked['ai_recorded']}, "
                 f"рынки +{tracked['market_recorded']}, "
+                f"калибровка сохранена {tracked['learning_recorded']}, "
+                f"поправка применена {tracked['learning_promoted']}, "
+                f"ошибок обучения {tracked['learning_errors']}, "
                 f"без времени старта пропущено {tracked['skipped_no_time']}, "
                 f"после старта пропущено {tracked['skipped_started']}, "
                 f"ошибок {tracked['invalid']}"
@@ -3610,11 +3663,21 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 backup_status = backup_database_to_gist(DB_FILE)
                 if backup_status.get("ok") and backup_status.get("state") == "uploaded":
                     logs.append("🛡️ SQLite: зашифрованная копия журнала сохранена и проверена в Secret Gist.")
-                elif backup_status.get("state") not in {"not_configured", "current"}:
+                elif backup_status.get("state") == "not_configured":
+                    logs.append(
+                        "⚠️ SQLite: удалённая копия не настроена. Журнал хранится только "
+                        "на локальном диске Streamlit Cloud и может исчезнуть при redeploy. "
+                        "Добавь GIST_ID, GITHUB_TOKEN и NEURO_BACKUP_KEY в Streamlit Secrets."
+                    )
+                elif backup_status.get("state") != "current":
                     logs.append(
                         "⚠️ SQLite remote backup: "
                         + str(backup_status.get("message") or backup_status.get("state"))
                     )
+                st.session_state["_sqlite_backup_status"] = {
+                    **backup_status,
+                    "checked_at": datetime.now().astimezone().isoformat(),
+                }
             except Exception as backup_exc:
                 logs.append(f"⚠️ SQLite remote backup: {type(backup_exc).__name__}")
         except Exception as exc:

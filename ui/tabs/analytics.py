@@ -8,6 +8,8 @@ import streamlit as st
 from config import DB_FILE
 from model.analytics_quality import card_quality, portfolio_risk
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger
+from model.error_learner import OnlineErrorLearner
+from model.learning_service import ForecastLearningService
 
 
 STATE = {
@@ -66,6 +68,16 @@ def render_learning_center():
         metrics = ledger.metrics()
         rows = ledger.rows(settled_only=True)
         market = MarketForecastLedger(DB_FILE).metrics()
+        learning = ForecastLearningService(
+            ledger,
+            OnlineErrorLearner(ledger, model_version_prefix="main-model-"),
+            enabled=False,
+            min_history=100,
+            auto_promote=True,
+            promotion_min_samples=200,
+            promotion_min_relative_improvement=0.01,
+        )
+        learning_status = learning.status(as_of=datetime.now(timezone.utc))
     except Exception as exc:
         st.error(f"Не удалось прочитать журнал: {type(exc).__name__}")
         return
@@ -80,6 +92,60 @@ def render_learning_center():
     e, f = st.columns(2)
     e.metric("Brier score · только FT", f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—")
     f.metric("Log loss · только FT", f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—")
+
+    st.subheader("Постоянное накопление и обучение")
+    l1, l2, l3 = st.columns(3)
+    l1.metric("Записано решений калибровки", learning_status["decisions"])
+    l2.metric("Прогнозов с допущенной поправкой", learning_status["promoted_decisions"])
+    shadow = learning_status["shadow_evaluation"]
+    l3.metric("Хронологическая shadow-выборка", shadow.get("n", 0))
+    gate = learning_status["promotion_gate"]
+    if gate.get("passed"):
+        st.success(
+            "Калибровка допущена для новых прогнозов: Brier и Log Loss улучшились "
+            "на требуемой хронологической выборке."
+        )
+    else:
+        st.info(
+            "Обучение работает в теневом режиме. Исходные вероятности сохраняются; "
+            "поправки включатся только после "
+            f"{gate.get('minimum_samples', 200)} завершённых shadow-прогнозов "
+            "и улучшения Brier и Log Loss минимум на "
+            f"{gate.get('minimum_relative_improvement', 0.01):.0%}."
+        )
+    if shadow.get("n"):
+        st.dataframe([{
+            "N": shadow["n"],
+            "Brier исходный": shadow.get("raw_brier"),
+            "Brier после обучения": shadow.get("shadow_brier"),
+            "Улучшение Brier": shadow.get("brier_relative_improvement"),
+            "Log Loss исходный": shadow.get("raw_log_loss"),
+            "Log Loss после обучения": shadow.get("shadow_log_loss"),
+            "Улучшение Log Loss": shadow.get("log_loss_relative_improvement"),
+        }], width="stretch", hide_index=True)
+
+    backup = st.session_state.get("_sqlite_backup_status") or {}
+    restore = st.session_state.get("_sqlite_restore_status") or {}
+    if backup.get("ok"):
+        st.success(
+            "Удалённая зашифрованная копия SQLite подтверждена: "
+            + str(backup.get("backup_at") or backup.get("checked_at") or "сохранена")
+        )
+    elif backup.get("state") == "not_configured" or restore.get("state") == "not_configured":
+        st.warning(
+            "Удалённая копия не настроена. На Streamlit Cloud SQLite-файл "
+            "может исчезнуть при перезапуске или redeploy. Добавь GIST_ID, "
+            "GITHUB_TOKEN и NEURO_BACKUP_KEY в Streamlit → Manage app → Settings → Secrets. "
+            "После этого каждый скан сохранит зашифрованную копию; пустая база "
+            "сможет автоматически восстановиться."
+        )
+    elif backup.get("state") == "backup_error":
+        st.error("Не удалось сохранить удалённую копию: " + str(backup.get("message") or "ошибка"))
+    st.caption(
+        "Журнал прогнозов, проверенные результаты, решения калибровки и рынок "
+        "находятся в одном SQLite DB_FILE; резервная копия включает все таблицы."
+    )
+
     st.subheader("Разбор последних завершённых прогнозов")
     if rows:
         display = []
@@ -104,7 +170,11 @@ def render_learning_center():
                      width="stretch", hide_index=True)
     else:
         st.info("Рыночный ledger пока не содержит закрытых прогнозов.")
-    st.info("Рекомендация системы: сначала накопить репрезентативную выборку и проверить улучшение walk-forward. Автоматическое переобучение и изменение коэффициентов отключено.")
+    st.info(
+        "Калибровка использует только прежние подтверждённые результаты основной модели; "
+        "прогнозы ИИ не смешиваются с её обучающей выборкой. Базовые веса Poisson/Elo, "
+        "пороги Value и риск-профиль автоматически не переписываются."
+    )
 
 
 def render_model_lab():
