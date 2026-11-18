@@ -63,6 +63,34 @@ class OnlineErrorLearnerTests(unittest.TestCase):
         self.assertEqual(evaluation["n"], 6)
         self.assertIsNotNone(evaluation["raw_brier"])
 
+    def test_model_version_prefix_keeps_ai_forecasts_out_of_main_model_learning(self):
+        base = self.start
+        for index, version in enumerate((
+            "main-model-v14.4.16", "main-model-v14.4.16",
+            "independent-llm-groq", "independent-llm-grok",
+        )):
+            key = f"version-{index}"
+            at = base + timedelta(days=index)
+            self.ledger.record_prediction(
+                forecast_key=key, fixture_id=key, home_team="H", away_team="A",
+                model_version=version, probabilities={"H": .6, "D": .25, "A": .15},
+                forecast_at=at, kickoff_at=at + timedelta(hours=2), league="League",
+            )
+            self.ledger.settle(
+                key, "H", home_score=1, away_score=0,
+                settled_at=at + timedelta(hours=3),
+            )
+        main_only = OnlineErrorLearner(
+            self.ledger, bins=5, min_bin_samples=1,
+            model_version_prefix="main-model-",
+        )
+        report = main_only.calibrate(
+            {"H": .6, "D": .25, "A": .15},
+            as_of=base + timedelta(days=10),
+        )
+        self.assertEqual(report["history_n"], 2)
+        self.assertEqual(report["model_version_prefix"], "main-model-")
+
     def test_invalid_parameters_rejected(self):
         with self.assertRaises(ValueError):
             OnlineErrorLearner(self.ledger, bins=1)

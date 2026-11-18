@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS, normalize_llm_provider
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger, OUTCOMES
+from model.error_learner import OnlineErrorLearner
+from model.learning_service import ForecastLearningService
 from model.temporal import weighted_mean
 
 
@@ -416,6 +418,9 @@ def _odds_from_card(card: dict) -> dict[str, float] | None:
 
 
 def _main_probabilities(card: dict) -> dict[str, float] | None:
+    raw_model = card.get("raw_model_probabilities")
+    if isinstance(raw_model, dict):
+        return _valid_probabilities(raw_model)
     try:
         raw = {"H": float(card["p1"]), "D": float(card["px"]), "A": float(card["p2"])}
     except (KeyError, TypeError, ValueError):
@@ -429,8 +434,11 @@ def record_scan_forecasts(
     now: datetime | None = None,
 ) -> dict[str, int]:
     """Save one immutable pre-kickoff forecast per fixture/model; repeated scans are safe."""
-    stats = {"main_recorded": 0, "ai_recorded": 0, "market_recorded": 0,
-             "skipped_no_time": 0, "skipped_started": 0, "invalid": 0}
+    stats = {
+        "main_recorded": 0, "ai_recorded": 0, "market_recorded": 0,
+        "learning_recorded": 0, "learning_promoted": 0, "learning_errors": 0,
+        "skipped_no_time": 0, "skipped_started": 0, "invalid": 0,
+    }
     ledger = ForecastLedger(db_path)
     market_ledger = MarketForecastLedger(db_path)
     # Read only idempotency keys. Decoding every historical JSON forecast row
@@ -623,6 +631,43 @@ def record_scan_forecasts(
         pending_market, market_ledger.record_recommendations_batch,
         market_ledger.record_recommendation, "market_recorded",
     )
+
+    # Keep calibration history isolated to the primary model. LLM forecasts
+    # have separate ledger rows and never enter the primary model's training bins.
+    if pending_main:
+        try:
+            learner = OnlineErrorLearner(
+                ledger, model_version_prefix="main-model-",
+            )
+            learning = ForecastLearningService(
+                ledger, learner, enabled=False, min_history=100,
+                auto_promote=True, promotion_min_samples=200,
+                promotion_min_relative_improvement=0.01,
+            )
+        except Exception:
+            stats["learning_errors"] += len(pending_main)
+            learning = None
+        if learning is not None:
+            for record in pending_main:
+                try:
+                    decision = learning.forecast(
+                        forecast_key=record["forecast_key"],
+                        fixture_id=record["fixture_id"],
+                        home_team=record["home_team"],
+                        away_team=record["away_team"],
+                        model_version=record["model_version"],
+                        probabilities=record["probabilities"],
+                        forecast_at=record["forecast_at"],
+                        kickoff_at=record["kickoff_at"],
+                        league=record.get("league"),
+                        entry_odds=record.get("entry_odds"),
+                        odds_source=record.get("odds_source"),
+                    )
+                    stats["learning_recorded"] += 1
+                    stats["learning_promoted"] += int(bool(decision.get("correction_enabled")))
+                except Exception:
+                    # Calibration audit failures never break raw forecast persistence.
+                    stats["learning_errors"] += 1
     return stats
 
 

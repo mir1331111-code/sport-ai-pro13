@@ -201,7 +201,8 @@ class IndependentForecastTests(unittest.TestCase):
             "match_ru": "Home FC — Away FC",
             "div": "E0", "league": "Premier League",
             "date_iso": "2026-10-25", "time": "16:30",
-            "p1": 0.52, "px": 0.28, "p2": 0.20,
+            "p1": 0.54, "px": 0.26, "p2": 0.20,
+            "raw_model_probabilities": {"H": 0.52, "D": 0.28, "A": 0.20},
             "market_odds": {"П1": 2.1, "X": 3.4, "П2": 3.8},
             "odds_source": "test-book",
             "xg_used": True,
@@ -216,7 +217,18 @@ class IndependentForecastTests(unittest.TestCase):
         )
         self.assertEqual(first["main_recorded"], 1)
         self.assertEqual(first["ai_recorded"], 1)
-        saved = ForecastLedger(tmp.name + "/forecasts.sqlite").rows()
+        self.assertEqual(first["learning_recorded"], 1)
+        self.assertEqual(first["learning_promoted"], 0)
+        self.assertEqual(first["learning_errors"], 0)
+        from model.learning_service import ForecastLearningService
+        path = tmp.name + "/forecasts.sqlite"
+        saved = ForecastLedger(path).rows()
+        learning_rows = ForecastLearningService(ForecastLedger(path)).decisions()
+        self.assertEqual(len(learning_rows), 1)
+        self.assertEqual(
+            learning_rows[0]["raw_probabilities"], {"H": .52, "D": .28, "A": .20}
+        )
+        self.assertFalse(learning_rows[0]["correction_enabled"])
         main_saved = next(row for row in saved if row["model_version"].startswith("main-model-"))
         ai_saved = next(row for row in saved if row["model_version"].startswith("independent-llm-"))
         self.assertEqual(main_saved["xg_used"], 1)
@@ -227,6 +239,7 @@ class IndependentForecastTests(unittest.TestCase):
         )
         self.assertEqual(second["main_recorded"], 0)
         self.assertEqual(second["ai_recorded"], 0)
+        self.assertEqual(second["learning_recorded"], 0)
         rows = ForecastLedger(tmp.name + "/forecasts.sqlite").rows()
         self.assertEqual(len(rows), 2)
         self.assertEqual({row["fixture_id"] for row in rows}, {rows[0]["fixture_id"]})
