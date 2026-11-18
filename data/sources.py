@@ -751,6 +751,8 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                     "HomeTeam": h,
                     "AwayTeam": a,
                     "fixture_id": e.get("idEvent"),
+                    "home_team_tsdb_id": str(e.get("idHomeTeam") or "").strip(),
+                    "away_team_tsdb_id": str(e.get("idAwayTeam") or "").strip(),
                     "venue": e.get("strVenue") or "",
                     "stadium_image": e.get("strVenueThumb") or "",
                     "home_badge": e.get("strHomeTeamBadge"),
@@ -2532,6 +2534,84 @@ def team_logo_url(team_name: str, logs=None) -> Optional[str]:
     except Exception as exc:
         note(f"ошибка запроса: {type(exc).__name__}")
         log.debug("TheSportsDB team logo lookup failed for %s: %s", requested, type(exc).__name__)
+        return None
+
+
+_TSDB_TEAM_LOOKUP_URL = "https://www.thesportsdb.com/api/v1/json/123/lookupteam.php"
+
+
+def team_badge_url_by_id(team_id: str | int, logs=None) -> Optional[str]:
+    """Resolve a team crest through its TheSportsDB ID (free-tier-safe).
+
+    Search-by-name is restricted on TheSportsDB's free tier; lookup-by-ID
+    returns exactly one team and its strBadge URL. IDs come from the event feed,
+    not from fuzzy text matching.
+    """
+    requested_id = str(team_id or "").strip()
+    if not requested_id or not requested_id.isdigit():
+        return None
+
+    def note(message):
+        if isinstance(logs, list):
+            logs.append(f"🖼 TheSportsDB team ID {requested_id}: {message}")
+
+    found_key = f"tsdb_team_id_badge_v1_found_{requested_id}"
+    cached = cache_get(found_key, _TEAM_LOGO_CACHE_TTL)
+    if isinstance(cached, dict):
+        url = str(cached.get("url") or "").strip()
+        if url.startswith("https://"):
+            note("эмблема найдена в кэше")
+            return url
+
+    miss_key = f"tsdb_team_id_badge_v1_miss_{requested_id}"
+    if cache_get(miss_key, _TEAM_LOGO_MISS_TTL) is not None:
+        note("подходящая эмблема ранее не найдена")
+        return None
+
+    try:
+        response = _sess.get(
+            _TSDB_TEAM_LOOKUP_URL,
+            params={"id": requested_id},
+            timeout=(3, 8),
+            proxies=NO_PROXY,
+        )
+        if response.status_code != 200:
+            note(f"lookupteam HTTP {response.status_code}")
+            cache_put(miss_key, {"missing": True})
+            return None
+        payload = response.json() or {}
+        teams = payload.get("teams") or []
+        team = next(
+            (
+                item for item in teams
+                if isinstance(item, dict)
+                and str(item.get("idTeam") or "").strip() == requested_id
+                and str(item.get("strSport") or "").strip().casefold() in {"soccer", "football"}
+            ),
+            None,
+        )
+        badge = str(
+            (team or {}).get("strBadge")
+            or (team or {}).get("strTeamBadge")
+            or ""
+        ).strip()
+        if badge.startswith("https://"):
+            cache_put(
+                found_key,
+                {"url": badge, "team": str((team or {}).get("strTeam") or "")},
+            )
+            note(f"эмблема найдена: {(team or {}).get('strTeam') or 'команда'}")
+            return badge
+
+        cache_put(miss_key, {"missing": True})
+        note("API не вернул strBadge для этого ID")
+        return None
+    except Exception as exc:
+        note(f"ошибка запроса: {type(exc).__name__}")
+        log.debug(
+            "TheSportsDB team lookup failed for ID %s: %s",
+            requested_id, type(exc).__name__,
+        )
         return None
 
 
