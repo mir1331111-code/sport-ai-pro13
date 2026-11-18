@@ -926,6 +926,74 @@ div[data-testid="stButton"] > button {
   .neo-quality-list { width:100%; }
 }
 
+
+/* Reference pass v4: keep the dashboard identity visible and tighten the match desk. */
+.neo-dashboard-header {
+  position:sticky;top:0;z-index:35;
+  padding:9px 12px 12px;margin:0 -2px 8px;
+  background:linear-gradient(100deg,rgba(7,19,20,.98),rgba(8,18,23,.96) 64%,rgba(10,26,21,.96));
+  border-bottom:1px solid #24443b;border-radius:0 0 10px 10px;
+  box-shadow:0 8px 18px rgba(0,0,0,.18);backdrop-filter:blur(12px);
+}
+.neo-dashboard-header h1 {font-size:1.48rem !important;}
+.neo-dashboard-header p {margin-top:4px !important;}
+.neo-kpi {min-height:116px;padding:12px 13px 10px;}
+.neo-kpi-label-row {min-height:17px;}
+.neo-kpi-status {
+  display:inline-flex;align-items:center;justify-content:center;
+  padding:3px 6px;border:1px solid #355146;border-radius:999px;
+  background:#10251f;color:#8fb8a6;font-size:.46rem;font-weight:900;
+  letter-spacing:.07em;white-space:nowrap;
+}
+.neo-kpi-spark {align-items:center;justify-content:flex-end;}
+.neo-spark-empty {
+  display:flex;align-items:center;justify-content:center;gap:5px;
+  width:100%;height:29px;padding:0 7px;
+  border:1px dashed #345145;border-radius:7px;
+  background:repeating-linear-gradient(135deg,rgba(56,112,86,.08) 0 5px,transparent 5px 10px);
+  color:#88ab9a;font:700 .49rem 'IBM Plex Mono',monospace;white-space:nowrap;
+}
+.neo-spark-empty b {color:#b7d7c8;font-size:.72rem;}
+.neo-panel {padding:12px 12px 10px;}
+.neo-panel-heading {padding-bottom:7px;margin-bottom:7px;}
+.neo-match-table {min-width:820px;}
+.neo-match-table th {padding:7px 6px;}
+.neo-match-table td {padding:8px 6px;}
+.neo-fixture-line {min-width:220px;gap:4px;}
+.neo-team {gap:5px;}
+.neo-team b {font-size:.65rem;}
+.neo-team-badge {
+  box-shadow:0 2px 7px rgba(0,0,0,.22);
+  overflow:hidden;
+}
+.neo-team-badge img {
+  position:absolute;inset:1px;width:calc(100% - 2px);height:calc(100% - 2px);
+  object-fit:contain;padding:2px;background:#10251f;
+}
+.neo-vs {font-size:.55rem;}
+.neo-league {max-width:160px;gap:5px;}
+.neo-league img {width:17px;height:17px;object-fit:contain;flex:0 0 17px;}
+.neo-league-flag {
+  display:inline-grid;place-items:center;flex:0 0 17px;
+  width:17px;height:17px;font-size:13px;line-height:1;
+}
+.neo-reliability-panel {min-height:unset;}
+.neo-chart-empty {min-height:175px;}
+.neo-bottom-panel {min-height:205px;}
+.neo-quality-layout {min-height:138px;}
+.neo-gauge {flex-basis:108px;width:108px;height:108px;}
+.neo-quality-row {margin:7px 0 8px;}
+.neo-backup-detail {margin-top:8px !important;}
+.neo-history-row {padding:5px 0;}
+.neo-dashboard-footer {padding-top:2px;}
+@media (max-width: 1500px) {
+  .neo-kpi-grid {grid-template-columns:repeat(4,minmax(0,1fr));}
+}
+@media (max-width: 1000px) {
+  .neo-kpi-grid {grid-template-columns:repeat(2,minmax(0,1fr));}
+  .neo-dashboard-header {position:relative;}
+}
+
 </style>
 """
 
