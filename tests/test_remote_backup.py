@@ -68,14 +68,59 @@ class RemoteSqliteBackupTests(unittest.TestCase):
                 value = conn.execute("SELECT value FROM sample").fetchone()[0]
             self.assertEqual(value, "keep-me")
 
-    def test_remote_backup_requires_gist_key_and_encryption_key(self):
+    def test_remote_backup_requires_only_the_github_token(self):
         with patch.object(
             remote_backup, "_credentials", return_value=("", "", ""),
         ):
             result = remote_backup.backup_database_to_gist()
         self.assertFalse(result["ok"])
         self.assertEqual(result["state"], "not_configured")
-        self.assertIn("NEURO_BACKUP_KEY", result["message"])
+        self.assertIn("GITHUB_TOKEN", result["message"])
+
+    def test_single_github_token_derives_a_stable_fernet_key(self):
+        fake_token = "github-pat-for-unit-test"
+        with patch.object(
+            remote_backup, "_secret",
+            side_effect=lambda name: fake_token if name == "GITHUB_TOKEN" else "",
+        ):
+            first = remote_backup._credentials()
+            second = remote_backup._credentials()
+
+        self.assertEqual(first[0], "")
+        self.assertEqual(first[1], fake_token)
+        self.assertTrue(first[2])
+        self.assertEqual(first[2], second[2])
+        remote_backup._fernet(first[2])
+
+    def test_managed_gist_discovery_selects_only_the_matching_secret_gist(self):
+        managed = {
+            "id": "managed-id",
+            "description": remote_backup.MANAGED_GIST_DESCRIPTION,
+            "public": False,
+            "files": {remote_backup.MANAGED_GIST_MARKER: {}},
+        }
+        public_copy = {**managed, "id": "public-id", "public": True}
+        unrelated = {**managed, "id": "other-id", "description": "unrelated"}
+        with patch("storage.remote_backup.requests.get") as get:
+            response = get.return_value
+            response.status_code = 200
+            response.json.return_value = [public_copy, unrelated, managed]
+            result = remote_backup._find_managed_gist("token")
+
+        self.assertEqual(result["id"], "managed-id")
+        self.assertEqual(get.call_args.kwargs["params"], {"per_page": 100, "page": 1})
+
+    def test_app_creates_a_non_public_managed_gist_automatically(self):
+        with patch("storage.remote_backup.requests.post") as post:
+            response = post.return_value
+            response.status_code = 201
+            response.json.return_value = {"id": "new-gist-id", "public": False}
+            result = remote_backup._create_managed_gist("token")
+
+        self.assertEqual(result, "new-gist-id")
+        payload = post.call_args.kwargs["json"]
+        self.assertFalse(payload["public"])
+        self.assertIn(remote_backup.MANAGED_GIST_MARKER, payload["files"])
 
     def test_new_local_snapshot_cannot_shrink_verified_remote_tables(self):
         with self.assertRaisesRegex(ValueError, "fewer rows"):
