@@ -1,16 +1,20 @@
-"""Premium data-first overview dashboard for NEURO BET PRO."""
+"""Neural Terminal overview dashboard for NEURO BET PRO."""
 from __future__ import annotations
 
 import html
 import math
-from collections import Counter
 from datetime import datetime
 
 import streamlit as st
+
 from betting.ranking import model_favorite
-from betting.risk import risk_snapshot, MAX_MARKET_STAKE_PCT, MAX_MATCH_EXPOSURE_PCT, MAX_DAILY_EXPOSURE_PCT
 from data.fixture_time import app_timezone
-from config import LLM_PROVIDERS
+from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
+from model.forecast_ledger import ForecastLedger
+
+
+OUTCOMES = ("H", "D", "A")
+OUTCOME_LABELS = {"H": "П1", "D": "X", "A": "П2"}
 
 
 def esc(value):
@@ -70,333 +74,439 @@ def context_summary(card):
 
 
 def match_name(card):
-    return str(card.get("match_ru") or card.get("match") or "Матч не указан").replace(" vs ", " — ")
+    return str(card.get("match_ru") or card.get("match") or (
+        f"{card.get('home_team') or 'Хозяева'} — {card.get('away_team') or 'Гости'}"
+    )).replace(" vs ", " — ")
 
 
-def panel(kicker, title, detail=""):
-    return (
-        "<section class='sp-panel'>"
-        f"<div class='sp-panel-kicker'>{esc(kicker)}</div>"
-        f"<div class='sp-panel-title'>{esc(title)}</div>"
-        + (f"<div class='sp-panel-detail'>{esc(detail)}</div>" if detail else "")
-    )
+def _forecast_metrics(rows):
+    settled = [
+        row for row in rows
+        if row.get("result") in OUTCOMES
+        and isinstance(row.get("probabilities"), dict)
+        and all(num((row.get("probabilities") or {}).get(key)) is not None for key in OUTCOMES)
+    ]
+    if not settled:
+        return {
+            "n": 0, "brier": None, "log_loss": None, "accuracy": None,
+            "market_delta_brier": None, "market_n": 0,
+        }
+
+    briers, losses, correct = [], [], 0
+    market_differences = []
+    for row in settled:
+        probabilities = row["probabilities"]
+        actual = row["result"]
+        briers.append(sum((float(probabilities[key]) - float(key == actual)) ** 2 for key in OUTCOMES))
+        losses.append(-math.log(max(float(probabilities[actual]), 1e-15)))
+        predicted = max(OUTCOMES, key=lambda key: float(probabilities[key]))
+        correct += int(predicted == actual)
+
+        prices = row.get("entry_odds")
+        if isinstance(prices, dict) and all(num(prices.get(key)) and num(prices.get(key)) > 1 for key in OUTCOMES):
+            implied = {key: 1.0 / float(prices[key]) for key in OUTCOMES}
+            total = sum(implied.values())
+            market = {key: implied[key] / total for key in OUTCOMES}
+            market_brier = sum((market[key] - float(key == actual)) ** 2 for key in OUTCOMES)
+            market_differences.append(briers[-1] - market_brier)
+
+    n = len(settled)
+    return {
+        "n": n,
+        "brier": sum(briers) / n,
+        "log_loss": sum(losses) / n,
+        "accuracy": correct / n,
+        "market_delta_brier": (
+            sum(market_differences) / len(market_differences) if market_differences else None
+        ),
+        "market_n": len(market_differences),
+    }
 
 
-def odds_html(card):
-    if not has_prices(card):
-        return "<div class='sp-empty-inline'>Полная реальная линия 1X2 не подтверждена.</div>"
-    return (
-        "<div class='sp-odds'>"
-        + "".join(
-            f"<span><small>{k}</small><b>{num(card['market_odds'][k]):.2f}</b></span>"
-            for k in ("П1", "X", "П2")
+def _ledger_snapshot():
+    try:
+        ledger = ForecastLedger(DB_FILE)
+        all_rows = ledger.rows()
+        main_history = [
+            row for row in all_rows
+            if str(row.get("model_version") or "").startswith("main-model-")
+        ]
+        active_version = f"main-model-v{APP_VERSION}"
+        active_rows = [
+            row for row in main_history
+            if str(row.get("model_version") or "") == active_version
+        ]
+        settled = [row for row in active_rows if row.get("result") in OUTCOMES]
+        metrics = _forecast_metrics(active_rows)
+        reliability = ledger.reliability_bins(
+            bins=10, model_version=active_version
         )
-        + "</div>"
-        + f"<div class='sp-source'>КОТИРОВКИ · {esc(card.get('odds_source') or 'SStats')}</div>"
-    )
+        return {
+            "ok": True,
+            "rows": active_rows,
+            "all_rows": main_history,
+            "active_version": active_version,
+            "settled": settled,
+            "pending": max(0, len(active_rows) - len(settled)),
+            "metrics": metrics,
+            "reliability": reliability,
+        }
+    except Exception as exc:
+        return {
+            "ok": False, "error": type(exc).__name__, "rows": [],
+            "settled": [], "pending": 0,
+            "metrics": _forecast_metrics([]), "reliability": {"rows": [], "n": 0},
+        }
 
 
-def probability_rows(card):
-    rows = []
-    for label, key, tone in (("П1", "p1", "home"), ("X", "px", "draw"), ("П2", "p2", "away")):
-        value = min(1.0, max(0.0, num(card.get(key)) or 0.0))
-        rows.append(
-            "<div class='sp-prob-row'>"
-            f"<span>{label}</span><div class='sp-track'><i class='{tone}' style='width:{value * 100:.1f}%'></i></div>"
-            f"<b>{value:.0%}</b></div>"
+def _reliability_svg(report):
+    source_rows = report.get("rows") or []
+    colors = {"H": "#46d6a2", "D": "#55b9d9", "A": "#b19aff"}
+    labels = {"H": "П1 · хозяева", "D": "X · ничья", "A": "П2 · гости"}
+    series = {}
+    for key in OUTCOMES:
+        points = []
+        for row in source_rows:
+            if row.get("outcome") != key:
+                continue
+            if int(row.get("n", 0) or 0) < 3:
+                continue
+            x = num(row.get("mean_probability"))
+            y = num(row.get("observed_frequency"))
+            if x is not None and y is not None:
+                points.append((x, y))
+        series[key] = sorted(points)
+
+    width, height = 420, 238
+    left, right, top, bottom = 42, 395, 18, 193
+    plot_w, plot_h = right - left, bottom - top
+    grid = []
+    for tick in (0.0, 0.25, 0.5, 0.75, 1.0):
+        y = bottom - tick * plot_h
+        x = left + tick * plot_w
+        grid.append(
+            f"<line x1='{left}' y1='{y:.1f}' x2='{right}' y2='{y:.1f}' class='neo-gridline'/>"
+            f"<line x1='{x:.1f}' y1='{top}' x2='{x:.1f}' y2='{bottom}' class='neo-gridline'/>"
+            f"<text x='{left-10}' y='{y+4:.1f}' text-anchor='end' class='neo-axis'>{tick:.2f}</text>"
+            f"<text x='{x:.1f}' y='{bottom+18}' text-anchor='middle' class='neo-axis'>{tick:.2f}</text>"
         )
-    return "".join(rows)
-
-
-def team_badge(url, name):
-    label = esc(name)
-    letter = esc((str(name or "?").strip()[:1] or "?").upper())
-    fallback = f"<span class='sp-team-fallback'>{letter}</span>"
-    if not url:
-        return f"<span class='sp-team-emblem'>{fallback}</span>"
+    paths = [
+        f"<line x1='{left}' y1='{bottom}' x2='{right}' y2='{top}' class='neo-ideal'/>"
+    ]
+    for key in OUTCOMES:
+        points = series[key]
+        if len(points) >= 2:
+            coords = " ".join(
+                f"{left + x * plot_w:.1f},{bottom - y * plot_h:.1f}"
+                for x, y in points
+            )
+            paths.append(
+                f"<polyline points='{coords}' fill='none' stroke='{colors[key]}' "
+                "stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/>"
+            )
+        for x, y in points:
+            paths.append(
+                f"<circle cx='{left + x * plot_w:.1f}' cy='{bottom - y * plot_h:.1f}' "
+                f"r='4' fill='{colors[key]}' stroke='#0d1a20' stroke-width='1.5'/>"
+            )
+    legend = "".join(
+        f"<span><i style='background:{colors[key]}'></i>{labels[key]}</span>"
+        for key in OUTCOMES
+    )
     return (
-        f"<span class='sp-team-emblem'>{fallback}"
-        f"<img src='{esc(url)}' alt='{label}' loading='lazy' "
-        """referrerpolicy='no-referrer' onerror="this.style.display='none'"></span>"""
+        "<div class='neo-chart-wrap'>"
+        f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='Калибровка вероятностей'>"
+        + "".join(grid) + "".join(paths)
+        + f"<text x='{(left+right)/2}' y='{height-4}' text-anchor='middle' class='neo-axis-title'>Прогнозная вероятность</text>"
+        + f"<text x='11' y='{(top+bottom)/2}' text-anchor='middle' transform='rotate(-90 11 {(top+bottom)/2})' class='neo-axis-title'>Фактическая частота</text>"
+        + "</svg><div class='neo-chart-legend'>"
+        + legend
+        + "<span><i class='neo-ideal-key'></i>Идеальная калибровка</span>"
+        + "</div></div>"
     )
 
 
-def league_badge(url, name):
-    label = esc(name)
-    if url:
-        return (
-            f"<span class='sp-league-emblem'><img src='{esc(url)}' alt='{label}' "
-            "loading='lazy' referrerpolicy='no-referrer' "
-            "onerror=\"this.style.display='none'\"></span>"
-        )
-    return "<span class='sp-league-emblem fallback'>⚽</span>"
-
-
-def match_tile(card, rank, ai_name="AI"):
-    pred = favorite(card) or {}
-    deep = card.get("deep_analysis") if isinstance(card.get("deep_analysis"), dict) else {}
-    ai_pick = str(deep.get("independent_pick") or "")
-    ai_tag = (
-        f"<span class='sp-ai-tag'>{esc(ai_name.upper())} · {esc(ai_pick)}</span>"
-        if ai_pick else f"<span class='sp-ai-tag muted'>{esc(ai_name.upper())} · ОЖИДАЕТ</span>"
+def _match_table_row(card):
+    prediction = favorite(card) or {}
+    values = []
+    for key in ("p1", "px", "p2"):
+        value = num(card.get(key))
+        values.append(f"{value:.0%}" if value is not None and 0 <= value <= 1 else "—")
+    odds = card.get("market_odds") or {}
+    odds_text = (
+        " / ".join(f"{num(odds[key]):.2f}" for key in ("П1", "X", "П2"))
+        if has_prices(card) else "—"
+    )
+    pick = str(prediction.get("pick") or "—")
+    probability = num(prediction.get("probability"))
+    pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
+    verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
+    value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
+    league = str(card.get("league") or card.get("div") or "Футбол")
+    time_text = " ".join(
+        part for part in (str(card.get("time") or "").strip(), str(card.get("date") or card.get("date_iso") or "").strip())
+        if part
     )
     return (
-        "<div class='sp-match-tile'>"
-        "<div class='sp-match-meta'>"
-        f"<span class='sp-league-meta'>{league_badge(card.get('league_badge'), card.get('league') or card.get('div') or 'ФУТБОЛ')}{esc(card.get('league') or card.get('div') or 'ФУТБОЛ')}</span>"
-        f"<span>{esc(card.get('date') or card.get('date_iso') or '')} {esc(card.get('time') or '')}</span>"
+        "<tr>"
+        f"<td class='neo-time'>{esc(time_text or '—')}</td>"
+        f"<td><span class='neo-league'>{esc(league)}</span></td>"
+        f"<td class='neo-fixture'><b>{esc(card.get('home_team') or 'Хозяева')}</b>"
+        f"<span> — </span><b>{esc(card.get('away_team') or 'Гости')}</b></td>"
+        + "".join(f"<td class='neo-prob'>{esc(value)}</td>" for value in values)
+        + f"<td class='neo-odds'>{esc(odds_text)}</td>"
+        + f"<td><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span></td>"
+        + "</tr>"
+    )
+
+
+def _kpi(label, value, note="", tone=""):
+    return (
+        f"<div class='neo-kpi {esc(tone)}'>"
+        f"<div class='neo-kpi-label'>{esc(label)}</div>"
+        f"<div class='neo-kpi-value'>{esc(value)}</div>"
+        f"<div class='neo-kpi-note'>{esc(note)}</div>"
         "</div>"
-        "<div class='sp-team-line'>"
-        f"<div class='sp-team-side'>{team_badge(card.get('home_badge'), card.get('home_team') or 'Хозяева')}"
-        f"<b>{esc(card.get('home_team') or 'Хозяева')}</b></div>"
-        "<span class='sp-vs'>VS</span>"
-        f"<div class='sp-team-side away'><b>{esc(card.get('away_team') or 'Гости')}</b>"
-        f"{team_badge(card.get('away_badge'), card.get('away_team') or 'Гости')}</div></div>"
-        f"<div class='sp-match-bottom'><span class='sp-pick'>{esc(pred.get('pick') or '—')} · {float(pred.get('probability') or 0):.1%}</span>{ai_tag}</div>"
-        + odds_html(card)
-        + "</div>"
+    )
+
+
+def _quality_panel(cards):
+    total = len(cards)
+    summaries = [context_summary(card) for card in cards]
+    metrics = [
+        ("Реальные коэффициенты 1X2", sum(has_prices(card) for card in cards)),
+        ("Подтверждённые стартовые XI", sum(item["xi"] for item in summaries)),
+        ("Назначенный судья", sum(item["referee"] for item in summaries)),
+        ("Подтверждённый фид травм", sum(item["injuries"] for item in summaries)),
+    ]
+    rows = []
+    for label, count in metrics:
+        pct = count / max(1, total) * 100
+        rows.append(
+            "<div class='neo-quality-row'>"
+            f"<div><span>{esc(label)}</span><b>{count}/{total}</b></div>"
+            f"<div class='neo-progress'><i style='width:{pct:.1f}%'></i></div>"
+            "</div>"
+        )
+    return (
+        "<section class='neo-panel neo-bottom-panel'>"
+        "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>SOURCE MONITOR</span>"
+        "<h3>Качество данных</h3></div><span class='neo-panel-icon'>◈</span></div>"
+        f"<div class='neo-quality-summary'><strong>{sum(has_prices(c) for c in cards)}/{total}</strong>"
+        "<span>полных линий 1X2 в текущем скане</span></div>"
+        + "".join(rows)
+        + "<p class='neo-panel-footnote'>Нет подтверждения — это неизвестное значение, а не доказательство отсутствия события.</p>"
+        "</section>"
+    )
+
+
+def _backup_panel():
+    backup = st.session_state.get("_sqlite_backup_status") or {}
+    checked = st.session_state.get("_sqlite_remote_status_check") or {}
+    restore = st.session_state.get("_sqlite_restore_status") or {}
+    ok = bool(backup.get("ok") or checked.get("ok"))
+    restored = bool(restore.get("restored"))
+    error = backup.get("state") == "backup_error" or restore.get("state") == "restore_error"
+    if ok:
+        state, state_class = "ПОДТВЕРЖДЕНО", "ok"
+        detail = str(
+            backup.get("message") or checked.get("message")
+            or "Удалённая зашифрованная копия доступна."
+        )
+        last_time = backup.get("backup_at") or backup.get("checked_at") or checked.get("checked_at")
+    elif restored:
+        state, state_class = "ВОССТАНОВЛЕНО", "ok"
+        detail = str(restore.get("message") or "SQLite успешно восстановлена.")
+        last_time = restore.get("checked_at")
+    elif error:
+        state, state_class = "ОШИБКА", "error"
+        detail = str(backup.get("message") or restore.get("message") or "Не удалось проверить резервную копию.")
+        last_time = backup.get("checked_at") or restore.get("checked_at")
+    else:
+        state, state_class = "ОЖИДАЕТ ПРОВЕРКИ", "pending"
+        detail = "После первого успешного сохранения здесь появится подтверждённое состояние копии."
+        last_time = None
+    time_text = str(last_time or "—").replace("T", " ").replace("+00:00", " UTC")
+    return (
+        "<section class='neo-panel neo-bottom-panel'>"
+        "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>REMOTE STORAGE</span>"
+        "<h3>Резервное копирование</h3></div><span class='neo-panel-icon'>⌁</span></div>"
+        f"<div class='neo-status-line'><span class='neo-status-dot {state_class}'></span>"
+        f"<b>{esc(state)}</b><span>GitHub Secret Gist</span></div>"
+        f"<div class='neo-backup-time'>Последняя отметка <b>{esc(time_text)}</b></div>"
+        f"<p class='neo-backup-detail'>{esc(detail)}</p>"
+        "<div class='neo-panel-footnote'>Проверка статуса и ручное сохранение доступны в разделе «Настройки и обслуживание» слева.</div>"
+        "</section>"
+    )
+
+
+def _history_panel(snapshot, roi, profit, turnover):
+    rows = snapshot.get("rows") or []
+    all_rows = snapshot.get("all_rows") or rows
+    settled = snapshot.get("settled") or []
+    dates = [str(row.get("forecast_at") or "")[:10] for row in all_rows if row.get("forecast_at")]
+    first_date = min(dates) if dates else "—"
+    last_date = max(dates) if dates else "—"
+    leagues = len({str(row.get("league") or "").strip() for row in rows if str(row.get("league") or "").strip()})
+    xg_rows = [row for row in rows if row.get("xg_used") is not None]
+    xg_used = sum(bool(row.get("xg_used")) for row in xg_rows)
+    xg_text = f"{xg_used}/{len(xg_rows)}" if xg_rows else "—"
+    metrics = snapshot.get("metrics") or {}
+    brier_text = f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—"
+    log_text = f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—"
+    roi_text = f"{roi:+.1f}%" if turnover > 0 else "—"
+    return (
+        "<section class='neo-panel neo-bottom-panel'>"
+        "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>HISTORY & COVERAGE</span>"
+        "<h3>История и покрытие</h3></div><span class='neo-panel-icon'>▤</span></div>"
+        "<div class='neo-history-row'><span>Прогнозов основной модели · все версии</span><b>"
+        f"{len(all_rows):,}</b></div>"
+        "<div class='neo-history-row'><span>Прогнозов текущей версии</span><b>"
+        f"{len(rows):,}</b></div>"
+        "<div class='neo-history-row'><span>Подтверждено FT · текущая версия</span><b>"
+        f"{len(settled):,}</b></div>"
+        "<div class='neo-history-row'><span>Ожидают результата</span><b>"
+        f"{snapshot.get('pending', 0):,}</b></div>"
+        "<div class='neo-history-row'><span>Покрытие турниров</span><b>"
+        f"{leagues}</b></div>"
+        "<div class='neo-history-row'><span>xG реально использован</span><b>"
+        f"{esc(xg_text)}</b></div>"
+        "<div class='neo-history-divider'></div>"
+        "<div class='neo-history-foot'>"
+        f"<span>Период {esc(first_date)} — {esc(last_date)}</span>"
+        f"<span>Brier {esc(brier_text)} · Log Loss {esc(log_text)}</span>"
+        f"<span>ROI виртуального портфеля {esc(roi_text)} · прибыль {profit:+.2f}</span>"
+        "<b class='neo-baseline-note'>Baseline: отдельный эталонный снимок ещё не зафиксирован</b>"
+        "</div></section>"
     )
 
 
 def render():
     data = st.session_state.get("data") or {}
-    cards = [c for c in (data.get("cards") or []) if isinstance(c, dict)]
+    cards = [card for card in (data.get("cards") or []) if isinstance(card, dict)]
+    cards.sort(key=lambda card: (str(card.get("date_iso") or "9999"), str(card.get("time") or "23:59")))
     ai_name = ai_provider_label(data)
-    cards.sort(key=lambda c: (str(c.get("date_iso") or "9999"), str(c.get("time") or "23:59")))
+    priced = sum(has_prices(card) for card in cards)
 
-    ranked = []
-    for card in cards:
-        pred = favorite(card)
-        if pred:
-            ranked.append((pred["probability"], card, pred))
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    ai_matches = [
-        c for c in cards
-        if (
-            isinstance(c.get("deep_analysis"), dict)
-            and c.get("deep_analysis_fixture_id")
-            and c["deep_analysis"].get("independent_pick") in {"П1", "X", "П2"}
-            and isinstance(c["deep_analysis"].get("probabilities"), dict)
-        )
-    ]
-    ai_matches.sort(
-        key=lambda c: (favorite(c) or {}).get("probability", 0.0),
-        reverse=True,
-    )
-
-    bets = [b for b in (data.get("bets") or []) if isinstance(b, dict)]
-    pending = sum(b.get("status") == "pending" for b in bets)
-    closed = [b for b in bets if b.get("status") in {"won", "lost"}]
-    wins = sum(b.get("status") == "won" for b in closed)
-    losses = sum(b.get("status") == "lost" for b in closed)
-    turnover = sum(num(b.get("stake")) or 0 for b in closed)
+    snapshot = _ledger_snapshot()
+    metrics = snapshot["metrics"]
+    bets = [bet for bet in (data.get("bets") or []) if isinstance(bet, dict)]
+    closed_bets = [bet for bet in bets if bet.get("status") in {"won", "lost"}]
+    turnover = sum(num(bet.get("stake")) or 0.0 for bet in closed_bets)
     profit = sum(
-        (num(b.get("stake")) or 0) * ((num(b.get("odds")) or 1) - 1)
-        * (1 if b.get("status") == "won" else -1)
-        for b in closed
+        (num(bet.get("stake")) or 0.0) * ((num(bet.get("odds")) or 1.0) - 1.0)
+        * (1.0 if bet.get("status") == "won" else -1.0)
+        for bet in closed_bets
     )
     roi = profit / turnover * 100 if turnover else 0.0
-    risk = risk_snapshot(data.get("bank"), bets, now=datetime.now(app_timezone()))
-    priced = sum(has_prices(c) for c in cards)
-    value = sum(
-        bool(c.get("best") is not None
-             and (c.get("verdict") or {}).get("real_odds")
-             and (c.get("verdict") or {}).get("value_passed"))
-        for c in cards
-    )
-    ai_count = sum(
-        isinstance(c.get("deep_analysis"), dict)
-        and c["deep_analysis"].get("independent_pick") in {"П1", "X", "П2"}
-        and isinstance(c["deep_analysis"].get("probabilities"), dict)
-        for c in cards
-    )
-    ctx = [context_summary(c) for c in cards]
-    xi_count = sum(x["xi"] for x in ctx)
-    referee_count = sum(x["referee"] for x in ctx)
-    injury_count = sum(x["injuries"] for x in ctx)
 
+    now = datetime.now(app_timezone())
     st.markdown(
-        "<div class='sp-dashboard-hero'><div class='sp-hero-copy'>"
-        "<div class='sp-eyebrow'>OVERVIEW / MATCH INTELLIGENCE</div>"
-        "<h1>Футбол. Данные. Решения.</h1>"
-        f"<p>Единая панель предматчевой аналитики: основная модель, реальные котировки SStats и независимый разбор {esc(ai_name)}.</p>"
-        "<div class='sp-hero-tags'><span>01 · MATCHES</span><span>02 · ODDS</span><span>03 · AI DOSSIER</span><span>04 · RISK CONTROL</span></div>"
-        "</div><div class='sp-hero-mark'><div class='sp-pitch'><i></i><b></b><em></em></div>"
-        "<div class='sp-hero-mark-caption'>NEURO<br/>INTELLIGENCE</div></div></div>",
+        "<div class='neo-dashboard-header'>"
+        "<div><div class='neo-dashboard-eyebrow'>SPORT-AI-PRO13 · FOOTBALL INTELLIGENCE</div>"
+        "<h1>Футбол. Прогнозы на матчи</h1>"
+        "<p>Основная модель · реальные котировки · проверенное качество прогнозов</p></div>"
+        "<div class='neo-header-meta'><span class='neo-live-pill'><i></i> ПАНЕЛЬ АКТИВНА</span>"
+        f"<span>v{esc(APP_VERSION)}</span><span>Обновлено {esc(now.strftime('%d.%m.%Y %H:%M'))}</span></div>"
+        "</div>",
         unsafe_allow_html=True,
     )
 
-    cols = st.columns(5)
-    for col, label, metric in zip(
-        cols,
-        ("МАТЧЕЙ В СКАНЕ", "С РЕАЛЬНЫМИ 1X2", "VALUE ПРОШЛИ", f"{ai_name.upper()} РАЗБОРОВ", "АКТИВНЫЕ СТАВКИ"),
-        (len(cards), priced, value, ai_count, pending),
-    ):
-        col.metric(label, metric)
+    brier = f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—"
+    log_loss = f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—"
+    accuracy = f"{metrics['accuracy']:.1%}" if metrics.get("accuracy") is not None else "—"
+    market_delta = metrics.get("market_delta_brier")
+    market_delta_text = (
+        f"{market_delta:+.4f}" if market_delta is not None else "—"
+    )
+    market_note = (
+        f"совпадающих матчей: {metrics.get('market_n', 0)} · отрицательное лучше"
+        if market_delta is not None else "нет достаточной парной линии и результата"
+    )
+    kpis = [
+        _kpi("Матчей в скане", f"{len(cards):,}", "текущий набор матчей"),
+        _kpi("Реальная линия 1X2", f"{priced:,}", "полная подтверждённая линия"),
+        _kpi("Settled · FT", f"{metrics.get('n', 0):,}", "только основная модель"),
+        _kpi("Brier Score", brier, "ниже — лучше"),
+        _kpi("Log Loss", log_loss, "ниже — лучше"),
+        _kpi("Accuracy · 1X2", accuracy, "доля угаданных исходов"),
+    ]
+    st.markdown(
+        "<div class='neo-kpi-grid'>" + "".join(kpis) + "</div>"
+        + "<div class='neo-market-delta'>"
+        "<span>СРАВНЕНИЕ С РЫНКОМ · Δ BRIER</span>"
+        f"<b>{esc(market_delta_text)}</b><small>{esc(market_note)}</small>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
-    if not cards:
-        st.markdown(
-            panel("FIRST RUN", "Рабочая панель готова", "После первого сканирования здесь появятся реальные матчи и аналитика.")
-            + "<div class='sp-empty-state'><div class='sp-empty-icon'>⚽</div>"
-            "<b>Пока нет данных сканирования</b>"
-            "<span>Открой LIVE SCANNER и запусти анализ. Здесь не показываются демонстрационные или выдуманные матчи.</span>"
-            "</div></section>",
-            unsafe_allow_html=True,
-        )
-        return
-
-    top = ai_matches[0] if ai_matches else (ranked[0][1] if ranked else cards[0])
-    pred = favorite(top) or {}
-    deep = top.get("deep_analysis") if isinstance(top.get("deep_analysis"), dict) else {}
-    ai_probs = deep.get("probabilities") or {}
-    ai_pick = deep.get("independent_pick")
-    ai_prob = num(ai_probs.get(ai_pick)) if ai_pick else None
-    ai_text = str(deep.get("match_assessment") or top.get("llm_opinion") or "")[:340]
-    report_lines = [str(line) for line in (data.get("report") or [])]
-    ai_status_line = next(
-        (
-            line.split("TOP MATCHES · AI STATUS:", 1)[1].strip()
-            for line in reversed(report_lines)
-            if "TOP MATCHES · AI STATUS:" in line
-        ),
-        "",
-    )
-    shortlist_line = next(
-        (
-            line.split("TOP MATCHES · независимый shortlist:", 1)[1].strip()
-            for line in reversed(report_lines)
-            if "TOP MATCHES · независимый shortlist:" in line
-        ),
-        "",
-    )
-    ai_status_html = (
-        f"<div class='sp-ai-summary muted'><b>СТАТУС AI · {esc(ai_name.upper())}</b><p>{esc(ai_status_line)}</p></div>"
-        if ai_status_line else
-        "<div class='sp-ai-summary muted'><b>СТАТУС AI</b><p>После нового сканирования здесь будет показана причина, если разбор не получен.</p></div>"
-    )
-    shortlist_html = (
-        f"<div class='sp-ai-summary muted'><b>ОТБОР TOP MATCHES</b><p>{esc(shortlist_line)}</p></div>"
-        if shortlist_line else ""
-    )
-    next_matches = cards[:6]
-    focus_matches = ai_matches[:7] if ai_matches else ([item[1] for item in ranked[:5]] or cards[:5])
-    focus_title = f"TOP MATCHES · {ai_name} + основная модель" if ai_matches else "Матчи в фокусе · основная модель"
-
-    left, mid, right = st.columns([1.08, 0.96, 0.88], gap="medium")
+    left, right = st.columns([1.68, 1.0], gap="medium")
     with left:
-        st.markdown(
-            panel("UPCOMING MATCHES", focus_title, "До 7 матчей; слабые кандидаты не добавляются ради заполнения списка")
-            + "".join(match_tile(card, i + 1, ai_name) for i, card in enumerate(focus_matches))
-            + "</section>",
-            unsafe_allow_html=True,
-        )
-
-    with mid:
-        ai_prob_text = f"{ai_prob:.1f}%" if ai_prob is not None else "—"
-        ai_caption = f"Независимый {ai_name} · {ai_pick}" if ai_pick else f"Независимый {ai_name} пока не вернул разбор"
-        st.markdown(
-            panel("AI PREDICTION", "Главный матч", match_name(top))
-            + "<div class='sp-ai-score'>"
-            f"<div><small>ОСНОВНАЯ МОДЕЛЬ</small><strong>{float(pred.get('probability') or 0):.0%}</strong><span>{esc(pred.get('pick') or '—')}</span></div>"
-            f"<div><small>{esc(ai_name.upper())} · НЕЗАВИСИМО</small><strong>{esc(ai_prob_text)}</strong><span>{esc(ai_caption)}</span></div></div>"
-            + probability_rows(top)
-            + (
-                f"<div class='sp-ai-summary'><b>{esc(ai_name.upper())} INSIGHT</b><p>{esc(ai_text)}</p></div>"
-                if ai_text else
-                f"<div class='sp-ai-summary muted'><b>{esc(ai_name.upper())} INSIGHT</b><p>Разбор появится после успешного запроса к выбранному AI.</p></div>"
+        table_rows = "".join(_match_table_row(card) for card in cards[:7])
+        if not table_rows:
+            table_rows = (
+                "<tr><td colspan='8' class='neo-empty-cell'>"
+                "Пока нет матчей для отображения. Открой сканер матчей и запусти обновление."
+                "</td></tr>"
             )
-            + ai_status_html
-            + shortlist_html
-            + "</section>",
+        st.markdown(
+            "<section class='neo-panel neo-matches-panel'>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>MATCH INTELLIGENCE</span>"
+            "<h3>Ближайшие матчи — прогнозы модели</h3></div>"
+            f"<span class='neo-count-pill'>{len(cards)} матчей</span></div>"
+            "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
+            "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
+            "<th>Коэффициенты 1X2</th><th>Прогноз</th>"
+            "</tr></thead><tbody>"
+            + table_rows
+            + "</tbody></table></div>"
+            f"<div class='neo-table-footer'>Показано {min(7, len(cards))} из {len(cards)} матчей · котировки отображаются только при полной реальной линии.</div>"
+            "</section>",
             unsafe_allow_html=True,
         )
 
     with right:
+        reliability = snapshot.get("reliability") or {"rows": [], "n": 0}
+        reliability_n = int(reliability.get("n", 0) or 0)
+        chart = (
+            _reliability_svg(reliability)
+            if reliability_n >= 30 else
+            "<div class='neo-chart-empty'><strong>Недостаточно истории для графика</strong>"
+            f"<span>Закрытых прогнозов основной модели: {reliability_n}. "
+            "Калибровка будет показана после накопления более широкой выборки.</span></div>"
+        )
         st.markdown(
-            panel("DATA QUALITY", "Контекст матчей", "Подтверждение источником SStats")
-            + f"<div class='sp-context-score'><strong>{xi_count}/{len(cards)}</strong><span>полных стартовых XI</span></div>"
-            + "".join(
-                "<div class='sp-context-row'>"
-                f"<span>{label}</span><b>{count}/{len(cards)}</b></div>"
-                f"<div class='sp-context-track'><i style='width:{count / max(1, len(cards)) * 100:.1f}%'></i></div>"
-                for label, count in (
-                    ("Стартовые XI", xi_count),
-                    ("Назначен судья", referee_count),
-                    ("Фид травм подтверждён", injury_count),
-                )
-            )
-            + "<div class='sp-context-note'>Неизвестные поля остаются неизвестными. Данные не заменяются предположениями.</div></section>",
+            "<section class='neo-panel neo-reliability-panel'>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>MODEL QUALITY</span>"
+            "<h3>Reliability · калибровка</h3></div>"
+            f"<span class='neo-count-pill'>{reliability_n:,} FT</span></div>"
+            + chart
+            + "<div class='neo-panel-footnote'>Сопоставление прогнозной вероятности и фактической частоты по исходам П1 / X / П2.</div>"
+            "</section>",
             unsafe_allow_html=True,
         )
 
-    bottom_left, bottom_right = st.columns([1.12, 0.88], gap="medium")
+    bottom_left, bottom_mid, bottom_right = st.columns(3, gap="medium")
     with bottom_left:
-        league_counts = Counter(str(c.get("league") or c.get("div") or "Другое") for c in cards)
-        total = max(1, len(cards))
-        rows = sorted(league_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        league_html = "".join(
-            "<div class='sp-league-row'>"
-            f"<span>{esc(name)}</span><div class='sp-league-track'><i style='width:{count / total * 100:.1f}%'></i></div><b>{count}</b></div>"
-            for name, count in rows
-        )
-        st.markdown(
-            panel("PREDICTIVE ANALYTICS", "Охват турниров", "Матчи из последнего сканирования")
-            + league_html
-            + "<div class='sp-divider'></div><div class='sp-analysis-kpis'>"
-            f"<div><small>ЗАКРЫТО</small><b>{wins + losses}</b><span>{wins} побед · {losses} поражений</span></div>"
-            f"<div><small>ROI ОТ ОБОРОТА</small><b class='{'positive' if roi >= 0 else 'negative'}'>{roi:+.1f}%</b><span>Только закрытые ставки</span></div>"
-            f"<div><small>БАНКРОЛЛ</small><b>{(num(data.get('bank')) or 0):,.0f}</b><span>Виртуальный режим</span></div>"
-            "</div></section>",
-            unsafe_allow_html=True,
-        )
-
+        st.markdown(_quality_panel(cards), unsafe_allow_html=True)
+    with bottom_mid:
+        st.markdown(_backup_panel(), unsafe_allow_html=True)
     with bottom_right:
-        priced_cards = [c for c in next_matches if has_prices(c)]
-        if priced_cards:
-            chosen = priced_cards[0]
-            market_html = (
-                "<div class='sp-market-match'>"
-                f"<b>{esc(match_name(chosen))}</b><span>{esc(chosen.get('league') or 'Футбол')}</span></div>"
-                + odds_html(chosen)
-            )
-        else:
-            market_html = "<div class='sp-empty-inline'>В текущем скане нет подтверждённой полной линии 1X2.</div>"
-        home_lambdas = [num(c.get("lam_h")) for c in cards if num(c.get("lam_h")) is not None]
-        away_lambdas = [num(c.get("lam_a")) for c in cards if num(c.get("lam_a")) is not None]
-        home_avg = sum(home_lambdas) / len(home_lambdas) if home_lambdas else None
-        away_avg = sum(away_lambdas) / len(away_lambdas) if away_lambdas else None
-        home_text = f"{home_avg:.2f}" if home_avg is not None else "—"
-        away_text = f"{away_avg:.2f}" if away_avg is not None else "—"
         st.markdown(
-            panel("ODDS OVERVIEW", "Рыночная линия", "Фактическая котировка из источника")
-            + market_html
-            + "<div class='sp-divider'></div><div class='sp-xg-row'>"
-            f"<div><small>СРЕДНЯЯ λ ХОЗЯЕВ</small><b>{home_text}</b></div>"
-            "<div class='sp-xg-sep'>VS</div>"
-            f"<div><small>СРЕДНЯЯ λ ГОСТЕЙ</small><b>{away_text}</b></div></div>"
-            "<div class='sp-context-note'>λ — ожидаемые голы модели, не подтверждённый итог матча.</div></section>",
+            _history_panel(snapshot, roi, profit, turnover),
             unsafe_allow_html=True,
         )
 
-    daily_risk_pct = float(risk.get("daily_exposure_pct") or 0.0)
-    daily_risk_amount = float(risk.get("daily_exposure") or 0.0)
-    daily_remaining = float(risk.get("daily_remaining") or 0.0)
-    max_match_amount = float(risk.get("max_match_exposure") or 0.0)
-    risk_state = "Дневной лимит достигнут — новые ставки заблокированы" if daily_risk_pct >= MAX_DAILY_EXPOSURE_PCT else "Лимит в норме"
-    risk_state_class = "blocked" if daily_risk_pct >= MAX_DAILY_EXPOSURE_PCT else "ok"
+    if not snapshot.get("ok"):
+        st.caption(
+            "Журнал прогнозов временно недоступен: "
+            + esc(snapshot.get("error") or "ошибка SQLite")
+        )
     st.markdown(
-        panel("RISK CONTROL", "Контроль совокупного риска", "Лимиты применяются до каждой ставки, включая ставки из разных рынков одного матча")
-        + "<div class='sp-risk-strip'>"
-        + f"<div><small>РИСК СЕГОДНЯ</small><b>{daily_risk_amount:,.2f}</b><span>{daily_risk_pct:.1%} от банка · предел {MAX_DAILY_EXPOSURE_PCT:.0%}</span></div>"
-        + f"<div><small>ОСТАТОК ДНЕВНОГО ЛИМИТА</small><b>{daily_remaining:,.2f}</b><span>с учётом рассчитанных сегодня ставок</span></div>"
-        + f"<div><small>ОТКРЫТАЯ ЭКСПОЗИЦИЯ</small><b>{float(risk.get('pending_exposure') or 0):,.2f}</b><span>по всем незакрытым рынкам</span></div>"
-        + f"<div><small>МАКСИМУМ НА МАТЧ</small><b>{max_match_amount:,.2f}</b><span>предел {MAX_MATCH_EXPOSURE_PCT:.0%} банка · рынок {MAX_MARKET_STAKE_PCT:.0%}</span></div>"
-        + f"<div class='sp-risk-state {risk_state_class}'>{esc(risk_state)}</div></div></section>",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        "<div class='sp-footer-note'><span>NEURO BET PRO</span> · данные последнего сканирования · "
-        "Прогнозы не гарантируют результат. Value допускается только после независимой рыночной проверки.</div>",
+        "<div class='neo-dashboard-footer'>"
+        f"<span>SPORT-AI-PRO13</span> · {esc(ai_name)} анализатор · "
+        "Показатели качества рассчитаны только по подтверждённым FT основной модели. "
+        "ROI относится только к виртуальному портфелю и не является метрикой точности прогнозов."
+        "</div>",
         unsafe_allow_html=True,
     )
