@@ -238,11 +238,21 @@ def _sstats_parse_markets(odds_payload):
             # Only a named full-time 1X2 market qualifies; plain "winner" is ambiguous.
             if _is_full_time_1x2(market_name):
                 selection = None
-                if label_norm in ("1", "home", "home win", "п1", "1 (home)"):
+                label_key = _market_key(label)
+                if (
+                    label_norm in ("1", "home", "home win", "п1", "1 (home)")
+                    or label_key in {"home team", "home side", "home win"}
+                ):
                     selection = "П1"
-                elif label_norm in ("x", "х", "draw", "tie", "ничья"):
+                elif (
+                    label_norm in ("x", "х", "draw", "tie", "ничья")
+                    or label_key == "the draw"
+                ):
                     selection = "X"
-                elif label_norm in ("2", "away", "away win", "п2", "2 (away)"):
+                elif (
+                    label_norm in ("2", "away", "away win", "п2", "2 (away)")
+                    or label_key in {"away team", "away side", "away win"}
+                ):
                     selection = "П2"
                 if selection:
                     book_key = str(bookmaker or "").strip()
@@ -365,30 +375,83 @@ def _sstats_parse_markets(odds_payload):
         "stat_market_odds": {},
         "asian_handicap_market_odds": {},
         "bookmaker_by_pick": bookmaker_by_pick,
+        "one_x_two_diagnostics": {},
         "extra_market_source": "sstats",
         "source": "sstats",
     }
 
-    # Prefer the complete valid 1X2 line with the lowest overround. This makes
-    # every no-vig probability traceable to one bookmaker's actual line.
+    # Preserve raw feed evidence for diagnostics, but publish a market line only
+    # when all three outcomes belong to one named bookmaker and pass the sanity gate.
     complete_lines = []
+    diagnostic_books = []
+    anonymous_complete = []
+    invalid_complete = []
+    partial_books = []
     for book, selections in one_x_two_by_book.items():
-        if not all(selections.get(pick) for pick in ("П1", "X", "П2")):
-            continue
-        line = {pick: max(selections[pick]) for pick in ("П1", "X", "П2")}
-        implied_sum = sum(1.0 / odd for odd in line.values())
-        # Values outside this broad range are likely wrong market mapping/data.
-        if not (0.85 <= implied_sum <= 1.35):
-            continue
-        complete_lines.append((implied_sum, book, line))
-    if complete_lines:
-        _, selected_book, selected_line = min(complete_lines, key=lambda item: item[0])
-        result.update(selected_line)
-        if selected_book:
-            result["bookmaker_by_pick"] = {pick: selected_book for pick in selected_line}
+        line = {
+            pick: max(selections[pick])
+            for pick in ("П1", "X", "П2")
+            if selections.get(pick)
+        }
+        missing = [pick for pick in ("П1", "X", "П2") if pick not in line]
+        implied_sum = (
+            sum(1.0 / odd for odd in line.values())
+            if len(line) == 3 else None
+        )
+        diagnostic_books.append({
+            "bookmaker": str(book or "").strip() or "Букмекер не указан",
+            "quotes": line,
+            "missing_outcomes": missing,
+            "implied_sum": round(implied_sum, 4) if implied_sum is not None else None,
+        })
+        if len(line) != 3:
+            partial_books.append(diagnostic_books[-1])
+        elif not (0.85 <= implied_sum <= 1.35):
+            invalid_complete.append(diagnostic_books[-1])
+        elif not str(book or "").strip():
+            anonymous_complete.append(diagnostic_books[-1])
         else:
-            # A compact feed without book provenance cannot be safely de-vigged.
-            result["bookmaker_by_pick"] = {}
+            complete_lines.append((implied_sum, str(book).strip(), line))
+
+    if complete_lines:
+        _, selected_book, selected_line = min(
+            complete_lines, key=lambda item: (item[0], item[1].casefold())
+        )
+        result.update(selected_line)
+        result["bookmaker_by_pick"] = {
+            pick: selected_book for pick in ("П1", "X", "П2")
+        }
+        status = "confirmed"
+        reason = f"Полная линия П1/X/П2 получена от одного букмекера: {selected_book}."
+    elif invalid_complete:
+        status = "invalid_overround"
+        reason = (
+            "Все три исхода получены, но сумма обратных коэффициентов вышла "
+            "за допустимый диапазон 0.85–1.35; линия отклонена."
+        )
+    elif anonymous_complete:
+        status = "unverified_bookmaker"
+        reason = (
+            "Все три исхода присутствуют, но источник не указал букмекера. "
+            "Линию нельзя надёжно подтвердить или использовать для de-vig."
+        )
+    elif partial_books:
+        status = "partial"
+        reason = (
+            "SStats прислал только часть исходов 1X2; недостающие котировки "
+            "не заполняются ценами других букмекеров."
+        )
+    else:
+        status = "missing"
+        reason = "В ответе SStats не найден отдельный рынок полного времени 1X2."
+
+    result["one_x_two_diagnostics"] = {
+        "status": status,
+        "reason": reason,
+        "quotes_by_bookmaker": diagnostic_books[:8],
+        "complete_bookmaker_count": len(complete_lines),
+        "available_market_names": [],
+    }
 
     for group in (
         "total_market_odds", "btts_market_odds", "stat_market_odds",
@@ -760,7 +823,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
     now, timezone_offset = _sstats_timezone()
     horizon = max(1, min(30, int(days or 3)))
     cache_key = (
-        f"sstats_upcoming_v5_{now.date().isoformat()}_{horizon}_"
+        f"sstats_upcoming_v6_{now.date().isoformat()}_{horizon}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 900)
@@ -863,6 +926,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             "odds_source": "sstats" if compact_1x2 else "no_market",
             "market_odds": compact_1x2,
             "bookmaker_by_pick": normalized.get("bookmaker_by_pick") or {},
+            "one_x_two_diagnostics": normalized.get("one_x_two_diagnostics") or {},
             "total_market_odds": normalized.get("total_market_odds") or {},
             "btts_market_odds": normalized.get("btts_market_odds") or {},
             "stat_market_odds": normalized.get("stat_market_odds") or {},
@@ -895,9 +959,24 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             continue
         current = unique[key_tuple]
         current["total_market_odds"].update(row.get("total_market_odds") or {})
-        current["market_odds"].update(row.get("market_odds") or {})
         current["btts_market_odds"].update(row.get("btts_market_odds") or {})
         current["stat_market_odds"].update(row.get("stat_market_odds") or {})
+        status_rank = {
+            "missing": 0, "partial": 1, "unverified_bookmaker": 2,
+            "invalid_overround": 3, "confirmed": 4,
+        }
+        current_diag = current.get("one_x_two_diagnostics") or {}
+        incoming_diag = row.get("one_x_two_diagnostics") or {}
+        current_confirmed = current_diag.get("status") == "confirmed"
+        incoming_confirmed = incoming_diag.get("status") == "confirmed"
+        if incoming_confirmed and not current_confirmed:
+            current["market_odds"] = dict(row.get("market_odds") or {})
+            current["bookmaker_by_pick"] = dict(row.get("bookmaker_by_pick") or {})
+            current["one_x_two_diagnostics"] = incoming_diag
+        elif not current_confirmed and status_rank.get(incoming_diag.get("status"), 0) > status_rank.get(
+            current_diag.get("status"), 0
+        ):
+            current["one_x_two_diagnostics"] = incoming_diag
     rows = list(unique.values())
     cache_put(cache_key, rows)
     if logs is not None:
@@ -2010,7 +2089,7 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
     if not key or game_id in (None, ""):
         return None
     cache_key = (
-        f"sstats_full_odds_v5_{game_id}_"
+        f"sstats_full_odds_v6_{game_id}_"
         f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
     )
     cached = cache_get(cache_key, 1800)
@@ -2044,6 +2123,9 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
         result["bookmakers"] = sorted({
             book for _bet, book in _sstats_flat_bets(data) if book
         })
+        result.setdefault("one_x_two_diagnostics", {})["available_market_names"] = (
+            result.get("market_names") or []
+        )
         market_count = sum(
             len(result.get(group) or {})
             for group in (
@@ -2069,6 +2151,12 @@ def sstats_odds_fixture(game_id, api_key: str, logs=None) -> Optional[dict]:
                 f"{market_count} исходов/линий; " +
                 ", ".join(f"{name}={count}" for name, count in group_counts.items()) + "."
             )
+            if result.get("one_x_two_diagnostics", {}).get("status") != "confirmed":
+                diagnostic = result.get("one_x_two_diagnostics") or {}
+                logs.append(
+                    "⚠️ SStats 1X2 не подтверждена: "
+                    + str(diagnostic.get("reason") or "полная линия не найдена")
+                )
             if group_counts["тоталы"] == 0 and market_names:
                 logs.append(
                     "SStats: названия рынков в ответе API: "

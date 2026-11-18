@@ -21,7 +21,8 @@ class OnlineErrorLearner:
 
     def __init__(self, ledger: ForecastLedger, *, bins: int = 10,
                  prior_strength: float = 20.0, min_bin_samples: int = 8,
-                 max_adjustment: float = 0.12):
+                 max_adjustment: float = 0.12,
+                 model_version_prefix: str | None = None):
         if isinstance(bins, bool) or not isinstance(bins, int) or not 2 <= bins <= 100:
             raise ValueError("bins must be an integer between 2 and 100")
         if not math.isfinite(prior_strength) or prior_strength <= 0:
@@ -35,9 +36,19 @@ class OnlineErrorLearner:
         self.prior_strength = float(prior_strength)
         self.min_bin_samples = min_bin_samples
         self.max_adjustment = float(max_adjustment)
+        if model_version_prefix is not None and (
+            not isinstance(model_version_prefix, str) or not model_version_prefix.strip()
+        ):
+            raise ValueError("model_version_prefix must be a non-empty string or None")
+        self.model_version_prefix = model_version_prefix.strip() if model_version_prefix else None
+        self._history_cache: dict[tuple[str, str | None], list[dict]] = {}
 
     def _history(self, as_of: datetime | str, league: str | None = None) -> list[dict]:
         cutoff = _utc(as_of)
+        cache_key = (_timestamp(as_of), league)
+        cached = self._history_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
         history = []
         for row in self.ledger.rows(settled_only=True):
             try:
@@ -47,9 +58,17 @@ class OnlineErrorLearner:
                 continue
             if forecast_time >= cutoff or settled_time is None or settled_time >= cutoff:
                 continue
+            if (
+                self.model_version_prefix
+                and not str(row.get("model_version") or "").startswith(self.model_version_prefix)
+            ):
+                continue
             if league is not None and row.get("league") != league:
                 continue
             history.append(row)
+        if len(self._history_cache) >= 64:
+            self._history_cache.clear()
+        self._history_cache[cache_key] = list(history)
         return history
 
     def calibrate(self, probabilities: Mapping[str, Any], *, as_of: datetime | str,
@@ -85,7 +104,8 @@ class OnlineErrorLearner:
                 "bin_counts": {key: counts[key][min(self.bins - 1, int(base[key] * self.bins))]
                                for key in OUTCOMES},
                 "correction_applied": applied, "as_of": _timestamp(as_of),
-                "league": league, "method": "prior-settled-binned-calibration"}
+                "league": league, "model_version_prefix": self.model_version_prefix,
+                "method": "prior-settled-binned-calibration"}
 
     def evaluate(self, *, as_of: datetime | str, league: str | None = None) -> dict[str, Any]:
         """Expanding-window comparison; each row is calibrated from earlier settled rows only."""
@@ -108,4 +128,5 @@ class OnlineErrorLearner:
                 "raw_log_loss": mean(raw_scores, 1),
                 "calibrated_log_loss": mean(calibrated_scores, 1),
                 "as_of": _timestamp(as_of),
+                "model_version_prefix": self.model_version_prefix,
                 "note": "Chronological diagnostic; compare on an untouched holdout before deployment."}

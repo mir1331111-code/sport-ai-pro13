@@ -106,11 +106,14 @@ served_probabilities = decision["probabilities"]
 
 Important operating rules:
 
-- The service is an integration API; it is not yet automatically wired into
-  every Streamlit scanner or external result-provider path.
-- Keep `enabled=False` until an untouched chronological holdout shows that
-  calibration improves both Brier score and log loss. The history threshold is
-  a safety gate, not evidence that calibration improves performance.
+- The live scanner records one calibration decision for each new primary-model
+  forecast. Independent LLM forecasts are excluded from the primary-model
+  calibration history.
+- The live integration runs in shadow mode and keeps `enabled=False`; candidate
+  corrected probabilities are stored separately from raw and served values.
+- Automatic promotion for future forecasts requires at least 200 eligible,
+  settled shadow decisions and at least 1% relative improvement in both Brier
+  score and Log Loss. Until then, original probabilities remain unchanged.
 - A caller must only settle a match after checking a trusted provider's final
   status and score. `settle_verified` requires a non-empty source label, but
   the caller remains responsible for actually verifying the provider response.
@@ -123,16 +126,23 @@ Important operating rules:
 
 ## Live scanner integration
 
-The scanner now creates a persistent ledger at `DB_FILE + ".forecast-ledger.sqlite"`
-and sends raw 1X2 model probabilities to `ForecastLearningService` in shadow
-mode. The source UTC kickoff timestamp is retained from football-data.org.
-When the scanner runs again, it attempts to settle old ledger entries only
-after kickoff + 2 hours and only when football-data.org reports status `FT`
-with a final regular-time score. The original model probabilities used by the
-scanner remain unchanged; the calibration service records what it would have
-served, together with the available history and its report.
+The live scanner stores main-model forecasts, independent AI forecasts, market
+recommendations, verified results, retry state and calibration decisions in the
+same `DB_FILE` SQLite database. Each scan writes new immutable pre-kickoff
+predictions with idempotent keys. After a scan, the app attempts an encrypted
+Secret Gist backup; while the app is open, the backup fragment also checks for
+changed data periodically. The app restores the remote copy only when the local
+database is empty. No forecast rows are intentionally pruned.
 
-This is intentionally a shadow deployment: results and reports accumulate
-without changing picks or stakes. Before enabling corrected probabilities,
-compare raw and calibrated Brier/log-loss on a chronological holdout and
-confirm the improvement is stable across time and leagues.
+When a fixture is confirmed FT, result synchronization attaches the verified
+score to the forecast and market ledgers. The live scanner uses prior settled
+**main-model** forecasts for calibration. LLM forecasts remain separate and are
+not mixed into that history. Each new main-model forecast stores its immutable
+raw probabilities, candidate shadow probabilities and calibration report in
+`forecast_learning_decisions`. Candidate probabilities are used in future scan
+calculations only after the chronological promotion gate passes.
+
+Automatic calibration promotion requires at least 200 eligible settled shadow
+decisions and at least 1% relative improvement in **both** Brier score and Log
+Loss. This adjusts probabilities only; it does not retrain the underlying
+Poisson/Elo weights, change Value/Edge gates, or change staking rules.

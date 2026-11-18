@@ -230,6 +230,59 @@ def render_verdict_card(c: dict, thr: float) -> str:
                 )
         except (TypeError, ValueError):
             line_html = ""
+    one_x_two_diagnostics = (
+        c.get("one_x_two_diagnostics")
+        if isinstance(c.get("one_x_two_diagnostics"), dict) else {}
+    )
+    line_diagnostics_html = ""
+    diagnostic_status = str(one_x_two_diagnostics.get("status") or "").strip()
+    if diagnostic_status and diagnostic_status != "confirmed":
+        status_labels = {
+            "partial": "частичная линия",
+            "invalid_overround": "линия отклонена по overround",
+            "unverified_bookmaker": "не указан букмекер",
+            "missing": "рынок 1X2 отсутствует в ответе",
+        }
+        reason = esc(str(one_x_two_diagnostics.get("reason") or "Линию нельзя подтвердить."))
+        quote_rows = []
+        for book_entry in (one_x_two_diagnostics.get("quotes_by_bookmaker") or [])[:3]:
+            if not isinstance(book_entry, dict):
+                continue
+            book_name = esc(str(book_entry.get("bookmaker") or "Букмекер не указан"))
+            quotes = book_entry.get("quotes") or {}
+            quote_text = " · ".join(
+                f"{code} {float(quotes[code]):.2f}"
+                for code in ("П1", "X", "П2")
+                if code in quotes
+            )
+            missing = ", ".join(str(x) for x in (book_entry.get("missing_outcomes") or []))
+            detail = esc(quote_text or "котировки не переданы")
+            if missing:
+                detail += " · нет: " + esc(missing)
+            quote_rows.append(
+                '<div style="margin-top:4px;">' + book_name + ': ' + detail + '</div>'
+            )
+        market_names = (
+            one_x_two_diagnostics.get("available_market_names")
+            or c.get("one_x_two_market_names") or []
+        )
+        names_html = (
+            '<div style="margin-top:4px;color:#94a3b8;">Рынки в ответе: '
+            + esc(", ".join(str(x) for x in market_names[:6])) + '</div>'
+            if market_names else ""
+        )
+        line_diagnostics_html = (
+            '<div style="margin-top:10px;padding:9px 12px;border-radius:9px;'
+            'background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.24);'
+            'font-size:.75rem;color:#cbd5e1;">'
+            '<b style="color:#fbbf24;">SStats · 1X2 не подтверждена: '
+            + esc(status_labels.get(diagnostic_status, diagnostic_status)) + '</b>'
+            + "".join(quote_rows)
+            + '<div style="margin-top:5px;">' + reason + '</div>'
+            + names_html
+            + '<div style="margin-top:4px;color:#94a3b8;">Цены разных букмекеров не объединяются; Value и автодобавление остаются отключены.</div>'
+            '</div>'
+        )
     selected_bookmaker = str(
         (c.get("bookmaker_by_pick") or {}).get(pick_code) or ""
     ).strip()
@@ -561,7 +614,7 @@ def render_verdict_card(c: dict, thr: float) -> str:
         '<div>Кэф: <b style="color:#a5f3fc;font-size:1.15rem;'
         'font-family:JetBrains Mono,monospace;">' + odd_display + '</b></div>'
         '<div>Уверенность: <b style="color:' + cc + ';">' + esc(conf) + '</b></div>'
-        '</div>' + line_html + bookmaker_html + warn + market_html + '</div>'
+        '</div>' + line_html + line_diagnostics_html + bookmaker_html + warn + market_html + '</div>'
 
         '<div style="padding:16px 24px;">'
         '<div style="color:#7dd3fc;font-size:.72rem;text-transform:uppercase;'
