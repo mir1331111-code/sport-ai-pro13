@@ -1,6 +1,9 @@
 import unittest
 
-from ui.tabs.dashboard import context_summary, favorite, has_prices, match_name
+from ui.tabs.dashboard import (
+    _quality_panel, _reliability_svg, _sparkline_svg,
+    context_summary, favorite, has_prices, match_name,
+)
 
 
 class DashboardHelperTests(unittest.TestCase):
@@ -57,6 +60,40 @@ class DashboardHelperTests(unittest.TestCase):
                         "match_ru": "Дом — Гости"}),
             "Дом — Гости",
         )
+
+    def test_dashboard_sparkline_is_omitted_without_a_real_series(self):
+        self.assertEqual(_sparkline_svg([]), "")
+        self.assertEqual(_sparkline_svg([0.2]), "")
+        self.assertIn("polyline", _sparkline_svg([0.2, 0.3, 0.25]))
+
+    def test_reliability_bars_only_render_for_supported_bins(self):
+        report = {
+            "rows": [
+                {
+                    "outcome": "H", "bin_index": 2, "n": 8,
+                    "mean_probability": 0.25, "observed_frequency": 0.375,
+                },
+                {
+                    "outcome": "D", "bin_index": 2, "n": 4,
+                    "mean_probability": 0.27, "observed_frequency": 0.25,
+                },
+                {
+                    "outcome": "A", "bin_index": 7, "n": 2,
+                    "mean_probability": 0.75, "observed_frequency": 0.5,
+                },
+            ],
+            "n": 8,
+        }
+        chart = _reliability_svg(report)
+        self.assertIn("neo-calibration-bar", chart)
+        self.assertIn("Идеальная калибровка", chart)
+        self.assertEqual(chart.count("neo-calibration-bar"), 1)
+
+    def test_data_quality_gauge_does_not_claim_full_quality_without_cards(self):
+        panel = _quality_panel([])
+        self.assertIn("КАЧЕСТВО", panel)
+        self.assertIn("<strong>—</strong>", panel)
+        self.assertNotIn("100%", panel)
 
 
 if __name__ == "__main__":

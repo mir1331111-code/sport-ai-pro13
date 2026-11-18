@@ -814,6 +814,118 @@ section[data-testid="stSidebar"] div[data-testid="stExpander"] summary {
   .neo-header-meta {gap:7px;}
 }
 
+
+/* Neural Terminal · reference dashboard refresh v3 */
+.block-container { max-width: 1760px !important; padding: .85rem 1.35rem 2rem !important; }
+.neo-dashboard-header { padding: 3px 2px 13px; margin-bottom: 8px; }
+.neo-dashboard-header h1 { font-size: 1.55rem !important; }
+.neo-dashboard-header p { font-size: .70rem; }
+.neo-header-meta { gap: 9px; }
+.neo-kpi-grid { grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin: 12px 0 8px; }
+.neo-kpi {
+  min-height: 124px; padding: 13px 14px 10px;
+  border-color: #21483c;
+  background: linear-gradient(145deg,#102720 0%,#10202a 58%,#102922 100%);
+  box-shadow: 0 8px 22px rgba(0,0,0,.14);
+}
+.neo-kpi-label-row { display:flex;align-items:center;justify-content:space-between;gap:8px; }
+.neo-kpi-label { color:#a3bcb3; font-size:.62rem; letter-spacing:.075em; }
+.neo-kpi-mark { width:7px;height:7px;border-radius:50%;background:#36d69c;box-shadow:0 0 10px rgba(54,214,156,.42); }
+.neo-kpi-main { display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;margin:6px 0 3px; }
+.neo-kpi-value { font-size:1.7rem; margin:0; white-space:nowrap; }
+.neo-kpi-spark { flex:0 0 40%;max-width:128px;min-width:54px;height:36px;display:flex;align-items:center; }
+.neo-sparkline { display:block;width:100%;height:34px;overflow:visible; }
+.neo-kpi-note { color:#70d9b0;font-size:.59rem;line-height:1.35; }
+.neo-market-delta { padding:8px 11px; margin:0 0 12px; gap:10px; }
+.neo-market-delta span { font-size:.56rem; }
+.neo-market-delta b { font-size:.85rem; }
+.neo-market-delta small { font-size:.59rem; }
+.neo-meta-spacer { margin-left:auto; }
+.neo-panel { padding:13px 13px 11px; border-radius:13px; }
+.neo-panel-heading { padding-bottom:8px; margin-bottom:7px; }
+.neo-panel-heading h3 { font-size:.92rem !important; }
+.neo-panel-kicker { font-size:.53rem; }
+.neo-count-pill { padding:4px 7px; font-size:.56rem; }
+.neo-match-table { min-width:930px; font-size:.64rem; }
+.neo-match-table th { padding:8px 7px; font-size:.53rem; }
+.neo-match-table td { padding:9px 7px; }
+.neo-fixture { max-width:none; }
+.neo-fixture-line { display:flex;align-items:center;gap:5px;min-width:240px; }
+.neo-team { display:inline-flex;align-items:center;gap:5px;min-width:0; }
+.neo-team b { color:#edf8f2;font-size:.66rem;font-weight:800;white-space:normal;line-height:1.2; }
+.neo-team-badge {
+  position:relative;display:inline-grid;place-items:center;flex:0 0 var(--badge-size);
+  width:var(--badge-size);height:var(--badge-size);overflow:hidden;border-radius:50%;
+  border:1px solid #2f5949;background:#17382d;color:#8ce8c1;
+  font-size:.61rem;font-weight:900;
+}
+.neo-team-badge img { width:100%;height:100%;object-fit:contain;padding:2px; }
+.neo-vs { color:#64867b;font-size:.58rem;flex:0 0 auto; }
+.neo-league { gap:5px;max-width:150px;overflow:hidden;text-overflow:ellipsis;font-size:.55rem;padding:4px 6px; }
+.neo-league img { width:14px;height:14px;object-fit:contain; }
+.neo-prob-pill {
+  display:inline-flex;min-width:33px;justify-content:center;padding:4px 5px;
+  border:1px solid #275344;border-radius:6px;background:#102c22;
+  color:#a5efd0;font:750 .61rem 'IBM Plex Mono',monospace;
+}
+.neo-odds { font-size:.60rem !important; }
+.neo-pick { padding:4px 6px;font-size:.56rem; }
+.neo-table-footer { font-size:.57rem; }
+.neo-reliability-panel { min-height:100%; }
+.neo-chart-wrap { padding:1px 0 0; }
+.neo-calibration-bar { fill:#39d49b;opacity:.84;transition:opacity .15s ease; }
+.neo-calibration-bar:hover { opacity:1; }
+.neo-chart-legend { margin-left:35px; }
+.neo-chart-legend span { font-size:.56rem; }
+.neo-chart-empty { min-height:182px; }
+.neo-quality-layout { display:flex;align-items:center;gap:12px;min-height:156px; }
+.neo-gauge { position:relative;flex:0 0 118px;width:118px;height:118px; }
+.neo-gauge-svg { width:100%;height:100%;display:block; }
+.neo-gauge-center { position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none; }
+.neo-gauge-center strong { color:#e9fff4;font:800 1.25rem 'IBM Plex Mono',monospace; }
+.neo-gauge-center span { color:#8eaaa0;font-size:.49rem;font-weight:900;letter-spacing:.11em;margin-top:2px; }
+.neo-quality-list { flex:1;min-width:0; }
+.neo-quality-row { margin:8px 0 9px; }
+.neo-quality-row > div:first-child { margin-bottom:4px; }
+.neo-quality-row span { font-size:.58rem; }
+.neo-quality-row b { font-size:.59rem; }
+.neo-progress { height:5px; }
+.neo-bottom-panel { min-height:240px; }
+.neo-status-line { padding:7px 0 9px; }
+.neo-backup-time { padding:9px 0; }
+.neo-history-row { padding:6px 0; }
+.neo-history-row span { font-size:.59rem; }
+.neo-history-row b { font-size:.67rem; }
+.neo-history-foot { font-size:.55rem; }
+.neo-panel-footnote { font-size:.56rem; }
+.neo-dashboard-footer { font-size:.55rem; }
+div[data-testid="stSelectbox"] > div > div {
+  min-height:38px !important;background:#102820 !important;border:1px solid #285342 !important;
+  border-radius:9px !important;
+}
+div[data-testid="stSelectbox"] [data-testid="stMarkdownContainer"] p { color:#b8d6c9 !important; }
+div[data-testid="stButton"] > button {
+  min-height:38px !important;width:100%;padding:0 .5rem !important;
+  border-radius:9px !important;background:#123427 !important;border-color:#2b7454 !important;
+  color:#8eebbe !important;font-size:1rem !important;
+}
+@media (max-width: 1500px) {
+  .neo-kpi-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
+}
+@media (max-width: 1150px) {
+  .neo-kpi-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .neo-quality-layout { align-items:flex-start; }
+}
+@media (max-width: 760px) {
+  .neo-kpi-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .neo-kpi { min-height:104px;padding:10px; }
+  .neo-kpi-value { font-size:1.32rem; }
+  .neo-kpi-spark { max-width:82px;min-width:34px; }
+  .neo-meta-spacer { margin-left:0; }
+  .neo-quality-layout { flex-direction:column;align-items:center; }
+  .neo-quality-list { width:100%; }
+}
+
 </style>
 """
 
