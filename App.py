@@ -963,9 +963,9 @@ with st.sidebar:
         or (st.session_state.get("_sqlite_remote_status_check") or {}).get("ok")
     )
     _model_health_label = {
-        "OK": "Модель · контроль в норме",
-        "ATTENTION": "Модель · требуется внимание",
-        "MONITORING": "Модель · накопление выборки",
+        "OK": "Портфель · контроль в норме",
+        "ATTENTION": "Портфель · требуется внимание",
+        "MONITORING": "Портфель · мало завершённых ставок",
     }.get(str(model_health.get("status") or ""), "Модель · статус неизвестен")
     _backup_label = "Резервная копия · подтверждена" if _backup_ok else "Резервная копия · нет свежего подтверждения"
     st.markdown(
