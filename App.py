@@ -904,27 +904,6 @@ def _model_health(D):
 
 model_health = _model_health(D)
 
-if model_health["status"] == "ATTENTION":
-    _health_items = " · ".join(f"{x[1]} ({x[2]})" for x in model_health["details"])
-    st.warning(
-        f"{model_health['label']} — {_health_items}. "
-        "Это диагностический сигнал, а не автоматическое изменение параметров ставок.")
-elif model_health["status"] == "MONITORING":
-    st.info(
-        f"{model_health['label']} — закрытых ставок с P: "
-        f"{model_health['sample']}. Нужна более длинная выборка для оценки.")
-else:
-    st.success(
-        f"{model_health['label']} · Brier {model_health['brier']:.3f} · "
-        f"ECE {model_health['cal_error'] * 100:.1f} п.п. · "
-        f"CLV {model_health['clv'] * 100:+.2f}%")
-
-if stale_count:
-    st.warning(
-        f"⏳ {stale_count} ставок не удалось закрыть автоматически более 48 ч. "
-        "Стейк по ним заморожен, в статистику они не входят. Проверьте результат "
-        "вручную во вкладке «Портфель» или верните стейки кнопкой в боковой панели.")
-
 TERMINAL_SECTIONS = {
     "🏠 Дашборд": (
         "SPORTS INTELLIGENCE", "OVERVIEW",
@@ -992,8 +971,8 @@ with st.sidebar:
     st.markdown(
         "<div class='neo-side-status'><div class='neo-side-status-head'>"
         "<i class='neo-side-status-dot'></i> Система активна</div>"
-        f"<small>{esc(_model_health_label)}<br/>Матчей в скане: {len(D.get('cards') or [])}"
-        f"<br/>{esc(_backup_label)}<br/>Версия: {esc(APP_VERSION)}</small></div>",
+        f"<small>{_model_health_label}<br/>Матчей в скане: {len(D.get('cards') or [])}"
+        f"<br/>{_backup_label}<br/>Устаревших ставок: {stale_count}<br/>Версия: {APP_VERSION}</small></div>",
         unsafe_allow_html=True,
     )
     with st.expander("⚙️ Настройки и обслуживание", expanded=False):
@@ -1355,8 +1334,8 @@ with st.sidebar:
 
             st.caption(
                 "Secret Gist — это непубличная ссылка, а не приватный диск: любой с URL может его открыть. "
-                "Портфель и SQLite шифруются NEURO_BACKUP_KEY; сам Streamlit app также следует "
-                "ограничить в Share/Manage access."
+                "В новой одно-секретной схеме SQLite шифруется ключом, производным от GITHUB_TOKEN; "
+                "старые установки с отдельным NEURO_BACKUP_KEY поддерживаются."
             )
 
         _backup = json.dumps(_strip_secrets(D), ensure_ascii=False, indent=2, default=str)
