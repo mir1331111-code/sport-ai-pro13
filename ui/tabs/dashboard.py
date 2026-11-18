@@ -609,11 +609,12 @@ def render():
             label_visibility="collapsed", key="dashboard_period_filter",
         )
     with filter_refresh:
-        st.button(
+        refresh_dashboard = st.button(
             "↻", key="dashboard_refresh_button", use_container_width=True,
             help="Обновить панель и перечитать текущие данные",
-            on_click=st.rerun,
         )
+        if refresh_dashboard:
+            st.rerun()
 
     filtered_cards = cards
     if selected_league != "Все турниры":
@@ -633,6 +634,12 @@ def render():
     log_loss = f"{metrics['log_loss']:.3f}" if metrics.get("log_loss") is not None else "—"
     accuracy = f"{metrics['accuracy']:.1%}" if metrics.get("accuracy") is not None else "—"
     roi_text = f"{roi:+.1f}%" if roi is not None else "—"
+    market_delta = metrics.get("market_delta_brier")
+    market_delta_text = f"{market_delta:+.4f}" if market_delta is not None else "—"
+    market_note = (
+        f"парных матчей: {metrics.get('market_n', 0)} · отрицательное значение лучше"
+        if market_delta is not None else "нет полной парной линии и результата"
+    )
     sample_note = f"{metrics.get('n', 0):,} завершённых прогнозов"
     roi_note = (
         f"виртуальный портфель · {len(closed_bets)} закрытых ставок"
@@ -652,8 +659,8 @@ def render():
         "<div class='neo-kpi-grid'>" + "".join(kpis) + "</div>"
         + "<div class='neo-market-delta'>"
         "<span>СРАВНЕНИЕ С РЫНКОМ · Δ BRIER</span>"
-        f"<b>{esc(f'{metrics.get("market_delta_brier"):+.4f}' if metrics.get('market_delta_brier') is not None else '—')}</b>"
-        f"<small>{esc(f'парных матчей: {metrics.get("market_n", 0)} · отрицательное значение лучше' if metrics.get('market_delta_brier') is not None else 'нет полной парной линии и результата')}</small>"
+        f"<b>{esc(market_delta_text)}</b>"
+        f"<small>{esc(market_note)}</small>"
         f"<small class='neo-meta-spacer'>В скане: {len(cards):,} · полных линий 1X2: {priced:,} · FT: {metrics.get('n', 0):,}</small>"
         "</div>",
         unsafe_allow_html=True,
