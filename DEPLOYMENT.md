@@ -26,19 +26,30 @@ On a fresh container, the encrypted remote database is restored only if the loca
 database is empty. Existing local rows are never silently overwritten.
 
 To protect the history across Streamlit Community Cloud restarts and redeploys,
-create a **private Secret Gist** and add these values in **Manage app → Settings → Secrets**:
+the app now needs only **one Streamlit Secret**. Create a fine-grained personal
+access token in GitHub and grant the account permission **Gists: Read and write**
+(no repository access is needed). Then open **Manage app → Settings → Secrets**
+and add:
 
 ```toml
-GIST_ID = "..."
-GITHUB_TOKEN = "..."
-NEURO_BACKUP_KEY = "..."
+GITHUB_TOKEN = "paste_your_fine_grained_token_here"
 ```
 
-Generate `NEURO_BACKUP_KEY` in the app's SQLite backup panel. Keep the same key
-permanently and store it safely outside Streamlit; losing it makes the remote
-backup unrecoverable. Never publish the Gist or put the key in the repository.
-Without all three secrets, statistics still accumulate in the current local
-SQLite file, but Streamlit Cloud may erase them when its container is replaced.
+The application automatically discovers its existing managed Secret Gist or
+creates one on the first successful backup. You do not need to create a Gist or
+configure `GIST_ID` / `NEURO_BACKUP_KEY` manually. The SQLite snapshot is
+encrypted before upload; the encryption key is derived from this token, so the
+same token is required to decrypt previous backups. **Keep the token in a
+password manager and do not rotate or revoke it unless you have first migrated
+the existing backup with the same encryption key.** Anyone who obtains the
+Secret Gist URL can view its files, but the database contents remain encrypted.
+Never publish the Gist URL or put the token in the repository.
+
+Existing installations with all three legacy secrets (`GIST_ID`,
+`GITHUB_TOKEN`, `NEURO_BACKUP_KEY`) remain supported. Keep their original
+values unchanged to retain access to the old backup. Without a valid
+`GITHUB_TOKEN`, statistics still accumulate in the current local SQLite file,
+but Streamlit Cloud may erase them when its container is replaced.
 
 The online learner uses only earlier settled **main-model** forecasts. It records
 shadow probabilities first; future probability corrections are applied only
