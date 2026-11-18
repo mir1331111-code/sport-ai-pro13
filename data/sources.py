@@ -2448,7 +2448,7 @@ def _team_logo_match_score(requested: str, candidate: str) -> float:
     return SequenceMatcher(None, requested_key, candidate_key).ratio()
 
 
-def team_logo_url(team_name: str) -> Optional[str]:
+def team_logo_url(team_name: str, logs=None) -> Optional[str]:
     """Resolve one team crest from TheSportsDB and cache positive/negative results.
 
     The free V1 endpoint accepts a single team name per request. The scanner
@@ -2463,14 +2463,21 @@ def team_logo_url(team_name: str) -> Optional[str]:
         return None
 
     cache_token = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+    def note(message):
+        if isinstance(logs, list):
+            logs.append(f"🖼 Эмблема {requested}: {message}")
+
     found_key = f"tsdb_team_logo_v3_found_{cache_token}"
     cached = cache_get(found_key, _TEAM_LOGO_CACHE_TTL)
     if isinstance(cached, dict):
         url = str(cached.get("url") or "").strip()
-        return url if url.startswith("https://") else None
+        if url.startswith("https://"):
+            note("найдена в кэше")
+            return url
 
     miss_key = f"tsdb_team_logo_v3_miss_{cache_token}"
     if cache_get(miss_key, _TEAM_LOGO_MISS_TTL) is not None:
+        note("в кэше сохранено отсутствие подходящей эмблемы")
         return None
 
     try:
@@ -2481,6 +2488,7 @@ def team_logo_url(team_name: str) -> Optional[str]:
             proxies=NO_PROXY,
         )
         if response.status_code != 200:
+            note(f"TheSportsDB HTTP {response.status_code}")
             cache_put(miss_key, {"missing": True})
             return None
         payload = response.json() or {}
@@ -2512,11 +2520,17 @@ def team_logo_url(team_name: str) -> Optional[str]:
             # attach the wrong badge to a fixture.
             if len(candidates) == 1 or best_score - candidates[1][0] >= 0.04:
                 cache_put(found_key, {"url": best_url, "team": best_name})
+                note(f"найдена: {best_name}")
                 return best_url
 
+        note(
+            f"нет однозначной эмблемы (ответов API: {len(teams)}, "
+            f"подходящих кандидатов: {len(candidates)})"
+        )
         cache_put(miss_key, {"missing": True})
         return None
     except Exception as exc:
+        note(f"ошибка запроса: {type(exc).__name__}")
         log.debug("TheSportsDB team logo lookup failed for %s: %s", requested, type(exc).__name__)
         return None
 
