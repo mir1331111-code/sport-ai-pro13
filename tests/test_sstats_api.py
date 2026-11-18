@@ -111,17 +111,28 @@ class SStatsTests(unittest.TestCase):
         compact_result = sstats._sstats_parse_markets(compact)
         detailed_result = sstats._sstats_parse_markets(detailed)
 
+        # Compact /Games/list has no bookmaker identity: preserve the raw
+        # observations for diagnostics, but do not publish an unverified line.
+        self.assertNotIn("П1", compact_result)
+        self.assertNotIn("X", compact_result)
+        self.assertNotIn("П2", compact_result)
+        self.assertEqual(
+            compact_result["one_x_two_diagnostics"]["status"],
+            "unverified_bookmaker",
+        )
+        self.assertEqual(detailed_result["П1"], 1.82)
+        self.assertEqual(detailed_result["X"], 3.55)
+        self.assertEqual(detailed_result["П2"], 4.70)
+        self.assertEqual(detailed_result["one_x_two_diagnostics"]["status"], "confirmed")
+
         for result in (compact_result, detailed_result):
-            self.assertEqual(result["П1"], 1.82)
-            self.assertEqual(result["X"], 3.55)
-            self.assertEqual(result["П2"], 4.70)
             self.assertEqual(result["btts_market_odds"]["BTTS Да"], 1.80)
             self.assertEqual(result["btts_market_odds"]["BTTS Нет"], 2.00)
             self.assertEqual(result["stat_market_odds"]["Угл ТБ 9.5"], 1.88)
             self.assertEqual(result["stat_market_odds"]["Карты ТМ 4.5"], 1.95)
             self.assertEqual(result["source"], "sstats")
-        # Anonymous compact prices stay hidden. A named single-book quote is
-        # displayed as a real price but explicitly marked uncorroborated.
+        # Anonymous compact totals stay hidden. A named one-book quote can be
+        # shown as a raw price but is not corroborated by a second bookmaker.
         self.assertEqual(compact_result["total_market_odds"], {})
         self.assertEqual(detailed_result["total_market_odds"]["ТБ 2.5"], 1.91)
         self.assertEqual(detailed_result["total_market_book_count"]["ТБ 2.5"], 1)
@@ -178,9 +189,13 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(rows[0]["AwayTeam"], "Chelsea")
         self.assertEqual(rows[0]["Div"], "E0")
         self.assertEqual(rows[0]["sstats_game_id"], 5678)
-        self.assertEqual(rows[0]["market_odds"]["П1"], 1.80)
-        # Games/list compact odds have no bookmaker provenance; do not treat
-        # a lone total quote as confirmed. Detailed Odds/{gameId} must corroborate it.
+        self.assertEqual(rows[0]["market_odds"], {})
+        # Games/list compact odds have no bookmaker provenance, so they stay
+        # diagnostic-only until detailed Odds/{gameId} confirms a named book.
+        self.assertEqual(
+            rows[0]["one_x_two_diagnostics"]["status"],
+            "unverified_bookmaker",
+        )
         self.assertEqual(rows[0]["total_market_odds"], {})
         params = request_mock.call_args.kwargs["params"]
         self.assertEqual(params["Upcoming"], "true")
