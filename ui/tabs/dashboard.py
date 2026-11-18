@@ -372,12 +372,25 @@ def _sparkline_svg(values, color="#39d49b"):
 
 def _kpi(label, value, note="", tone="", series=None, color="#39d49b"):
     sparkline = _sparkline_svg(series, color=color)
+    trend_ready = len([item for item in (series or []) if num(item) is not None]) >= 2
+    if not sparkline:
+        sparkline = (
+            "<div class='neo-spark-empty' aria-label='Недостаточно истории для динамики'>"
+            "<span>НЕТ ИСТОРИИ</span><b>—</b></div>"
+        )
+    status = "" if trend_ready else (
+        "НЕТ ОБОРОТА" if "ROI" in str(label).upper() else "НЕТ ВЫБОРКИ"
+    )
+    status_html = (
+        f"<span class='neo-kpi-status'>{esc(status)}</span>"
+        if status else "<span class='neo-kpi-mark' aria-hidden='true'></span>"
+    )
     return (
         f"<div class='neo-kpi {esc(tone)}'>"
         "<div class='neo-kpi-label-row'>"
         f"<div class='neo-kpi-label'>{esc(label)}</div>"
-        f"<span class='neo-kpi-mark' aria-hidden='true'></span>"
-        "</div>"
+        + status_html
+        + "</div>"
         "<div class='neo-kpi-main'>"
         f"<div class='neo-kpi-value'>{esc(value)}</div>"
         f"<div class='neo-kpi-spark'>{sparkline}</div>"
