@@ -647,7 +647,7 @@ def _tsdb_venue_metadata(venue_id: str, logs=None) -> dict:
         return cached
     try:
         response = _sess.get(
-            "https://www.thesportsdb.com/api/v1/json/3/lookupvenue.php",
+            "https://www.thesportsdb.com/api/v1/json/123/lookupvenue.php",
             params={"id": venue_id}, timeout=(3, 6), proxies=NO_PROXY,
         )
         if response.status_code != 200:
@@ -703,7 +703,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     for off in range(total_days):
         d = today + timedelta(days=off)
         dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_day_v11_{dstr}"
+        ck = f"tsdb_day_v12_{dstr}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -713,7 +713,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
             continue
         try:
             r = _sess.get(
-                "https://www.thesportsdb.com/api/v1/json/3/eventsday.php",
+                "https://www.thesportsdb.com/api/v1/json/123/eventsday.php",
                 params={"d": dstr, "s": "Soccer"},
                 timeout=15, proxies=NO_PROXY)
             if r.status_code != 200:
@@ -896,7 +896,7 @@ def tsdb_match_result(match_id, logs=None) -> Optional[dict]:
         return cached or None
     try:
         r = _sess.get(
-            "https://www.thesportsdb.com/api/v1/json/3/lookupevent.php",
+            "https://www.thesportsdb.com/api/v1/json/123/lookupevent.php",
             params={"id": str(match_id)}, timeout=15, proxies=NO_PROXY,
         )
         if r.status_code != 200:
