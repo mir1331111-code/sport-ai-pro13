@@ -104,7 +104,8 @@ class OnlineErrorLearner:
                 "bin_counts": {key: counts[key][min(self.bins - 1, int(base[key] * self.bins))]
                                for key in OUTCOMES},
                 "correction_applied": applied, "as_of": _timestamp(as_of),
-                "league": league, "method": "prior-settled-binned-calibration"}
+                "league": league, "model_version_prefix": self.model_version_prefix,
+                "method": "prior-settled-binned-calibration"}
 
     def evaluate(self, *, as_of: datetime | str, league: str | None = None) -> dict[str, Any]:
         """Expanding-window comparison; each row is calibrated from earlier settled rows only."""
