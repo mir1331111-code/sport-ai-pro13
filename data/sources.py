@@ -2423,11 +2423,11 @@ def _team_level_marker(name: str) -> tuple[str, ...]:
     """Prevent a senior-team logo from being assigned to a reserve/youth side."""
     value = str(name or "").casefold()
     markers = []
-    for match in re.findall(
+    for match in re.finditer(
         r"\bu\s*[- ]?(\d{2})\b|\bunder\s*[- ]?(\d{2})\b",
         value,
     ):
-        markers.append("u" + str(match))
+        markers.append("u" + str(match.group(1) or match.group(2)))
     if re.search(r"\b(?:ii|iii|iv|b team|c team|reserves?|academy|youth|castilla)\b", value):
         markers.append("reserve")
     return tuple(sorted(set(markers)))
@@ -2481,6 +2481,7 @@ def team_logo_url(team_name: str) -> Optional[str]:
             proxies=NO_PROXY,
         )
         if response.status_code != 200:
+            cache_put(miss_key, {"missing": True})
             return None
         payload = response.json() or {}
         teams = payload.get("teams") or []
