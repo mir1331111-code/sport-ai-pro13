@@ -27,17 +27,17 @@ class SourceOptimizationTests(unittest.TestCase):
                 {
                     "strTeam": "Arnavutköy Belediyespor",
                     "strSport": "Soccer",
-                    "strTeamBadge": "https://assets.test/arnavutkoy.png",
+                    "strBadge": "https://assets.test/arnavutkoy.png",
                 },
                 {
                     "strTeam": "Arnavutköy Belediyespor U19",
                     "strSport": "Soccer",
-                    "strTeamBadge": "https://assets.test/arnavutkoy-u19.png",
+                    "strBadge": "https://assets.test/arnavutkoy-u19.png",
                 },
                 {
                     "strTeam": "Arnavutköy Basketball",
                     "strSport": "Basketball",
-                    "strTeamBadge": "https://assets.test/basketball.png",
+                    "strBadge": "https://assets.test/basketball.png",
                 },
             ]
         })
@@ -45,8 +45,11 @@ class SourceOptimizationTests(unittest.TestCase):
         badge = sources.team_logo_url("Arnavutkoy Belediyespor")
 
         self.assertEqual(badge, "https://assets.test/arnavutkoy.png")
+        self.assertEqual(get_mock.call_args.args[0], sources._TSDB_TEAM_SEARCH_URL)
+        self.assertIn("/123/searchteams.php", get_mock.call_args.args[0])
         self.assertEqual(get_mock.call_args.kwargs["params"], {"t": "Arnavutkoy Belediyespor"})
         self.assertTrue(cache_put_mock.called)
+        self.assertTrue(any("tsdb_team_logo_v3_found_" in call.args[0] for call in cache_put_mock.call_args_list))
 
     @patch("data.sources.cache_get", side_effect=[None, None])
     @patch("data.sources.cache_put")
