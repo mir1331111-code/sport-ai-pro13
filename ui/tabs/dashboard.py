@@ -9,7 +9,7 @@ import re
 import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
-from data.fixture_time import app_timezone, fixture_kickoff_local
+from data.fixture_time import app_timezone
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
 from ui.cards import _LEAGUE_FLAGS
 from model.forecast_ledger import ForecastLedger
@@ -398,22 +398,6 @@ def _kpi(label, value, note="", tone="", series=None, color="#39d49b"):
         f"<div class='neo-kpi-note'>{esc(note)}</div>"
         "</div>"
     )
-
-
-def _card_kickoff(card):
-    """Return the fixture's authoritative local kickoff, including UTC offsets."""
-    if not isinstance(card, dict):
-        return None
-    try:
-        timezone = app_timezone()
-        parsed = fixture_kickoff_local(
-            card, timezone_name=getattr(timezone, "key", None),
-        )
-        if parsed is not None:
-            return parsed
-    except (TypeError, ValueError, OverflowError):
-        pass
-    return None
 
 
 def _quality_panel(cards):
