@@ -127,20 +127,27 @@ def _ledger_snapshot():
     try:
         ledger = ForecastLedger(DB_FILE)
         all_rows = ledger.rows()
-        main_rows = [
+        main_history = [
             row for row in all_rows
             if str(row.get("model_version") or "").startswith("main-model-")
         ]
-        settled = [row for row in main_rows if row.get("result") in OUTCOMES]
-        metrics = _forecast_metrics(main_rows)
+        active_version = f"main-model-v{APP_VERSION}"
+        active_rows = [
+            row for row in main_history
+            if str(row.get("model_version") or "") == active_version
+        ]
+        settled = [row for row in active_rows if row.get("result") in OUTCOMES]
+        metrics = _forecast_metrics(active_rows)
         reliability = ledger.reliability_bins(
-            bins=10, model_version_prefix="main-model-"
+            bins=10, model_version=active_version
         )
         return {
             "ok": True,
-            "rows": main_rows,
+            "rows": active_rows,
+            "all_rows": main_history,
+            "active_version": active_version,
             "settled": settled,
-            "pending": max(0, len(main_rows) - len(settled)),
+            "pending": max(0, len(active_rows) - len(settled)),
             "metrics": metrics,
             "reliability": reliability,
         }
@@ -335,8 +342,9 @@ def _backup_panel():
 
 def _history_panel(snapshot, roi, profit, turnover):
     rows = snapshot.get("rows") or []
+    all_rows = snapshot.get("all_rows") or rows
     settled = snapshot.get("settled") or []
-    dates = [str(row.get("forecast_at") or "")[:10] for row in rows if row.get("forecast_at")]
+    dates = [str(row.get("forecast_at") or "")[:10] for row in all_rows if row.get("forecast_at")]
     first_date = min(dates) if dates else "—"
     last_date = max(dates) if dates else "—"
     leagues = len({str(row.get("league") or "").strip() for row in rows if str(row.get("league") or "").strip()})
@@ -351,9 +359,11 @@ def _history_panel(snapshot, roi, profit, turnover):
         "<section class='neo-panel neo-bottom-panel'>"
         "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>HISTORY & COVERAGE</span>"
         "<h3>История и покрытие</h3></div><span class='neo-panel-icon'>▤</span></div>"
-        "<div class='neo-history-row'><span>Прогнозов основной модели</span><b>"
+        "<div class='neo-history-row'><span>Прогнозов основной модели · все версии</span><b>"
+        f"{len(all_rows):,}</b></div>"
+        "<div class='neo-history-row'><span>Прогнозов текущей версии</span><b>"
         f"{len(rows):,}</b></div>"
-        "<div class='neo-history-row'><span>Подтверждено FT</span><b>"
+        "<div class='neo-history-row'><span>Подтверждено FT · текущая версия</span><b>"
         f"{len(settled):,}</b></div>"
         "<div class='neo-history-row'><span>Ожидают результата</span><b>"
         f"{snapshot.get('pending', 0):,}</b></div>"
