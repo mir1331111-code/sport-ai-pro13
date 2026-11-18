@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import html
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
+import re
 
 import streamlit as st
 
@@ -79,36 +80,64 @@ def match_name(card):
     )).replace(" vs ", " — ")
 
 
+def _rolling_series(values, window=12):
+    values = [float(value) for value in values if num(value) is not None]
+    if len(values) < 2:
+        return []
+    result = []
+    for index in range(len(values)):
+        sample = values[max(0, index - window + 1):index + 1]
+        result.append(sum(sample) / len(sample))
+    return result
+
+
 def _forecast_metrics(rows):
-    settled = [
-        row for row in rows
-        if row.get("result") in OUTCOMES
-        and isinstance(row.get("probabilities"), dict)
-        and all(num((row.get("probabilities") or {}).get(key)) is not None for key in OUTCOMES)
-    ]
+    settled = sorted(
+        [
+            row for row in rows
+            if row.get("result") in OUTCOMES
+            and isinstance(row.get("probabilities"), dict)
+            and all(num((row.get("probabilities") or {}).get(key)) is not None for key in OUTCOMES)
+        ],
+        key=lambda row: str(row.get("forecast_at") or ""),
+    )
     if not settled:
         return {
             "n": 0, "brier": None, "log_loss": None, "accuracy": None,
             "market_delta_brier": None, "market_n": 0,
+            "brier_series": [], "log_loss_series": [], "accuracy_series": [],
         }
 
     briers, losses, correct = [], [], 0
     market_differences = []
+    brier_values, loss_values, accuracy_values = [], [], []
     for row in settled:
         probabilities = row["probabilities"]
         actual = row["result"]
-        briers.append(sum((float(probabilities[key]) - float(key == actual)) ** 2 for key in OUTCOMES))
-        losses.append(-math.log(max(float(probabilities[actual]), 1e-15)))
+        row_brier = sum(
+            (float(probabilities[key]) - float(key == actual)) ** 2
+            for key in OUTCOMES
+        )
+        row_loss = -math.log(max(float(probabilities[actual]), 1e-15))
+        briers.append(row_brier)
+        losses.append(row_loss)
         predicted = max(OUTCOMES, key=lambda key: float(probabilities[key]))
         correct += int(predicted == actual)
+        brier_values.append(row_brier)
+        loss_values.append(row_loss)
+        accuracy_values.append(float(predicted == actual))
 
         prices = row.get("entry_odds")
-        if isinstance(prices, dict) and all(num(prices.get(key)) and num(prices.get(key)) > 1 for key in OUTCOMES):
+        if isinstance(prices, dict) and all(
+            num(prices.get(key)) and num(prices.get(key)) > 1 for key in OUTCOMES
+        ):
             implied = {key: 1.0 / float(prices[key]) for key in OUTCOMES}
             total = sum(implied.values())
             market = {key: implied[key] / total for key in OUTCOMES}
-            market_brier = sum((market[key] - float(key == actual)) ** 2 for key in OUTCOMES)
-            market_differences.append(briers[-1] - market_brier)
+            market_brier = sum(
+                (market[key] - float(key == actual)) ** 2 for key in OUTCOMES
+            )
+            market_differences.append(row_brier - market_brier)
 
     n = len(settled)
     return {
@@ -117,11 +146,14 @@ def _forecast_metrics(rows):
         "log_loss": sum(losses) / n,
         "accuracy": correct / n,
         "market_delta_brier": (
-            sum(market_differences) / len(market_differences) if market_differences else None
+            sum(market_differences) / len(market_differences)
+            if market_differences else None
         ),
         "market_n": len(market_differences),
+        "brier_series": _rolling_series(brier_values),
+        "log_loss_series": _rolling_series(loss_values),
+        "accuracy_series": _rolling_series(accuracy_values),
     }
-
 
 def _ledger_snapshot():
     try:
@@ -160,25 +192,27 @@ def _ledger_snapshot():
 
 
 def _reliability_svg(report):
+    """Pooled one-vs-rest reliability bars, built only from settled 1X2 rows."""
     source_rows = report.get("rows") or []
-    colors = {"H": "#46d6a2", "D": "#55b9d9", "A": "#b19aff"}
-    labels = {"H": "П1 · хозяева", "D": "X · ничья", "A": "П2 · гости"}
-    series = {}
-    for key in OUTCOMES:
-        points = []
-        for row in source_rows:
-            if row.get("outcome") != key:
-                continue
-            if int(row.get("n", 0) or 0) < 3:
-                continue
-            x = num(row.get("mean_probability"))
-            y = num(row.get("observed_frequency"))
-            if x is not None and y is not None:
-                points.append((x, y))
-        series[key] = sorted(points)
+    bins = 10
+    buckets = [
+        {"n": 0, "probability_sum": 0.0, "observed_sum": 0.0}
+        for _ in range(bins)
+    ]
+    for row in source_rows:
+        probability = num(row.get("mean_probability"))
+        observed = num(row.get("observed_frequency"))
+        n = int(row.get("n", 0) or 0)
+        index = int(row.get("bin_index", -1))
+        if probability is None or observed is None or n <= 0 or not 0 <= index < bins:
+            continue
+        bucket = buckets[index]
+        bucket["n"] += n
+        bucket["probability_sum"] += probability * n
+        bucket["observed_sum"] += observed * n
 
     width, height = 420, 238
-    left, right, top, bottom = 42, 395, 18, 193
+    left, right, top, bottom = 40, 400, 16, 190
     plot_w, plot_h = right - left, bottom - top
     grid = []
     for tick in (0.0, 0.25, 0.5, 0.75, 1.0):
@@ -187,43 +221,60 @@ def _reliability_svg(report):
         grid.append(
             f"<line x1='{left}' y1='{y:.1f}' x2='{right}' y2='{y:.1f}' class='neo-gridline'/>"
             f"<line x1='{x:.1f}' y1='{top}' x2='{x:.1f}' y2='{bottom}' class='neo-gridline'/>"
-            f"<text x='{left-10}' y='{y+4:.1f}' text-anchor='end' class='neo-axis'>{tick:.2f}</text>"
-            f"<text x='{x:.1f}' y='{bottom+18}' text-anchor='middle' class='neo-axis'>{tick:.2f}</text>"
+            f"<text x='{left-8}' y='{y+4:.1f}' text-anchor='end' class='neo-axis'>{tick:.2f}</text>"
+            f"<text x='{x:.1f}' y='{bottom+18}' text-anchor='middle' class='neo-axis'>{tick:.1f}</text>"
         )
-    paths = [
+
+    bar_width = plot_w / bins * 0.58
+    bars = []
+    for index, bucket in enumerate(buckets):
+        n = bucket["n"]
+        if n < 5:
+            continue
+        mean_probability = bucket["probability_sum"] / n
+        observed = bucket["observed_sum"] / n
+        x_center = left + (index + 0.5) * plot_w / bins
+        bar_height = max(0.0, min(1.0, observed)) * plot_h
+        y = bottom - bar_height
+        title = (
+            f"Бин {index + 1}: прогноз {mean_probability:.1%}, "
+            f"факт {observed:.1%}, наблюдений {n}"
+        )
+        bars.append(
+            f"<rect x='{x_center - bar_width/2:.1f}' y='{y:.1f}' "
+            f"width='{bar_width:.1f}' height='{bar_height:.1f}' rx='3' "
+            f"class='neo-calibration-bar'><title>{esc(title)}</title></rect>"
+        )
+
+    paths = (
         f"<line x1='{left}' y1='{bottom}' x2='{right}' y2='{top}' class='neo-ideal'/>"
-    ]
-    for key in OUTCOMES:
-        points = series[key]
-        if len(points) >= 2:
-            coords = " ".join(
-                f"{left + x * plot_w:.1f},{bottom - y * plot_h:.1f}"
-                for x, y in points
-            )
-            paths.append(
-                f"<polyline points='{coords}' fill='none' stroke='{colors[key]}' "
-                "stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/>"
-            )
-        for x, y in points:
-            paths.append(
-                f"<circle cx='{left + x * plot_w:.1f}' cy='{bottom - y * plot_h:.1f}' "
-                f"r='4' fill='{colors[key]}' stroke='#0d1a20' stroke-width='1.5'/>"
-            )
-    legend = "".join(
-        f"<span><i style='background:{colors[key]}'></i>{labels[key]}</span>"
-        for key in OUTCOMES
+    )
+    legend = (
+        "<div class='neo-chart-legend'>"
+        "<span><i style='background:#35d39a'></i>Фактическая частота</span>"
+        "<span><i class='neo-ideal-key'></i>Идеальная калибровка</span>"
+        "</div>"
     )
     return (
         "<div class='neo-chart-wrap'>"
-        f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='Калибровка вероятностей'>"
-        + "".join(grid) + "".join(paths)
-        + f"<text x='{(left+right)/2}' y='{height-4}' text-anchor='middle' class='neo-axis-title'>Прогнозная вероятность</text>"
-        + f"<text x='11' y='{(top+bottom)/2}' text-anchor='middle' transform='rotate(-90 11 {(top+bottom)/2})' class='neo-axis-title'>Фактическая частота</text>"
-        + "</svg><div class='neo-chart-legend'>"
-        + legend
-        + "<span><i class='neo-ideal-key'></i>Идеальная калибровка</span>"
-        + "</div></div>"
+        f"<svg viewBox='0 0 {width} {height}' role='img' aria-label='Калибровка вероятностей по бинам'>"
+        + "".join(grid) + paths + "".join(bars)
+        + f"<text x='{(left+right)/2}' y='{height-4}' text-anchor='middle' class='neo-axis-title'>Средняя прогнозная вероятность</text>"
+        + f"<text x='10' y='{(top+bottom)/2}' text-anchor='middle' transform='rotate(-90 10 {(top+bottom)/2})' class='neo-axis-title'>Фактическая частота</text>"
+        + "</svg>" + legend + "</div>"
     )
+
+def _team_badge_html(name, url="", size=22):
+    safe_url = str(url or "").strip()
+    initial = esc((str(name or "?").strip()[:1] or "?").upper())
+    if safe_url.startswith(("https://", "http://")):
+        inner = (
+            f"<img src='{esc(safe_url)}' alt='{esc(name)}' loading='lazy' "
+            "referrerpolicy='no-referrer'/>"
+        )
+    else:
+        inner = initial
+    return f"<span class='neo-team-badge' style='--badge-size:{int(size)}px'>{inner}</span>"
 
 
 def _match_table_row(card):
@@ -231,54 +282,159 @@ def _match_table_row(card):
     values = []
     for key in ("p1", "px", "p2"):
         value = num(card.get(key))
-        values.append(f"{value:.0%}" if value is not None and 0 <= value <= 1 else "—")
+        values.append(
+            f"<span class='neo-prob-pill'>{f'{value:.0%}' if value is not None and 0 <= value <= 1 else '—'}</span>"
+        )
+
     odds = card.get("market_odds") or {}
-    odds_text = (
-        " / ".join(f"{num(odds[key]):.2f}" for key in ("П1", "X", "П2"))
-        if has_prices(card) else "—"
-    )
+    odds_cells = []
+    for key in ("П1", "X", "П2"):
+        price = num(odds.get(key)) if has_prices(card) else None
+        odds_cells.append(
+            f"<td class='neo-odds'>{f'{price:.2f}' if price is not None else '—'}</td>"
+        )
+
     pick = str(prediction.get("pick") or "—")
     probability = num(prediction.get("probability"))
     pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
     value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
+
     league = str(card.get("league") or card.get("div") or "Футбол")
-    time_text = " ".join(
-        part for part in (str(card.get("time") or "").strip(), str(card.get("date") or card.get("date_iso") or "").strip())
-        if part
+    league_logo = str(card.get("league_badge") or "")
+    league_image = (
+        f"<img src='{esc(league_logo)}' alt='' loading='lazy' referrerpolicy='no-referrer'/>"
+        if league_logo.startswith(("https://", "http://")) else ""
     )
+    time_text = str(card.get("time") or "").strip()
+    date_text = str(card.get("date") or card.get("date_iso") or "").strip()
+    if time_text and time_text in date_text:
+        kickoff_text = date_text
+    else:
+        kickoff_text = " · ".join(part for part in (time_text, date_text) if part)
+
+    home_name = str(card.get("home_team") or "Хозяева")
+    away_name = str(card.get("away_team") or "Гости")
     return (
         "<tr>"
-        f"<td class='neo-time'>{esc(time_text or '—')}</td>"
-        f"<td><span class='neo-league'>{esc(league)}</span></td>"
-        f"<td class='neo-fixture'><b>{esc(card.get('home_team') or 'Хозяева')}</b>"
-        f"<span> — </span><b>{esc(card.get('away_team') or 'Гости')}</b></td>"
-        + "".join(f"<td class='neo-prob'>{esc(value)}</td>" for value in values)
-        + f"<td class='neo-odds'>{esc(odds_text)}</td>"
+        f"<td class='neo-time'>{esc(kickoff_text or '—')}</td>"
+        f"<td><span class='neo-league'>{league_image}{esc(league)}</span></td>"
+        "<td class='neo-fixture'><div class='neo-fixture-line'>"
+        "<span class='neo-team'>"
+        + _team_badge_html(home_name, card.get("home_badge"), 21)
+        + f"<b>{esc(home_name)}</b></span><span class='neo-vs'>—</span>"
+        "<span class='neo-team'>"
+        + _team_badge_html(away_name, card.get("away_badge"), 21)
+        + f"<b>{esc(away_name)}</b></span>"
+        "</div></td>"
+        + "".join(f"<td class='neo-prob'>{value}</td>" for value in values)
+        + "".join(odds_cells)
         + f"<td><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span></td>"
         + "</tr>"
     )
 
 
-def _kpi(label, value, note="", tone=""):
+def _sparkline_svg(values, color="#39d49b"):
+    cleaned = [num(value) for value in (values or [])]
+    cleaned = [value for value in cleaned if value is not None]
+    if len(cleaned) < 2:
+        return ""
+    width, height, pad = 118, 34, 3
+    low, high = min(cleaned), max(cleaned)
+    span = high - low or max(abs(high) * 0.08, 0.01)
+    points = []
+    for index, value in enumerate(cleaned):
+        x = pad + index * (width - pad * 2) / (len(cleaned) - 1)
+        y = height - pad - ((value - low) / span) * (height - pad * 2)
+        points.append((x, y))
+    line = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+    area = (
+        f"M {points[0][0]:.1f},{height-pad:.1f} "
+        + " ".join(f"L {x:.1f},{y:.1f}" for x, y in points)
+        + f" L {points[-1][0]:.1f},{height-pad:.1f} Z"
+    )
+    return (
+        f"<svg class='neo-sparkline' viewBox='0 0 {width} {height}' "
+        "preserveAspectRatio='none' aria-hidden='true'>"
+        f"<path d='{area}' fill='{color}' opacity='.12'/>"
+        f"<polyline points='{line}' fill='none' stroke='{color}' "
+        "stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/>"
+        "</svg>"
+    )
+
+
+def _kpi(label, value, note="", tone="", series=None, color="#39d49b"):
+    sparkline = _sparkline_svg(series, color=color)
     return (
         f"<div class='neo-kpi {esc(tone)}'>"
+        "<div class='neo-kpi-label-row'>"
         f"<div class='neo-kpi-label'>{esc(label)}</div>"
+        f"<span class='neo-kpi-mark' aria-hidden='true'></span>"
+        "</div>"
+        "<div class='neo-kpi-main'>"
         f"<div class='neo-kpi-value'>{esc(value)}</div>"
+        f"<div class='neo-kpi-spark'>{sparkline}</div>"
+        "</div>"
         f"<div class='neo-kpi-note'>{esc(note)}</div>"
         "</div>"
     )
+
+
+def _card_kickoff(card):
+    raw = card.get("kickoff_at") or card.get("date_iso") or card.get("date")
+    if isinstance(raw, datetime):
+        parsed = raw
+    else:
+        raw_text = str(raw or "").strip()
+        parsed = None
+        if raw_text:
+            try:
+                parsed = datetime.fromisoformat(raw_text.replace("Z", "+00:00"))
+            except ValueError:
+                for fmt in ("%d.%m.%Y", "%d.%m.%y", "%Y/%m/%d"):
+                    try:
+                        parsed = datetime.strptime(raw_text, fmt)
+                        break
+                    except ValueError:
+                        continue
+        if parsed is not None and parsed.time().replace(tzinfo=None).hour == 0 and parsed.minute == 0:
+            time_match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", str(card.get("time") or ""))
+            if time_match:
+                parsed = parsed.replace(hour=int(time_match.group(1)), minute=int(time_match.group(2)))
+    if parsed is None:
+        return None
+    tz = app_timezone()
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=tz)
+    else:
+        parsed = parsed.astimezone(tz)
+    return parsed
 
 
 def _quality_panel(cards):
     total = len(cards)
     summaries = [context_summary(card) for card in cards]
     metrics = [
-        ("Реальные коэффициенты 1X2", sum(has_prices(card) for card in cards)),
-        ("Подтверждённые стартовые XI", sum(item["xi"] for item in summaries)),
+        ("Коэффициенты 1X2", sum(has_prices(card) for card in cards)),
+        ("Подтверждённые составы XI", sum(item["xi"] for item in summaries)),
         ("Назначенный судья", sum(item["referee"] for item in summaries)),
         ("Подтверждённый фид травм", sum(item["injuries"] for item in summaries)),
     ]
+    tracked = len(metrics) * total
+    quality_count = sum(count for _label, count in metrics)
+    quality_pct = (quality_count / tracked * 100) if tracked else None
+    quality_text = f"{quality_pct:.0f}%" if quality_pct is not None else "—"
+    circumference = 2 * math.pi * 39
+    dash = circumference * quality_pct / 100 if quality_pct is not None else 0
+    gauge = (
+        "<svg class='neo-gauge-svg' viewBox='0 0 100 100' role='img' "
+        f"aria-label='Покрытие проверяемых источников {esc(quality_text)}'>"
+        f"<circle cx='50' cy='50' r='39' fill='none' stroke='#263d39' stroke-width='8'/>"
+        f"<circle cx='50' cy='50' r='39' fill='none' stroke='#39d49b' stroke-width='8' "
+        f"stroke-linecap='round' stroke-dasharray='{dash:.1f} {circumference:.1f}' "
+        "transform='rotate(-90 50 50)'/>"
+        "</svg>"
+    )
     rows = []
     for label, count in metrics:
         pct = count / max(1, total) * 100
@@ -290,15 +446,17 @@ def _quality_panel(cards):
         )
     return (
         "<section class='neo-panel neo-bottom-panel'>"
-        "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>SOURCE MONITOR</span>"
+        "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DATA QUALITY</span>"
         "<h3>Качество данных</h3></div><span class='neo-panel-icon'>◈</span></div>"
-        f"<div class='neo-quality-summary'><strong>{sum(has_prices(c) for c in cards)}/{total}</strong>"
-        "<span>полных линий 1X2 в текущем скане</span></div>"
+        "<div class='neo-quality-layout'><div class='neo-gauge'>"
+        + gauge
+        + f"<div class='neo-gauge-center'><strong>{esc(quality_text)}</strong><span>КАЧЕСТВО</span></div>"
+        "</div><div class='neo-quality-list'>"
         + "".join(rows)
-        + "<p class='neo-panel-footnote'>Нет подтверждения — это неизвестное значение, а не доказательство отсутствия события.</p>"
+        + "</div></div>"
+        "<p class='neo-panel-footnote'>Доля подтверждённых полей в четырёх проверках по матчам текущего скана; это не вероятность исхода и не оценка уверенности модели.</p>"
         "</section>"
     )
-
 
 def _backup_panel():
     backup = st.session_state.get("_sqlite_backup_status") or {}
@@ -393,13 +551,26 @@ def render():
     metrics = snapshot["metrics"]
     bets = [bet for bet in (data.get("bets") or []) if isinstance(bet, dict)]
     closed_bets = [bet for bet in bets if bet.get("status") in {"won", "lost"}]
+    closed_bets.sort(key=lambda bet: str(
+        bet.get("settled_at") or bet.get("updated_at") or bet.get("date_iso") or ""
+    ))
     turnover = sum(num(bet.get("stake")) or 0.0 for bet in closed_bets)
     profit = sum(
         (num(bet.get("stake")) or 0.0) * ((num(bet.get("odds")) or 1.0) - 1.0)
         * (1.0 if bet.get("status") == "won" else -1.0)
         for bet in closed_bets
     )
-    roi = profit / turnover * 100 if turnover else 0.0
+    roi = profit / turnover * 100 if turnover else None
+    roi_series = []
+    running_turnover = 0.0
+    running_profit = 0.0
+    for bet in closed_bets:
+        stake = num(bet.get("stake")) or 0.0
+        odds = num(bet.get("odds")) or 1.0
+        running_turnover += stake
+        running_profit += stake * ((odds - 1.0) if bet.get("status") == "won" else -1.0)
+        if running_turnover > 0:
+            roi_series.append(running_profit / running_turnover * 100)
 
     now = datetime.now(app_timezone())
     st.markdown(
@@ -413,55 +584,102 @@ def render():
         unsafe_allow_html=True,
     )
 
-    brier = f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—"
-    log_loss = f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—"
-    accuracy = f"{metrics['accuracy']:.1%}" if metrics.get("accuracy") is not None else "—"
-    market_delta = metrics.get("market_delta_brier")
-    market_delta_text = (
-        f"{market_delta:+.4f}" if market_delta is not None else "—"
+    leagues = sorted({
+        str(card.get("league") or card.get("div") or "").strip()
+        for card in cards if str(card.get("league") or card.get("div") or "").strip()
+    })
+    filter_sport, filter_league, filter_period, filter_refresh = st.columns(
+        [0.82, 1.25, 1.12, 0.28], gap="small"
     )
-    market_note = (
-        f"совпадающих матчей: {metrics.get('market_n', 0)} · отрицательное лучше"
-        if market_delta is not None else "нет достаточной парной линии и результата"
+    with filter_sport:
+        st.selectbox(
+            "Вид спорта", ["⚽ Футбол"], index=0,
+            label_visibility="collapsed", disabled=True,
+            key="dashboard_sport_filter",
+        )
+    with filter_league:
+        league_options = ["Все турниры"] + leagues
+        selected_league = st.selectbox(
+            "Турнир", league_options, index=0,
+            label_visibility="collapsed", key="dashboard_league_filter",
+        )
+    with filter_period:
+        selected_period = st.selectbox(
+            "Период", ["Все матчи", "Ближайшие 24 ч"], index=0,
+            label_visibility="collapsed", key="dashboard_period_filter",
+        )
+    with filter_refresh:
+        st.button(
+            "↻", key="dashboard_refresh_button", use_container_width=True,
+            help="Обновить панель и перечитать текущие данные",
+            on_click=st.rerun,
+        )
+
+    filtered_cards = cards
+    if selected_league != "Все турниры":
+        filtered_cards = [
+            card for card in filtered_cards
+            if str(card.get("league") or card.get("div") or "").strip() == selected_league
+        ]
+    if selected_period == "Ближайшие 24 ч":
+        period_end = now + timedelta(hours=24)
+        filtered_cards = [
+            card for card in filtered_cards
+            if (kickoff := _card_kickoff(card)) is not None
+            and now <= kickoff <= period_end
+        ]
+
+    brier = f"{metrics['brier']:.3f}" if metrics.get("brier") is not None else "—"
+    log_loss = f"{metrics['log_loss']:.3f}" if metrics.get("log_loss") is not None else "—"
+    accuracy = f"{metrics['accuracy']:.1%}" if metrics.get("accuracy") is not None else "—"
+    roi_text = f"{roi:+.1f}%" if roi is not None else "—"
+    sample_note = f"{metrics.get('n', 0):,} завершённых прогнозов"
+    roi_note = (
+        f"виртуальный портфель · {len(closed_bets)} закрытых ставок"
+        if turnover > 0 else "нет закрытых ставок с оборотом"
     )
     kpis = [
-        _kpi("Матчей в скане", f"{len(cards):,}", "текущий набор матчей"),
-        _kpi("Реальная линия 1X2", f"{priced:,}", "полная подтверждённая линия"),
-        _kpi("Settled · FT", f"{metrics.get('n', 0):,}", "только основная модель"),
-        _kpi("Brier Score", brier, "ниже — лучше"),
-        _kpi("Log Loss", log_loss, "ниже — лучше"),
-        _kpi("Accuracy · 1X2", accuracy, "доля угаданных исходов"),
+        _kpi("Brier Score", brier, f"{sample_note} · ниже — лучше",
+             series=metrics.get("brier_series"), color="#39d49b"),
+        _kpi("Log Loss", log_loss, f"{sample_note} · ниже — лучше",
+             series=metrics.get("log_loss_series"), color="#4ec8d7"),
+        _kpi("Accuracy (1X2)", accuracy, f"{sample_note} · доля верных исходов",
+             series=metrics.get("accuracy_series"), color="#39d49b"),
+        _kpi("ROI (ставки)", roi_text, roi_note,
+             series=roi_series, color="#39d49b" if (roi or 0) >= 0 else "#f17b83"),
     ]
     st.markdown(
         "<div class='neo-kpi-grid'>" + "".join(kpis) + "</div>"
         + "<div class='neo-market-delta'>"
         "<span>СРАВНЕНИЕ С РЫНКОМ · Δ BRIER</span>"
-        f"<b>{esc(market_delta_text)}</b><small>{esc(market_note)}</small>"
+        f"<b>{esc(f'{metrics.get("market_delta_brier"):+.4f}' if metrics.get('market_delta_brier') is not None else '—')}</b>"
+        f"<small>{esc(f'парных матчей: {metrics.get("market_n", 0)} · отрицательное значение лучше' if metrics.get('market_delta_brier') is not None else 'нет полной парной линии и результата')}</small>"
+        f"<small class='neo-meta-spacer'>В скане: {len(cards):,} · полных линий 1X2: {priced:,} · FT: {metrics.get('n', 0):,}</small>"
         "</div>",
         unsafe_allow_html=True,
     )
 
-    left, right = st.columns([1.68, 1.0], gap="medium")
+    left, right = st.columns([2.08, 1.0], gap="medium")
     with left:
-        table_rows = "".join(_match_table_row(card) for card in cards[:7])
+        table_rows = "".join(_match_table_row(card) for card in filtered_cards[:5])
         if not table_rows:
             table_rows = (
-                "<tr><td colspan='8' class='neo-empty-cell'>"
-                "Пока нет матчей для отображения. Открой сканер матчей и запусти обновление."
+                "<tr><td colspan='10' class='neo-empty-cell'>"
+                "Нет матчей для выбранных фильтров. Измени турнир или период либо обнови сканер."
                 "</td></tr>"
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
             "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>MATCH INTELLIGENCE</span>"
             "<h3>Ближайшие матчи — прогнозы модели</h3></div>"
-            f"<span class='neo-count-pill'>{len(cards)} матчей</span></div>"
+            f"<span class='neo-count-pill'>{len(filtered_cards)} матчей</span></div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
-            "<th>Коэффициенты 1X2</th><th>Прогноз</th>"
+            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Вариант</th>"
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {min(7, len(cards))} из {len(cards)} матчей · котировки отображаются только при полной реальной линии.</div>"
+            f"<div class='neo-table-footer'>Показано {min(5, len(filtered_cards))} из {len(filtered_cards)} матчей в выбранном фильтре · котировки выводятся только при полной реальной линии.</div>"
             "</section>",
             unsafe_allow_html=True,
         )
@@ -474,7 +692,7 @@ def render():
             if reliability_n >= 30 else
             "<div class='neo-chart-empty'><strong>Недостаточно истории для графика</strong>"
             f"<span>Закрытых прогнозов основной модели: {reliability_n}. "
-            "Калибровка будет показана после накопления более широкой выборки.</span></div>"
+            "Калибровка появится после накопления более широкой выборки.</span></div>"
         )
         st.markdown(
             "<section class='neo-panel neo-reliability-panel'>"
@@ -482,7 +700,7 @@ def render():
             "<h3>Reliability · калибровка</h3></div>"
             f"<span class='neo-count-pill'>{reliability_n:,} FT</span></div>"
             + chart
-            + "<div class='neo-panel-footnote'>Сопоставление прогнозной вероятности и фактической частоты по исходам П1 / X / П2.</div>"
+            + "<div class='neo-panel-footnote'>Вероятность модели и наблюдаемая частота объединены по классам П1 / X / П2; пунктир — идеальная калибровка.</div>"
             "</section>",
             unsafe_allow_html=True,
         )
@@ -494,7 +712,7 @@ def render():
         st.markdown(_backup_panel(), unsafe_allow_html=True)
     with bottom_right:
         st.markdown(
-            _history_panel(snapshot, roi, profit, turnover),
+            _history_panel(snapshot, roi or 0.0, profit, turnover),
             unsafe_allow_html=True,
         )
 
