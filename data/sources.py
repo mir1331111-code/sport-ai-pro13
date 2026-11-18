@@ -703,7 +703,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
     for off in range(total_days):
         d = today + timedelta(days=off)
         dstr = d.strftime("%Y-%m-%d")
-        ck = f"tsdb_day_v12_{dstr}"
+        ck = f"tsdb_day_v13_{dstr}"
         cached = cache_get(ck, 1800)
         if cached is not None:
             if isinstance(cached, list):
@@ -730,7 +730,7 @@ def tsdb_matches(days: int = 7, logs=None) -> list:
                 a = e.get("strAwayTeam")
                 if not h or not a:
                     continue
-                # Validate sport explicitly; invalidate old cache via v9 key.
+                # Validate sport explicitly before retaining event metadata.
                 sport_name = str(e.get("strSport") or "").strip().lower()
                 league = str(e.get("strLeague") or "Матч")
                 league_lower = league.lower()
@@ -2576,8 +2576,7 @@ def team_badge_url_by_id(team_id: str | int, logs=None) -> Optional[str]:
             proxies=NO_PROXY,
         )
         if response.status_code != 200:
-            note(f"lookupteam HTTP {response.status_code}")
-            cache_put(miss_key, {"missing": True})
+            note(f"lookupteam HTTP {response.status_code}; повторный запрос не блокируется кэшем")
             return None
         payload = response.json() or {}
         teams = payload.get("teams") or []
