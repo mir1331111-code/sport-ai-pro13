@@ -1,7 +1,7 @@
 import unittest
 
 from ui.tabs.dashboard import (
-    _quality_panel, _reliability_svg, _sparkline_svg,
+    _match_table_row, _quality_panel, _reliability_svg, _sparkline_svg,
     context_summary, favorite, has_prices, match_name,
 )
 
@@ -60,6 +60,33 @@ class DashboardHelperTests(unittest.TestCase):
                         "match_ru": "Дом — Гости"}),
             "Дом — Гости",
         )
+
+    def test_fixture_rows_render_real_badges_and_competition_flags(self):
+        row = _match_table_row({
+            "home_team": "Arsenal",
+            "away_team": "Chelsea",
+            "home_badge": "https://assets.test/arsenal.png",
+            "away_badge": "https://assets.test/chelsea.png",
+            "div": "E0",
+            "league": "Premier League",
+            "p1": 0.5, "px": 0.25, "p2": 0.25,
+            "market_odds": {"П1": 2.0, "X": 3.2, "П2": 4.0},
+            "odds_source": "sstats",
+        })
+        self.assertIn("https://assets.test/arsenal.png", row)
+        self.assertIn("https://assets.test/chelsea.png", row)
+        self.assertIn("neo-league-flag", row)
+        self.assertIn("Premier League", row)
+
+    def test_fixture_rows_keep_initial_fallback_when_badges_are_missing(self):
+        row = _match_table_row({
+            "home_team": "Home FC",
+            "away_team": "Away FC",
+            "p1": 0.5, "px": 0.25, "p2": 0.25,
+            "market_odds": {},
+        })
+        self.assertIn(">H</span>", row)
+        self.assertIn(">A</span>", row)
 
     def test_dashboard_sparkline_is_omitted_without_a_real_series(self):
         self.assertEqual(_sparkline_svg([]), "")
