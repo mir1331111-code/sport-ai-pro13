@@ -92,7 +92,7 @@ class DashboardHelperTests(unittest.TestCase):
     def test_data_quality_gauge_does_not_claim_full_quality_without_cards(self):
         panel = _quality_panel([])
         self.assertIn("КАЧЕСТВО", panel)
-        self.assertIn(">—<", panel)
+        self.assertIn("<strong>—</strong>", panel)
         self.assertNotIn("100%", panel)
 
 
