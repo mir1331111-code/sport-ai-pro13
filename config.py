@@ -9,6 +9,8 @@ DATA_VERSION = 18
 # Lower-history items remain forecast-only.
 MIN_RECOMMENDED_MATCHES = 7
 MAX_RECOMMENDED_MATCHES = 10
+# Default scan horizon requested for the main dashboard workflow.
+DEFAULT_SCAN_HORIZON_DAYS = 3
 # A strong-looking probability needs a larger venue-specific sample.
 # Short samples remain visible as forecasts, but are not labelled strong.
 MIN_FAVORITE_HISTORY = 10
