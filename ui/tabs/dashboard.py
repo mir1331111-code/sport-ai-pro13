@@ -438,7 +438,46 @@ def _https_image_url(value):
     return ""
 
 
-def _match_table_row(card):
+def _forecast_rejection_reason(card):
+    """Explain why a visible forecast is not an approved bet."""
+    reasons = []
+    selection_note = str(card.get("_daily_selection_note") or "").strip()
+    if selection_note:
+        selection_note = selection_note.replace("Ознакомительный прогноз · ", "", 1)
+        if selection_note and selection_note not in reasons:
+            reasons.append(selection_note)
+
+    context = card.get("context_quality")
+    context = context if isinstance(context, dict) else {}
+    if not context.get("strong_value_eligible"):
+        reason = str(context.get("reason") or "").strip()
+        if reason and reason not in reasons:
+            reasons.append(reason)
+
+    verdict = card.get("verdict")
+    verdict = verdict if isinstance(verdict, dict) else {}
+    verdict_reasons = verdict.get("reasons")
+    if isinstance(verdict_reasons, list):
+        for item in verdict_reasons:
+            text = str(item or "").strip()
+            if text and ("Strong/Value" in text or "Value" in text or "Kelly" in text):
+                if text not in reasons:
+                    reasons.append(text)
+
+    if not has_prices(card):
+        reasons.append("нет полной подтверждённой линии П1/X/П2 одного букмекера")
+    elif not verdict.get("real_odds"):
+        reasons.append("рыночная линия не подтверждена для расчёта Value")
+    elif not verdict.get("value_passed"):
+        reasons.append("не пройдены Value / Edge / EV")
+    elif not verdict.get("is_bet"):
+        reasons.append("ставка не прошла итоговый допуск / Kelly")
+
+    # Keep a concise explanation in the narrow table cell.
+    return "; ".join(dict.fromkeys(reasons)) or "прогноз информационный; допуска к ставке нет"
+
+
+def _match_table_row(card, *, preview_only=False):
     prediction = favorite(card) or {}
     values = []
     for key in ("p1", "px", "p2"):
@@ -461,7 +500,13 @@ def _match_table_row(card):
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
     value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
     has_confirmed_line = has_prices(card)
-    if value_passed:
+    if preview_only:
+        reason_text = _forecast_rejection_reason(card)
+        bet_status_html = (
+            "<small class='neo-bet-status blocked'>ПРОГНОЗ · НЕ ДОПУЩЕН К СТАВКЕ</small>"
+            f"<small class='neo-pick-note provisional'>{esc(reason_text)}</small>"
+        )
+    elif value_passed and verdict.get("is_bet"):
         bet_status_html = (
             "<small class='neo-bet-status approved'>VALUE · СТАВКА ДОПУЩЕНА</small>"
         )
@@ -848,6 +893,7 @@ def render():
         diagnostics=selection_diagnostics,
     )
     approved_event_cards = []
+    forecast_candidates = []
     for item in ranked_events:
         card = dict(item["card"])
         card["_daily_strict_eligible"] = bool(item.get("strict_eligible"))
@@ -857,6 +903,13 @@ def render():
         card["_daily_quality_score"] = float(item.get("quality_score") or 0.0)
         if dashboard_bet_approved(card):
             approved_event_cards.append(card)
+        else:
+            forecast_candidates.append((item.get("kickoff"), card))
+    # The forecast feed is a chronological view, not a second betting ranking.
+    forecast_candidates.sort(
+        key=lambda pair: pair[0] if pair[0] is not None else datetime.max.replace(tzinfo=now.tzinfo)
+    )
+    forecast_event_cards = [card for _kickoff, card in forecast_candidates[:12]]
     selected_event_cards = approved_event_cards[:5]
     strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
@@ -952,6 +1005,38 @@ def render():
             + table_rows
             + "</tbody></table></div>"
             f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · всего матчей в периоде: {available_event_count} · строгих кандидатов (история + фаворит): {strict_count} · без истории/вероятности: {provisional_count} · не подтверждён Strong/Value-контекст: {context_blocked_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count}. Причины пересекаются. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
+            "</section>",
+            unsafe_allow_html=True,
+        )
+        forecast_rows = "".join(
+            _match_table_row(card, preview_only=True)
+            for card in forecast_event_cards
+        )
+        st.markdown(
+            "<section class='neo-panel neo-forecast-panel'>"
+            "<div class='neo-panel-heading'><div>"
+            "<span class='neo-panel-kicker'>FORECAST FEED · НЕ СПИСОК СТАВОК</span>"
+            "<h3>Ближайшие матчи · прогнозы модели</h3></div>"
+            f"<span class='neo-count-pill'>{len(forecast_event_cards)} из {len(forecast_candidates)} матчей</span></div>"
+            "<div class='neo-ranking-disclaimer'>"
+            "<b>Здесь видны предстоящие матчи, даже если они не прошли допуск.</b> "
+            "Вероятности П1 / X / П2 — прогноз модели, не рекомендация поставить. "
+            "Каждая строка содержит причину отказа; эти матчи не попадают в автоматический портфель."
+            "</div>"
+            "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
+            "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
+            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Прогноз и причина недопуска</th>"
+            "</tr></thead><tbody>"
+            + (
+                forecast_rows
+                if forecast_rows else
+                "<tr><td colspan='10' class='neo-empty-cell'>"
+                "Нет дополнительных матчей для прогноза в выбранном периоде."
+                "</td></tr>"
+            )
+            + "</tbody></table></div>"
+            f"<div class='neo-table-footer'>Показаны ближайшие по времени {len(forecast_event_cards)} непринятых прогнозов из {len(forecast_candidates)}. "
+            "Статус «НЕ ДОПУЩЕН» означает, что ставку делать нельзя. Список ограничен 12 строками для читаемости.</div>"
             "</section>",
             unsafe_allow_html=True,
         )
