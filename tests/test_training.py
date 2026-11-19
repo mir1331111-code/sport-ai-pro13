@@ -45,6 +45,12 @@ class ChronologicalTrainingTests(unittest.TestCase):
         self.assertEqual(skipped["missing_or_invalid_score"], 1)
         self.assertEqual(skipped["missing_teams"], 1)
 
+    def test_prediction_exposes_competition_specific_calibration_state(self):
+        model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        prediction = model.predict("A", "B", "S_TEST")
+        self.assertFalse(prediction["probability_calibrated"])
+        self.assertEqual(prediction["calibration_matches"], 0)
+
     def test_batch_predicts_all_same_day_fixtures_before_ingesting_results(self):
         model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
         untouched = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
