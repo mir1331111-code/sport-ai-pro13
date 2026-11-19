@@ -284,8 +284,9 @@ def _fixture_key(card: dict, index: int) -> tuple:
     home, away = _teams(card)
     date = str(card.get("date_iso") or card.get("date") or "")[:10]
     home_key, away_key = _team_key(home), _team_key(away)
+    division = str(card.get("div") or card.get("league") or "").strip().casefold()
     if date and home_key and away_key:
-        return ("fixture", date, home_key, away_key)
+        return ("fixture", date, division, home_key, away_key)
     fixture_id = str(card.get("fixture_id") or card.get("sstats_game_id") or "").strip()
     if fixture_id:
         return ("id", fixture_id)
@@ -408,6 +409,8 @@ def rank_best_fixtures(
     Priority 2: a model-only forecast when the competition has at least
     min_league_history pre-match results and both venue-specific team samples
     meet min_sample_games. Unsupported prior-only model forecasts are excluded.
+    The legacy include_limited_history argument never promotes neutral-prior
+    forecasts into this ranking.
 
     Kickoff is used only for the requested time window and display; it never
     increases an event's rank. Betting eligibility remains a separate gate.
@@ -597,6 +600,7 @@ def rank_best_fixtures(
             "card": card,
             "kickoff": kickoff,
             "pass_pick": market_pick or model["pick"],
+            "model_pick": model["pick"] if model else None,
             "pass_probability": pass_probability,
             "pass_probability_source": pass_source,
             "market_probabilities": market_probabilities,
@@ -680,6 +684,15 @@ def rank_best_fixtures(
         except (TypeError, ValueError, OverflowError):
             pass
 
+    counters["market_unique_candidates"] = sum(
+        bool(item["market_candidate"]) for item in unique.values()
+    )
+    counters["model_only_unique_candidates"] = sum(
+        not bool(item["market_candidate"]) for item in unique.values()
+    )
+    counters["model_supported_unique_candidates"] = sum(
+        bool(item["model_supported"]) for item in unique.values()
+    )
     publish_diagnostics(len(unique), len(ranked))
     return ranked
 
