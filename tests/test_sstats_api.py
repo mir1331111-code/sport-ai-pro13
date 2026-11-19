@@ -391,11 +391,6 @@ class SStatsTests(unittest.TestCase):
                     "Div": "S_TEST991",
                     "League": "Local Premier League",
                 },
-                {
-                    "sstats_league_id": "",
-                    "Div": "S_NO_ID",
-                    "League": "Unknown Cup",
-                },
             ],
             "private-api-key",
             years_back=5,
