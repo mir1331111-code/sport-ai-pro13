@@ -402,7 +402,11 @@ def _daily_event_quality(card: dict, prediction: dict) -> dict:
     away_sample = max(0, int(prediction.get("away_sample") or 0))
     history_component = min(1.0, min(home_sample, away_sample) / 12.0)
 
-    genuine_provider_xg = bool(card.get("xg_used")) and not bool(card.get("xg_modelled_used"))
+    genuine_provider_xg = (
+        bool(card.get("xg_used"))
+        and not bool(card.get("xg_modelled_used"))
+        and str(card.get("xg_source") or "").casefold() == "provider"
+    )
     odds = card.get("market_odds") if isinstance(card.get("market_odds"), dict) else {}
     complete_odds = all(
         _number(odds.get(key)) is not None and float(_number(odds.get(key))) > 1.0
