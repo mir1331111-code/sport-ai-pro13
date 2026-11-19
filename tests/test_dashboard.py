@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from data.fixture_time import app_timezone
 from betting.ranking import rank_best_fixtures
 from ui.tabs.dashboard import (
-    _forecast_rejection_reason, _grok_panel, _https_image_url,
-    _match_table_row, _probability_health_note,
+    _forecast_history_support, _forecast_rejection_reason,
+    _grok_panel, _https_image_url, _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
 )
@@ -239,6 +239,79 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("52%", reason)
         self.assertIn("стартового XI", reason)
         self.assertIn("полной подтверждённой линии", reason)
+
+    def test_prior_only_forecast_does_not_label_p1_as_a_pick(self):
+        card = {
+            "home_team": "Al Ain",
+            "away_team": "Al-Dhafra",
+            "date_iso": "2026-11-19",
+            "time": "16:25",
+            "p1": 0.421, "px": 0.289, "p2": 0.290,
+            "independent_features": {
+                "home_home_sample": 0,
+                "away_away_sample": 0,
+            },
+            "market_odds": {"П1": 1.14, "X": 9.59, "П2": 14.70},
+            "odds_source": "sstats",
+            "verdict": {"real_odds": False, "value_passed": False, "is_bet": False},
+            "_daily_home_sample": 0,
+            "_daily_away_sample": 0,
+            "_daily_selection_note": (
+                "Ознакомительный прогноз · дома 0/5; в гостях 0/5; "
+                "нет выраженного фаворита (42% < 52%)"
+            ),
+        }
+        row = _match_table_row(card, preview_only=True)
+        self.assertIn("PRIOR-ONLY · НЕ ВЫБИРАЕМ ИСХОД", row)
+        self.assertNotIn("П1 · 42%", row)
+        self.assertIn("42%", row)
+        self.assertIn("29%", row)
+        self.assertIn("Нет достаточной домашней/выездной истории", row)
+        self.assertIn("ПРОГНОЗ · НЕ ДОПУЩЕН К СТАВКЕ", row)
+
+    def test_evidence_backed_preview_can_show_p1_draw_or_p2(self):
+        for probabilities, expected in (
+            ({"p1": 0.60, "px": 0.22, "p2": 0.18}, "П1 · 60%"),
+            ({"p1": 0.18, "px": 0.62, "p2": 0.20}, "X · 62%"),
+            ({"p1": 0.18, "px": 0.22, "p2": 0.60}, "П2 · 60%"),
+        ):
+            card = {
+                "home_team": "Alpha FC",
+                "away_team": "Beta FC",
+                **probabilities,
+                "independent_features": {
+                    "home_home_sample": 8,
+                    "away_away_sample": 9,
+                },
+                "_daily_home_sample": 8,
+                "_daily_away_sample": 9,
+                "verdict": {"real_odds": False, "value_passed": False, "is_bet": False},
+            }
+            row = _match_table_row(card, preview_only=True)
+            self.assertIn(expected, row)
+            self.assertNotIn("PRIOR-ONLY", row)
+
+    def test_forecast_history_support_uses_venue_specific_counts(self):
+        self.assertEqual(
+            _forecast_history_support({
+                "_daily_home_sample": 6,
+                "_daily_away_sample": 2,
+                "independent_features": {
+                    "home_home_sample": 10,
+                    "away_away_sample": 10,
+                },
+            }),
+            (6, 2, False),
+        )
+        self.assertEqual(
+            _forecast_history_support({
+                "independent_features": {
+                    "home_home_sample": 5,
+                    "away_away_sample": 5,
+                },
+            }),
+            (5, 5, True),
+        )
 
     def test_fixture_row_distinguishes_forecast_from_value_approved_bet(self):
         no_line = _match_table_row({
