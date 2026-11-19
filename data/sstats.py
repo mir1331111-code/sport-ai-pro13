@@ -825,6 +825,8 @@ def _sstats_division_for_game(
         "premier league", "serie a", "serie b", "bundesliga",
         "ligue 1", "ligue 2", "la liga", "primera division",
         "segunda division", "division 1", "division 2", "cup",
+        "champions league", "europa league", "conference league",
+        "super league",
     }
     normalized_label = re.sub(
         r"[^a-z0-9]+", " ",
@@ -833,12 +835,16 @@ def _sstats_division_for_game(
             if not unicodedata.combining(char)
         ),
     ).strip()
-    if not country and league_id not in (None, "") and normalized_label in ambiguous_bare_names:
-        league_id_text = str(league_id).strip()
-        if league_id_text.isdigit():
-            return "S_" + hashlib.sha1(
-                f"sstats-league:{league_id_text}".encode("utf-8")
-            ).hexdigest()[:10].upper()
+    if not country and normalized_label in ambiguous_bare_names:
+        league_id_text = str(league_id or "").strip()
+        stable_identity = (
+            f"sstats-league:{league_id_text}"
+            if league_id_text.isdigit()
+            else f"sstats-ambiguous-label:{normalized_label}"
+        )
+        return "S_" + hashlib.sha1(
+            stable_identity.encode("utf-8")
+        ).hexdigest()[:10].upper()
     return _sstats_div_code(label)
 
 
