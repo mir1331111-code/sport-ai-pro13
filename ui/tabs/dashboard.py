@@ -752,15 +752,41 @@ def render():
         period_end = None
         table_title = "Лучшие события всего горизонта · 1X2"
 
+    # The main dashboard table is a betting shortlist, not a general forecast
+    # gallery. Forecast-only and market-only events are deliberately excluded.
+    timezone_name = getattr(now.tzinfo, "key", None)
+    upcoming_in_period = []
+    for card in filtered_cards:
+        kickoff = fixture_kickoff_local(card, timezone_name=timezone_name)
+        if kickoff is None or kickoff <= now:
+            continue
+        if period_end is not None and kickoff >= period_end:
+            continue
+        upcoming_in_period.append(card)
+
+    approved_cards = []
+    for source_card in upcoming_in_period:
+        recommendation = approved_1x2_recommendation(source_card)
+        if recommendation is None:
+            continue
+        best = recommendation["best"]
+        approved_card = dict(source_card)
+        approved_card["_daily_required_pick"] = str(best[1])
+        approved_card["_daily_approved_probability"] = float(best[4])
+        approved_card["_daily_approved_odds"] = float(best[2])
+        approved_card["verdict"] = dict(recommendation["verdict"])
+        approved_card["best"] = best
+        approved_cards.append(approved_card)
+
     selection_diagnostics = {}
     ranked_events = rank_best_fixtures(
-        filtered_cards,
+        approved_cards,
         now=now,
         period_end=period_end,
         limit=5,
         min_sample_games=5,
         min_probability=0.52,
-        include_limited_history=True,
+        include_limited_history=False,
         diagnostics=selection_diagnostics,
     )
     selected_event_cards = []
@@ -778,15 +804,15 @@ def render():
         card["_daily_away_sample"] = int(item.get("away_sample") or 0)
         card["_daily_league_sample"] = int(item.get("league_history_matches") or 0)
         selected_event_cards.append(card)
-    market_count = int(selection_diagnostics.get("market_unique_candidates", 0) or 0)
-    model_only_count = int(selection_diagnostics.get("model_only_unique_candidates", 0) or 0)
-    available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
+
+    available_event_count = len(approved_cards)
+    approved_event_count = len(selected_event_cards)
+    excluded_not_approved = max(0, len(upcoming_in_period) - available_event_count)
+    market_count = len(approved_cards)
     scan_diagnostics_text = (
-        f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
-        f"уже начались: {selection_diagnostics.get('already_started', 0)} · "
-        f"вне периода: {selection_diagnostics.get('outside_window', 0)} · "
-        f"нет полной линии одного букмекера: {selection_diagnostics.get('incoherent_market_line', 0)} · "
-        f"нет рынка и достаточной истории модели: {selection_diagnostics.get('no_market_or_supported_model', 0)}"
+        f"В периоде будущих матчей: {len(upcoming_in_period)} · "
+        f"прошли строгий допуск 1X2: {available_event_count} · "
+        f"исключено как прогнозы без допуска: {excluded_not_approved}"
     )
 
     brier = f"{metrics['brier']:.3f}" if metrics.get("brier") is not None else "—"
