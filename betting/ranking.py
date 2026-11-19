@@ -383,6 +383,9 @@ def model_favorite(card: object) -> dict | None:
         "sample_support": sample_support,
         "rank_score": rank_score,
         "strength": strength,
+        # Legacy cards without calibration metadata are not treated as validated.
+        "calibration_ready": bool(card.get("probability_calibrated", False)),
+        "calibration_matches": max(0, int(_number(card.get("calibration_matches"), 0.0) or 0)),
     }
 
 
@@ -710,27 +713,46 @@ def rank_model_favorites_with_minimum(
 
 
 def favorite_display(item: object) -> dict:
-    """Avoid presenting a prior-only argmax as a team-specific match pick."""
+    """Only call a pick strong when venue history and its league calibrator exist."""
     if not isinstance(item, dict):
         return {
             "pick": None,
             "label": "НЕДОСТАТОЧНО ДАННЫХ · НЕТ ВЫБОРА",
             "probability": None,
             "history_sufficient": False,
+            "calibrated": False,
         }
+
+    sample = max(0, int(item.get("sample_games") or 0))
+    floor = max(1, int(item.get("history_floor") or 10))
     history_sufficient = bool(item.get("history_sufficient", False))
-    if not history_sufficient:
+    calibration_ready = bool(item.get("calibration_ready", False))
+    calibration_matches = max(0, int(item.get("calibration_matches") or 0))
+
+    if sample == 0:
+        label = "НЕДОСТАТОЧНО ИСТОРИИ · PRIOR-ONLY"
+    elif not history_sufficient:
+        label = f"ОГРАНИЧЕННАЯ ИСТОРИЯ · {sample}/{floor} МАТЧЕЙ"
+    elif not calibration_ready:
+        label = (
+            "НЕ КАЛИБРОВАНО · СЫРАЯ ВЕРОЯТНОСТЬ "
+            f"(калибратор лиги: {calibration_matches} матчей)"
+        )
+    else:
         return {
-            "pick": None,
-            "label": "НЕДОСТАТОЧНО ИСТОРИИ · PRIOR-ONLY",
-            "probability": None,
-            "history_sufficient": False,
+            "pick": item.get("pick"),
+            "label": str(item.get("label") or "Наиболее вероятный исход"),
+            "probability": item.get("probability"),
+            "history_sufficient": True,
+            "calibrated": True,
         }
+
     return {
-        "pick": item.get("pick"),
-        "label": str(item.get("label") or "Наиболее вероятный исход"),
-        "probability": item.get("probability"),
-        "history_sufficient": True,
+        "pick": None,
+        "label": label,
+        "probability": None,
+        "history_sufficient": history_sufficient,
+        "calibrated": False,
     }
 
 
