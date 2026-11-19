@@ -25,7 +25,8 @@ from storage import sqlite_store as db
 from storage import user_datasets
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches,
-                          sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
+                          sstats_upcoming_matches, sstats_historical_matches_for_fixtures,
+                          sstats_context_enrich, sstats_odds_fixture,
                           footballapi_xg_history, team_badge_url_by_id)
 from data.fixture_merge import (
     enforce_sstats_market_card, enforce_sstats_odds_only,
@@ -2825,6 +2826,28 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         update_loader("📈 Загрузка xG-истории...", 0.16, logs)
         footballapi_xg_rows = footballapi_xg_history(footballapi_key, logs)
+
+        update_loader("📚 Загрузка истории по текущим турнирам SStats...", 0.18, logs)
+        sstats_history_rows = []
+        if sstats_key and rows:
+            try:
+                history_league_limit = _runtime_int(
+                    "sstats_history_max_leagues",
+                    "SSTATS_HISTORY_MAX_LEAGUES",
+                    default=30,
+                    minimum=1,
+                )
+                sstats_history_rows = sstats_historical_matches_for_fixtures(
+                    rows, sstats_key, years_back=5,
+                    max_leagues=history_league_limit, logs=logs,
+                )
+            except Exception as exc:
+                logs.append(
+                    f"⚠️ SStats historical archive: {type(exc).__name__}; "
+                    "forecast-only режим сохраняется."
+                )
+        if sstats_history_rows:
+            custom_historical_rows = list(custom_historical_rows or []) + sstats_history_rows
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(
