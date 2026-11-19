@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime
 from data.team_names import normalize_team
 
 
@@ -10,12 +11,49 @@ def _team_key(value) -> str:
     return normalize_team(str(value or ""))
 
 
-def fixture_key(row: dict) -> tuple:
-    """Stable date/team key across providers with different fixture IDs."""
+def _fixture_day(row: dict) -> date | None:
+    """Parse common provider date formats into a comparable calendar day."""
+    value = row.get("Date") or row.get("date") or row.get("date_iso")
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+    iso_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    if iso_match:
+        try:
+            return date.fromisoformat(iso_match.group(1))
+        except ValueError:
+            pass
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _fixture_pair_key(row: dict) -> tuple[str, str]:
     return (
-        str(row.get("Date") or row.get("date") or "")[:10],
         _team_key(row.get("HomeTeam") or row.get("home_team")),
         _team_key(row.get("AwayTeam") or row.get("away_team")),
+    )
+
+
+def fixture_key(row: dict) -> tuple:
+    """Stable date/team key across providers with different IDs/date formats."""
+    day = _fixture_day(row)
+    return (
+        day.isoformat() if day is not None else str(
+            row.get("Date") or row.get("date") or ""
+        )[:10],
+        *_fixture_pair_key(row),
     )
 
 
@@ -40,19 +78,27 @@ def enrich_fixture_visual_metadata(
     """Overlay only visual fixture metadata without adding/replacing fixtures.
 
     The primary feed remains authoritative for fixture identity, kickoff,
-    competition and bookmaker odds. Secondary feeds can fill only known image
-    and venue fields on an exact normalized date/team match.
+    competition and bookmaker odds. Secondary feeds can fill image/venue fields
+    on exact date/team matches, or a unique same-team match within one calendar
+    day when providers disagree about UTC/local kickoff dates or date formats.
+    Ambiguous near-date matches are ignored to avoid attaching another team's crest.
     """
     metadata_by_fixture: dict[tuple, list[dict]] = {}
+    metadata_by_pair: dict[tuple[str, str], list[dict]] = {}
     for row in metadata_rows or []:
         if not isinstance(row, dict):
             continue
         key = fixture_key(row)
+        pair = _fixture_pair_key(row)
         if all(key):
             metadata_by_fixture.setdefault(key, []).append(row)
+        if all(pair) and _fixture_day(row) is not None:
+            metadata_by_pair.setdefault(pair, []).append(row)
 
     result = []
     fixtures_matched = 0
+    date_fallback_matches = 0
+    ambiguous_date_matches = 0
     assets_added = 0
     fixtures_with_assets = 0
     for row in primary_rows or []:
@@ -61,6 +107,27 @@ def enrich_fixture_visual_metadata(
         clean = dict(row)
         key = fixture_key(row)
         candidates = metadata_by_fixture.get(key, []) if all(key) else []
+        if not candidates:
+            primary_day = _fixture_day(row)
+            pair = _fixture_pair_key(row)
+            nearby = []
+            if primary_day is not None and all(pair):
+                for metadata_row in metadata_by_pair.get(pair, []):
+                    metadata_day = _fixture_day(metadata_row)
+                    if metadata_day is None:
+                        continue
+                    gap = abs((metadata_day - primary_day).days)
+                    if gap <= 1:
+                        nearby.append((gap, fixture_key(metadata_row), metadata_row))
+            if nearby:
+                nearest_gap = min(item[0] for item in nearby)
+                nearest = [item for item in nearby if item[0] == nearest_gap]
+                nearest_keys = {item[1] for item in nearest}
+                if len(nearest_keys) == 1:
+                    candidates = [item[2] for item in nearest]
+                    date_fallback_matches += 1
+                else:
+                    ambiguous_date_matches += 1
         if candidates:
             fixtures_matched += 1
             # Prefer the matching provider event with the broadest visual
@@ -87,6 +154,8 @@ def enrich_fixture_visual_metadata(
         "primary_fixtures": len(result),
         "metadata_fixtures": len(metadata_by_fixture),
         "fixtures_matched": fixtures_matched,
+        "date_fallback_matches": date_fallback_matches,
+        "ambiguous_date_matches": ambiguous_date_matches,
         "assets_added": assets_added,
         "fixtures_with_assets": fixtures_with_assets,
     }

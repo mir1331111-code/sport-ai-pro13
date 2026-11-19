@@ -2,7 +2,7 @@ import unittest
 
 from ui.tabs.dashboard import (
     _match_table_row, _quality_panel, _reliability_svg, _sparkline_svg,
-    context_summary, favorite, has_prices, match_name,
+    approved_1x2_recommendation, context_summary, favorite, has_prices, match_name,
 )
 
 
@@ -11,6 +11,7 @@ class DashboardHelperTests(unittest.TestCase):
         complete = {
             "odds_source": "sstats",
             "market_odds": {"П1": 2.1, "X": 3.3, "П2": 3.6},
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book A", "П2": "Book A"},
         }
         partial = {
             "odds_source": "sstats",
@@ -19,10 +20,70 @@ class DashboardHelperTests(unittest.TestCase):
         invalid = {
             "odds_source": "model_only",
             "market_odds": {"П1": 2.1, "X": 3.3, "П2": 3.6},
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book A", "П2": "Book A"},
+        }
+        mixed_bookmakers = {
+            "odds_source": "sstats",
+            "market_odds": {"П1": 2.1, "X": 3.3, "П2": 3.6},
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book B", "П2": "Book A"},
         }
         self.assertTrue(has_prices(complete))
         self.assertFalse(has_prices(partial))
         self.assertFalse(has_prices(invalid))
+        self.assertFalse(has_prices(mixed_bookmakers))
+
+    def _approved_card(self, pick):
+        odds = {"П1": 2.10, "X": 3.40, "П2": 4.10}
+        quoted_odd = odds[pick]
+        return {
+            "div": "E0",
+            "odds_source": "sstats",
+            "market_odds": odds,
+            "bookmaker_by_pick": {
+                "П1": "Book A", "X": "Book A", "П2": "Book A",
+            },
+            "context_quality": {"strong_value_eligible": True},
+            "winner_market_validation": True,
+            "winner_market_validation_scope": "competition_independent_holdout",
+            "winner_market_validation_division": "E0",
+            "market_holdout_id": "holdout-e0-v1",
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", pick, quoted_odd, 0.12, 0.52, 1.0),
+                    "verdict": {
+                        "real_odds": True, "value_passed": True,
+                        "is_bet": True, "edge": 0.08,
+                    },
+                },
+            },
+        }
+
+    def test_main_dashboard_approval_accepts_draw_and_away_outcomes(self):
+        for pick in ("X", "П2"):
+            with self.subTest(pick=pick):
+                recommendation = approved_1x2_recommendation(
+                    self._approved_card(pick)
+                )
+                self.assertIsNotNone(recommendation)
+                self.assertEqual(recommendation["best"][1], pick)
+
+    def test_main_dashboard_rejects_stale_or_mismatched_approved_price(self):
+        card = self._approved_card("П2")
+        card["best_by_market"]["winner"]["best"] = (
+            "1X2", "П2", 2.10, 0.12, 0.52, 1.0,
+        )
+        self.assertIsNone(approved_1x2_recommendation(card))
+
+    def test_main_dashboard_hides_forecast_only_or_global_only_matches(self):
+        forecast_only = self._approved_card("П1")
+        forecast_only["best_by_market"] = {}
+        self.assertIsNone(approved_1x2_recommendation(forecast_only))
+
+        global_only = self._approved_card("П1")
+        global_only["winner_market_validation_scope"] = "global_research_only"
+        global_only["winner_market_validation_division"] = ""
+        global_only["market_holdout_id"] = ""
+        self.assertIsNone(approved_1x2_recommendation(global_only))
 
     def test_context_summary_never_promotes_unknown_fields(self):
         card = {
@@ -113,9 +174,57 @@ class DashboardHelperTests(unittest.TestCase):
             "p1": 0.70, "px": 0.18, "p2": 0.12,
             "market_odds": {"П1": 1.9, "X": 3.5, "П2": 4.5},
             "odds_source": "sstats",
-            "verdict": {"real_odds": True, "value_passed": True},
+            "odds_source": "sstats",
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book A", "П2": "Book A"},
+            "context_quality": {"strong_value_eligible": True},
+            "winner_market_validation": True,
+            "winner_market_validation_scope": "competition_independent_holdout",
+            "winner_market_validation_division": "E0",
+            "market_holdout_id": "holdout-e0-v1",
+            "div": "E0",
+            "verdict": {"real_odds": True, "value_passed": True, "is_bet": True},
         })
         self.assertIn("VALUE · СТАВКА ДОПУЩЕНА", approved)
+
+
+    def test_fixture_row_uses_market_pass_probability_and_discloses_model_gap(self):
+        row = _match_table_row({
+            "home_team": "Fredericia",
+            "away_team": "Hillerod",
+            "p1": 0.42, "px": 0.29, "p2": 0.29,
+            "market_odds": {"П1": 1.33, "X": 5.69, "П2": 7.93},
+            "odds_source": "sstats",
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book A", "П2": "Book A"},
+            "_daily_pass_pick": "П1",
+            "_daily_pass_probability": 0.69,
+            "_daily_pass_source": "market_no_vig",
+            "_daily_model_probability_for_pass": 0.42,
+            "_daily_model_market_gap": -0.27,
+            "_daily_home_sample": 0,
+            "_daily_away_sample": 0,
+            "_daily_league_sample": 0,
+        })
+        self.assertIn("П1 · 69%", row)
+        self.assertIn("РЫНОК БЕЗ МАРЖИ", row)
+        self.assertIn("модель: 42%", row)
+        self.assertIn("лига 0/30", row)
+        self.assertNotIn("VALUE · СТАВКА ДОПУЩЕНА", row)
+
+    def test_row_does_not_show_approved_bet_for_global_only_validation(self):
+        row = _match_table_row({
+            "home_team": "Global FC", "away_team": "Other FC",
+            "div": "E0",
+            "p1": 0.70, "px": 0.18, "p2": 0.12,
+            "market_odds": {"П1": 1.90, "X": 3.50, "П2": 4.50},
+            "odds_source": "sstats",
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book A", "П2": "Book A"},
+            "context_quality": {"strong_value_eligible": True},
+            "winner_market_validation": True,
+            "winner_market_validation_scope": "global_research_only",
+            "verdict": {"real_odds": True, "value_passed": True, "is_bet": True},
+        })
+        self.assertIn("НЕ ДОПУЩЕНО К СТАВКЕ", row)
+        self.assertNotIn("VALUE · СТАВКА ДОПУЩЕНА", row)
 
     def test_fixture_row_labels_provisional_daily_forecasts(self):
         row = _match_table_row({

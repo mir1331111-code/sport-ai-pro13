@@ -2,7 +2,9 @@ import math
 import unittest
 
 from betting.best_picks import best_value_market
-from betting.market_math import blend_probability, proportional_devig
+from betting.market_math import (
+    blend_probability, competition_market_is_validated, proportional_devig,
+)
 
 
 class MarketMathTests(unittest.TestCase):
@@ -62,6 +64,34 @@ class MarketMathTests(unittest.TestCase):
         self.assertAlmostEqual(chosen["ev"], chosen["prob"] * 2.10 - 1.0)
         self.assertAlmostEqual(chosen["edge"], chosen["prob"] - fair)
         self.assertTrue(math.isfinite(chosen["stake"]))
+
+
+    def test_global_walk_forward_never_authorizes_competition_value(self):
+        card = {
+            "div": "E0",
+            "winner_market_validation": True,
+            "winner_market_validation_scope": "global_research_only",
+            "winner_market_validation_division": "",
+            "market_holdout_id": "",
+        }
+        self.assertFalse(competition_market_is_validated(card, "winner"))
+
+    def test_competition_value_requires_exact_league_and_independent_holdout_id(self):
+        approved = {
+            "div": "E0",
+            "winner_market_validation": True,
+            "winner_market_validation_scope": "competition_independent_holdout",
+            "winner_market_validation_division": "E0",
+            "market_holdout_id": "holdout-e0-v1",
+        }
+        self.assertTrue(competition_market_is_validated(approved, "winner"))
+        self.assertFalse(competition_market_is_validated(
+            dict(approved, winner_market_validation_division="SP1"), "winner",
+        ))
+        self.assertFalse(competition_market_is_validated(
+            dict(approved, market_holdout_id=""), "winner",
+        ))
+        self.assertFalse(competition_market_is_validated(approved, "btts"))
 
 
 if __name__ == "__main__":

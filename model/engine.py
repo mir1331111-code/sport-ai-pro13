@@ -556,6 +556,10 @@ class Engine:
         с остальной системой.
         """
 
+        # Training and add() normalize competition codes to uppercase.
+        # Prediction must use the exact same namespace or it silently falls
+        # back to neutral league rates/priors for lowercase or whitespace input.
+        lg = _division_key(lg)
         P0 = self.lp[lg]
         home_key = _team_state_key(lg, h)
         away_key = _team_state_key(lg, a)
@@ -890,6 +894,13 @@ class Engine:
             ),
 
             "games": games,
+            # Explicit venue/competition support for ranking and diagnostics.
+            # These are pre-match counts from the same competition namespace.
+            "home_home_samples": len(sh["hs"]),
+            "away_away_samples": len(sa["as"]),
+            "league_history_matches": len(self.lg_hg.get(lg, [])),
+            "home_total_samples": gh,
+            "away_total_samples": ga,
             "h2h_n": h2h_n,
 
             "e": elo_home,

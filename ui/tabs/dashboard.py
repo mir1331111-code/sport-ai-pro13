@@ -9,8 +9,10 @@ import re
 import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
-from data.fixture_time import app_timezone
-from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
+from betting.market_math import proportional_devig, competition_market_is_validated
+from data.fixture_time import app_timezone, fixture_kickoff_local
+from config import APP_VERSION, DB_FILE, LLM_PROVIDERS, llm_provider_key_config
+from llm.deep_analysis import format_top_match_opinion, last_top_matches_status
 from ui.cards import _LEAGUE_FLAGS
 from model.forecast_ledger import ForecastLedger
 
@@ -54,9 +56,61 @@ def has_prices(card):
     prices = card.get("market_odds") or {}
     return (
         isinstance(prices, dict)
-        and str(card.get("odds_source") or "").casefold() not in {"", "no_market", "model_only"}
-        and all(1.01 < (num(prices.get(k)) or 0) <= 100 for k in ("П1", "X", "П2"))
+        and str(card.get("odds_source") or "").strip().casefold() == "sstats"
+        and proportional_devig(
+            prices,
+            ("П1", "X", "П2"),
+            bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
+        ) is not None
     )
+
+
+def approved_1x2_recommendation(card):
+    """Return an actual 1X2 bet approval, never a forecast or market-only signal."""
+    if not isinstance(card, dict):
+        return None
+    if not bool((card.get("context_quality") or {}).get("strong_value_eligible")):
+        return None
+    if not competition_market_is_validated(card, "winner"):
+        return None
+    if not has_prices(card):
+        return None
+    recommendation = (card.get("best_by_market") or {}).get("winner")
+    if not isinstance(recommendation, dict):
+        return None
+    best = recommendation.get("best")
+    verdict = recommendation.get("verdict")
+    if (
+        not isinstance(best, (list, tuple))
+        or len(best) < 6
+        or not isinstance(verdict, dict)
+        or str(best[0] or "").upper() != "1X2"
+        or str(best[1] or "") not in {"П1", "X", "П2"}
+        or not verdict.get("real_odds")
+        or not verdict.get("value_passed")
+        or not verdict.get("is_bet")
+    ):
+        return None
+    try:
+        odd, ev, probability, stake = map(float, (best[2], best[3], best[4], best[5]))
+        edge_value = float(verdict.get("edge"))
+    except (TypeError, ValueError):
+        return None
+    prices = card.get("market_odds") or {}
+    quoted_odd = num(prices.get(best[1])) if isinstance(prices, dict) else None
+    bookmaker = str((card.get("bookmaker_by_pick") or {}).get(best[1]) or "").strip()
+    if (
+        not bookmaker
+        or quoted_odd is None
+        or abs(quoted_odd - odd) > 0.01
+        or odd < 1.70
+        or ev < 0.05
+        or edge_value < 0.05
+        or not 0.0 < probability < 1.0
+        or stake <= 0.0
+    ):
+        return None
+    return recommendation
 
 
 def context_summary(card):
@@ -298,11 +352,34 @@ def _match_table_row(card):
             f"<td class='neo-odds'>{f'{price:.2f}' if price is not None else '—'}</td>"
         )
 
-    pick = str(prediction.get("pick") or "—")
-    probability = num(prediction.get("probability"))
-    pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
+    model_pick = str(prediction.get("pick") or "—")
+    model_probability = num(prediction.get("probability"))
+    pass_pick = str(card.get("_daily_pass_pick") or model_pick)
+    pass_probability = num(card.get("_daily_pass_probability"))
+    pass_source = str(card.get("_daily_pass_source") or "model_supported")
+    if pass_probability is None:
+        pass_probability = model_probability
+    pick_text = (
+        f"{pass_pick} · {pass_probability:.0%}"
+        if pass_probability is not None else pass_pick
+    )
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
-    value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
+    single_book_line = proportional_devig(
+        card.get("market_odds") or {},
+        ("П1", "X", "П2"),
+        bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
+    )
+    context_ok = bool(
+        (card.get("context_quality") or {}).get("strong_value_eligible")
+    )
+    value_passed = bool(
+        verdict.get("real_odds")
+        and verdict.get("value_passed")
+        and verdict.get("is_bet")
+        and single_book_line is not None
+        and context_ok
+        and competition_market_is_validated(card, "winner")
+    )
     has_confirmed_line = has_prices(card)
     if value_passed:
         bet_status_html = (
@@ -318,32 +395,35 @@ def _match_table_row(card):
             "<small class='neo-bet-status forecast-only'>ТОЛЬКО ПРОГНОЗ · "
             "нет подтверждённой полной линии 1X2</small>"
         )
-    strict_daily = card.get("_daily_strict_eligible")
     daily_note = str(card.get("_daily_selection_note") or "").strip()
-    quality_score = num(card.get("_daily_quality_score"))
-    score_html = (
-        f"<small class='neo-pick-note rank-score'>БАЛЛ СОРТИРОВКИ · {quality_score:.0f}/100</small>"
-        if quality_score is not None else ""
+    home_sample = int(card.get("_daily_home_sample") or 0)
+    away_sample = int(card.get("_daily_away_sample") or 0)
+    league_sample = int(card.get("_daily_league_sample") or 0)
+    sample_text = (
+        f"история: лига {league_sample}/30 · дома {home_sample}/5 · в гостях {away_sample}/5"
     )
-    if strict_daily is True:
+    model_market_gap = num(card.get("_daily_model_market_gap"))
+    model_pass_probability = num(card.get("_daily_model_probability_for_pass"))
+    if pass_source == "market_no_vig":
+        disagreement = ""
+        if model_market_gap is not None and abs(model_market_gap) >= 0.10:
+            disagreement = (
+                f" · модель: {model_pass_probability:.0%} "
+                f"({model_market_gap:+.0%} к рынку)"
+                if model_pass_probability is not None else ""
+            )
         selection_html = (
-            "<small class='neo-pick-note proven'>ИСТОРИЯ И ФАВОРИТ ПОДТВЕРЖДЕНЫ</small>"
-            + score_html
-        )
-    elif strict_daily is False:
-        note_text = daily_note.replace("Ознакомительный прогноз · ", "", 1)
-        sample_text = (
-            f"Дом/гость: {int(card.get('_daily_home_sample') or 0)}/"
-            f"{int(card.get('_daily_away_sample') or 0)}"
-        )
-        selection_html = (
-            f"<small class='neo-pick-note provisional'>ОЗНАКОМИТЕЛЬНО · "
-            f"{esc(note_text or 'ограниченная доказательная база')} · "
-            f"{esc(sample_text)}</small>"
-            + score_html
+            "<small class='neo-pick-note proven'>ДОПУЩЕННЫЙ ИСХОД · РЫНОЧНАЯ ВЕРОЯТНОСТЬ БЕЗ МАРЖИ</small>"
+            f"<small class='neo-pick-note rank-score'>{esc(sample_text)}{esc(disagreement)}</small>"
+            "<small class='neo-pick-note provisional'>Вероятность относится именно к выбранной ставке; П1, X и П2 сравниваются одинаково.</small>"
         )
     else:
-        selection_html = score_html
+        selection_html = (
+            "<small class='neo-pick-note provisional'>МОДЕЛЬНЫЙ ПРОГНОЗ · "
+            "линия рынка без маржи отсутствует</small>"
+            f"<small class='neo-pick-note rank-score'>{esc(sample_text)}</small>"
+            "<small class='neo-pick-note provisional'>Не подтверждён рынком; не является допуском к ставке.</small>"
+        )
 
     league = str(card.get("league") or card.get("div") or "Футбол")
     league_code = str(card.get("div") or "")
@@ -668,42 +748,75 @@ def render():
             datetime.min.time(),
             tzinfo=now.tzinfo,
         )
-        table_title = "Лучшие события сегодня · 1X2"
+        table_title = "Допущенные ставки сегодня · 1X2"
     elif selected_period == "Ближайшие 24 часа · лучшие события":
         period_end = now + timedelta(hours=24)
-        table_title = "Лучшие события ближайших 24 часов · 1X2"
+        table_title = "Допущенные ставки ближайших 24 часов · 1X2"
     else:
         period_end = None
-        table_title = "Лучшие события всего горизонта · 1X2"
+        table_title = "Допущенные ставки · весь горизонт скана"
+
+    # The main dashboard table is a betting shortlist, not a general forecast
+    # gallery. Forecast-only and market-only events are deliberately excluded.
+    timezone_name = getattr(now.tzinfo, "key", None)
+    upcoming_in_period = []
+    for card in filtered_cards:
+        kickoff = fixture_kickoff_local(card, timezone_name=timezone_name)
+        if kickoff is None or kickoff <= now:
+            continue
+        if period_end is not None and kickoff >= period_end:
+            continue
+        upcoming_in_period.append(card)
+
+    approved_cards = []
+    for source_card in upcoming_in_period:
+        recommendation = approved_1x2_recommendation(source_card)
+        if recommendation is None:
+            continue
+        best = recommendation["best"]
+        approved_card = dict(source_card)
+        approved_card["_daily_required_pick"] = str(best[1])
+        approved_card["_daily_approved_probability"] = float(best[4])
+        approved_card["_daily_approved_odds"] = float(best[2])
+        approved_card["verdict"] = dict(recommendation["verdict"])
+        approved_card["best"] = best
+        approved_cards.append(approved_card)
 
     selection_diagnostics = {}
     ranked_events = rank_best_fixtures(
-        filtered_cards,
+        approved_cards,
         now=now,
         period_end=period_end,
         limit=5,
         min_sample_games=5,
         min_probability=0.52,
-        include_limited_history=True,
+        include_limited_history=False,
         diagnostics=selection_diagnostics,
     )
     selected_event_cards = []
     for item in ranked_events:
         card = dict(item["card"])
-        card["_daily_strict_eligible"] = bool(item.get("strict_eligible"))
+        card["_daily_pass_pick"] = str(item.get("pass_pick") or "")
+        card["_daily_pass_probability"] = float(item.get("pass_probability") or 0.0)
+        card["_daily_pass_source"] = str(item.get("pass_probability_source") or "")
+        card["_daily_market_probabilities"] = item.get("market_probabilities") or {}
+        card["_daily_model_probability_for_pass"] = item.get("model_probability_for_pass")
+        card["_daily_model_market_gap"] = item.get("model_market_gap")
+        card["_daily_model_supported"] = bool(item.get("model_supported"))
         card["_daily_selection_note"] = str(item.get("selection_note") or "")
         card["_daily_home_sample"] = int(item.get("home_sample") or 0)
         card["_daily_away_sample"] = int(item.get("away_sample") or 0)
-        card["_daily_quality_score"] = float(item.get("quality_score") or 0.0)
+        card["_daily_league_sample"] = int(item.get("league_history_matches") or 0)
         selected_event_cards.append(card)
-    strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
-    provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
-    available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
+
+    available_event_count = len(approved_cards)
+    approved_event_count = len(selected_event_cards)
+    excluded_not_approved = max(0, len(upcoming_in_period) - available_event_count)
+    market_count = len(approved_cards)
     scan_diagnostics_text = (
-        f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
-        f"уже начались: {selection_diagnostics.get('already_started', 0)} · "
-        f"вне периода: {selection_diagnostics.get('outside_window', 0)} · "
-        f"некорректный 1X2: {selection_diagnostics.get('invalid_forecast', 0)}"
+        f"В периоде будущих матчей: {len(upcoming_in_period)} · "
+        f"прошли строгий допуск 1X2: {available_event_count} · "
+        f"исключено как прогнозы без допуска: {excluded_not_approved}"
     )
 
     brier = f"{metrics['brier']:.3f}" if metrics.get("brier") is not None else "—"
@@ -748,27 +861,26 @@ def render():
         if not table_rows:
             table_rows = (
                 "<tr><td colspan='10' class='neo-empty-cell'>"
-                "В выбранном периоде нет будущих матчей с корректным прогнозом 1X2. "
+                "В выбранном периоде нет ставок 1X2, прошедших все фильтры. "
                 "Проверь время начала, выбранный турнир и актуальность сканирования."
                 "</td></tr>"
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DAILY FORECAST RANKING · НЕ СПИСОК СТАВОК</span>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>APPROVED BETS · ONLY STRICTLY QUALIFIED 1X2</span>"
             f"<h3>{esc(table_title)}</h3></div>"
-            f"<span class='neo-count-pill'>{available_event_count} событий</span></div>"
+            f"<span class='neo-count-pill'>{available_event_count} допущено</span></div>"
             "<div class='neo-ranking-disclaimer'>"
-            "<b>Место в списке = качество прогноза, а не допуск к ставке.</b> "
-            "Ставка разрешена только при отдельной зелёной метке "
-            "<strong>VALUE · СТАВКА ДОПУЩЕНА</strong>."
+            "<b>В этой таблице только ставки, уже прошедшие строгий допуск.</b> "
+            "Прогнозы и котировки без допуска намеренно исключены."
             "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
-            "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
-            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Прогноз и статус ставки</th>"
+            "<th>Время</th><th>Лига</th><th>Матч</th><th>Модель П1</th><th>Модель X</th><th>Модель П2</th>"
+            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Оценка прохода / статус ставки</th>"
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} событий из {available_event_count} предстоящих · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. ПОРЯДОК СПИСКА = рейтинг прогноза, НЕ одобрение ставки. Балл сортировки: 40% вероятность фаворита, 30% отрыв от второго исхода, 20% домашняя/выездная история, 5% реальный xG, 5% полная линия. Только зелёная метка VALUE · СТАВКА ДОПУЩЕНА означает прохождение отдельного Value/EV/Edge/Kelly-фильтра.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {available_event_count} допущенных 1X2 ставок · исключено матчей без допуска: {excluded_not_approved}. Ранжирование выполняется по no-vig вероятности именно того исхода, который прошёл Value-фильтр (П1, X или П2). В таблице нет прогнозов без одновременного подтверждения полной линии одного букмекера, отдельного league holdout, контекста, EV ≥5%, Edge ≥5% и положительного Kelly.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
@@ -792,6 +904,78 @@ def render():
             + "<div class='neo-panel-footnote'>Вероятность модели и наблюдаемая частота объединены по классам П1 / X / П2; пунктир — идеальная калибровка.</div>"
             "</section>",
             unsafe_allow_html=True,
+        )
+
+    # Independent LLM analysis is surfaced separately from the approved-bet
+    # table. It can explain forecasts, but cannot authorize staking.
+    selected_provider = str(
+        (data.get("meta") or {}).get("llm_provider") or "Groq (бесплатно, быстро)"
+    )
+    provider_env = llm_provider_key_config(selected_provider).get("env") or "API key"
+    try:
+        ai_status = last_top_matches_status() or {}
+    except Exception:
+        ai_status = {}
+    # Dashboard scope is intentionally strict: do not leak forecast-only
+    # fixtures into the approved-bets view through the independent AI panel.
+    ai_cards = [
+        card for card in selected_event_cards
+        if isinstance(card, dict)
+        and (
+            isinstance(card.get("deep_analysis"), dict)
+            or str(card.get("llm_opinion") or "").strip()
+        )
+    ]
+    ai_cards.sort(
+        key=lambda card: (
+            str(card.get("date_iso") or "9999"),
+            str(card.get("time") or "23:59"),
+        )
+    )
+    st.markdown(
+        "<section class='neo-panel neo-ai-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>INDEPENDENT AI · NOT A BETTING GATE</span>"
+        f"<h3>{esc(ai_name)} Deep Analysis</h3></div>"
+        f"<span class='neo-count-pill'>{len(ai_cards)} разборов</span></div>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+    status_state = str(ai_status.get("state") or "not_run")
+    status_model = str(ai_status.get("model") or (data.get("meta") or {}).get("llm_model") or "модель не указана")
+    status_message = str(ai_status.get("message") or "")
+    st.caption(
+        f"Провайдер: {ai_name} · модель: {status_model} · "
+        f"статус: {status_state}"
+        + (f" · {status_message}" if status_message else "")
+    )
+    if ai_cards:
+        for ai_card in ai_cards[:7]:
+            analysis = ai_card.get("deep_analysis") or {}
+            opinion = str(ai_card.get("llm_opinion") or "").strip()
+            if not opinion and isinstance(analysis, dict):
+                pick = (favorite(ai_card) or {}).get("pick")
+                opinion = format_top_match_opinion(
+                    analysis,
+                    model_pick_code=pick if pick in {"П1", "X", "П2"} else None,
+                )
+            title = match_name(ai_card)
+            with st.expander(f"{title} · {ai_name}", expanded=False):
+                if opinion:
+                    st.markdown(opinion)
+                elif analysis:
+                    st.write(analysis)
+                else:
+                    st.caption("Провайдер вернул разбор без текстового резюме.")
+        st.caption(
+            "AI-разбор помогает оценить составы, контекст и альтернативные исходы. "
+            "Он не заменяет историческую проверку лиги, реальную котировку и Value/EV/Edge/Kelly."
+        )
+    else:
+        st.info(
+            f"Разбор {ai_name} ещё не сохранён для выбранных матчей. "
+            f"Проверьте ключ {provider_env} и выполните новый скан. "
+            f"Текущий статус: {status_state}."
         )
 
     bottom_left, bottom_mid, bottom_right = st.columns(3, gap="medium")

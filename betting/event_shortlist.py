@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from betting.market_ranking import market_forecast_summary
+from betting.market_math import competition_market_is_validated
 from model.historical_match_stats import poisson_over_probability
 from model.market_forecasts import count_over_probability
 from model.market_models import asian_handicap_expected_value
@@ -111,6 +112,11 @@ def _source(card: dict, family: str) -> str:
 
 
 def _recommendation(card: dict, family: str) -> dict | None:
+    # A global aggregate walk-forward result cannot authorize a bet in an
+    # individual competition. Keep the signal forecast-only without an
+    # explicit independent holdout for this exact league and market family.
+    if family in {"winner", "goals"} and not competition_market_is_validated(card, family):
+        return None
     value = (card.get("best_by_market") or {}).get(family)
     if not isinstance(value, dict):
         return None

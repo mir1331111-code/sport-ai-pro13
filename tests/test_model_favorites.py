@@ -241,204 +241,253 @@ class ModelFavoriteTests(unittest.TestCase):
         self.assertEqual(result["away_sample"], 8)
         self.assertEqual(result["sample_games"], 3)
 
-    def test_daily_shortlist_ranks_best_forecasts_across_the_whole_day(self):
-        tz = ZoneInfo("Europe/Warsaw")
-        now = datetime(2026, 11, 18, 8, 0, tzinfo=tz)
-        next_day = datetime(2026, 11, 19, 0, 0, tzinfo=tz)
-        def card(home, away, kickoff, probability, home_n=7, away_n=7, games=18):
-            return {
-                "home": home, "away": away,
-                "match": f"{home} vs {away}",
-                "date": f"18.11 {kickoff}",
-                "date_iso": "2026-11-18",
-                "time": kickoff,
-                "p1": probability,
-                "px": 0.20,
-                "p2": 0.80 - probability,
-                "games": games,
-                "independent_features": {
-                    "home_home_sample": home_n,
-                    "away_away_sample": away_n,
-                },
-            }
-
-        early = card("Early FC", "Side FC", "09:00", 0.61)
-        late_best = card("Late United", "Opponent FC", "18:30", 0.74)
-        weak_history = card("Unknown FC", "Other FC", "19:00", 0.79,
-                            home_n=0, away_n=0, games=30)
-        low_probability = card("Even FC", "Other Side", "20:00", 0.50)
-        legacy_without_venue_samples = card(
-            "Legacy FC", "Other FC", "21:00", 0.88,
-        )
-        legacy_without_venue_samples.pop("independent_features")
-        yesterday = {
-            **card("Past FC", "Other FC", "23:00", 0.90),
-            "date": "17.11 23:00",
-            "date_iso": "2026-11-17",
-        }
-        tomorrow = {
-            **card("Tomorrow FC", "Other FC", "01:00", 0.95),
-            "date": "19.11 01:00",
-            "date_iso": "2026-11-19",
-        }
-
-        ranked = rank_best_fixtures(
-            [
-                early, late_best, weak_history, low_probability,
-                legacy_without_venue_samples, yesterday, tomorrow,
-            ],
-            now=now, period_end=next_day, limit=None,
-            min_sample_games=5, min_probability=0.52,
-        )
-        self.assertEqual(
-            [item["card"]["match"] for item in ranked],
-            ["Late United vs Opponent FC", "Early FC vs Side FC"],
-        )
-        self.assertGreater(ranked[0]["kickoff"], ranked[1]["kickoff"])
-
-    def test_daily_shortlist_keeps_limited_history_as_provisional(self):
-        tz = ZoneInfo("Europe/Warsaw")
-        now = datetime(2026, 11, 19, 9, 0, tzinfo=tz)
+    def _daily_card(
+        self, home, away, kickoff, odds=None, *, division="E0",
+        probabilities=(0.42, 0.29, 0.29), home_n=0, away_n=0, league_n=0,
+        bookmaker="Book A",
+    ):
         card = {
-            "home": "Unknown Home", "away": "Unknown Away",
-            "match": "Unknown Home vs Unknown Away",
-            "date_iso": "2026-11-19", "time": "19:30",
-            "p1": 0.44, "px": 0.30, "p2": 0.26,
-            "games": 25,
+            "home": home, "away": away,
+            "home_team": home, "away_team": away,
+            "match": f"{home} vs {away}",
+            "date": f"19.11 {kickoff}",
+            "date_iso": "2026-11-19",
+            "time": kickoff,
+            "div": division,
+            "league": division,
+            "p1": probabilities[0],
+            "px": probabilities[1],
+            "p2": probabilities[2],
             "independent_features": {
-                "home_home_sample": 0,
-                "away_away_sample": 1,
+                "home_home_sample": home_n,
+                "away_away_sample": away_n,
             },
+            "league_history_matches": league_n,
         }
+        if odds:
+            card["odds_source"] = "sstats"
+            card["market_odds"] = odds
+            card["bookmaker_by_pick"] = {
+                "П1": bookmaker, "X": bookmaker, "П2": bookmaker,
+            }
+        return card
+
+    def test_daily_ranking_prefers_no_vig_market_favourite_over_prior_only_model(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        strong_market = self._daily_card(
+            "FC Fredericia", "Hillerod", "19:00",
+            {"П1": 1.33, "X": 5.69, "П2": 7.93},
+        )
+        balanced_market = self._daily_card(
+            "Svikaita", "Hegelmann II", "10:00",
+            {"П1": 2.42, "X": 3.60, "П2": 2.46},
+        )
         diagnostics = {}
         ranked = rank_best_fixtures(
-            [card], now=now, period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
-            include_limited_history=True, diagnostics=diagnostics,
-        )
-        self.assertEqual(len(ranked), 1)
-        self.assertFalse(ranked[0]["strict_eligible"])
-        self.assertEqual(ranked[0]["home_sample"], 0)
-        self.assertEqual(ranked[0]["away_sample"], 1)
-        self.assertEqual(diagnostics["strict_unique"], 0)
-        self.assertEqual(diagnostics["provisional_unique"], 1)
-
-    def test_daily_shortlist_puts_supported_events_ahead_of_earlier_provisional_ones(self):
-        tz = ZoneInfo("Europe/Warsaw")
-        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
-        provisional = {
-            "home": "Provisional FC", "away": "Guest FC",
-            "match": "Provisional FC vs Guest FC",
-            "date_iso": "2026-11-19", "time": "09:00",
-            "p1": 0.85, "px": 0.10, "p2": 0.05,
-            "independent_features": {
-                "home_home_sample": 1, "away_away_sample": 2,
-            },
-        }
-        supported = {
-            "home": "Supported FC", "away": "Guest FC",
-            "match": "Supported FC vs Guest FC",
-            "date_iso": "2026-11-19", "time": "20:00",
-            "p1": 0.62, "px": 0.22, "p2": 0.16,
-            "independent_features": {
-                "home_home_sample": 7, "away_away_sample": 8,
-            },
-        }
-        ranked = rank_best_fixtures(
-            [provisional, supported], now=now,
-            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
-            include_limited_history=True,
-        )
-        self.assertEqual(ranked[0]["card"]["match"], "Supported FC vs Guest FC")
-        self.assertTrue(ranked[0]["strict_eligible"])
-        self.assertEqual(ranked[1]["card"]["match"], "Provisional FC vs Guest FC")
-        self.assertFalse(ranked[1]["strict_eligible"])
-
-    def test_daily_shortlist_quality_beats_earlier_kickoff(self):
-        tz = ZoneInfo("Europe/Warsaw")
-        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
-        weak_early = {
-            "home": "Early FC", "away": "Guest FC",
-            "match": "Early FC vs Guest FC",
-            "date_iso": "2026-11-19", "time": "09:00",
-            "p1": 0.62, "px": 0.22, "p2": 0.16,
-            "independent_features": {
-                "home_home_sample": 5, "away_away_sample": 5,
-            },
-        }
-        strong_late = {
-            "home": "Late FC", "away": "Guest FC",
-            "match": "Late FC vs Guest FC",
-            "date_iso": "2026-11-19", "time": "20:00",
-            "p1": 0.62, "px": 0.22, "p2": 0.16,
-            "independent_features": {
-                "home_home_sample": 12, "away_away_sample": 12,
-            },
-            "xg_used": True,
-            "xg_modelled_used": False,
-            "xg_source": "provider",
-            "market_odds": {"П1": 1.90, "X": 3.40, "П2": 4.20},
-        }
-        ranked = rank_best_fixtures(
-            [weak_early, strong_late],
+            [balanced_market, strong_market],
             now=now,
             period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
             limit=5,
+            include_limited_history=True,
+            diagnostics=diagnostics,
         )
-        self.assertEqual(ranked[0]["card"]["match"], "Late FC vs Guest FC")
-        self.assertGreater(ranked[0]["quality_score"], ranked[1]["quality_score"])
-        self.assertEqual(ranked[0]["quality_components"]["venue_history"], 1.0)
-        self.assertTrue(ranked[0]["has_provider_xg"])
-        self.assertTrue(ranked[0]["has_complete_market_line"])
+        self.assertEqual(
+            [item["card"]["match"] for item in ranked],
+            ["FC Fredericia vs Hillerod", "Svikaita vs Hegelmann II"],
+        )
+        self.assertEqual(ranked[0]["pass_pick"], "П1")
+        self.assertEqual(ranked[0]["pass_probability_source"], "market_no_vig")
+        self.assertGreater(ranked[0]["pass_probability"], 0.65)
+        self.assertAlmostEqual(ranked[0]["model_favourite_probability"], 0.42)
+        self.assertEqual(diagnostics["market_unique_candidates"], 2)
+        self.assertEqual(diagnostics["model_only_unique_candidates"], 0)
 
-    def test_daily_shortlist_keeps_all_events_tied_at_display_cutoff(self):
-        tz = ZoneInfo("Europe/Warsaw")
+    def test_daily_ranking_can_select_draw_as_strongest_market_outcome(self):
+        tz = ZoneInfo("Europe/Paris")
         now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        draw_favourite = self._daily_card(
+            "Draw FC", "Other FC", "19:00",
+            {"П1": 4.20, "X": 2.05, "П2": 3.90},
+        )
+        ranked = rank_best_fixtures(
+            [draw_favourite],
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+        )
+        self.assertEqual(ranked[0]["pass_pick"], "X")
+        self.assertGreater(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["П1"],
+        )
+        self.assertGreater(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["П2"],
+        )
+
+    def test_daily_ranking_can_select_away_win_as_strongest_market_outcome(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        away_favourite = self._daily_card(
+            "Home FC", "Away FC", "19:00",
+            {"П1": 4.40, "X": 3.70, "П2": 1.72},
+        )
+        ranked = rank_best_fixtures(
+            [away_favourite],
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+        )
+        self.assertEqual(ranked[0]["pass_pick"], "П2")
+        self.assertGreater(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["П1"],
+        )
+        self.assertGreater(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["X"],
+        )
+
+    def test_approved_pick_override_ranks_exact_selection_not_generic_favourite(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        card = self._daily_card(
+            "Away Value FC", "Other FC", "19:00",
+            {"П1": 1.95, "X": 3.30, "П2": 4.10},
+        )
+        card["_daily_required_pick"] = "П2"
+        ranked = rank_best_fixtures(
+            [card],
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+        )
+        self.assertEqual(ranked[0]["pass_pick"], "П2")
+        self.assertAlmostEqual(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["П2"],
+        )
+
+    def test_daily_ranking_uses_market_probability_not_kickoff_time(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        early_balanced = self._daily_card(
+            "Early FC", "Other", "09:00",
+            {"П1": 2.30, "X": 3.30, "П2": 2.90},
+        )
+        late_favourite = self._daily_card(
+            "Late United", "Opponent", "20:00",
+            {"П1": 1.40, "X": 4.80, "П2": 7.00},
+        )
+        ranked = rank_best_fixtures(
+            [early_balanced, late_favourite],
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+        )
+        self.assertEqual(ranked[0]["card"]["match"], "Late United vs Opponent")
+        self.assertGreater(ranked[0]["kickoff"], ranked[1]["kickoff"])
+        self.assertGreater(ranked[0]["pass_probability"], ranked[1]["pass_probability"])
+
+    def test_model_only_event_requires_league_and_venue_specific_history(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        supported = self._daily_card(
+            "Supported FC", "Guest FC", "19:30", None,
+            probabilities=(0.66, 0.20, 0.14),
+            home_n=8, away_n=7, league_n=120,
+        )
+        prior_only = self._daily_card(
+            "Unknown FC", "Other FC", "20:00", None,
+            probabilities=(0.88, 0.08, 0.04),
+            home_n=1, away_n=2, league_n=0,
+        )
+        ranked = rank_best_fixtures(
+            [prior_only, supported],
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+            include_limited_history=True,
+        )
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0]["card"]["match"], "Supported FC vs Guest FC")
+        self.assertEqual(ranked[0]["pass_probability_source"], "model_supported")
+        self.assertTrue(ranked[0]["model_supported"])
+
+    def test_incoherent_best_odds_across_books_do_not_create_market_pass_probability(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        card = self._daily_card(
+            "Split Book FC", "Other FC", "19:00",
+            {"П1": 1.40, "X": 4.80, "П2": 7.00},
+        )
+        card["bookmaker_by_pick"] = {
+            "П1": "Book A", "X": "Book B", "П2": "Book C",
+        }
+        ranked = rank_best_fixtures(
+            [card], now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+            include_limited_history=True,
+        )
+        self.assertEqual(ranked, [])
+
+    def test_no_line_and_unsupported_prior_is_never_promoted_even_when_legacy_fallback_enabled(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        card = self._daily_card(
+            "No History FC", "Other FC", "19:00", None,
+            probabilities=(0.87, 0.08, 0.05),
+            home_n=0, away_n=0, league_n=0,
+        )
+        ranked = rank_best_fixtures(
+            [card], now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+            include_limited_history=True,
+        )
+        self.assertEqual(ranked, [])
+
+    def test_daily_ranking_keeps_all_market_events_tied_at_cutoff(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        odds = {"П1": 1.80, "X": 3.50, "П2": 4.50}
         cards = [
-            {
-                "home": f"Home {i}", "away": f"Away {i}",
-                "match": f"Home {i} vs Away {i}",
-                "date_iso": "2026-11-19", "time": f"{10 + i:02d}:00",
-                "p1": 0.60, "px": 0.24, "p2": 0.16,
-                "independent_features": {
-                    "home_home_sample": 7, "away_away_sample": 7,
-                },
-            }
-            for i in range(6)
+            self._daily_card(
+                f"Home {index}", f"Away {index}", f"{10 + index:02d}:00",
+                odds,
+            )
+            for index in range(6)
         ]
         ranked = rank_best_fixtures(
-            cards,
-            now=now,
+            cards, now=now,
             period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
             limit=5,
         )
         self.assertEqual(len(ranked), 6)
         self.assertEqual(
             {item["card"]["match"] for item in ranked},
-            {card["match"] for card in cards},
+            {item["match"] for item in cards},
         )
 
-    def test_daily_shortlist_respects_requested_window_and_limit(self):
-        tz = ZoneInfo("Europe/Warsaw")
-        now = datetime(2026, 11, 18, 8, 0, tzinfo=tz)
-        cards = [
-            {
-                "home": f"Home {i}", "away": f"Away {i}",
-                "match": f"Home {i} vs Away {i}",
-                "date_iso": "2026-11-18", "time": f"{10 + i:02d}:00",
-                "p1": 0.60 + i * 0.02, "px": 0.20, "p2": 0.20 - i * 0.02,
-                "independent_features": {
-                    "home_home_sample": 6, "away_away_sample": 6,
-                },
-            }
-            for i in range(5)
-        ]
-        end = datetime(2026, 11, 18, 12, 0, tzinfo=tz)
-        ranked = rank_best_fixtures(
-            cards, now=now, period_end=end, limit=2,
+    def test_daily_ranking_respects_local_day_and_excludes_started_events(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 12, 0, tzinfo=tz)
+        started = self._daily_card(
+            "Started FC", "Other FC", "11:00",
+            {"П1": 1.20, "X": 6.00, "П2": 12.0},
         )
-        self.assertEqual(len(ranked), 2)
-        self.assertTrue(all(item["kickoff"] < end for item in ranked))
-        self.assertEqual(ranked[0]["card"]["match"], "Home 1 vs Away 1")
+        today = self._daily_card(
+            "Today FC", "Other FC", "19:00",
+            {"П1": 1.70, "X": 3.80, "П2": 5.20},
+        )
+        tomorrow = dict(today)
+        tomorrow["date_iso"] = "2026-11-20"
+        tomorrow["date"] = "20.11 08:00"
+        tomorrow["time"] = "08:00"
+        tomorrow["match"] = "Tomorrow FC vs Other FC"
+        tomorrow["home_team"] = "Tomorrow FC"
+        tomorrow["home"] = "Tomorrow FC"
+        ranked = rank_best_fixtures(
+            [started, tomorrow, today], now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+        )
+        self.assertEqual([item["card"]["match"] for item in ranked], ["Today FC vs Other FC"])
+
 
 
 if __name__ == "__main__":
