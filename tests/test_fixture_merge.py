@@ -3,11 +3,49 @@ import unittest
 from data.fixture_merge import (
     enrich_fixture_visual_metadata, enforce_sstats_market_card,
     enforce_sstats_odds_only, fixture_key, is_sstats_market_source,
-    merge_fixture_sources,
+    merge_fixture_sources, supplemental_schedule_rows,
 )
 
 
 class FixtureMergeTests(unittest.TestCase):
+    def test_secondary_schedule_adds_unique_known_league_forecasts_only(self):
+        primary = [{
+            "Date": "2026-11-20 18:00:00",
+            "HomeTeam": "Arsenal FC", "AwayTeam": "Chelsea",
+            "Div": "E0", "League": "Premier League",
+            "source": "sstats", "sstats_game_id": 100,
+        }]
+        secondary = [
+            {
+                "Date": "2026-11-21", "HomeTeam": "Arsenal", "AwayTeam": "Chelsea FC",
+                "Div": "E0", "League": "Premier League",
+                "source": "espn", "fixture_id": "espn:duplicate",
+            },
+            {
+                "Date": "2026-11-20", "HomeTeam": "Real Madrid", "AwayTeam": "Barcelona",
+                "Div": "SP1", "League": "La Liga",
+                "source": "espn", "fixture_id": "espn:unique",
+                "market_odds": {"П1": 1.1, "X": 9.0, "П2": 21.0},
+            },
+            {
+                "Date": "2026-11-20", "HomeTeam": "Unknown FC", "AwayTeam": "Other FC",
+                "Div": "G", "League": "Soccer",
+                "source": "tsdb", "fixture_id": "tsdb:generic",
+            },
+            {
+                "Date": "2026-11-20", "HomeTeam": "SStats FC", "AwayTeam": "Other FC",
+                "Div": "S_123", "League": "Cup",
+                "source": "sstats", "sstats_game_id": 101,
+            },
+        ]
+        supplemental = supplemental_schedule_rows(primary, secondary)
+        self.assertEqual(len(supplemental), 1)
+        self.assertEqual(supplemental[0]["fixture_id"], "espn:unique")
+        # Secondary schedule prices are never accepted as bookmaker evidence.
+        safe = enforce_sstats_odds_only([*primary, *supplemental])
+        self.assertEqual(safe[0].get("sstats_game_id"), 100)
+        self.assertEqual(safe[1]["market_odds"], {})
+
     def test_merges_same_fixture_across_providers_and_keeps_preferred_row(self):
         official = [{
             "Date": "2026-10-20", "HomeTeam": "Arsenal FC", "AwayTeam": "Chelsea",
