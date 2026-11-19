@@ -1485,6 +1485,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         strong_favorites = sum(
             1 for item in favorite_matches
             if item.get("history_sufficient", False)
+            and item.get("calibration_ready", True)
             and float(item.get("probability") or 0.0) >= STRONG_FORECAST_MIN_PROB
         )
         st.markdown(
@@ -1494,7 +1495,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "<div style='color:#91a4ad;font-size:.88rem;margin-top:5px'>"
             f"Показано {len(favorite_matches)} уникальных матчей: целевой минимум {MIN_RECOMMENDED_MATCHES}, "
             f"максимум {MAX_RECOMMENDED_MATCHES}. Сильных прогнозов ≥{STRONG_FORECAST_MIN_PROB:.0%} "
-            f"с достаточной историей: {strong_favorites}. "
+            f"с историей ≥{favorite_history_floor} и калибровкой лиги: {strong_favorites}. "
             "Сортировка прежде всего по вероятности. Матчи с короткой историей явно помечаются "
             "и не считаются сильными сигналами. Это прогнозы, не гарантии победы.</div></div>"
             "</div>",
@@ -1502,9 +1503,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         )
         if low_history_favorites:
             st.caption(
-                f"В список включено матчей с историей менее {favorite_history_floor} игр "
-                f"хотя бы у одной команды: {low_history_favorites}. В этом блоке они помечены "
-                "как прогнозы с ограниченной историей и не считаются Strong; отдельные Value-проверки не менялись."
+                f"Матчей с историей менее {favorite_history_floor} игр хотя бы у одной команды: "
+                f"{low_history_favorites}. Они остаются в списке как прогнозы с ограниченной историей."
+            )
+        uncalibrated_count = sum(
+            1 for item in favorite_matches
+            if item.get("history_sufficient", False)
+            and not item.get("calibration_ready", True)
+        )
+        if uncalibrated_count:
+            st.caption(
+                f"Матчей с достаточной историей, но без обученного калибратора своей лиги: "
+                f"{uncalibrated_count}. Их проценты показываются как сырые вероятности, "
+                "без статуса сильного сигнала."
             )
         if len(favorite_matches) < MIN_RECOMMENDED_MATCHES:
             st.caption(
@@ -1532,26 +1543,37 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 favorite_history_sufficient = bool(
                     favorite_item.get("history_sufficient", False)
                 )
+                favorite_calibration_ready = bool(
+                    favorite_item.get("calibration_ready", True)
+                )
                 favorite_strength_label = (
                     "ОГРАНИЧЕННАЯ ИСТОРИЯ · НЕ СИЛЬНЫЙ СИГНАЛ"
                     if not favorite_history_sufficient
-                    else f"СИЛЬНЫЙ ПРОГНОЗ ≥{STRONG_FORECAST_MIN_PROB:.0%}"
+                    else "СЫРАЯ ВЕРОЯТНОСТЬ · НЕТ КАЛИБРАТОРА ЛИГИ"
+                    if not favorite_calibration_ready
+                    else f"СИЛЬНЫЙ ПРОГНОЗ ≥{STRONG_FORECAST_MIN_PROB:.0%} · КАЛИБРОВАН"
                     if favorite_probability >= STRONG_FORECAST_MIN_PROB
                     else f"НИЖЕ ПОРОГА СИЛЬНОГО ПРОГНОЗА {STRONG_FORECAST_MIN_PROB:.0%}"
                 )
                 favorite_strength_title = (
-                    favorite_item["strength"] if favorite_history_sufficient
-                    else "МАЛО ИСТОРИИ"
+                    "МАЛО ИСТОРИИ" if not favorite_history_sufficient
+                    else favorite_item["strength"] if favorite_calibration_ready
+                    else "НЕ КАЛИБРОВАНО"
                 )
                 display_favorite = favorite_display(favorite_item)
                 favorite_outcome_html = (
                     f"{html.escape(display_favorite['label'])} · {favorite_probability:.1%}"
-                    if display_favorite["history_sufficient"]
+                    if display_favorite.get("calibrated", False)
                     else html.escape(display_favorite["label"])
                 )
                 model_distribution = " · ".join(
                     f"{label} {float(favorite_card.get(field) or 0):.1%}"
                     for field, label in (("p1", "П1"), ("px", "X"), ("p2", "П2"))
+                )
+                model_distribution_label = (
+                    "Вероятности модели"
+                    if favorite_calibration_ready
+                    else "СЫРЫЕ вероятности · калибратор этой лиги не обучен"
                 )
                 market_distribution_html = ""
                 if market_line := proportional_devig(
@@ -1581,7 +1603,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"<div style='color:#8fd8bd;font-weight:800;font-size:17px'>"
                         f"{favorite_outcome_html}</div>"
                         f"<div style='color:#d4e0e6;font-size:11px;margin-top:4px'>"
-                        f"Вероятности модели: {html.escape(model_distribution)}</div>"
+                        f"{html.escape(model_distribution_label)}: {html.escape(model_distribution)}</div>"
                         + market_distribution_html
                         + f"<div style='color:#b7c2c9;font-size:11px;margin-top:2px'>"
                         f"{html.escape(favorite_strength_label)}</div>"
@@ -3463,6 +3485,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "verdict": verdict, "best": best,
                 "best_by_market": best_by_market,
                 "games": P["games"], "fh": fh, "fa": fa,
+                "probability_calibrated": bool(P.get("probability_calibrated", False)),
+                "calibration_matches": int(P.get("calibration_matches") or 0),
                 "fixture_id": r.get("fixture_id"),
                 "sstats_game_id": r.get("sstats_game_id"),
                 "historical_stats": historical_stats,

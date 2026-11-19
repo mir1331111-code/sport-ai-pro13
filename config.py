@@ -9,7 +9,9 @@ DATA_VERSION = 18
 # Lower-history items remain forecast-only.
 MIN_RECOMMENDED_MATCHES = 7
 MAX_RECOMMENDED_MATCHES = 10
-MIN_FAVORITE_HISTORY = 5
+# A strong-looking probability needs a larger venue-specific sample.
+# Short samples remain visible as forecasts, but are not labelled strong.
+MIN_FAVORITE_HISTORY = 10
 
 # A model forecast is labelled strong at or above this event probability.
 # This display classification is separate from Value/EV/Edge/Kelly approval.

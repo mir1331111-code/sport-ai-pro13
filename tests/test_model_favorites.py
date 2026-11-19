@@ -221,15 +221,77 @@ class ModelFavoriteTests(unittest.TestCase):
             item = {
                 **model_favorite({
                     "home": "Alpha", "away": "Beta", **probabilities,
+                    "probability_calibrated": True,
+                    "calibration_matches": 150,
                     "independent_features": {
-                        "home_home_sample": 7,
-                        "away_away_sample": 8,
+                        "home_home_sample": 12,
+                        "away_away_sample": 12,
                     },
                 }),
                 "history_sufficient": True,
+                "history_floor": 10,
             }
             self.assertEqual(favorite_display(item)["label"], expected)
             self.assertIsNotNone(favorite_display(item)["pick"])
+
+    def test_eight_match_history_is_not_enough_for_a_strong_pick(self):
+        ranked = rank_model_favorites_with_minimum(
+            [{
+                "home": "Alpha", "away": "Beta",
+                "p1": 0.929, "px": 0.040, "p2": 0.031,
+                "probability_calibrated": True,
+                "calibration_matches": 150,
+                "independent_features": {
+                    "home_home_sample": 8,
+                    "away_away_sample": 8,
+                },
+            }],
+            minimum=1, limit=1, min_sample_games=10,
+        )
+        presentation = favorite_display(ranked[0])
+        self.assertFalse(ranked[0]["history_sufficient"])
+        self.assertIsNone(presentation["pick"])
+        self.assertIn("ОГРАНИЧЕННАЯ ИСТОРИЯ · 8/10", presentation["label"])
+
+    def test_high_probability_without_league_calibration_is_not_a_strong_pick(self):
+        ranked = rank_model_favorites_with_minimum(
+            [{
+                "home": "Alpha", "away": "Beta",
+                "p1": 0.929, "px": 0.040, "p2": 0.031,
+                "probability_calibrated": False,
+                "calibration_matches": 72,
+                "independent_features": {
+                    "home_home_sample": 12,
+                    "away_away_sample": 12,
+                },
+            }],
+            minimum=1, limit=1, min_sample_games=10,
+        )
+        presentation = favorite_display(ranked[0])
+        self.assertTrue(ranked[0]["history_sufficient"])
+        self.assertFalse(ranked[0]["calibration_ready"])
+        self.assertIsNone(presentation["pick"])
+        self.assertIn("НЕ КАЛИБРОВАНО", presentation["label"])
+        self.assertIn("72 матчей", presentation["label"])
+
+    def test_calibrated_high_probability_with_ten_samples_is_displayable(self):
+        ranked = rank_model_favorites_with_minimum(
+            [{
+                "home": "Alpha", "away": "Beta",
+                "p1": 0.70, "px": 0.18, "p2": 0.12,
+                "probability_calibrated": True,
+                "calibration_matches": 150,
+                "independent_features": {
+                    "home_home_sample": 10,
+                    "away_away_sample": 11,
+                },
+            }],
+            minimum=1, limit=1, min_sample_games=10,
+        )
+        presentation = favorite_display(ranked[0])
+        self.assertTrue(presentation["calibrated"])
+        self.assertEqual(presentation["pick"], "П1")
+        self.assertAlmostEqual(presentation["probability"], 0.70)
 
     def test_minimum_seven_never_invents_missing_fixtures(self):
         cards = [
