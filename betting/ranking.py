@@ -386,6 +386,51 @@ def model_favorite(card: object) -> dict | None:
     }
 
 
+def _daily_event_quality(card: dict, prediction: dict) -> dict:
+    """Return a transparent, forecast-only quality score (not a win probability).
+
+    Components are normalized to 0..1 and weighted:
+    favourite probability 40%, separation from the second outcome 30%,
+    venue-specific history 20%, genuine provider xG 5%, complete 1X2 odds 5%.
+    """
+    probability = min(1.0, max(0.0, float(prediction.get("probability") or 0.0)))
+    margin = min(1.0, max(0.0, float(prediction.get("probability_margin") or 0.0)))
+    probability_component = min(1.0, max(0.0, (probability - (1.0 / 3.0)) / (2.0 / 3.0)))
+    margin_component = min(1.0, max(0.0, margin / (2.0 / 3.0)))
+
+    home_sample = max(0, int(prediction.get("home_sample") or 0))
+    away_sample = max(0, int(prediction.get("away_sample") or 0))
+    history_component = min(1.0, min(home_sample, away_sample) / 12.0)
+
+    genuine_provider_xg = bool(card.get("xg_used")) and not bool(card.get("xg_modelled_used"))
+    odds = card.get("market_odds") if isinstance(card.get("market_odds"), dict) else {}
+    complete_odds = all(
+        _number(odds.get(key)) is not None and float(_number(odds.get(key))) > 1.0
+        for key in ("П1", "X", "П2")
+    )
+
+    components = {
+        "probability": probability_component,
+        "separation": margin_component,
+        "venue_history": history_component,
+        "provider_xg": 1.0 if genuine_provider_xg else 0.0,
+        "complete_market_line": 1.0 if complete_odds else 0.0,
+    }
+    score = 100.0 * (
+        0.40 * components["probability"]
+        + 0.30 * components["separation"]
+        + 0.20 * components["venue_history"]
+        + 0.05 * components["provider_xg"]
+        + 0.05 * components["complete_market_line"]
+    )
+    return {
+        "quality_score": round(score, 2),
+        "quality_components": components,
+        "has_provider_xg": genuine_provider_xg,
+        "has_complete_market_line": complete_odds,
+    }
+
+
 def rank_best_fixtures(
     cards: object,
     *,
@@ -539,10 +584,12 @@ def rank_best_fixtures(
             else "Ознакомительный прогноз · " + "; ".join(note_parts)
         )
 
+        quality = _daily_event_quality(card, prediction)
         key = _fixture_key(card, index)
         candidate = {
             "card": card,
             **prediction,
+            **quality,
             "kickoff": kickoff,
             "history_ready": history_ready,
             "probability_ready": probability_ready,
@@ -552,39 +599,61 @@ def rank_best_fixtures(
         current = unique.get(key)
         candidate_quality = (
             int(strict_eligible),
-            prediction["probability"],
+            quality["quality_score"],
             prediction["probability_margin"],
             prediction["sample_games"],
-            int(bool(card.get("xg_used"))),
-            len(card.get("market_odds") or {}),
+            prediction["probability"],
+            str(card.get("league") or ""),
+            str(card.get("match") or card.get("match_ru") or ""),
         )
         if current is None:
             unique[key] = candidate
         else:
             current_quality = (
                 int(current["strict_eligible"]),
-                current["probability"],
+                current["quality_score"],
                 current["probability_margin"],
                 current["sample_games"],
-                int(bool(current["card"].get("xg_used"))),
-                len(current["card"].get("market_odds") or {}),
+                current["probability"],
+                str(current["card"].get("league") or ""),
+                str(current["card"].get("match") or current["card"].get("match_ru") or ""),
             )
             if candidate_quality > current_quality:
                 unique[key] = candidate
 
     ranked = list(unique.values())
+    # Kickoff time is deliberately not a ranking key. It is display metadata,
+    # not evidence that one event is a better forecast than another.
     ranked.sort(key=lambda item: (
         -int(item["strict_eligible"]),
-        -item["probability"],
+        -item["quality_score"],
         -item["probability_margin"],
         -item["sample_games"],
-        -int(bool(item["card"].get("xg_used"))),
-        item["kickoff"],
-        str(item["card"].get("match") or item["card"].get("match_ru") or ""),
+        -item["probability"],
+        str(item["card"].get("league") or "").casefold(),
+        str(item["card"].get("match") or item["card"].get("match_ru") or "").casefold(),
     ))
     if limit is not None:
         try:
-            ranked = ranked[:max(0, int(limit))]
+            maximum = max(0, int(limit))
+            if maximum == 0:
+                ranked = []
+            elif len(ranked) > maximum:
+                cutoff = ranked[maximum - 1]
+                cutoff_tier = bool(cutoff["strict_eligible"])
+                cutoff_score = round(float(cutoff["quality_score"]), 2)
+                # Keep every event tied at the display boundary instead of
+                # arbitrarily preferring the earlier kickoff.
+                ranked = [
+                    item for item in ranked
+                    if (
+                        bool(item["strict_eligible"]) > cutoff_tier
+                        or (
+                            bool(item["strict_eligible"]) == cutoff_tier
+                            and round(float(item["quality_score"]), 2) >= cutoff_score
+                        )
+                    )
+                ]
         except (TypeError, ValueError, OverflowError):
             pass
 
