@@ -57,7 +57,7 @@ from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
 from betting.ranking import (
     model_favorite, rank_model_favorites,
-    rank_model_favorites_with_minimum, rank_score,
+    rank_model_favorites_with_minimum, rank_score, supported_1x2_favorite_cards,
 )
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
 from betting.event_shortlist import build_best_market_events, build_market_coverage
@@ -1243,6 +1243,21 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     k5.metric("Value-проходы", qualified_count)
     k6.metric("Открытые ставки", pending_count)
 
+    active_ai_provider = str(
+        (D.get("meta") or {}).get("llm_provider") or "Groq (бесплатно, быстро)"
+    )
+    active_ai_name = _provider_display_name(active_ai_provider)
+    active_ai_model = str(
+        (D.get("meta") or {}).get("llm_model") or "модель выберется по провайдеру"
+    )
+    active_ai_key = bool(_provider_api_key(active_ai_provider))
+    st.caption(
+        f"Независимый AI-анализ: {active_ai_name} · {active_ai_model} · "
+        f"ключ: {'найден' if active_ai_key else 'не задан'}. "
+        "Провайдер и ключ меняются слева: «API ключи» → «LLM-аналитик». "
+        "Для Grok выберите «Grok (x.ai)», задайте XAI_API_KEY и проверьте подключение."
+    )
+
     st.markdown("<div class='scanner-section-label'>БЫСТРЫЙ ЗАПУСК</div>",
                 unsafe_allow_html=True)
     c1, c2 = st.columns([1.25, 1], vertical_alignment="bottom")
@@ -1453,19 +1468,22 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             qualified.sort(key=lambda c: -float(
                 (c.get("verdict") or {}).get("ev") or -1))
 
-        # Forecast favorites are ranked independently of bookmaker value gates.
-        # They are displayed as model probabilities, never as guaranteed winners
-        # or automatic betting recommendations.
+        # A model favourite must be supported by the league and by both
+        # teams' matching home/away samples. Neutral-prior 42/29/29 outputs stay
+        # available in the full fixture browser but are not promoted as favourites.
         favorite_history_floor = MIN_FAVORITE_HISTORY
-        favorite_matches = rank_model_favorites_with_minimum(
+        supported_favorite_cards = supported_1x2_favorite_cards(
             all_cards,
+            min_team_samples=favorite_history_floor,
+            min_league_history=30,
+        )
+        favorite_matches = rank_model_favorites_with_minimum(
+            supported_favorite_cards,
             minimum=MIN_RECOMMENDED_MATCHES,
             limit=MAX_RECOMMENDED_MATCHES,
             min_sample_games=favorite_history_floor,
         )
-        low_history_favorites = sum(
-            1 for item in favorite_matches if not item.get("history_sufficient", False)
-        )
+        unsupported_favorite_count = max(0, len(all_cards) - len(supported_favorite_cards))
         strong_favorites = sum(
             1 for item in favorite_matches
             if item.get("history_sufficient", False)
@@ -1479,16 +1497,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"Показано {len(favorite_matches)} уникальных матчей: целевой минимум {MIN_RECOMMENDED_MATCHES}, "
             f"максимум {MAX_RECOMMENDED_MATCHES}. Сильных прогнозов ≥{STRONG_FORECAST_MIN_PROB:.0%} "
             f"с достаточной историей: {strong_favorites}. "
-            "Сортировка прежде всего по вероятности. Матчи с короткой историей явно помечаются "
-            "и не считаются сильными сигналами. Это прогнозы, не гарантии победы.</div></div>"
+            "В shortlist попадают только матчи с ≥30 результатами по лиге и ≥5 домашними/выездными "
+            "матчами соответствующих команд. П1, X и П2 оцениваются на равных; это модельный прогноз, не ставка.</div></div>"
             "</div>",
             unsafe_allow_html=True,
         )
-        if low_history_favorites:
+        if unsupported_favorite_count:
             st.caption(
-                f"В список включено матчей с историей менее {favorite_history_floor} игр "
-                f"хотя бы у одной команды: {low_history_favorites}. В этом блоке они помечены "
-                "как прогнозы с ограниченной историей и не считаются Strong; отдельные Value-проверки не менялись."
+                f"Не включено в shortlist фаворитов: {unsupported_favorite_count} матчей "
+                "без достаточной истории лиги/домашней и выездной выборки. Они остаются доступны "
+                "в режиме «Все матчи» как предварительные прогнозы."
             )
         if len(favorite_matches) < MIN_RECOMMENDED_MATCHES:
             st.caption(
@@ -1523,35 +1541,68 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     if favorite_probability >= STRONG_FORECAST_MIN_PROB
                     else f"НИЖЕ ПОРОГА СИЛЬНОГО ПРОГНОЗА {STRONG_FORECAST_MIN_PROB:.0%}"
                 )
-                favorite_strength_title = (
-                    favorite_item["strength"] if favorite_history_sufficient
-                    else "МАЛО ИСТОРИИ"
+                favorite_strength_title = favorite_item["strength"]
+                home_name = translate_team(str(favorite_card.get("home_team") or "Хозяева"))
+                away_name = translate_team(str(favorite_card.get("away_team") or "Гости"))
+                def _favorite_badge(name, url):
+                    letter = html.escape((name or "?")[:1].upper())
+                    safe_url = str(url or "").strip()
+                    image_html = (
+                        f"<img src='{html.escape(safe_url, quote=True)}' alt='{html.escape(name, quote=True)}' "
+                        "loading='lazy' referrerpolicy='no-referrer' "
+                        "style='position:absolute;inset:1px;width:calc(100% - 2px);height:calc(100% - 2px);"
+                        "object-fit:contain;padding:2px;background:#10251f' "
+                        "onerror=\"this.style.display='none'\"/>"
+                        if safe_url.startswith("https://") else ""
+                    )
+                    return (
+                        "<span style='position:relative;display:inline-grid;place-items:center;flex:0 0 34px;"
+                        "width:34px;height:34px;border:1px solid #376354;border-radius:50%;"
+                        "background:#17382d;color:#8ce8c1;font-size:12px;font-weight:900;overflow:hidden'>"
+                        + letter + image_html + "</span>"
+                    )
+                p1_value = float(favorite_card.get("p1") or 0.0)
+                px_value = float(favorite_card.get("px") or 0.0)
+                p2_value = float(favorite_card.get("p2") or 0.0)
+                league_logo = str(favorite_card.get("league_badge") or "").strip()
+                league_logo_html = (
+                    f"<img src='{html.escape(league_logo, quote=True)}' alt='' loading='lazy' "
+                    "referrerpolicy='no-referrer' style='width:16px;height:16px;object-fit:contain;vertical-align:middle'/> "
+                    if league_logo.startswith("https://") else ""
                 )
                 with favorite_columns[(favorite_rank - 1) % 2]:
                     st.markdown(
                         "<div style='padding:13px 15px;margin:7px 0;border:1px solid rgba(118,159,180,.28);"
                         "border-radius:12px;background:linear-gradient(120deg,rgba(22,42,54,.9),rgba(15,24,32,.94))'>"
                         f"<div style='display:flex;justify-content:space-between;gap:8px;color:#9eb1bd;font-size:11px'>"
-                        f"<span>#{favorite_rank} · {html.escape(favorite_league)}</span>"
+                        f"<span>#{favorite_rank} · {league_logo_html}{html.escape(favorite_league)}</span>"
                         f"<span>{html.escape(favorite_strength_title)}</span></div>"
-                        f"<div style='font-weight:750;font-size:16px;color:#f0f5f7;margin:7px 0 4px'>"
-                        f"{html.escape(favorite_match)}</div>"
-                        f"<div style='color:#8fd8bd;font-weight:800;font-size:19px'>"
+                        "<div style='display:flex;align-items:center;gap:9px;margin:11px 0 6px;min-width:0'>"
+                        + _favorite_badge(home_name, favorite_card.get("home_badge"))
+                        + f"<b style='color:#f0f5f7;font-size:14px;overflow-wrap:anywhere'>{html.escape(home_name)}</b>"
+                        "<span style='color:#8b93a7'>—</span>"
+                        + _favorite_badge(away_name, favorite_card.get("away_badge"))
+                        + f"<b style='color:#f0f5f7;font-size:14px;overflow-wrap:anywhere'>{html.escape(away_name)}</b>"
+                        + "</div>"
+                        f"<div style='color:#8fd8bd;font-weight:800;font-size:18px'>"
                         f"{html.escape(favorite_item['label'])} · {favorite_probability:.1%}</div>"
-                        f"<div style='color:#b7c2c9;font-size:11px;margin-top:2px'>"
+                        f"<div style='display:flex;gap:10px;flex-wrap:wrap;color:#c2d4d7;font-size:11px;margin-top:5px'>"
+                        f"<span>П1 {p1_value:.1%}</span><span>X {px_value:.1%}</span><span>П2 {p2_value:.1%}</span></div>"
+                        f"<div style='color:#b7c2c9;font-size:11px;margin-top:5px'>"
                         f"{html.escape(favorite_strength_label)}</div>"
                         f"<div style='color:#9aaab3;font-size:12px;margin-top:4px'>"
                         f"{html.escape(favorite_kickoff or 'Время начала уточняется')} · "
                         f"отрыв от второго исхода {favorite_margin:.1%} · история команд {favorite_sample} матчей"
                         f"</div><div style='color:#8fd8bd;font-size:11px;margin-top:3px'>"
-                        f"Сортировка: вероятность → отрыв → история · это не гарантия"
+                        f"Рейтинг исходов симметричный: П1 / X / П2 · это не допуск к ставке"
                         f"</div></div>",
                         unsafe_allow_html=True,
                     )
         else:
             st.info(
-                f"Нет матчей с достаточной историей команд (не менее {favorite_history_floor} "
-                "завершённых матчей у каждой команды). Прогнозы без этой базы не выдаются за фаворитов."
+                f"Нет матчей, одновременно имеющих ≥30 завершённых матчей лиги и "
+                f"≥{favorite_history_floor} матчей хозяев дома и гостей в гостях. "
+                "Нейтральные приоры не выдаются за сильные прогнозы."
             )
 
         st.markdown(
@@ -1665,11 +1716,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             key="scanner_sort_v5")
         display_mode = c2.selectbox(
             "Что показывать",
-            ["⭐ Вероятные исходы (все матчи)",
-             "🎯 Только подтверждённый Value-shortlist",
+            ["🎯 Только подтверждённый Value-shortlist",
+             "⭐ Вероятные исходы (все матчи)",
              "Все матчи с реальными котировками"],
             index=0,
-            key="scanner_display_mode_v4",
+            key="scanner_display_mode_v5",
         )
         probability_mode = display_mode.startswith("⭐")
         recommendation_mode = display_mode.startswith("🎯")
@@ -1688,14 +1739,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
         elif probability_mode:
             st.caption(
-                "По умолчанию показываются все найденные матчи, отсортированные по вероятнейшему "
-                "исходу 1X2. Отдельные вкладки также показывают весь пул событий; отсутствие цены "
-                "или Value не скрывает прогноз и не превращает его в ставку."
+                "Это режим просмотра прогнозов, а не ставок: он показывает поддержанные и "
+                "предварительные оценки. Для списка допущенных ставок выберите строгий Value-shortlist."
             )
         else:
             st.caption(
-                "Показаны матчи с доступными котировками. Для полного списка событий выберите "
-                "«Вероятные исходы (все матчи)»."
+                "Показаны матчи с доступными котировками; наличие цены само по себе не означает "
+                "допуск. Строгий список ставок доступен в режиме Value-shortlist."
             )
 
         if sort_mode.startswith("По дате"):
