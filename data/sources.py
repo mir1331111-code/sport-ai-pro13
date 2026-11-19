@@ -3016,6 +3016,7 @@ from data.sstats import (
     _sstats_div_code,
     sstats_account_check,
     sstats_upcoming_matches,
+    sstats_historical_matches_for_fixtures,
     sstats_find_match_id,
     sstats_match_result,
     sstats_match_statistics,
