@@ -52,6 +52,30 @@ class SStatsTests(unittest.TestCase):
         self.assertIs(sources.sstats_match_statistics, sstats.sstats_match_statistics)
         self.assertIs(sources.sstats_match_result, sstats.sstats_match_result)
 
+    def test_sstats_league_info_uses_agreeing_home_and_away_team_countries(self):
+        name, league_id, country = sstats._sstats_league_info({
+            "league": {"name": "Premier League"},
+            "homeTeam": {
+                "id": 10, "name": "Home FC",
+                "country": {"name": "Mauritania"},
+            },
+            "awayTeam": {
+                "id": 11, "name": "Away FC",
+                "countryName": "Mauritania",
+            },
+        })
+        self.assertEqual(name, "Premier League")
+        self.assertEqual(league_id, "")
+        self.assertEqual(country, "Mauritania")
+
+    def test_sstats_league_info_does_not_guess_country_when_team_countries_conflict(self):
+        _name, _league_id, country = sstats._sstats_league_info({
+            "league": {"name": "Cup"},
+            "homeTeam": {"name": "Home FC", "countryName": "Mauritania"},
+            "awayTeam": {"name": "Away FC", "countryName": "Senegal"},
+        })
+        self.assertEqual(country, "")
+
     def test_sstats_league_info_handles_top_level_and_nested_league_objects(self):
         name, league_id, country = sstats._sstats_league_info({
             "league": {
@@ -412,6 +436,56 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(params["From"], "2021-11-20")
         self.assertTrue(cache_put.called)
         self.assertIn("1 FT-матчей", "\n".join(logs))
+
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "_sstats_timezone")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
+    def test_historical_loader_accepts_missing_status_only_when_ended_filter_has_valid_score(
+        self, _cache_get, _cache_put, timezone_mock, request_mock
+    ):
+        from datetime import datetime
+        timezone_mock.return_value = (datetime(2026, 11, 19, 12, 0), 3)
+        request_mock.return_value = _Response(200, {
+            "status": "success",
+            "data": [
+                {
+                    "Date": "2026-05-01T18:00:00",
+                    "HomeTeamName": "Home FC", "AwayTeamName": "Away FC",
+                    "HomeResult": 2, "AwayResult": 1,
+                },
+                {
+                    "DATE": "2026-05-08T18:00:00", "Status": "FT",
+                    "HomeTeam": {"Name": "Home FC"},
+                    "AwayTeam": {"Name": "Away FC"},
+                    "HomeGoals": 1, "AwayGoals": 1,
+                },
+                {
+                    "date": "2026-05-15T18:00:00", "Status": 7,
+                    "homeTeamName": "Home FC", "awayTeamName": "Away FC",
+                    "homeResult": 9, "awayResult": 0,
+                },
+                {
+                    "date": "2026-05-22T18:00:00", "homeTeamName": "Home FC",
+                    "awayTeamName": "Away FC", "homeResult": None, "awayResult": 0,
+                },
+            ],
+        })
+        logs = []
+        rows = sstats.sstats_historical_matches_for_fixtures(
+            [{
+                "sstats_league_id": "991",
+                "Div": "S_TEST991",
+                "League": "Local Premier League",
+            }],
+            "private-key", logs=logs,
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([(row["FTHG"], row["FTAG"]) for row in rows], [(2, 1), (1, 1)])
+        joined = "\n".join(logs)
+        self.assertIn("без поля Status (Ended=true)=1", joined)
+        self.assertIn("отклонено по Status=1", joined)
+        self.assertIn("без валидного счёта=1", joined)
 
     def test_historical_loader_does_not_fetch_without_sstats_league_ids(self):
         with patch.object(sstats, "_sstats_league_catalog", return_value=[]):
