@@ -1021,14 +1021,6 @@ div[data-testid="stButton"] > button {
   .neo-dashboard-header {position:relative;}
 }
 
-</style>
-"""
-
-
-def inject() -> None:
-    """Inject the app-wide design system once per Streamlit render."""
-    st.markdown(CSS, unsafe_allow_html=True)
-
 
 /* Grok independent-analysis panel for Neural Terminal */
 .neo-grok-panel { margin-top:12px; border-color:#2b4d68; background:linear-gradient(145deg,#101d2a,#101a21 65%,#10231e); }
@@ -1044,3 +1036,11 @@ def inject() -> None:
 .neo-grok-risk { color:#edc78c;font-size:.62rem;line-height:1.45;margin:5px 0; }
 .neo-grok-empty { display:flex;flex-direction:column;gap:5px;padding:13px;border:1px dashed #385266;border-radius:9px;background:#111f2a;color:#a9c0cf;font-size:.64rem;line-height:1.5; }
 .neo-grok-empty b { color:#d4eaff;font-size:.72rem; }
+
+</style>
+"""
+
+
+def inject() -> None:
+    """Inject the app-wide design system once per Streamlit render."""
+    st.markdown(CSS, unsafe_allow_html=True)
