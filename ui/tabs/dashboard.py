@@ -68,6 +68,7 @@ def dashboard_bet_approved(card):
         has_prices(card)
         and verdict.get("real_odds")
         and verdict.get("value_passed")
+        and verdict.get("is_bet")
         and pick in {"П1", "X", "П2"}
     )
 
