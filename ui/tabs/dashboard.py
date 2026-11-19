@@ -744,13 +744,13 @@ def render():
             datetime.min.time(),
             tzinfo=now.tzinfo,
         )
-        table_title = "Лучшие события сегодня · 1X2"
+        table_title = "Допущенные ставки сегодня · 1X2"
     elif selected_period == "Ближайшие 24 часа · лучшие события":
         period_end = now + timedelta(hours=24)
-        table_title = "Лучшие события ближайших 24 часов · 1X2"
+        table_title = "Допущенные ставки ближайших 24 часов · 1X2"
     else:
         period_end = None
-        table_title = "Лучшие события всего горизонта · 1X2"
+        table_title = "Допущенные ставки · весь горизонт скана"
 
     # The main dashboard table is a betting shortlist, not a general forecast
     # gallery. Forecast-only and market-only events are deliberately excluded.
@@ -857,19 +857,18 @@ def render():
         if not table_rows:
             table_rows = (
                 "<tr><td colspan='10' class='neo-empty-cell'>"
-                "В выбранном периоде нет будущих матчей с корректным прогнозом 1X2. "
+                "В выбранном периоде нет ставок 1X2, прошедших все фильтры. "
                 "Проверь время начала, выбранный турнир и актуальность сканирования."
                 "</td></tr>"
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DAILY PASS-PROBABILITY RANKING · НЕ СПИСОК СТАВОК</span>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>APPROVED BETS · ONLY STRICTLY QUALIFIED 1X2</span>"
             f"<h3>{esc(table_title)}</h3></div>"
-            f"<span class='neo-count-pill'>{available_event_count} событий</span></div>"
+            f"<span class='neo-count-pill'>{available_event_count} допущено</span></div>"
             "<div class='neo-ranking-disclaimer'>"
-            "<b>Место в списке = качество прогноза, а не допуск к ставке.</b> "
-            "Ставка разрешена только при отдельной зелёной метке "
-            "<strong>VALUE · СТАВКА ДОПУЩЕНА</strong>."
+            "<b>В этой таблице только ставки, уже прошедшие строгий допуск.</b> "
+            "Прогнозы и котировки без допуска намеренно исключены."
             "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>Модель П1</th><th>Модель X</th><th>Модель П2</th>"
@@ -877,7 +876,7 @@ def render():
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {available_event_count} предстоящих событий за выбранный период · оценка по рынку без маржи: {market_count} · модельный прогноз с достаточной историей: {model_only_count}. При наличии полной линии одного букмекера порядок строится по no-vig вероятности рынка; иначе показывается модель только при истории лиги ≥30 и выборке хозяев дома/гостей в гостях ≥5. Колонки П1/X/П2 — вероятности модели; последняя колонка отдельно указывает источник оценки прохода. Ни рыночный ориентир, ни место в списке не являются разрешением на ставку. Зелёная VALUE-метка возможна только после отдельного league holdout, полного рынка, контекста и риск-фильтров.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {available_event_count} допущенных 1X2 ставок · исключено матчей без допуска: {excluded_not_approved}. Ранжирование выполняется по no-vig вероятности именно того исхода, который прошёл Value-фильтр (П1, X или П2). В таблице нет прогнозов без одновременного подтверждения полной линии одного букмекера, отдельного league holdout, контекста, EV ≥5%, Edge ≥5% и положительного Kelly.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
