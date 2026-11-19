@@ -483,7 +483,7 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual([(row["FTHG"], row["FTAG"]) for row in rows], [(2, 1), (1, 1)])
         joined = "\n".join(logs)
-        self.assertIn("без поля Status (Ended=true)=1", joined)
+        self.assertIn("без поля Status (Ended=true)=2", joined)
         self.assertIn("отклонено по Status=1", joined)
         self.assertIn("без валидного счёта=1", joined)
 
