@@ -1563,7 +1563,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 display_favorite = favorite_display(favorite_item)
                 favorite_outcome_html = (
                     f"{html.escape(display_favorite['label'])} · {favorite_probability:.1%}"
-                    if display_favorite["history_sufficient"]
+                    if display_favorite.get("calibrated", False)
                     else html.escape(display_favorite["label"])
                 )
                 model_distribution = " · ".join(
