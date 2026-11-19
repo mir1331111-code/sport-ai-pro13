@@ -61,3 +61,33 @@ def blend_probability(model_probability: float, market_probability: float, model
         raise ValueError("model_weight must be between 0 and 1")
     return max(1e-6, min(1.0 - 1e-6,
                          market_probability + model_weight * (model_probability - market_probability)))
+
+def competition_market_is_validated(card: Mapping, family: str) -> bool:
+    """Fail closed unless the exact competition has its own independent holdout.
+
+    A positive aggregate walk-forward report across many leagues is a research
+    summary, not evidence that every individual competition is actionable.
+    """
+    if not isinstance(card, Mapping):
+        return False
+    division = str(card.get("div") or "").strip().upper()
+    if not division:
+        return False
+    family = str(family or "").strip().casefold()
+    if family == "winner":
+        passed = bool(card.get("winner_market_validation"))
+        scope = str(card.get("winner_market_validation_scope") or "")
+        validated_division = str(card.get("winner_market_validation_division") or "").strip().upper()
+    elif family == "goals":
+        passed = bool(card.get("total_market_validation"))
+        scope = str(card.get("total_market_validation_scope") or "")
+        validated_division = str(card.get("total_market_validation_division") or "").strip().upper()
+    else:
+        return False
+    return (
+        passed
+        and scope == "competition_independent_holdout"
+        and validated_division == division
+        and bool(card.get("market_holdout_id"))
+    )
+
