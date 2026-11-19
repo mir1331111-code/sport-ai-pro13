@@ -411,10 +411,10 @@ def _reliability_svg(report):
     )
 
 def _team_badge_html(name, url="", size=24):
-    safe_url = str(url or "").strip()
+    safe_url = _https_image_url(url)
     initial = esc((str(name or "?").strip()[:1] or "?").upper())
     inner = initial
-    if safe_url.startswith("https://"):
+    if safe_url:
         inner += (
             f"<img src='{esc(safe_url)}' alt='{esc(name)}' loading='lazy' "
             "decoding='async' referrerpolicy='no-referrer' "
@@ -424,6 +424,18 @@ def _team_badge_html(name, url="", size=24):
         f"<span class='neo-team-badge' style='--badge-size:{int(size)}px' "
         f"aria-label='{esc(name)}'>{inner}</span>"
     )
+
+
+def _https_image_url(value):
+    """Normalize safe provider image URLs, including legacy HTTP and // URLs."""
+    source = str(value or "").strip()
+    if source.startswith("//"):
+        return "https:" + source
+    if source.casefold().startswith("http://"):
+        return "https://" + source[7:]
+    if source.casefold().startswith("https://"):
+        return source
+    return ""
 
 
 def _match_table_row(card):
@@ -493,10 +505,11 @@ def _match_table_row(card):
     league = str(card.get("league") or card.get("div") or "Футбол")
     league_code = str(card.get("div") or "")
     league_logo = str(card.get("league_badge") or "")
+    safe_league_logo = _https_image_url(league_logo)
     league_mark = (
-        f"<img src='{esc(league_logo)}' alt='' loading='lazy' decoding='async' "
+        f"<img src='{esc(safe_league_logo)}' alt='' loading='lazy' decoding='async' "
         "referrerpolicy='no-referrer' onerror=\"this.style.display='none'\"/>"
-        if league_logo.startswith("https://")
+        if safe_league_logo
         else f"<span class='neo-league-flag'>{esc(_LEAGUE_FLAGS.get(league_code, '⚽'))}</span>"
     )
     time_text = str(card.get("time") or "").strip()
