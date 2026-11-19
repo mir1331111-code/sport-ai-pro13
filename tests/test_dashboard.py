@@ -1,7 +1,11 @@
 import unittest
+from datetime import datetime, timedelta
 
+from data.fixture_time import app_timezone
+from betting.ranking import rank_best_fixtures
 from ui.tabs.dashboard import (
-    _grok_panel, _https_image_url, _match_table_row, _probability_health_note,
+    _forecast_rejection_reason, _grok_panel, _https_image_url,
+    _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
 )
@@ -68,6 +72,33 @@ class DashboardHelperTests(unittest.TestCase):
         })
         self.assertEqual(draw["pick"], "X")
         self.assertEqual(away["pick"], "П2")
+
+    def test_provisional_match_counts_are_visible_in_diagnostics_but_not_approved(self):
+        now = datetime.now(app_timezone())
+        kickoff = now + timedelta(hours=2)
+        card = {
+            "fixture_id": "sstats:provisional-1",
+            "date_iso": kickoff.date().isoformat(),
+            "time": kickoff.strftime("%H:%M"),
+            "home_team": "Home FC",
+            "away_team": "Away FC",
+            "p1": 0.42, "px": 0.29, "p2": 0.29,
+            "independent_features": {
+                "home_home_sample": 0,
+                "away_away_sample": 0,
+            },
+        }
+        diagnostics = {}
+        ranked = rank_best_fixtures(
+            [card], now=now, limit=None, min_sample_games=5,
+            min_probability=0.52, include_limited_history=True,
+            diagnostics=diagnostics,
+        )
+        self.assertEqual(len(ranked), 1)
+        self.assertFalse(ranked[0]["strict_eligible"])
+        self.assertEqual(diagnostics["unique_candidates"], 1)
+        self.assertEqual(diagnostics["strict_unique"], 0)
+        self.assertEqual(diagnostics["provisional_unique"], 1)
 
     def test_dashboard_shows_only_strict_value_and_kelly_approved_bets(self):
         approved = {
@@ -173,6 +204,41 @@ class DashboardHelperTests(unittest.TestCase):
         })
         self.assertIn("БАЛЛ СОРТИРОВКИ · 76/100", row)
         self.assertIn("neo-pick-note rank-score", row)
+
+    def test_preview_forecast_rows_are_never_labeled_as_bets(self):
+        card = {
+            "home_team": "Forecast FC",
+            "away_team": "Other FC",
+            "p1": 0.42, "px": 0.29, "p2": 0.29,
+            "market_odds": {"П1": 2.5, "X": 3.1, "П2": 2.8},
+            "odds_source": "sstats",
+            "verdict": {
+                "real_odds": True, "value_passed": True, "is_bet": True,
+            },
+        }
+        row = _match_table_row(card, preview_only=True)
+        self.assertIn("ПРОГНОЗ · НЕ ДОПУЩЕН К СТАВКЕ", row)
+        self.assertNotIn("VALUE · СТАВКА ДОПУЩЕНА", row)
+        self.assertNotIn("class='neo-pick value'", row)
+
+    def test_forecast_rejection_reason_explains_history_context_and_market(self):
+        card = {
+            "_daily_selection_note": (
+                "Ознакомительный прогноз · дома 0/5; в гостях 0/5; "
+                "нет выраженного фаворита (42% < 52%)"
+            ),
+            "context_quality": {
+                "strong_value_eligible": False,
+                "reason": "нет подтверждённого стартового XI и/или судьи",
+            },
+            "market_odds": {},
+            "verdict": {"real_odds": False, "value_passed": False, "is_bet": False},
+        }
+        reason = _forecast_rejection_reason(card)
+        self.assertIn("дома 0/5", reason)
+        self.assertIn("52%", reason)
+        self.assertIn("стартового XI", reason)
+        self.assertIn("полной подтверждённой линии", reason)
 
     def test_fixture_row_distinguishes_forecast_from_value_approved_bet(self):
         no_line = _match_table_row({

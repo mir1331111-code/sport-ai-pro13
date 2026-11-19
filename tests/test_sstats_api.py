@@ -45,6 +45,10 @@ class SStatsTests(unittest.TestCase):
     def test_public_sstats_functions_remain_reexported_from_sources(self):
         from data import sources
         self.assertIs(sources.sstats_upcoming_matches, sstats.sstats_upcoming_matches)
+        self.assertIs(
+            sources.sstats_historical_matches_for_fixtures,
+            sstats.sstats_historical_matches_for_fixtures,
+        )
         self.assertIs(sources.sstats_match_statistics, sstats.sstats_match_statistics)
         self.assertIs(sources.sstats_match_result, sstats.sstats_match_result)
 
@@ -158,7 +162,7 @@ class SStatsTests(unittest.TestCase):
                 "status": 2,
                 "homeTeam": {"id": 100, "name": "Arsenal"},
                 "awayTeam": {"id": 200, "name": "Chelsea"},
-                "season": {"league": {"name": "Premier League"}},
+                "season": {"league": {"id": 991, "name": "Premier League"}},
                 "odds": [
                     {
                         "marketId": 1,
@@ -187,8 +191,11 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["HomeTeam"], "Arsenal")
         self.assertEqual(rows[0]["AwayTeam"], "Chelsea")
-        self.assertEqual(rows[0]["Div"], "E0")
+        self.assertEqual(rows[0]["Div"], "S_" + sstats.hashlib.sha1(
+            b"sstats-league:991"
+        ).hexdigest()[:10].upper())
         self.assertEqual(rows[0]["sstats_game_id"], 5678)
+        self.assertEqual(rows[0]["sstats_league_id"], "991")
         self.assertEqual(rows[0]["market_odds"], {})
         # Games/list compact odds have no bookmaker provenance, so they stay
         # diagnostic-only until detailed Odds/{gameId} confirms a named book.
@@ -201,6 +208,98 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(params["Upcoming"], "true")
         self.assertNotIn("do-not-log-this-key", "\\n".join(logs))
         self.assertEqual(request_mock.call_args.args[0], "Games/list")
+
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "_sstats_timezone")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
+    def test_historical_league_results_are_loaded_as_strict_ft_rows(
+        self, _cache_get, cache_put, timezone_mock, request_mock
+    ):
+        from datetime import datetime
+        timezone_mock.return_value = (datetime(2026, 11, 19, 12, 0), 3)
+        request_mock.return_value = _Response(200, {
+            "status": "success",
+            "data": [
+                {
+                    "id": 1, "date": "2026-05-01T18:00:00",
+                    "status": 8,
+                    "homeTeam": {"name": "Home FC"},
+                    "awayTeam": {"name": "Away FC"},
+                    "homeResult": 2, "awayResult": 1,
+                },
+                {
+                    "id": 2, "date": "2026-05-08T18:00:00",
+                    "status": 7,
+                    "homeTeam": {"name": "Home FC"},
+                    "awayTeam": {"name": "Away FC"},
+                    "homeResult": 9, "awayResult": 0,
+                },
+                {
+                    "id": 3, "date": "2026-05-15T18:00:00",
+                    "status": 8,
+                    "homeTeam": {"name": "Other FC"},
+                    "awayTeam": {"name": "Away FC"},
+                    "homeResult": None, "awayResult": 0,
+                },
+                {
+                    "id": 4, "date": "2027-05-15T18:00:00",
+                    "status": 8,
+                    "homeTeam": {"name": "Future FC"},
+                    "awayTeam": {"name": "Away FC"},
+                    "homeResult": 1, "awayResult": 0,
+                },
+            ],
+        })
+
+        logs = []
+        rows = sstats.sstats_historical_matches_for_fixtures(
+            [
+                {
+                    "sstats_league_id": "991",
+                    "Div": "S_TEST991",
+                    "League": "Local Premier League",
+                    "market_odds": {"П1": 2.1, "X": 3.0, "П2": 3.4},
+                },
+                {
+                    "sstats_league_id": "991",
+                    "Div": "S_TEST991",
+                    "League": "Local Premier League",
+                },
+                {
+                    "sstats_league_id": "",
+                    "Div": "S_NO_ID",
+                    "League": "Unknown Cup",
+                },
+            ],
+            "private-api-key",
+            years_back=5,
+            max_leagues=10,
+            logs=logs,
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["Div"], "S_TEST991")
+        self.assertEqual(rows[0]["FTHG"], 2)
+        self.assertEqual(rows[0]["FTAG"], 1)
+        self.assertEqual(rows[0]["source"], "sstats_history")
+        self.assertEqual(request_mock.call_count, 1)
+        self.assertEqual(request_mock.call_args.args[0], "Games/list")
+        params = request_mock.call_args.kwargs["params"]
+        self.assertEqual(params["LeagueId"], "991")
+        self.assertEqual(params["Ended"], "true")
+        self.assertEqual(params["To"], "2026-11-19")
+        self.assertEqual(params["From"], "2021-11-20")
+        self.assertTrue(cache_put.called)
+        self.assertIn("1 FT-матчей", "\n".join(logs))
+
+    def test_historical_loader_does_not_fetch_without_sstats_league_ids(self):
+        logs = []
+        rows = sstats.sstats_historical_matches_for_fixtures(
+            [{"Div": "S_NO_ID", "League": "Unknown"}], "private-key", logs=logs,
+        )
+        self.assertEqual(rows, [])
+        self.assertIn("нет LeagueId", "\n".join(logs))
 
     @patch.object(sstats, "_sstats_request")
     @patch.object(sstats, "_sstats_timezone", return_value=(None, 2))

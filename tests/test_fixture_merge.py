@@ -84,6 +84,58 @@ class FixtureMergeTests(unittest.TestCase):
         self.assertEqual(report["assets_added"], 5)
         self.assertEqual(report["fixtures_with_assets"], 1)
 
+    def test_visual_metadata_matches_unique_team_pair_across_one_day_timezone_drift(self):
+        primary = [{
+            "Date": "2026-11-16 23:30:00",
+            "HomeTeam": "Fortaleza B",
+            "AwayTeam": "Tirol/CEFAT",
+            "fixture_id": "sstats:123",
+            "sstats_game_id": 123,
+            "market_odds": {"П1": 2.7, "X": 3.2, "П2": 2.3},
+        }]
+        metadata = [{
+            "Date": "2026-11-17",
+            "HomeTeam": "Fortaleza B",
+            "AwayTeam": "Tirol/CEFAT",
+            "home_badge": "https://assets.test/fortaleza.png",
+            "away_badge": "https://assets.test/tirol.png",
+            "home_team_tsdb_id": "1001",
+            "away_team_tsdb_id": "1002",
+        }]
+
+        rows, report = enrich_fixture_visual_metadata(primary, metadata)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["fixture_id"], "sstats:123")
+        self.assertEqual(rows[0]["market_odds"], primary[0]["market_odds"])
+        self.assertEqual(rows[0]["home_badge"], metadata[0]["home_badge"])
+        self.assertEqual(rows[0]["away_badge"], metadata[0]["away_badge"])
+        self.assertEqual(report["date_fallback_matches"], 1)
+        self.assertEqual(report["ambiguous_team_pair_matches"], 0)
+
+    def test_visual_metadata_skips_equally_nearby_ambiguous_team_pair(self):
+        primary = [{
+            "Date": "2026-11-16 12:00:00",
+            "HomeTeam": "Home FC",
+            "AwayTeam": "Away FC",
+        }]
+        metadata = [
+            {
+                "Date": "2026-11-15", "HomeTeam": "Home FC",
+                "AwayTeam": "Away FC", "home_badge": "https://assets.test/old.png",
+            },
+            {
+                "Date": "2026-11-17", "HomeTeam": "Home FC",
+                "AwayTeam": "Away FC", "home_badge": "https://assets.test/new.png",
+            },
+        ]
+
+        rows, report = enrich_fixture_visual_metadata(primary, metadata)
+
+        self.assertNotIn("home_badge", rows[0])
+        self.assertEqual(report["date_fallback_matches"], 0)
+        self.assertEqual(report["ambiguous_team_pair_matches"], 1)
+
     def test_visual_metadata_does_not_overwrite_existing_primary_assets(self):
         primary = [{
             "Date": "2026-11-16",

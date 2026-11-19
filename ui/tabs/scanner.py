@@ -25,7 +25,8 @@ from storage import sqlite_store as db
 from storage import user_datasets
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches,
-                          sstats_upcoming_matches, sstats_context_enrich, sstats_odds_fixture,
+                          sstats_upcoming_matches, sstats_historical_matches_for_fixtures,
+                          sstats_context_enrich, sstats_odds_fixture,
                           footballapi_xg_history, team_badge_url_by_id)
 from data.fixture_merge import (
     enforce_sstats_market_card, enforce_sstats_odds_only,
@@ -56,7 +57,7 @@ from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
 from betting.ranking import (
-    model_favorite, rank_model_favorites,
+    favorite_display, model_favorite, rank_model_favorites,
     rank_model_favorites_with_minimum, rank_score,
 )
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
@@ -1518,6 +1519,32 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     favorite_item["strength"] if favorite_history_sufficient
                     else "МАЛО ИСТОРИИ"
                 )
+                display_favorite = favorite_display(favorite_item)
+                favorite_outcome_html = (
+                    f"{html.escape(display_favorite['label'])} · {favorite_probability:.1%}"
+                    if display_favorite["history_sufficient"]
+                    else html.escape(display_favorite["label"])
+                )
+                model_distribution = " · ".join(
+                    f"{label} {float(favorite_card.get(field) or 0):.1%}"
+                    for field, label in (("p1", "П1"), ("px", "X"), ("p2", "П2"))
+                )
+                market_distribution_html = ""
+                if market_line := proportional_devig(
+                    favorite_card.get("market_odds") or {},
+                    ("П1", "X", "П2"),
+                    bookmaker_by_pick=favorite_card.get("bookmaker_by_pick") or {},
+                ):
+                    market_pick = max(market_line, key=market_line.get)
+                    market_distribution = " · ".join(
+                        f"{label} {market_line[pick]:.1%}"
+                        for pick, label in (("П1", "П1"), ("X", "X"), ("П2", "П2"))
+                    )
+                    market_distribution_html = (
+                        "<div style='color:#82c8e5;font-size:11px;margin-top:4px'>"
+                        f"Рынок без маржи: {html.escape(market_distribution)} · "
+                        f"фаворит рынка: {html.escape(market_pick)}</div>"
+                    )
                 with favorite_columns[(favorite_rank - 1) % 2]:
                     st.markdown(
                         "<div style='padding:13px 15px;margin:7px 0;border:1px solid rgba(118,159,180,.28);"
@@ -1527,9 +1554,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"<span>{html.escape(favorite_strength_title)}</span></div>"
                         f"<div style='font-weight:750;font-size:16px;color:#f0f5f7;margin:7px 0 4px'>"
                         f"{html.escape(favorite_match)}</div>"
-                        f"<div style='color:#8fd8bd;font-weight:800;font-size:19px'>"
-                        f"{html.escape(favorite_item['label'])} · {favorite_probability:.1%}</div>"
-                        f"<div style='color:#b7c2c9;font-size:11px;margin-top:2px'>"
+                        f"<div style='color:#8fd8bd;font-weight:800;font-size:17px'>"
+                        f"{favorite_outcome_html}</div>"
+                        f"<div style='color:#d4e0e6;font-size:11px;margin-top:4px'>"
+                        f"Вероятности модели: {html.escape(model_distribution)}</div>"
+                        + market_distribution_html
+                        + f"<div style='color:#b7c2c9;font-size:11px;margin-top:2px'>"
                         f"{html.escape(favorite_strength_label)}</div>"
                         f"<div style='color:#9aaab3;font-size:12px;margin-top:4px'>"
                         f"{html.escape(favorite_kickoff or 'Время начала уточняется')} · "
@@ -2672,6 +2702,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"совпадений {visual_stats['fixtures_matched']}/"
                     f"{visual_stats['primary_fixtures']}, "
                     f"добавлено изображений и полей {visual_stats['assets_added']}, "
+                    f"совпадений по сдвигу даты ±1 день {visual_stats.get('date_fallback_matches', 0)}, "
+                    f"неоднозначных пар {visual_stats.get('ambiguous_team_pair_matches', 0)}, "
                     f"матчей с визуальными данными "
                     f"{visual_stats['fixtures_with_assets']}; "
                     f"источники TSDB={len(tsdb_rows)}, ESPN={len(espn_rows)}, "
@@ -2823,6 +2855,28 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         update_loader("📈 Загрузка xG-истории...", 0.16, logs)
         footballapi_xg_rows = footballapi_xg_history(footballapi_key, logs)
+
+        update_loader("📚 Загрузка истории по текущим турнирам SStats...", 0.18, logs)
+        sstats_history_rows = []
+        if sstats_key and rows:
+            try:
+                history_league_limit = _runtime_int(
+                    "sstats_history_max_leagues",
+                    "SSTATS_HISTORY_MAX_LEAGUES",
+                    default=30,
+                    minimum=1,
+                )
+                sstats_history_rows = sstats_historical_matches_for_fixtures(
+                    rows, sstats_key, years_back=5,
+                    max_leagues=history_league_limit, logs=logs,
+                )
+            except Exception as exc:
+                logs.append(
+                    f"⚠️ SStats historical archive: {type(exc).__name__}; "
+                    "forecast-only режим сохраняется."
+                )
+        if sstats_history_rows:
+            custom_historical_rows = list(custom_historical_rows or []) + sstats_history_rows
 
         update_loader("🧠 Загрузка модели...", 0.20, logs)
         engine = _load_engine(

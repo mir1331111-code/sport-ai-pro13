@@ -3,8 +3,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from betting.ranking import (
-    model_favorite, rank_best_fixtures, rank_model_favorites,
-    rank_model_favorites_with_minimum,
+    favorite_display, model_favorite, rank_best_fixtures,
+    rank_model_favorites, rank_model_favorites_with_minimum,
 )
 
 
@@ -192,6 +192,44 @@ class ModelFavoriteTests(unittest.TestCase):
         self.assertEqual(sum(item["history_sufficient"] for item in ranked), 4)
         self.assertEqual(sum(not item["history_sufficient"] for item in ranked), 3)
         self.assertTrue(all("card" in item for item in ranked))
+
+    def test_prior_only_favorite_is_not_presented_as_a_match_pick(self):
+        ranked = rank_model_favorites_with_minimum(
+            [{
+                "match": "Unknown Home vs Unknown Away",
+                "date_iso": "2026-11-19",
+                "p1": 0.421, "px": 0.289, "p2": 0.289,
+                "independent_features": {
+                    "home_home_sample": 0,
+                    "away_away_sample": 0,
+                },
+            }],
+            minimum=1, limit=1, min_sample_games=5,
+        )
+        presentation = favorite_display(ranked[0])
+        self.assertIsNone(presentation["pick"])
+        self.assertIsNone(presentation["probability"])
+        self.assertFalse(presentation["history_sufficient"])
+        self.assertIn("PRIOR-ONLY", presentation["label"])
+
+    def test_supported_favorite_keeps_its_p1_x_or_p2_label(self):
+        for probabilities, expected in (
+            ({"p1": 0.62, "px": 0.20, "p2": 0.18}, "Победа Alpha"),
+            ({"p1": 0.20, "px": 0.62, "p2": 0.18}, "Ничья"),
+            ({"p1": 0.18, "px": 0.20, "p2": 0.62}, "Победа Beta"),
+        ):
+            item = {
+                **model_favorite({
+                    "home": "Alpha", "away": "Beta", **probabilities,
+                    "independent_features": {
+                        "home_home_sample": 7,
+                        "away_away_sample": 8,
+                    },
+                }),
+                "history_sufficient": True,
+            }
+            self.assertEqual(favorite_display(item)["label"], expected)
+            self.assertIsNotNone(favorite_display(item)["pick"])
 
     def test_minimum_seven_never_invents_missing_fixtures(self):
         cards = [

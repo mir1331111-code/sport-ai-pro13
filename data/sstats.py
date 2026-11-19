@@ -10,6 +10,7 @@ import math
 import os
 import re
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -810,6 +811,40 @@ def _sstats_division_for_game(
     label = str(league_name or "").strip()
     if country and country.casefold() not in label.casefold():
         label = f"{country} {label}".strip()
+
+    league_id = (
+        league_obj.get("id") or league_obj.get("leagueId")
+        or game.get("leagueId") or game.get("LeagueId")
+        or (season_obj.get("leagueId") if isinstance(season_obj, dict) else None)
+    )
+    # A bare label such as "Premier League", "Ligue 1" or "Serie A" is not
+    # enough to identify a country. Do not silently train Mauritania/Egypt/etc.
+    # in the English/French/Italian league namespace. SStats LeagueId gives a
+    # stable, competition-specific namespace and its own history is loaded below.
+    ambiguous_bare_names = {
+        "premier league", "serie a", "serie b", "bundesliga",
+        "ligue 1", "ligue 2", "la liga", "primera division",
+        "segunda division", "division 1", "division 2", "cup",
+        "champions league", "europa league", "conference league",
+        "super league",
+    }
+    normalized_label = re.sub(
+        r"[^a-z0-9]+", " ",
+        "".join(
+            char for char in unicodedata.normalize("NFKD", str(league_name or "").casefold())
+            if not unicodedata.combining(char)
+        ),
+    ).strip()
+    if not country and normalized_label in ambiguous_bare_names:
+        league_id_text = str(league_id or "").strip()
+        stable_identity = (
+            f"sstats-league:{league_id_text}"
+            if league_id_text.isdigit()
+            else f"sstats-ambiguous-label:{normalized_label}"
+        )
+        return "S_" + hashlib.sha1(
+            stable_identity.encode("utf-8")
+        ).hexdigest()[:10].upper()
     return _sstats_div_code(label)
 
 
@@ -897,7 +932,10 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             else ""
         )
 
-        league_obj = (game.get("season") or {}).get("league") or {}
+        season_obj = game.get("season")
+        season_obj = season_obj if isinstance(season_obj, dict) else {}
+        league_obj = season_obj.get("league") or {}
+        league_obj = league_obj if isinstance(league_obj, dict) else {}
         league_name = str(
             league_obj.get("name")
             or game.get("leagueName")
@@ -905,6 +943,11 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             or "SStats"
         ).strip()
         div = _sstats_division_for_game(game, league_obj, league_name)
+        sstats_league_id = (
+            league_obj.get("id") or league_obj.get("leagueId")
+            or game.get("leagueId") or game.get("LeagueId")
+            or season_obj.get("leagueId")
+        )
         normalized = _sstats_parse_markets(game.get("odds") or [])
         compact_1x2 = {
             key: normalized[key]
@@ -920,6 +963,10 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             "AwayTeam": away,
             "Div": div,
             "League": league_name,
+            "sstats_league_id": (
+                str(sstats_league_id).strip()
+                if sstats_league_id not in (None, "") else ""
+            ),
             "fixture_id": f"sstats:{game.get('id')}",
             "sstats_game_id": game.get("id"),
             "source": "sstats",
@@ -987,6 +1034,248 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             f"1X2 у {quoted}, тоталы у {totals}."
         )
     return rows
+
+
+def sstats_historical_matches_for_fixtures(
+    fixtures,
+    api_key: str,
+    *,
+    years_back: int = 5,
+    max_leagues: int = 30,
+    logs=None,
+) -> list[dict]:
+    """Load completed results for competitions present in the current SStats scan.
+
+    Historical rows stay in the fixture's own Div namespace. This is especially
+    important for local, reserve, women's and youth leagues that are not present
+    in the bundled major-league archive. Only normal full-time results (status 8)
+    with explicit integer scores are admitted to chronological model training.
+    """
+    key = str(api_key or "").strip()
+    if not key:
+        if logs is not None:
+            logs.append("ℹ️ SStats history: API key отсутствует; динамическая история пропущена.")
+        return []
+    if not isinstance(fixtures, (list, tuple)) or not fixtures:
+        return []
+
+    try:
+        year_span = max(1, min(8, int(years_back)))
+    except (TypeError, ValueError, OverflowError):
+        year_span = 5
+    try:
+        league_limit = max(1, min(60, int(max_leagues)))
+    except (TypeError, ValueError, OverflowError):
+        league_limit = 30
+
+    now, timezone_offset = _sstats_timezone()
+    to_date = now.date()
+    from_date = to_date - timedelta(days=365 * year_span)
+    from_text, to_text = from_date.isoformat(), to_date.isoformat()
+    token_tag = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+    competitions = {}
+    for fixture in fixtures:
+        if not isinstance(fixture, dict):
+            continue
+        league_id = str(fixture.get("sstats_league_id") or "").strip()
+        division = str(fixture.get("Div") or "").strip()
+        if not league_id.isdigit() or not division:
+            continue
+        identity = (league_id, division)
+        item = competitions.setdefault(identity, {
+            "league_id": league_id,
+            "division": division,
+            "league": str(fixture.get("League") or division),
+            "fixtures": 0,
+            "priced": 0,
+        })
+        item["fixtures"] += 1
+        item["priced"] += int(bool(fixture.get("market_odds")))
+
+    if not competitions:
+        if logs is not None:
+            logs.append(
+                "ℹ️ SStats history: в текущих матчах нет LeagueId; "
+                "историю нельзя безопасно привязать к соревнованиям."
+            )
+        return []
+
+    ordered = sorted(
+        competitions.values(),
+        key=lambda item: (
+            -(item["fixtures"] + 2 * item["priced"]),
+            item["division"],
+            item["league_id"],
+        ),
+    )
+    selected = ordered[:league_limit]
+    skipped_leagues = max(0, len(ordered) - len(selected))
+
+    def _fetch_competition(item):
+        league_id = item["league_id"]
+        cache_key = (
+            f"sstats_history_v1_{league_id}_{item['division']}_"
+            f"{from_text}_{to_text}_{token_tag}"
+        )
+        cached = cache_get(cache_key, 24 * 60 * 60)
+        if isinstance(cached, list):
+            return item, cached, "cache"
+
+        records = []
+        offsets = (0, 1000)
+        for offset in offsets:
+            params = {
+                "LeagueId": league_id,
+                "From": from_text,
+                "To": to_text,
+                "Ended": "true",
+                "Limit": 1000,
+                "Offset": offset,
+                "TimeZone": timezone_offset,
+            }
+            try:
+                response = _sstats_request(
+                    "Games/list", key, params=params, timeout=(5, 35)
+                )
+            except Exception as exc:
+                return item, [], type(exc).__name__
+            if response.status_code != 200:
+                return item, [], f"HTTP {response.status_code}"
+            try:
+                payload = response.json() or {}
+                page = _sstats_unwrap(payload)
+            except Exception as exc:
+                return item, [], type(exc).__name__
+            if not isinstance(page, list):
+                return item, [], "unexpected response"
+            records.extend(row for row in page if isinstance(row, dict))
+            if len(page) < 1000:
+                break
+
+        normalized = []
+        seen = set()
+        for game in records:
+            try:
+                status = int(game.get("status"))
+            except (TypeError, ValueError):
+                status = None
+            if status != 8:
+                continue
+
+            raw_date = game.get("date") or game.get("Date")
+            match_date = _parse_provider_date(raw_date)
+            if match_date is None:
+                continue
+            if match_date.tzinfo is not None and now.tzinfo is not None:
+                match_date = match_date.astimezone(now.tzinfo)
+            day = match_date.date()
+            if not from_date <= day <= to_date:
+                continue
+
+            home_obj = game.get("homeTeam") or {}
+            away_obj = game.get("awayTeam") or {}
+            if not isinstance(home_obj, dict):
+                home_obj = {}
+            if not isinstance(away_obj, dict):
+                away_obj = {}
+            home = str(
+                home_obj.get("name") or game.get("homeTeamName") or ""
+            ).strip()
+            away = str(
+                away_obj.get("name") or game.get("awayTeamName") or ""
+            ).strip()
+            if not home or not away:
+                continue
+
+            def _score(value):
+                if value is None or isinstance(value, bool):
+                    return None
+                try:
+                    number = float(str(value).strip().replace(",", "."))
+                except (TypeError, ValueError, OverflowError):
+                    return None
+                if not math.isfinite(number) or number < 0 or not number.is_integer():
+                    return None
+                return int(number)
+
+            home_goals = _score(game.get("homeResult"))
+            away_goals = _score(game.get("awayResult"))
+            if home_goals is None or away_goals is None:
+                continue
+            identity = (
+                day.isoformat(), _norm_name(home), _norm_name(away),
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            normalized.append({
+                "Date": day.isoformat(),
+                "HomeTeam": home,
+                "AwayTeam": away,
+                "FTHG": home_goals,
+                "FTAG": away_goals,
+                "Div": item["division"],
+                "League": item["league"],
+                "SStatsLeagueId": league_id,
+                "source": "sstats_history",
+            })
+
+        normalized.sort(key=lambda row: (
+            row["Date"], row["HomeTeam"].casefold(), row["AwayTeam"].casefold(),
+        ))
+        # cache_get enforces the 24-hour freshness window; cache_put writes
+        # the atomic payload and intentionally has no TTL argument.
+        cache_put(cache_key, normalized)
+        return item, normalized, "api"
+
+    results = []
+    errors = []
+    # A small bounded pool avoids serial 30-request latency while respecting
+    # SStats' public API rate limits and reusing its 24-hour cache on repeat scans.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_fetch_competition, item) for item in selected]
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+
+    results.sort(key=lambda result: (
+        result[0]["division"], result[0]["league_id"],
+    ))
+    output = []
+    seen_global = set()
+    successful_competitions = 0
+    cached_competitions = 0
+    for item, rows, source in results:
+        if source in {"api", "cache"}:
+            successful_competitions += 1
+            cached_competitions += int(source == "cache")
+        elif source:
+            errors.append(f"{item['league']} [{item['league_id']}]: {source}")
+        for row in rows:
+            identity = (
+                row["Div"], row["Date"],
+                _norm_name(row["HomeTeam"]), _norm_name(row["AwayTeam"]),
+            )
+            if identity in seen_global:
+                continue
+            seen_global.add(identity)
+            output.append(row)
+
+    if logs is not None:
+        logs.append(
+            f"📚 SStats history: загружено {len(output)} FT-матчей за {successful_competitions}/"
+            f"{len(selected)} соревнований за {year_span} лет; "
+            f"кэш использован для {cached_competitions}, пропущено соревнований по лимиту {skipped_leagues}."
+        )
+        if errors:
+            logs.append(
+                "⚠️ SStats history: ошибки отдельных соревнований: "
+                + "; ".join(errors[:8])
+            )
+    return output
 
 
 def _sstats_div_code(league_name: str) -> str:

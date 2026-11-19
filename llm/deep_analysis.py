@@ -927,8 +927,9 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
         if "groq" in base.casefold() and model.casefold().startswith("openai/gpt-oss"):
             body["max_completion_tokens"] = 128
             body["reasoning_effort"] = "low"
+            # Groq rejects include_reasoning when reasoning_format is set.
+            # Keep reasoning_format=hidden to suppress reasoning tokens from the response.
             body["reasoning_format"] = "hidden"
-            body["include_reasoning"] = False
         else:
             body["max_tokens"] = 64
         url = f"{base}/chat/completions"
@@ -1116,8 +1117,9 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
             body["max_completion_tokens"] = 8192
             body.update({
                 "reasoning_effort": "low",
+                # Groq GPT-OSS accepts reasoning_format=hidden; do not combine it
+                # with include_reasoning (the API rejects that parameter pair).
                 "reasoning_format": "hidden",
-                "include_reasoning": False,
                 "response_format": _DEEP_ANALYSIS_RESPONSE_FORMAT,
             })
         elif is_groq:

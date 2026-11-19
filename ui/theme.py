@@ -1022,6 +1022,12 @@ div[data-testid="stButton"] > button {
 }
 
 
+/* Separate upcoming forecast feed: visible predictions are never betting approval */
+.neo-forecast-panel { margin-top:12px; border-color:#3a5145; }
+.neo-forecast-panel .neo-panel-kicker { color:#8bd8b5; }
+.neo-forecast-panel .neo-pick-cell { min-width:210px;max-width:285px;white-space:normal; }
+.neo-forecast-panel .neo-pick-note.provisional { display:block;white-space:normal;line-height:1.4;margin-top:5px; }
+.neo-forecast-panel .neo-bet-status.blocked { display:block; }
 /* Grok independent-analysis panel for Neural Terminal */
 .neo-grok-panel { margin-top:12px; border-color:#2b4d68; background:linear-gradient(145deg,#101d2a,#101a21 65%,#10231e); }
 .neo-grok-panel .neo-panel-kicker { color:#83c7f5; }

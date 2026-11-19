@@ -42,6 +42,28 @@ class SStatsDivisionMappingTests(unittest.TestCase):
         self.assertNotEqual(_sstats_div_code("Brasileirão Série B"), "BR1")
         self.assertEqual(_sstats_div_code("Brazilian Serie A"), "BR1")
 
+    def test_ambiguous_bare_league_uses_sstats_id_when_country_is_missing(self):
+        code = _sstats_division_for_game(
+            {"leagueId": 991},
+            {"id": 991},
+            "Premier League",
+        )
+        self.assertTrue(code.startswith("S_"))
+        self.assertEqual(
+            code,
+            _sstats_division_for_game(
+                {"leagueId": 991}, {"id": 991}, "Premier League",
+            ),
+        )
+        self.assertNotEqual(code, "E0")
+
+    def test_ambiguous_league_without_country_never_defaults_to_major_league(self):
+        for league in ("Premier League", "Ligue 1", "Serie A", "Champions League"):
+            with self.subTest(league=league):
+                code = _sstats_division_for_game({}, {}, league)
+                self.assertTrue(code.startswith("S_"))
+                self.assertNotIn(code, {"E0", "F1", "I1", "C1"})
+
     def test_country_context_disambiguates_identical_league_names(self):
         self.assertEqual(
             _sstats_division_for_game({}, {"country": "Brazil"}, "Serie A"),

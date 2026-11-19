@@ -359,7 +359,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         request = post.call_args.kwargs["json"]
         self.assertEqual(request["reasoning_effort"], "low")
         self.assertEqual(request["reasoning_format"], "hidden")
-        self.assertFalse(request["include_reasoning"])
+        self.assertNotIn("include_reasoning", request)
         self.assertEqual(request["response_format"]["type"], "json_schema")
         prompt = request["messages"][0]["content"]
         self.assertIn("Referee Example", prompt)
@@ -604,6 +604,8 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         self.assertEqual(request["model"], "openai/gpt-oss-120b")
         self.assertEqual(request["max_completion_tokens"], 128)
         self.assertEqual(request["reasoning_effort"], "low")
+        self.assertEqual(request["reasoning_format"], "hidden")
+        self.assertNotIn("include_reasoning", request)
         self.assertNotIn("max_tokens", request)
 
     def test_non_monotone_market_probabilities_are_discarded_without_losing_1x2(self):
