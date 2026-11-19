@@ -890,8 +890,7 @@ def _sstats_league_catalog(api_key: str, logs=None) -> list[dict]:
 
     try:
         response = _sstats_request(
-            "Leagues", key, params={"Limit": 2000, "Offset": 0},
-            timeout=(5, 30),
+            "Leagues", key, timeout=(5, 30),
         )
     except Exception as exc:
         if logs is not None:
