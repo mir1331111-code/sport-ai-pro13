@@ -311,9 +311,14 @@ def _match_table_row(card):
         )
     elif strict_daily is False:
         note_text = daily_note.replace("Ознакомительный прогноз · ", "", 1)
+        sample_text = (
+            f"Дом/гость: {int(card.get('_daily_home_sample') or 0)}/"
+            f"{int(card.get('_daily_away_sample') or 0)}"
+        )
         selection_html = (
             f"<small class='neo-pick-note provisional'>ОЗНАКОМИТЕЛЬНО · "
-            f"{esc(note_text or 'ограниченная доказательная база')}</small>"
+            f"{esc(note_text or 'ограниченная доказательная база')} · "
+            f"{esc(sample_text)}</small>"
         )
     else:
         selection_html = ""
