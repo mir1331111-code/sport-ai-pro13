@@ -1,5 +1,8 @@
 import unittest
+from datetime import datetime, timedelta
 
+from data.fixture_time import app_timezone
+from betting.ranking import rank_best_fixtures
 from ui.tabs.dashboard import (
     _grok_panel, _https_image_url, _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
@@ -68,6 +71,33 @@ class DashboardHelperTests(unittest.TestCase):
         })
         self.assertEqual(draw["pick"], "X")
         self.assertEqual(away["pick"], "П2")
+
+    def test_provisional_match_counts_are_visible_in_diagnostics_but_not_approved(self):
+        now = datetime.now(app_timezone())
+        kickoff = now + timedelta(hours=2)
+        card = {
+            "fixture_id": "sstats:provisional-1",
+            "date_iso": kickoff.date().isoformat(),
+            "time": kickoff.strftime("%H:%M"),
+            "home_team": "Home FC",
+            "away_team": "Away FC",
+            "p1": 0.42, "px": 0.29, "p2": 0.29,
+            "independent_features": {
+                "home_home_sample": 0,
+                "away_away_sample": 0,
+            },
+        }
+        diagnostics = {}
+        ranked = rank_best_fixtures(
+            [card], now=now, limit=None, min_sample_games=5,
+            min_probability=0.52, include_limited_history=True,
+            diagnostics=diagnostics,
+        )
+        self.assertEqual(len(ranked), 1)
+        self.assertFalse(ranked[0]["strict_eligible"])
+        self.assertEqual(diagnostics["unique_candidates"], 1)
+        self.assertEqual(diagnostics["strict_unique"], 0)
+        self.assertEqual(diagnostics["provisional_unique"], 1)
 
     def test_dashboard_shows_only_strict_value_and_kelly_approved_bets(self):
         approved = {
