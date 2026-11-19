@@ -545,9 +545,17 @@ def rank_best_fixtures(
                 counters["incoherent_market_line"] += 1
 
         if market_probabilities:
-            market_pick = max(
-                ("П1", "X", "П2"),
-                key=lambda pick: market_probabilities[pick],
+            # The dashboard may pass a strict, already-approved bet selection.
+            # In that case rank the probability of that exact selection, not
+            # the home-win outcome or the market's generic favourite.
+            requested_pick = str(card.get("_daily_required_pick") or "").strip()
+            market_pick = (
+                requested_pick
+                if requested_pick in market_probabilities
+                else max(
+                    ("П1", "X", "П2"),
+                    key=lambda pick: market_probabilities[pick],
+                )
             )
             pass_probability = float(market_probabilities[market_pick])
             market_candidate = True
