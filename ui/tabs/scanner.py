@@ -2672,6 +2672,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"совпадений {visual_stats['fixtures_matched']}/"
                     f"{visual_stats['primary_fixtures']}, "
                     f"добавлено изображений и полей {visual_stats['assets_added']}, "
+                    f"совпадений по сдвигу даты ±1 день {visual_stats.get('date_fallback_matches', 0)}, "
+                    f"неоднозначных пар {visual_stats.get('ambiguous_team_pair_matches', 0)}, "
                     f"матчей с визуальными данными "
                     f"{visual_stats['fixtures_with_assets']}; "
                     f"источники TSDB={len(tsdb_rows)}, ESPN={len(espn_rows)}, "
