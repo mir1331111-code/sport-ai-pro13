@@ -2678,6 +2678,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     "🖼 Визуальные метаданные без подмены расписания/котировок: "
                     f"совпадений {visual_stats['fixtures_matched']}/"
                     f"{visual_stats['primary_fixtures']}, "
+                    f"сопоставлений со сдвигом даты ±1 день {visual_stats['date_fallback_matches']} "
+                    f"(неоднозначных пропусков {visual_stats['ambiguous_date_matches']}), "
                     f"добавлено изображений и полей {visual_stats['assets_added']}, "
                     f"матчей с визуальными данными "
                     f"{visual_stats['fixtures_with_assets']}; "
