@@ -25,7 +25,7 @@ def _fixture_day(row: dict) -> date | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
     except ValueError:
         pass
-    iso_match = re.search(r"\\b(\\d{4}-\\d{2}-\\d{2})\\b", text)
+    iso_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
     if iso_match:
         try:
             return date.fromisoformat(iso_match.group(1))
