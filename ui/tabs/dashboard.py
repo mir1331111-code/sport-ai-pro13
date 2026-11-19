@@ -788,7 +788,7 @@ def render():
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DAILY FORECAST RANKING · НЕ СПИСОК СТАВОК</span>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DAILY PASS-PROBABILITY RANKING · НЕ СПИСОК СТАВОК</span>"
             f"<h3>{esc(table_title)}</h3></div>"
             f"<span class='neo-count-pill'>{available_event_count} событий</span></div>"
             "<div class='neo-ranking-disclaimer'>"
@@ -797,12 +797,12 @@ def render():
             "<strong>VALUE · СТАВКА ДОПУЩЕНА</strong>."
             "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
-            "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
-            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Прогноз и статус ставки</th>"
+            "<th>Время</th><th>Лига</th><th>Матч</th><th>Модель П1</th><th>Модель X</th><th>Модель П2</th>"
+            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Оценка прохода / статус ставки</th>"
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} событий из {available_event_count} предстоящих · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. ПОРЯДОК СПИСКА = рейтинг прогноза, НЕ одобрение ставки. Балл сортировки: 40% вероятность фаворита, 30% отрыв от второго исхода, 20% домашняя/выездная история, 5% реальный xG, 5% полная линия. Только зелёная метка VALUE · СТАВКА ДОПУЩЕНА означает прохождение отдельного Value/EV/Edge/Kelly-фильтра.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {available_event_count} предстоящих событий за выбранный период · оценка по рынку без маржи: {market_count} · модельный прогноз с достаточной историей: {model_only_count}. При наличии полной линии одного букмекера порядок строится по no-vig вероятности рынка; иначе показывается модель только при истории лиги ≥30 и выборке хозяев дома/гостей в гостях ≥5. Колонки П1/X/П2 — вероятности модели; последняя колонка отдельно указывает источник оценки прохода. Ни рыночный ориентир, ни место в списке не являются разрешением на ставку. Зелёная VALUE-метка возможна только после отдельного league holdout, полного рынка, контекста и риск-фильтров.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
