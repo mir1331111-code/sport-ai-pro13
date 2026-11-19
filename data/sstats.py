@@ -814,7 +814,9 @@ def _sstats_country_name(value):
 def _sstats_team_country(game, side):
     """Read country metadata from a home/away team object when supplied."""
     game = game if isinstance(game, dict) else {}
-    team = game.get(side) or game.get(side.casefold()) or {}
+    team = _sstats_mapping_value(
+        game, (side, "home_team" if side.casefold().startswith("home") else "away_team"),
+    ) or {}
     if isinstance(team, dict):
         value = _sstats_mapping_value(
             team, ("country", "countryName", "country_name", "nation"),
@@ -846,17 +848,26 @@ def _sstats_league_info(game):
     league_id = None
     for candidate in candidates:
         league_id = _sstats_mapping_value(
-            candidate, ("id", "leagueId", "league_id", "leagueID", "LeagueId", "ID"),
+            candidate, (
+                "id", "leagueId", "league_id", "leagueID", "LeagueId", "ID",
+                "competitionId", "tournamentId",
+            ),
         )
         if league_id not in (None, ""):
             break
     if league_id in (None, ""):
         league_id = _sstats_mapping_value(
-            game, ("leagueId", "league_id", "leagueID", "LeagueId", "LeagueID"),
+            game, (
+                "leagueId", "league_id", "leagueID", "LeagueId", "LeagueID",
+                "competitionId", "tournamentId",
+            ),
         )
     if league_id in (None, ""):
         league_id = _sstats_mapping_value(
-            season, ("leagueId", "league_id", "leagueID", "LeagueId", "LeagueID"),
+            season, (
+                "leagueId", "league_id", "leagueID", "LeagueId", "LeagueID",
+                "competitionId", "tournamentId",
+            ),
         )
 
     league_name = None
@@ -1404,7 +1415,9 @@ def sstats_historical_matches_for_fixtures(
         )
         cached = cache_get(cache_key, 24 * 60 * 60)
         if isinstance(cached, list):
-            return item, cached, "cache"
+            return item, cached, "cache", {
+                "fetched": len(cached), "accepted": len(cached),
+            }
 
         records = []
         offsets = (0, 1000)
