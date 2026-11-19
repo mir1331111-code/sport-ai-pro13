@@ -96,9 +96,13 @@ def approved_1x2_recommendation(card):
         edge_value = float(verdict.get("edge"))
     except (TypeError, ValueError):
         return None
+    prices = card.get("market_odds") or {}
+    quoted_odd = num(prices.get(best[1])) if isinstance(prices, dict) else None
     bookmaker = str((card.get("bookmaker_by_pick") or {}).get(best[1]) or "").strip()
     if (
         not bookmaker
+        or quoted_odd is None
+        or abs(quoted_odd - odd) > 0.01
         or odd < 1.70
         or ev < 0.05
         or edge_value < 0.05
@@ -409,9 +413,9 @@ def _match_table_row(card):
                 if model_pass_probability is not None else ""
             )
         selection_html = (
-            "<small class='neo-pick-note proven'>РЫНОК БЕЗ МАРЖИ · ОЦЕНКА ПРОХОДА</small>"
+            "<small class='neo-pick-note proven'>ДОПУЩЕННЫЙ ИСХОД · РЫНОЧНАЯ ВЕРОЯТНОСТЬ БЕЗ МАРЖИ</small>"
             f"<small class='neo-pick-note rank-score'>{esc(sample_text)}{esc(disagreement)}</small>"
-            "<small class='neo-pick-note provisional'>Это рыночный ориентир, не модельная вероятность и не допуск к ставке.</small>"
+            "<small class='neo-pick-note provisional'>Вероятность относится именно к выбранной ставке; П1, X и П2 сравниваются одинаково.</small>"
         )
     else:
         selection_html = (
