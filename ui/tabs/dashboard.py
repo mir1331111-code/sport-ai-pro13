@@ -670,6 +670,12 @@ def render():
         selected_event_cards.append(card)
     strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
+    scan_diagnostics_text = (
+        f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
+        f"уже начались: {selection_diagnostics.get('already_started', 0)} · "
+        f"вне периода: {selection_diagnostics.get('outside_window', 0)} · "
+        f"некорректный 1X2: {selection_diagnostics.get('invalid_forecast', 0)}"
+    )
 
     brier = f"{metrics['brier']:.3f}" if metrics.get("brier") is not None else "—"
     log_loss = f"{metrics['log_loss']:.3f}" if metrics.get("log_loss") is not None else "—"
@@ -728,7 +734,7 @@ def render():
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} лучших из {len(ranked_events)} предстоящих событий · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. Сначала идут события с подтверждённой историей и фаворитом, затем прогнозы с ограниченными данными. Ознакомительный прогноз не является рекомендацией к ставке; Value/EV/Edge/Kelly не изменены.</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} лучших из {len(ranked_events)} предстоящих событий · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. Сначала идут события с подтверждённой историей и фаворитом, затем прогнозы с ограниченными данными. Ознакомительный прогноз не является рекомендацией к ставке; Value/EV/Edge/Kelly не изменены.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
