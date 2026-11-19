@@ -2234,6 +2234,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 key=lambda pair: pair[1],
                             )[0]
                             refresh_card["deep_analysis"] = analysis
+                            refresh_card["deep_analysis_provider"] = refresh_provider
+                            refresh_card["deep_analysis_model"] = str(D.get("meta", {}).get("llm_model") or "")
                             refresh_card["llm_opinion"] = format_top_match_opinion(
                                 analysis, model_pick_code=model_pick
                             )
@@ -2733,7 +2735,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Team-name search is restricted on TheSportsDB's free tier.
         # Use the exact provider team IDs attached to matching event records.
         logo_by_team_id = {}
-        logo_lookup_budget = 10
+        logo_lookup_budget = 24
         logo_lookups = 0
         logo_fields_added = 0
         for fixture_row in rows:
@@ -3451,6 +3453,20 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "context": {},
             })
 
+        badge_pair_count = sum(
+            1 for card in cards
+            if card.get("home_badge") and card.get("away_badge")
+        )
+        badge_any_count = sum(
+            1 for card in cards
+            if card.get("home_badge") or card.get("away_badge")
+        )
+        logs.append(
+            f"🖼 Эмблемы клубов: полная пара URL у {badge_pair_count}/{len(cards)} матчей; "
+            f"хотя бы одна эмблема у {badge_any_count}/{len(cards)}. "
+            "Отсутствующие URL не заменяются выдуманными логотипами."
+        )
+
         if sstats_key:
             sstats_id_count = sum(
                 1 for row in rows
@@ -3676,6 +3692,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         key=lambda pair: pair[1],
                     )[0]
                     card["deep_analysis"] = analysis
+                    card["deep_analysis_provider"] = llm_prov
+                    card["deep_analysis_model"] = llm_model
                     card["llm_opinion"] = format_top_match_opinion(
                         analysis, model_pick_code=model_pick_code
                     )
