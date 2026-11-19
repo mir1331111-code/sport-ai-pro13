@@ -141,12 +141,18 @@ def _grok_panel(cards, meta):
                     )
             independent_pick = str(analysis.get("independent_pick") or "").strip()
             model_prediction = favorite(card) or {}
-            model_pick = str(model_prediction.get("pick") or "")
+            _home_n, _away_n, model_history_supported = _forecast_history_support(card)
+            model_pick = (
+                str(model_prediction.get("pick") or "")
+                if model_history_supported else ""
+            )
             if independent_pick in {"П1", "X", "П2"}:
                 comparison = (
                     "совпадает с основной моделью"
-                    if independent_pick == model_pick
-                    else f"расходится с основной моделью ({model_pick or 'нет прогноза'})"
+                    if model_pick and independent_pick == model_pick
+                    else f"расходится с основной моделью ({model_pick})"
+                    if model_pick
+                    else "у основной модели нет подтверждённой истории для выбора исхода"
                 )
                 body.append(
                     f"<div class='neo-grok-meta'>Grok: <b>{esc(independent_pick)}</b> · "
@@ -438,6 +444,27 @@ def _https_image_url(value):
     return ""
 
 
+def _forecast_history_support(card, minimum=5):
+    """Return venue-specific sample counts and whether the forecast has support."""
+    features = card.get("independent_features")
+    features = features if isinstance(features, dict) else {}
+
+    def sample(primary, secondary):
+        value = card.get(primary)
+        if value is None:
+            value = features.get(secondary)
+        parsed = num(value)
+        return max(0, int(parsed)) if parsed is not None else 0
+
+    home_n = sample("_daily_home_sample", "home_home_sample")
+    away_n = sample("_daily_away_sample", "away_away_sample")
+    try:
+        floor = max(1, int(minimum))
+    except (TypeError, ValueError):
+        floor = 5
+    return home_n, away_n, home_n >= floor and away_n >= floor
+
+
 def _forecast_rejection_reason(card):
     """Explain why a visible forecast is not an approved bet."""
     reasons = []
@@ -496,7 +523,13 @@ def _match_table_row(card, *, preview_only=False):
 
     pick = str(prediction.get("pick") or "—")
     probability = num(prediction.get("probability"))
-    pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
+    home_history_n, away_history_n, history_supported = _forecast_history_support(card)
+    prior_only = bool(preview_only and not history_supported)
+    pick_text = (
+        "PRIOR-ONLY · НЕ ВЫБИРАЕМ ИСХОД"
+        if prior_only else
+        f"{pick} · {probability:.0%}" if probability is not None else pick
+    )
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
     value_passed = bool(
         not preview_only and verdict.get("real_odds")
@@ -505,9 +538,17 @@ def _match_table_row(card, *, preview_only=False):
     has_confirmed_line = has_prices(card)
     if preview_only:
         reason_text = _forecast_rejection_reason(card)
+        history_note = (
+            "<small class='neo-pick-note provisional'>"
+            f"Нет достаточной домашней/выездной истории: {home_history_n}/5 и "
+            f"{away_history_n}/5. Вероятности показаны как prior; фаворит не выбирается."
+            "</small>"
+            if prior_only else ""
+        )
         bet_status_html = (
             "<small class='neo-bet-status blocked'>ПРОГНОЗ · НЕ ДОПУЩЕН К СТАВКЕ</small>"
-            f"<small class='neo-pick-note provisional'>{esc(reason_text)}</small>"
+            + history_note
+            + f"<small class='neo-pick-note provisional'>{esc(reason_text)}</small>"
         )
     elif value_passed and verdict.get("is_bet"):
         bet_status_html = (
@@ -583,7 +624,7 @@ def _match_table_row(card, *, preview_only=False):
         "</div></td>"
         + "".join(f"<td class='neo-prob'>{value}</td>" for value in values)
         + "".join(odds_cells)
-        + f"<td class='neo-pick-cell'><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span>{bet_status_html}{selection_html}</td>"
+        + f"<td class='neo-pick-cell'><span class='neo-pick {'prior-only' if prior_only else 'value' if value_passed else ''}'>{esc(pick_text)}</span>{bet_status_html}{selection_html}</td>"
         + "</tr>"
     )
 
