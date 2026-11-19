@@ -55,8 +55,12 @@ def has_prices(card):
     prices = card.get("market_odds") or {}
     return (
         isinstance(prices, dict)
-        and str(card.get("odds_source") or "").casefold() not in {"", "no_market", "model_only"}
-        and all(1.01 < (num(prices.get(k)) or 0) <= 100 for k in ("П1", "X", "П2"))
+        and str(card.get("odds_source") or "").strip().casefold() == "sstats"
+        and proportional_devig(
+            prices,
+            ("П1", "X", "П2"),
+            bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
+        ) is not None
     )
 
 
