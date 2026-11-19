@@ -57,7 +57,7 @@ from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
 from betting.ranking import (
-    model_favorite, rank_model_favorites,
+    favorite_display, model_favorite, rank_model_favorites,
     rank_model_favorites_with_minimum, rank_score,
 )
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
@@ -1519,6 +1519,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     favorite_item["strength"] if favorite_history_sufficient
                     else "МАЛО ИСТОРИИ"
                 )
+                display_favorite = favorite_display(favorite_item)
+                favorite_outcome_html = (
+                    f"{html.escape(display_favorite['label'])} · {favorite_probability:.1%}"
+                    if display_favorite["history_sufficient"]
+                    else html.escape(display_favorite["label"])
+                )
                 model_distribution = " · ".join(
                     f"{label} {float(favorite_card.get(field) or 0):.1%}"
                     for field, label in (("p1", "П1"), ("px", "X"), ("p2", "П2"))
@@ -1548,8 +1554,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"<span>{html.escape(favorite_strength_title)}</span></div>"
                         f"<div style='font-weight:750;font-size:16px;color:#f0f5f7;margin:7px 0 4px'>"
                         f"{html.escape(favorite_match)}</div>"
-                        f"<div style='color:#8fd8bd;font-weight:800;font-size:19px'>"
-                        f"{html.escape(favorite_item['label'])} · {favorite_probability:.1%}</div>"
+                        f"<div style='color:#8fd8bd;font-weight:800;font-size:17px'>"
+                        f"{favorite_outcome_html}</div>"
                         f"<div style='color:#d4e0e6;font-size:11px;margin-top:4px'>"
                         f"Вероятности модели: {html.escape(model_distribution)}</div>"
                         + market_distribution_html
