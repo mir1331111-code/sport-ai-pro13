@@ -1,7 +1,7 @@
 import unittest
 
 from ui.tabs.dashboard import (
-    _grok_panel, _match_table_row, _probability_health_note,
+    _grok_panel, _https_image_url, _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
 )
@@ -151,6 +151,17 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("https://assets.test/chelsea.png", row)
         self.assertIn("neo-league-flag", row)
         self.assertIn("Premier League", row)
+
+    def test_badge_urls_upgrade_http_and_protocol_relative_sources(self):
+        self.assertEqual(
+            _https_image_url("http://assets.test/crest.png"),
+            "https://assets.test/crest.png",
+        )
+        self.assertEqual(
+            _https_image_url("//assets.test/crest.png"),
+            "https://assets.test/crest.png",
+        )
+        self.assertEqual(_https_image_url("javascript:alert(1)"), "")
 
     def test_fixture_row_displays_daily_event_quality_score(self):
         row = _match_table_row({
