@@ -303,11 +303,26 @@ def _match_table_row(card):
     pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
     value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
+    has_confirmed_line = has_prices(card)
+    if value_passed:
+        bet_status_html = (
+            "<small class='neo-bet-status approved'>VALUE · СТАВКА ДОПУЩЕНА</small>"
+        )
+    elif has_confirmed_line:
+        bet_status_html = (
+            "<small class='neo-bet-status blocked'>НЕ ДОПУЩЕНО К СТАВКЕ · "
+            "строгий Value-фильтр не пройден</small>"
+        )
+    else:
+        bet_status_html = (
+            "<small class='neo-bet-status forecast-only'>ТОЛЬКО ПРОГНОЗ · "
+            "нет подтверждённой полной линии 1X2</small>"
+        )
     strict_daily = card.get("_daily_strict_eligible")
     daily_note = str(card.get("_daily_selection_note") or "").strip()
     quality_score = num(card.get("_daily_quality_score"))
     score_html = (
-        f"<small class='neo-pick-note rank-score'>РЕЙТИНГ СОБЫТИЯ · {quality_score:.0f}/100</small>"
+        f"<small class='neo-pick-note rank-score'>БАЛЛ СОРТИРОВКИ · {quality_score:.0f}/100</small>"
         if quality_score is not None else ""
     )
     if strict_daily is True:
@@ -362,7 +377,7 @@ def _match_table_row(card):
         "</div></td>"
         + "".join(f"<td class='neo-prob'>{value}</td>" for value in values)
         + "".join(odds_cells)
-        + f"<td class='neo-pick-cell'><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span>{selection_html}</td>"
+        + f"<td class='neo-pick-cell'><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span>{bet_status_html}{selection_html}</td>"
         + "</tr>"
     )
 
@@ -739,16 +754,21 @@ def render():
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>MATCH INTELLIGENCE · DAILY RANKING</span>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DAILY FORECAST RANKING · НЕ СПИСОК СТАВОК</span>"
             f"<h3>{esc(table_title)}</h3></div>"
             f"<span class='neo-count-pill'>{available_event_count} событий</span></div>"
+            "<div class='neo-ranking-disclaimer'>"
+            "<b>Место в списке = качество прогноза, а не допуск к ставке.</b> "
+            "Ставка разрешена только при отдельной зелёной метке "
+            "<strong>VALUE · СТАВКА ДОПУЩЕНА</strong>."
+            "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
-            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Вариант</th>"
+            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Прогноз и статус ставки</th>"
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} событий из {available_event_count} предстоящих · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. Рейтинг качества: 40% вероятность фаворита, 30% отрыв от второго исхода, 20% домашняя/выездная история, 5% реальный xG, 5% полная линия. Время начала не повышает рейтинг; все события с равным баллом на границе списка сохраняются. Балл — сортировка, не вероятность победы и не рекомендация к ставке. Value/EV/Edge/Kelly не изменены.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} событий из {available_event_count} предстоящих · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. ПОРЯДОК СПИСКА = рейтинг прогноза, НЕ одобрение ставки. Балл сортировки: 40% вероятность фаворита, 30% отрыв от второго исхода, 20% домашняя/выездная история, 5% реальный xG, 5% полная линия. Только зелёная метка VALUE · СТАВКА ДОПУЩЕНА означает прохождение отдельного Value/EV/Edge/Kelly-фильтра.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
