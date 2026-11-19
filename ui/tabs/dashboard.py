@@ -73,6 +73,33 @@ def dashboard_bet_approved(card):
     )
 
 
+DASHBOARD_FORECAST_FEED_LIMIT = 20
+
+
+def _rank_dashboard_forecast_feed(candidates, limit=DASHBOARD_FORECAST_FEED_LIMIT):
+    """Return the highest-quality non-bet forecasts, not merely earliest kickoffs."""
+    prepared = []
+    for item, card in candidates or []:
+        if not isinstance(item, dict) or not isinstance(card, dict):
+            continue
+        prepared.append((item, card))
+
+    prepared.sort(key=lambda pair: (
+        -int(bool(pair[0].get("strict_eligible"))),
+        -float(pair[0].get("quality_score") or 0.0),
+        -float(pair[0].get("probability_margin") or 0.0),
+        -int(pair[0].get("sample_games") or 0),
+        -float(pair[0].get("probability") or 0.0),
+        str(pair[1].get("date_iso") or pair[1].get("date") or ""),
+        str(pair[1].get("match") or pair[1].get("match_ru") or "").casefold(),
+    ))
+    try:
+        maximum = max(0, int(limit))
+    except (TypeError, ValueError, OverflowError):
+        maximum = DASHBOARD_FORECAST_FEED_LIMIT
+    return [card for _item, card in prepared[:maximum]]
+
+
 def _provider_is_grok(provider):
     name = str(provider or "").strip()
     details = LLM_PROVIDERS.get(name, {})
@@ -847,9 +874,9 @@ def render():
                 "Ближайшие 24 часа · лучшие события",
                 "Весь горизонт скана · лучшие события",
             ],
-            index=0,
+            index=2,
             label_visibility="collapsed",
-            key="dashboard_period_filter_v2",
+            key="dashboard_period_filter_v3",
         )
     with filter_refresh:
         refresh_dashboard = st.button(
@@ -907,12 +934,13 @@ def render():
         if dashboard_bet_approved(card):
             approved_event_cards.append(card)
         else:
-            forecast_candidates.append((item.get("kickoff"), card))
-    # The forecast feed is a chronological view, not a second betting ranking.
-    forecast_candidates.sort(
-        key=lambda pair: pair[0] if pair[0] is not None else datetime.max.replace(tzinfo=now.tzinfo)
+            forecast_candidates.append((item, card))
+    # The scanner's horizon is the search window. Within that window, the
+    # forecast feed must surface the best-supported candidates first, not hide
+    # later but better-supported games behind the next kickoff.
+    forecast_event_cards = _rank_dashboard_forecast_feed(
+        forecast_candidates, limit=DASHBOARD_FORECAST_FEED_LIMIT,
     )
-    forecast_event_cards = [card for _kickoff, card in forecast_candidates[:12]]
     selected_event_cards = approved_event_cards[:5]
     strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
@@ -1019,12 +1047,13 @@ def render():
             "<section class='neo-panel neo-forecast-panel'>"
             "<div class='neo-panel-heading'><div>"
             "<span class='neo-panel-kicker'>FORECAST FEED · НЕ СПИСОК СТАВОК</span>"
-            "<h3>Ближайшие матчи · прогнозы модели</h3></div>"
-            f"<span class='neo-count-pill'>{len(forecast_event_cards)} из {len(forecast_candidates)} матчей</span></div>"
+            "<h3>Лучшие матчи горизонта · прогнозы модели</h3></div>"
+            f"<span class='neo-count-pill'>{len(forecast_event_cards)} из {len(forecast_candidates)} по качеству</span></div>"
             "<div class='neo-ranking-disclaimer'>"
-            "<b>Здесь видны предстоящие матчи, даже если они не прошли допуск.</b> "
-            "Вероятности П1 / X / П2 — прогноз модели, не рекомендация поставить. "
-            "Каждая строка содержит причину отказа; эти матчи не попадают в автоматический портфель."
+            "<b>Здесь показаны лучшие по качеству прогнозы во всём выбранном горизонте сканирования.</b> "
+            "Рейтинг учитывает историю, отрыв между исходами, вероятность и наличие рыночной линии; "
+            "поздний матч может быть выше раннего. Вероятности П1 / X / П2 — прогноз модели, "
+            "не рекомендация поставить. Каждая строка содержит причину отказа."
             "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
@@ -1038,8 +1067,8 @@ def render():
                 "</td></tr>"
             )
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показаны ближайшие по времени {len(forecast_event_cards)} непринятых прогнозов из {len(forecast_candidates)}. "
-            "Статус «НЕ ДОПУЩЕН» означает, что ставку делать нельзя. Список ограничен 12 строками для читаемости.</div>"
+            f"<div class='neo-table-footer'>Показаны {len(forecast_event_cards)} лучших по качеству прогнозов из {len(forecast_candidates)} непринятых событий выбранного периода. "
+            f"Максимум {DASHBOARD_FORECAST_FEED_LIMIT} строк. Статус «НЕ ДОПУЩЕН» означает, что ставку делать нельзя.</div>"
             "</section>",
             unsafe_allow_html=True,
         )
