@@ -754,9 +754,14 @@ def render():
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DAILY FORECAST RANKING · NOT BET APPROVAL</span>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DAILY FORECAST RANKING · НЕ СПИСОК СТАВОК</span>"
             f"<h3>{esc(table_title)}</h3></div>"
             f"<span class='neo-count-pill'>{available_event_count} событий</span></div>"
+            "<div class='neo-ranking-disclaimer'>"
+            "<b>Место в списке = качество прогноза, а не допуск к ставке.</b> "
+            "Ставка разрешена только при отдельной зелёной метке "
+            "<strong>VALUE · СТАВКА ДОПУЩЕНА</strong>."
+            "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
             "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Прогноз и статус ставки</th>"
