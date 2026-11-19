@@ -296,6 +296,63 @@ class ModelFavoriteTests(unittest.TestCase):
         )
         self.assertGreater(ranked[0]["kickoff"], ranked[1]["kickoff"])
 
+    def test_daily_shortlist_keeps_limited_history_as_provisional(self):
+        tz = ZoneInfo("Europe/Warsaw")
+        now = datetime(2026, 11, 19, 9, 0, tzinfo=tz)
+        card = {
+            "home": "Unknown Home", "away": "Unknown Away",
+            "match": "Unknown Home vs Unknown Away",
+            "date_iso": "2026-11-19", "time": "19:30",
+            "p1": 0.44, "px": 0.30, "p2": 0.26,
+            "games": 25,
+            "independent_features": {
+                "home_home_sample": 0,
+                "away_away_sample": 1,
+            },
+        }
+        diagnostics = {}
+        ranked = rank_best_fixtures(
+            [card], now=now, period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+            include_limited_history=True, diagnostics=diagnostics,
+        )
+        self.assertEqual(len(ranked), 1)
+        self.assertFalse(ranked[0]["strict_eligible"])
+        self.assertEqual(ranked[0]["home_sample"], 0)
+        self.assertEqual(ranked[0]["away_sample"], 1)
+        self.assertEqual(diagnostics["strict_unique"], 0)
+        self.assertEqual(diagnostics["provisional_unique"], 1)
+
+    def test_daily_shortlist_puts_supported_events_ahead_of_earlier_provisional_ones(self):
+        tz = ZoneInfo("Europe/Warsaw")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        provisional = {
+            "home": "Provisional FC", "away": "Guest FC",
+            "match": "Provisional FC vs Guest FC",
+            "date_iso": "2026-11-19", "time": "09:00",
+            "p1": 0.85, "px": 0.10, "p2": 0.05,
+            "independent_features": {
+                "home_home_sample": 1, "away_away_sample": 2,
+            },
+        }
+        supported = {
+            "home": "Supported FC", "away": "Guest FC",
+            "match": "Supported FC vs Guest FC",
+            "date_iso": "2026-11-19", "time": "20:00",
+            "p1": 0.62, "px": 0.22, "p2": 0.16,
+            "independent_features": {
+                "home_home_sample": 7, "away_away_sample": 8,
+            },
+        }
+        ranked = rank_best_fixtures(
+            [provisional, supported], now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+            include_limited_history=True,
+        )
+        self.assertEqual(ranked[0]["card"]["match"], "Supported FC vs Guest FC")
+        self.assertTrue(ranked[0]["strict_eligible"])
+        self.assertEqual(ranked[1]["card"]["match"], "Provisional FC vs Guest FC")
+        self.assertFalse(ranked[1]["strict_eligible"])
+
     def test_daily_shortlist_respects_requested_window_and_limit(self):
         tz = ZoneInfo("Europe/Warsaw")
         now = datetime(2026, 11, 18, 8, 0, tzinfo=tz)

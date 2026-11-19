@@ -742,6 +742,10 @@ section[data-testid="stSidebar"] div[data-testid="stExpander"] summary {
   color:#b5d9cb;background:#142820;font-size:.59rem;font-weight:900;
 }
 .neo-pick.value {color:#a6f3ce;background:#12412e;border-color:#2f9b6b;}
+.neo-pick-cell {white-space:normal !important;min-width:105px;}
+.neo-pick-note {display:block;margin-top:4px;font-size:.47rem;line-height:1.25;font-weight:800;white-space:normal;}
+.neo-pick-note.proven {color:#70d7ad;}
+.neo-pick-note.provisional {color:#d9b77b;}
 .neo-empty-cell {padding:34px 12px !important;text-align:center;color:#91a8a4 !important;white-space:normal !important;}
 .neo-table-footer {padding-top:9px;color:#78928e;font-size:.6rem;line-height:1.4;}
 .neo-chart-wrap {padding:2px 0 0;}

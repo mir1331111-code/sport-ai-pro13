@@ -394,15 +394,37 @@ def rank_best_fixtures(
     limit: int | None = 5,
     min_sample_games: int = 5,
     min_probability: float = 0.52,
+    include_limited_history: bool = False,
+    diagnostics: dict | None = None,
 ) -> list[dict]:
-    """Rank the best upcoming fixtures in a time window, not by kickoff order.
+    """Rank upcoming fixtures, optionally keeping provisional forecasts visible.
 
-    The selection is forecast-only: it requires a valid 1X2 distribution,
-    at least five dated home-at-home observations for the home team and
-    away-at-away observations for the away team, and a non-draw-like favourite.
-    Bookmaker Value/EV/Edge/Kelly approval remains an independent process.
+    Strict candidates have a valid 1X2 distribution, at least the configured
+    number of dated home-at-home observations for the home team and away-at-away
+    observations for the away team, and a favourite probability at or above
+    the configured probability floor.
+
+    When include_limited_history is enabled, otherwise valid future model
+    forecasts are also returned as clearly labelled display-only candidates.
+    This fallback never changes Value/EV/Edge/Kelly or staking eligibility.
     """
+    counters = {
+        "input_cards": len(cards) if isinstance(cards, list) else 0,
+        "invalid_kickoff": 0,
+        "already_started": 0,
+        "outside_window": 0,
+        "invalid_forecast": 0,
+        "missing_venue_history": 0,
+        "insufficient_home_history": 0,
+        "insufficient_away_history": 0,
+        "below_probability": 0,
+        "strict_candidates": 0,
+        "provisional_candidates": 0,
+    }
     if not isinstance(cards, list):
+        if isinstance(diagnostics, dict):
+            diagnostics.clear()
+            diagnostics.update(counters)
         return []
 
     tz = app_timezone()
@@ -417,6 +439,9 @@ def rank_best_fixtures(
             else period_end.astimezone(tz)
         )
         if local_end <= local_now:
+            if isinstance(diagnostics, dict):
+                diagnostics.clear()
+                diagnostics.update(counters)
             return []
 
     try:
@@ -437,38 +462,119 @@ def rank_best_fixtures(
         if not isinstance(card, dict):
             continue
         kickoff = fixture_kickoff_local(card, timezone_name=timezone_name)
-        if kickoff is None or kickoff <= local_now:
+        if kickoff is None:
+            counters["invalid_kickoff"] += 1
+            continue
+        if kickoff <= local_now:
+            counters["already_started"] += 1
             continue
         if local_end is not None and kickoff >= local_end:
+            counters["outside_window"] += 1
+            continue
+
+        prediction = model_favorite(card)
+        if prediction is None:
+            counters["invalid_forecast"] += 1
             continue
 
         features = card.get("independent_features")
-        if (
-            not isinstance(features, dict)
-            or "home_home_sample" not in features
-            or "away_away_sample" not in features
-        ):
-            # A legacy total-games counter is not proof of venue-specific history.
-            continue
-        prediction = model_favorite(card)
-        if prediction is None:
-            continue
-        if (
-            prediction["home_sample"] < history_floor
-            or prediction["away_sample"] < history_floor
-        ):
-            continue
-        if prediction["probability"] < probability_floor:
-            continue
+        has_venue_history = (
+            isinstance(features, dict)
+            and "home_home_sample" in features
+            and "away_away_sample" in features
+        )
+        if has_venue_history:
+            home_sample = max(0, int(prediction.get("home_sample") or 0))
+            away_sample = max(0, int(prediction.get("away_sample") or 0))
+        else:
+            home_sample = 0
+            away_sample = 0
+            counters["missing_venue_history"] += 1
+
+        history_ready = (
+            has_venue_history
+            and home_sample >= history_floor
+            and away_sample >= history_floor
+        )
+        if has_venue_history and home_sample < history_floor:
+            counters["insufficient_home_history"] += 1
+        if has_venue_history and away_sample < history_floor:
+            counters["insufficient_away_history"] += 1
+
+        probability_ready = prediction["probability"] >= probability_floor
+        if not probability_ready:
+            counters["below_probability"] += 1
+
+        strict_eligible = history_ready and probability_ready
+        if strict_eligible:
+            counters["strict_candidates"] += 1
+        else:
+            counters["provisional_candidates"] += 1
+            if not include_limited_history:
+                continue
+
+        prediction = dict(prediction)
+        prediction["home_sample"] = home_sample
+        prediction["away_sample"] = away_sample
+        prediction["sample_games"] = min(home_sample, away_sample)
+        prediction["sample_support"] = min(1.0, prediction["sample_games"] / 12.0)
+
+        note_parts = []
+        if not history_ready:
+            if not has_venue_history:
+                note_parts.append("нет раздельной домашней/выездной истории")
+            else:
+                if home_sample < history_floor:
+                    note_parts.append(f"дома {home_sample}/{history_floor}")
+                if away_sample < history_floor:
+                    note_parts.append(f"в гостях {away_sample}/{history_floor}")
+        if not probability_ready:
+            note_parts.append(
+                f"нет выраженного фаворита ({prediction['probability']:.0%} < "
+                f"{probability_floor:.0%})"
+            )
+        selection_note = (
+            "Подтверждённая история и фаворит"
+            if strict_eligible
+            else "Ознакомительный прогноз · " + "; ".join(note_parts)
+        )
 
         key = _fixture_key(card, index)
-        candidate = {"card": card, **prediction, "kickoff": kickoff}
+        candidate = {
+            "card": card,
+            **prediction,
+            "kickoff": kickoff,
+            "history_ready": history_ready,
+            "probability_ready": probability_ready,
+            "strict_eligible": strict_eligible,
+            "selection_note": selection_note,
+        }
         current = unique.get(key)
-        if current is None or _duplicate_quality(card) > _duplicate_quality(current["card"]):
+        candidate_quality = (
+            int(strict_eligible),
+            prediction["probability"],
+            prediction["probability_margin"],
+            prediction["sample_games"],
+            int(bool(card.get("xg_used"))),
+            len(card.get("market_odds") or {}),
+        )
+        if current is None:
             unique[key] = candidate
+        else:
+            current_quality = (
+                int(current["strict_eligible"]),
+                current["probability"],
+                current["probability_margin"],
+                current["sample_games"],
+                int(bool(current["card"].get("xg_used"))),
+                len(current["card"].get("market_odds") or {}),
+            )
+            if candidate_quality > current_quality:
+                unique[key] = candidate
 
     ranked = list(unique.values())
     ranked.sort(key=lambda item: (
+        -int(item["strict_eligible"]),
         -item["probability"],
         -item["probability_margin"],
         -item["sample_games"],
@@ -481,6 +587,14 @@ def rank_best_fixtures(
             ranked = ranked[:max(0, int(limit))]
         except (TypeError, ValueError, OverflowError):
             pass
+
+    if isinstance(diagnostics, dict):
+        counters["unique_candidates"] = len(unique)
+        counters["returned_candidates"] = len(ranked)
+        counters["strict_unique"] = sum(bool(item["strict_eligible"]) for item in unique.values())
+        counters["provisional_unique"] = sum(not item["strict_eligible"] for item in unique.values())
+        diagnostics.clear()
+        diagnostics.update(counters)
     return ranked
 
 
