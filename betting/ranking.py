@@ -709,6 +709,31 @@ def rank_model_favorites_with_minimum(
     ]
 
 
+def favorite_display(item: object) -> dict:
+    """Avoid presenting a prior-only argmax as a team-specific match pick."""
+    if not isinstance(item, dict):
+        return {
+            "pick": None,
+            "label": "НЕДОСТАТОЧНО ДАННЫХ · НЕТ ВЫБОРА",
+            "probability": None,
+            "history_sufficient": False,
+        }
+    history_sufficient = bool(item.get("history_sufficient", False))
+    if not history_sufficient:
+        return {
+            "pick": None,
+            "label": "НЕДОСТАТОЧНО ИСТОРИИ · PRIOR-ONLY",
+            "probability": None,
+            "history_sufficient": False,
+        }
+    return {
+        "pick": item.get("pick"),
+        "label": str(item.get("label") or "Наиболее вероятный исход"),
+        "probability": item.get("probability"),
+        "history_sufficient": True,
+    }
+
+
 def rank_model_favorites(
     cards: object, limit: int | None = None, *, min_sample_games: int = 0,
 ) -> list[dict]:
