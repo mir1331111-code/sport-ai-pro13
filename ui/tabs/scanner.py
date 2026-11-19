@@ -2743,7 +2743,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 ("home_badge", "home_team_tsdb_id"),
                 ("away_badge", "away_team_tsdb_id"),
             ):
-                if fixture_row.get(badge_field):
+                existing_badge = str(fixture_row.get(badge_field) or "").strip()
+                if existing_badge.startswith(("https://", "http://", "//")):
                     continue
                 team_id = str(fixture_row.get(id_field) or "").strip()
                 if not team_id or not team_id.isdigit():
