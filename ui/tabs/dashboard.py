@@ -9,6 +9,7 @@ import re
 import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
+from betting.market_math import proportional_devig, competition_market_is_validated
 from data.fixture_time import app_timezone
 from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
 from ui.cards import _LEAGUE_FLAGS
@@ -302,7 +303,22 @@ def _match_table_row(card):
     probability = num(prediction.get("probability"))
     pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
-    value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
+    single_book_line = proportional_devig(
+        card.get("market_odds") or {},
+        ("П1", "X", "П2"),
+        bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
+    )
+    context_ok = bool(
+        (card.get("context_quality") or {}).get("strong_value_eligible")
+    )
+    value_passed = bool(
+        verdict.get("real_odds")
+        and verdict.get("value_passed")
+        and verdict.get("is_bet")
+        and single_book_line is not None
+        and context_ok
+        and competition_market_is_validated(card, "winner")
+    )
     has_confirmed_line = has_prices(card)
     if value_passed:
         bet_status_html = (
