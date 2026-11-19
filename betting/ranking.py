@@ -20,6 +20,7 @@ from datetime import datetime
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from data.team_names import normalize_team
 from typing import Optional
+from betting.market_math import proportional_devig
 
 
 DEFAULT_WEIGHTS = {
@@ -386,55 +387,6 @@ def model_favorite(card: object) -> dict | None:
     }
 
 
-def _daily_event_quality(card: dict, prediction: dict) -> dict:
-    """Return a transparent, forecast-only quality score (not a win probability).
-
-    Components are normalized to 0..1 and weighted:
-    favourite probability 40%, separation from the second outcome 30%,
-    venue-specific history 20%, genuine provider xG 5%, complete 1X2 odds 5%.
-    """
-    probability = min(1.0, max(0.0, float(prediction.get("probability") or 0.0)))
-    margin = min(1.0, max(0.0, float(prediction.get("probability_margin") or 0.0)))
-    probability_component = min(1.0, max(0.0, (probability - (1.0 / 3.0)) / (2.0 / 3.0)))
-    margin_component = min(1.0, max(0.0, margin / (2.0 / 3.0)))
-
-    home_sample = max(0, int(prediction.get("home_sample") or 0))
-    away_sample = max(0, int(prediction.get("away_sample") or 0))
-    history_component = min(1.0, min(home_sample, away_sample) / 12.0)
-
-    genuine_provider_xg = (
-        bool(card.get("xg_used"))
-        and not bool(card.get("xg_modelled_used"))
-        and str(card.get("xg_source") or "").casefold() == "provider"
-    )
-    odds = card.get("market_odds") if isinstance(card.get("market_odds"), dict) else {}
-    complete_odds = all(
-        _number(odds.get(key)) is not None and float(_number(odds.get(key))) > 1.0
-        for key in ("П1", "X", "П2")
-    )
-
-    components = {
-        "probability": probability_component,
-        "separation": margin_component,
-        "venue_history": history_component,
-        "provider_xg": 1.0 if genuine_provider_xg else 0.0,
-        "complete_market_line": 1.0 if complete_odds else 0.0,
-    }
-    score = 100.0 * (
-        0.40 * components["probability"]
-        + 0.30 * components["separation"]
-        + 0.20 * components["venue_history"]
-        + 0.05 * components["provider_xg"]
-        + 0.05 * components["complete_market_line"]
-    )
-    return {
-        "quality_score": round(score, 2),
-        "quality_components": components,
-        "has_provider_xg": genuine_provider_xg,
-        "has_complete_market_line": complete_odds,
-    }
-
-
 def rank_best_fixtures(
     cards: object,
     *,
@@ -443,37 +395,49 @@ def rank_best_fixtures(
     limit: int | None = 5,
     min_sample_games: int = 5,
     min_probability: float = 0.52,
+    min_league_history: int = 30,
     include_limited_history: bool = False,
     diagnostics: dict | None = None,
 ) -> list[dict]:
-    """Rank upcoming fixtures, optionally keeping provisional forecasts visible.
+    """Rank remaining-day fixtures by the strongest available pass-probability evidence.
 
-    Strict candidates have a valid 1X2 distribution, at least the configured
-    number of dated home-at-home observations for the home team and away-at-away
-    observations for the away team, and a favourite probability at or above
-    the configured probability floor.
+    Priority 1: a complete, coherent single-bookmaker SStats 1X2 line,
+    converted to no-vig market probabilities. This is explicitly labelled as
+    a market consensus estimate, not a model forecast or bet approval.
 
-    When include_limited_history is enabled, otherwise valid future model
-    forecasts are also returned as clearly labelled display-only candidates.
-    This fallback never changes Value/EV/Edge/Kelly or staking eligibility.
+    Priority 2: a model-only forecast when the competition has at least
+    min_league_history pre-match results and both venue-specific team samples
+    meet min_sample_games. Unsupported prior-only model forecasts are excluded.
+
+    Kickoff is used only for the requested time window and display; it never
+    increases an event's rank. Betting eligibility remains a separate gate.
     """
     counters = {
         "input_cards": len(cards) if isinstance(cards, list) else 0,
         "invalid_kickoff": 0,
         "already_started": 0,
         "outside_window": 0,
-        "invalid_forecast": 0,
+        "invalid_model_forecast": 0,
+        "incoherent_market_line": 0,
+        "no_market_or_supported_model": 0,
         "missing_venue_history": 0,
         "insufficient_home_history": 0,
         "insufficient_away_history": 0,
-        "below_probability": 0,
-        "strict_candidates": 0,
-        "provisional_candidates": 0,
+        "insufficient_league_history": 0,
+        "below_model_probability": 0,
+        "market_candidates": 0,
+        "model_only_candidates": 0,
     }
-    if not isinstance(cards, list):
+
+    def publish_diagnostics(unique_count=0, returned_count=0):
         if isinstance(diagnostics, dict):
+            counters["unique_candidates"] = int(unique_count)
+            counters["returned_candidates"] = int(returned_count)
             diagnostics.clear()
             diagnostics.update(counters)
+
+    if not isinstance(cards, list):
+        publish_diagnostics()
         return []
 
     tz = app_timezone()
@@ -488,15 +452,17 @@ def rank_best_fixtures(
             else period_end.astimezone(tz)
         )
         if local_end <= local_now:
-            if isinstance(diagnostics, dict):
-                diagnostics.clear()
-                diagnostics.update(counters)
+            publish_diagnostics()
             return []
 
     try:
         history_floor = max(0, int(min_sample_games))
     except (TypeError, ValueError, OverflowError):
         history_floor = 5
+    try:
+        league_floor = max(0, int(min_league_history))
+    except (TypeError, ValueError, OverflowError):
+        league_floor = 30
     try:
         probability_floor = float(min_probability)
     except (TypeError, ValueError, OverflowError):
@@ -507,6 +473,7 @@ def rank_best_fixtures(
 
     timezone_name = getattr(tz, "key", None)
     unique: dict[tuple, dict] = {}
+
     for index, card in enumerate(cards):
         if not isinstance(card, dict):
             continue
@@ -521,122 +488,175 @@ def rank_best_fixtures(
             counters["outside_window"] += 1
             continue
 
-        prediction = model_favorite(card)
-        if prediction is None:
-            counters["invalid_forecast"] += 1
-            continue
-
+        model = model_favorite(card)
         features = card.get("independent_features")
+        if not isinstance(features, dict):
+            features = {}
+
         has_venue_history = (
-            isinstance(features, dict)
-            and "home_home_sample" in features
+            "home_home_sample" in features
             and "away_away_sample" in features
         )
-        if has_venue_history:
-            home_sample = max(0, int(prediction.get("home_sample") or 0))
-            away_sample = max(0, int(prediction.get("away_sample") or 0))
-        else:
-            home_sample = 0
-            away_sample = 0
-            counters["missing_venue_history"] += 1
+        home_sample = int(model.get("home_sample") or 0) if model else 0
+        away_sample = int(model.get("away_sample") or 0) if model else 0
+        league_history = int(
+            _number(
+                card.get("league_history_matches"),
+                _number(features.get("league_history_matches"), 0.0),
+            ) or 0
+        )
 
-        history_ready = (
-            has_venue_history
+        if not has_venue_history:
+            counters["missing_venue_history"] += 1
+        if home_sample < history_floor:
+            counters["insufficient_home_history"] += 1
+        if away_sample < history_floor:
+            counters["insufficient_away_history"] += 1
+        if league_history < league_floor:
+            counters["insufficient_league_history"] += 1
+
+        model_supported = bool(
+            model
+            and has_venue_history
             and home_sample >= history_floor
             and away_sample >= history_floor
+            and league_history >= league_floor
         )
-        if has_venue_history and home_sample < history_floor:
-            counters["insufficient_home_history"] += 1
-        if has_venue_history and away_sample < history_floor:
-            counters["insufficient_away_history"] += 1
+        model_probability_ready = bool(
+            model_supported and model["probability"] >= probability_floor
+        )
+        if model_supported and not model_probability_ready:
+            counters["below_model_probability"] += 1
 
-        probability_ready = prediction["probability"] >= probability_floor
-        if not probability_ready:
-            counters["below_probability"] += 1
-
-        strict_eligible = history_ready and probability_ready
-        if strict_eligible:
-            counters["strict_candidates"] += 1
-        else:
-            counters["provisional_candidates"] += 1
-            if not include_limited_history:
-                continue
-
-        prediction = dict(prediction)
-        prediction["home_sample"] = home_sample
-        prediction["away_sample"] = away_sample
-        prediction["sample_games"] = min(home_sample, away_sample)
-        prediction["sample_support"] = min(1.0, prediction["sample_games"] / 12.0)
-
-        note_parts = []
-        if not history_ready:
-            if not has_venue_history:
-                note_parts.append("нет раздельной домашней/выездной истории")
-            else:
-                if home_sample < history_floor:
-                    note_parts.append(f"дома {home_sample}/{history_floor}")
-                if away_sample < history_floor:
-                    note_parts.append(f"в гостях {away_sample}/{history_floor}")
-        if not probability_ready:
-            note_parts.append(
-                f"нет выраженного фаворита ({prediction['probability']:.0%} < "
-                f"{probability_floor:.0%})"
+        # Market probabilities are usable as an event-pass reference only
+        # with a full SStats line whose three prices share one named bookmaker.
+        market_probabilities = None
+        source = str(card.get("odds_source") or "").strip().casefold()
+        if source == "sstats":
+            market_probabilities = proportional_devig(
+                card.get("market_odds") or {},
+                ("П1", "X", "П2"),
+                bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
             )
-        selection_note = (
-            "Подтверждённая история и фаворит"
-            if strict_eligible
-            else "Ознакомительный прогноз · " + "; ".join(note_parts)
-        )
+            if market_probabilities is None and card.get("market_odds"):
+                counters["incoherent_market_line"] += 1
 
-        quality = _daily_event_quality(card, prediction)
+        if market_probabilities:
+            market_pick = max(
+                ("П1", "X", "П2"),
+                key=lambda pick: market_probabilities[pick],
+            )
+            pass_probability = float(market_probabilities[market_pick])
+            market_candidate = True
+            pass_source = "market_no_vig"
+            source_tier = 2
+            counters["market_candidates"] += 1
+            model_pick = model["pick"] if model else None
+            model_favourite_probability = (
+                float(model["probability"]) if model else None
+            )
+            model_probability_for_pass = (
+                float(card.get({
+                    "П1": "p1", "X": "px", "П2": "p2",
+                }[market_pick]))
+                if _number(card.get({
+                    "П1": "p1", "X": "px", "П2": "p2",
+                }[market_pick])) is not None else None
+            )
+            model_market_gap = (
+                model_probability_for_pass - pass_probability
+                if model_probability_for_pass is not None else None
+            )
+            selection_note = (
+                "Оценка прохода: рынок без маржи, полная линия одного букмекера. "
+                "Это не модельная вероятность и не допуск к ставке."
+            )
+        elif model_probability_ready:
+            market_pick = None
+            pass_probability = float(model["probability"])
+            market_candidate = False
+            pass_source = "model_supported"
+            source_tier = 1
+            counters["model_only_candidates"] += 1
+            model_pick = model["pick"]
+            model_favourite_probability = float(model["probability"])
+            model_probability_for_pass = float(model["probability"])
+            model_market_gap = None
+            selection_note = (
+                "Модельный прогноз: история лиги и домашняя/выездная история команд "
+                "достаточны. Рынок без маржи отсутствует; ставка не подтверждена."
+            )
+        else:
+            counters["no_market_or_supported_model"] += 1
+            # include_limited_history is intentionally not allowed to promote
+            # unsupported neutral-prior outputs into a pass-probability ranking.
+            continue
+
         key = _fixture_key(card, index)
         candidate = {
             "card": card,
-            **prediction,
-            **quality,
             "kickoff": kickoff,
-            "history_ready": history_ready,
-            "probability_ready": probability_ready,
-            "strict_eligible": strict_eligible,
+            "pass_pick": market_pick or model["pick"],
+            "pass_probability": pass_probability,
+            "pass_probability_source": pass_source,
+            "market_probabilities": market_probabilities,
+            "model_pick": model_pick,
+            "model_favourite_probability": model_favourite_probability,
+            "model_probability_for_pass": model_probability_for_pass,
+            "model_market_gap": model_market_gap,
+            "model_supported": model_supported,
+            "market_candidate": market_candidate,
+            "home_sample": home_sample,
+            "away_sample": away_sample,
+            "league_history_matches": league_history,
+            "history_ready": model_supported,
+            "probability_ready": (
+                model_supported
+                and bool(model and model["probability"] >= probability_floor)
+            ),
+            "strict_eligible": False,
             "selection_note": selection_note,
         }
+
         current = unique.get(key)
         candidate_quality = (
-            int(strict_eligible),
-            quality["quality_score"],
-            prediction["probability_margin"],
-            prediction["sample_games"],
-            prediction["probability"],
-            str(card.get("league") or ""),
-            str(card.get("match") or card.get("match_ru") or ""),
+            source_tier,
+            round(pass_probability, 6),
+            int(model_supported),
+            min(home_sample, away_sample),
+            league_history,
+            str(card.get("league") or "").casefold(),
+            str(card.get("match") or card.get("match_ru") or "").casefold(),
         )
         if current is None:
             unique[key] = candidate
         else:
+            current_tier = 2 if current["market_candidate"] else 1
             current_quality = (
-                int(current["strict_eligible"]),
-                current["quality_score"],
-                current["probability_margin"],
-                current["sample_games"],
-                current["probability"],
-                str(current["card"].get("league") or ""),
-                str(current["card"].get("match") or current["card"].get("match_ru") or ""),
+                current_tier,
+                round(float(current["pass_probability"]), 6),
+                int(current["model_supported"]),
+                min(int(current["home_sample"]), int(current["away_sample"])),
+                int(current["league_history_matches"]),
+                str(current["card"].get("league") or "").casefold(),
+                str(current["card"].get("match") or current["card"].get("match_ru") or "").casefold(),
             )
             if candidate_quality > current_quality:
                 unique[key] = candidate
 
     ranked = list(unique.values())
-    # Kickoff time is deliberately not a ranking key. It is display metadata,
-    # not evidence that one event is a better forecast than another.
+    # The pass-probability source is the primary ordering key. Kickoff is never
+    # used to break ties or promote an earlier fixture.
     ranked.sort(key=lambda item: (
-        -int(item["strict_eligible"]),
-        -item["quality_score"],
-        -item["probability_margin"],
-        -item["sample_games"],
-        -item["probability"],
+        -int(item["market_candidate"]),
+        -float(item["pass_probability"]),
+        -int(item["model_supported"]),
+        -min(int(item["home_sample"]), int(item["away_sample"])),
+        -int(item["league_history_matches"]),
         str(item["card"].get("league") or "").casefold(),
         str(item["card"].get("match") or item["card"].get("match_ru") or "").casefold(),
     ))
+
     if limit is not None:
         try:
             maximum = max(0, int(limit))
@@ -644,30 +664,23 @@ def rank_best_fixtures(
                 ranked = []
             elif len(ranked) > maximum:
                 cutoff = ranked[maximum - 1]
-                cutoff_tier = bool(cutoff["strict_eligible"])
-                cutoff_score = round(float(cutoff["quality_score"]), 2)
-                # Keep every event tied at the display boundary instead of
-                # arbitrarily preferring the earlier kickoff.
+                cutoff_tier = bool(cutoff["market_candidate"])
+                cutoff_probability = round(float(cutoff["pass_probability"]), 3)
+                # Retain all events tied at the cutoff to this probability precision.
                 ranked = [
                     item for item in ranked
                     if (
-                        bool(item["strict_eligible"]) > cutoff_tier
+                        bool(item["market_candidate"]) > cutoff_tier
                         or (
-                            bool(item["strict_eligible"]) == cutoff_tier
-                            and round(float(item["quality_score"]), 2) >= cutoff_score
+                            bool(item["market_candidate"]) == cutoff_tier
+                            and round(float(item["pass_probability"]), 3) >= cutoff_probability
                         )
                     )
                 ]
         except (TypeError, ValueError, OverflowError):
             pass
 
-    if isinstance(diagnostics, dict):
-        counters["unique_candidates"] = len(unique)
-        counters["returned_candidates"] = len(ranked)
-        counters["strict_unique"] = sum(bool(item["strict_eligible"]) for item in unique.values())
-        counters["provisional_unique"] = sum(not item["strict_eligible"] for item in unique.values())
-        diagnostics.clear()
-        diagnostics.update(counters)
+    publish_diagnostics(len(unique), len(ranked))
     return ranked
 
 
