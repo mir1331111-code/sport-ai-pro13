@@ -84,6 +84,70 @@ class FixtureMergeTests(unittest.TestCase):
         self.assertEqual(report["assets_added"], 5)
         self.assertEqual(report["fixtures_with_assets"], 1)
 
+    def test_visual_badges_match_when_provider_uses_next_local_calendar_day(self):
+        primary = [{
+            "Date": "2026-11-16T23:45:00Z",
+            "HomeTeam": "Arsenal FC",
+            "AwayTeam": "Chelsea",
+            "fixture_id": "sstats:near-midnight",
+            "market_odds": {"П1": 1.9},
+        }]
+        secondary = [{
+            "Date": "17.11.2026",
+            "HomeTeam": "Arsenal",
+            "AwayTeam": "Chelsea FC",
+            "home_badge": "https://assets.test/arsenal.png",
+            "away_badge": "https://assets.test/chelsea.png",
+        }]
+
+        rows, report = enrich_fixture_visual_metadata(primary, secondary)
+
+        self.assertEqual(rows[0]["home_badge"], "https://assets.test/arsenal.png")
+        self.assertEqual(rows[0]["away_badge"], "https://assets.test/chelsea.png")
+        self.assertEqual(rows[0]["market_odds"], {"П1": 1.9})
+        self.assertEqual(report["fixtures_matched"], 1)
+        self.assertEqual(report["date_fallback_matches"], 1)
+
+    def test_visual_badge_near_date_match_is_rejected_when_ambiguous(self):
+        primary = [{
+            "Date": "2026-11-16T23:45:00Z",
+            "HomeTeam": "Arsenal FC",
+            "AwayTeam": "Chelsea",
+        }]
+        secondary = [
+            {
+                "Date": "2026-11-15",
+                "HomeTeam": "Arsenal",
+                "AwayTeam": "Chelsea FC",
+                "home_badge": "https://assets.test/wrong-old.png",
+            },
+            {
+                "Date": "2026-11-17",
+                "HomeTeam": "Arsenal",
+                "AwayTeam": "Chelsea FC",
+                "home_badge": "https://assets.test/wrong-new.png",
+            },
+        ]
+
+        rows, report = enrich_fixture_visual_metadata(primary, secondary)
+
+        self.assertNotIn("home_badge", rows[0])
+        self.assertEqual(report["fixtures_matched"], 0)
+        self.assertEqual(report["ambiguous_date_matches"], 1)
+
+    def test_fixture_key_normalizes_iso_and_local_date_formats(self):
+        iso = fixture_key({
+            "Date": "2026-11-19T19:30:00Z",
+            "HomeTeam": "Arsenal FC",
+            "AwayTeam": "Chelsea",
+        })
+        local = fixture_key({
+            "Date": "19.11.2026",
+            "HomeTeam": "Arsenal",
+            "AwayTeam": "Chelsea FC",
+        })
+        self.assertEqual(iso, local)
+
     def test_visual_metadata_does_not_overwrite_existing_primary_assets(self):
         primary = [{
             "Date": "2026-11-16",
