@@ -303,6 +303,23 @@ def _match_table_row(card):
     pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
     value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
+    strict_daily = card.get("_daily_strict_eligible")
+    daily_note = str(card.get("_daily_selection_note") or "").strip()
+    daily_samples = (
+        f"Дом/гость: {int(card.get('_daily_home_sample') or 0)}/"
+        f"{int(card.get('_daily_away_sample') or 0)}"
+    )
+    if strict_daily is True:
+        selection_html = (
+            "<small class='neo-pick-note proven'>ИСТОРИЯ И ФАВОРИТ ПОДТВЕРЖДЕНЫ</small>"
+        )
+    elif strict_daily is False:
+        selection_html = (
+            f"<small class='neo-pick-note provisional'>ОЗНАКОМИТЕЛЬНО · "
+            f"{esc(daily_samples)}</small>"
+        )
+    else:
+        selection_html = ""
 
     league = str(card.get("league") or card.get("div") or "Футбол")
     league_code = str(card.get("div") or "")
@@ -336,7 +353,7 @@ def _match_table_row(card):
         "</div></td>"
         + "".join(f"<td class='neo-prob'>{value}</td>" for value in values)
         + "".join(odds_cells)
-        + f"<td><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span></td>"
+        + f"<td class='neo-pick-cell'><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span>{selection_html}</td>"
         + "</tr>"
     )
 
@@ -635,6 +652,7 @@ def render():
         period_end = None
         table_title = "Лучшие события всего горизонта · 1X2"
 
+    selection_diagnostics = {}
     ranked_events = rank_best_fixtures(
         filtered_cards,
         now=now,
@@ -642,10 +660,19 @@ def render():
         limit=None,
         min_sample_games=5,
         min_probability=0.52,
+        include_limited_history=True,
+        diagnostics=selection_diagnostics,
     )
-    selected_event_cards = [
-        item["card"] for item in ranked_events[:5]
-    ]
+    selected_event_cards = []
+    for item in ranked_events[:5]:
+        card = dict(item["card"])
+        card["_daily_strict_eligible"] = bool(item.get("strict_eligible"))
+        card["_daily_selection_note"] = str(item.get("selection_note") or "")
+        card["_daily_home_sample"] = int(item.get("home_sample") or 0)
+        card["_daily_away_sample"] = int(item.get("away_sample") or 0)
+        selected_event_cards.append(card)
+    strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
+    provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
 
     brier = f"{metrics['brier']:.3f}" if metrics.get("brier") is not None else "—"
     log_loss = f"{metrics['log_loss']:.3f}" if metrics.get("log_loss") is not None else "—"
@@ -689,9 +716,8 @@ def render():
         if not table_rows:
             table_rows = (
                 "<tr><td colspan='10' class='neo-empty-cell'>"
-                "Нет событий, которые одновременно имеют будущий старт, корректный прогноз 1X2 "
-                "и минимум 5 домашних наблюдений хозяев и 5 выездных наблюдений гостей. "
-                "Слабые матчи не добавляются ради заполнения списка."
+                "В выбранном периоде нет будущих матчей с корректным прогнозом 1X2. "
+                "Проверь время начала, выбранный турнир и актуальность сканирования."
                 "</td></tr>"
             )
         st.markdown(
@@ -705,7 +731,7 @@ def render():
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} лучших из {len(ranked_events)} прошедших фильтры событий · ранжирование: вероятность → отрыв от второго исхода → домашняя/выездная история · только предстоящие матчи. Котировки отображаются только при полной реальной линии.</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} лучших из {len(ranked_events)} предстоящих событий · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. Сначала идут события с подтверждённой историей и фаворитом, затем прогнозы с ограниченными данными. Ознакомительный прогноз не является рекомендацией к ставке; Value/EV/Edge/Kelly не изменены.</div>"
             "</section>",
             unsafe_allow_html=True,
         )
