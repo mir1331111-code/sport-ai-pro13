@@ -498,7 +498,10 @@ def _match_table_row(card, *, preview_only=False):
     probability = num(prediction.get("probability"))
     pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
-    value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
+    value_passed = bool(
+        not preview_only and verdict.get("real_odds")
+        and verdict.get("value_passed") and verdict.get("is_bet")
+    )
     has_confirmed_line = has_prices(card)
     if preview_only:
         reason_text = _forecast_rejection_reason(card)
