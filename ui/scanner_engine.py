@@ -142,6 +142,14 @@ def _train_engine(
     train_divs = list(seasonal_snapshot["train_divs"])
     history = copy.deepcopy(seasonal_snapshot["history"])
     engine = Engine(matrix_n=matrix_n)
+    # The current walk-forward is an aggregate research benchmark across
+    # several competitions, not a competition-specific untouched holdout.
+    # Keep this map empty until Fixed Holdout Model Lab produces a per-league
+    # holdout report with a stable holdout ID.
+    engine.winner_market_validation_by_league = {}
+    engine.total_market_validation_by_league = {}
+    engine.winner_market_validation_scope = "global_research_only"
+    engine.total_market_validation_scope = "global_research_only"
     from model.historical_match_stats import (
         HistoricalMatchStats, walk_forward_market_validation,
     )
