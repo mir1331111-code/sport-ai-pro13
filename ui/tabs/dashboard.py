@@ -58,6 +58,150 @@ def has_prices(card):
         and all(1.01 < (num(prices.get(k)) or 0) <= 100 for k in ("П1", "X", "П2"))
     )
 
+def dashboard_bet_approved(card):
+    """Only admit a match to the dashboard bet list after every gate passes."""
+    if not isinstance(card, dict) or card.get("_daily_strict_eligible") is not True:
+        return False
+    verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
+    pick = str(verdict.get("pick") or "").strip()
+    return bool(
+        has_prices(card)
+        and verdict.get("real_odds")
+        and verdict.get("value_passed")
+        and pick in {"П1", "X", "П2"}
+    )
+
+
+def _provider_is_grok(provider):
+    name = str(provider or "").strip()
+    details = LLM_PROVIDERS.get(name, {})
+    base = str(details.get("base") or "").casefold()
+    return "api.x.ai" in base or "grok" in name.casefold()
+
+
+def _probability_health_note(cards):
+    """Detect a repeated probability vector that usually signals prior-only forecasts."""
+    counts = {}
+    valid = 0
+    for card in cards or []:
+        values = [num(card.get(key)) for key in ("p1", "px", "p2")]
+        if any(value is None or not 0 <= value <= 1 for value in values):
+            continue
+        if not 0.90 <= sum(values) <= 1.10:
+            continue
+        valid += 1
+        signature = tuple(round(value, 3) for value in values)
+        counts[signature] = counts.get(signature, 0) + 1
+    if valid < 5 or not counts:
+        return ""
+    signature, repeated = max(counts.items(), key=lambda item: item[1])
+    if repeated < max(5, math.ceil(valid * 0.60)):
+        return ""
+    return (
+        f"⚠️ Повторяется один и тот же вектор 1X2 у {repeated} из {valid} матчей "
+        f"(П1 {signature[0]:.0%} · X {signature[1]:.0%} · П2 {signature[2]:.0%}). "
+        "Это похоже на прогноз по нейтральным priors при недостатке истории команд. "
+        "Такие матчи не должны попадать в список допущенных ставок."
+    )
+
+
+def _grok_panel(cards, meta):
+    """Show only analyses explicitly recorded as Grok/xAI; never relabel another LLM."""
+    meta = meta if isinstance(meta, dict) else {}
+    selected_provider = str(meta.get("llm_provider") or "")
+    selected_is_grok = _provider_is_grok(selected_provider)
+    rows = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        analysis = card.get("deep_analysis")
+        analysis = analysis if isinstance(analysis, dict) else {}
+        analysis_provider = str(card.get("deep_analysis_provider") or "")
+        grok_comment = str(card.get("grok_comment") or "").strip()
+        explicit_grok_analysis = _provider_is_grok(analysis_provider)
+        if not explicit_grok_analysis and not grok_comment:
+            continue
+        title = match_name(card)
+        body = []
+        if explicit_grok_analysis:
+            probabilities = analysis.get("probabilities")
+            probabilities = probabilities if isinstance(probabilities, dict) else {}
+            values = {key: num(probabilities.get(key)) for key in ("П1", "X", "П2")}
+            if all(value is not None and 0 <= value <= 100 for value in values.values()):
+                total = sum(values.values())
+                if total > 0 and abs(total - 100) <= 5:
+                    body.append(
+                        "<div class='neo-grok-probs'>"
+                        + "".join(
+                            f"<span>{key}<b>{value:.1f}%</b></span>"
+                            for key, value in values.items()
+                        )
+                        + "</div>"
+                    )
+            independent_pick = str(analysis.get("independent_pick") or "").strip()
+            model_prediction = favorite(card) or {}
+            model_pick = str(model_prediction.get("pick") or "")
+            if independent_pick in {"П1", "X", "П2"}:
+                comparison = (
+                    "совпадает с основной моделью"
+                    if independent_pick == model_pick
+                    else f"расходится с основной моделью ({model_pick or 'нет прогноза'})"
+                )
+                body.append(
+                    f"<div class='neo-grok-meta'>Grok: <b>{esc(independent_pick)}</b> · "
+                    f"{esc(comparison)} · модель {esc(card.get('deep_analysis_model') or 'xAI')}</div>"
+                )
+            assessment = str(
+                analysis.get("match_assessment") or analysis.get("opinion") or ""
+            ).strip()
+            if assessment:
+                body.append(f"<p class='neo-grok-copy'>{esc(assessment)}</p>")
+            risks = str(analysis.get("risks") or "").strip()
+            if risks:
+                body.append(f"<p class='neo-grok-risk'><b>Риски:</b> {esc(risks)}</p>")
+            quality = str(analysis.get("data_quality") or "").strip()
+            if quality:
+                body.append(f"<small class='neo-grok-meta'>Качество данных: {esc(quality)}</small>")
+        if grok_comment:
+            bookmaker = str(card.get("grok_bookmaker") or "источник не указан")
+            body.append(
+                f"<p class='neo-grok-copy'>{esc(grok_comment)}</p>"
+                f"<small class='neo-grok-meta'>Источник: {esc(bookmaker)}</small>"
+            )
+        rows.append(
+            "<article class='neo-grok-row'><div class='neo-grok-match'>"
+            + esc(title) + "</div>" + "".join(body) + "</article>"
+        )
+        if len(rows) >= 4:
+            break
+
+    if not rows:
+        if selected_is_grok:
+            message = (
+                "Grok выбран как AI-провайдер, но сохранённого разбора пока нет. "
+                "Запустите TOP MATCHES / обновление AI-досье в сканере."
+            )
+        else:
+            active = ai_provider_label({"meta": meta})
+            message = (
+                f"Сейчас выбран {active}, а не Grok. Для независимого разбора Grok выберите "
+                "«Grok (x.ai)» в API Center, задайте XAI_API_KEY и обновите TOP MATCHES."
+            )
+        content = (
+            "<div class='neo-grok-empty'><b>Grok пока не предоставил разбор</b>"
+            f"<span>{esc(message)}</span></div>"
+        )
+    else:
+        content = "".join(rows)
+    return (
+        "<section class='neo-panel neo-grok-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>INDEPENDENT AI · xAI</span>"
+        "<h3>Grok · независимый анализ</h3></div>"
+        f"<span class='neo-count-pill'>{len(rows)} разборов</span></div>"
+        + content + "</section>"
+    )
+
 
 def context_summary(card):
     context = card.get("deep_analysis_context")
@@ -742,6 +886,10 @@ def render():
         unsafe_allow_html=True,
     )
 
+    probability_warning = _probability_health_note(cards)
+    if probability_warning:
+        st.warning(probability_warning)
+
     left, right = st.columns([1.68, 1.0], gap="medium")
     with left:
         table_rows = "".join(_match_table_row(card) for card in selected_event_cards)
@@ -804,6 +952,8 @@ def render():
             _history_panel(snapshot, roi or 0.0, profit, turnover),
             unsafe_allow_html=True,
         )
+
+    st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
 
     if not snapshot.get("ok"):
         st.caption(
