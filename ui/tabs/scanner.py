@@ -66,7 +66,9 @@ from betting.risk import (
     KELLY_FRACTION, MIN_BET_ODDS, MAX_MARKET_STAKE_PCT,
     MAX_MATCH_EXPOSURE_PCT, MAX_DAILY_EXPOSURE_PCT, size_bet,
 )
-from betting.market_math import blend_probability, proportional_devig
+from betting.market_math import (
+    blend_probability, proportional_devig, competition_market_is_validated,
+)
 from llm.analyst import LLMRateLimitError
 from llm.deep_analysis import (
     MAX_TOP_MATCHES, build_match_dossier, analyze_top_matches,
@@ -341,7 +343,10 @@ def _portfolio_auto_recommendation(card: object, market_family: str | None = Non
             continue
 
         if family == "winner":
-            if market_code != "1X2":
+            if (
+                market_code != "1X2"
+                or not competition_market_is_validated(card, "winner")
+            ):
                 continue
             coherent_line = proportional_devig(
                 card.get("market_odds") or {},
@@ -351,7 +356,10 @@ def _portfolio_auto_recommendation(card: object, market_family: str | None = Non
             if coherent_line is None:
                 continue
         else:
-            if market_code != "OU" or not bool(card.get("total_market_validation")):
+            if (
+                market_code != "OU"
+                or not competition_market_is_validated(card, "goals")
+            ):
                 continue
             line_match = re.fullmatch(r"Т[БМ]\s+(\d+(?:[.,]\d+)?)", pick, re.I)
             if not line_match:
@@ -802,15 +810,16 @@ def _render_manual_odds_block(
     if selected_market_type == "1X2":
         market_is_validated = (
             is_sstats_market_source(c.get("odds_source"))
-            and bool(c.get("winner_market_validation")) and market_pair_validated
+            and competition_market_is_validated(c, "winner")
+            and market_pair_validated
         )
         validation_parts = []
         if not is_sstats_market_source(c.get("odds_source")):
             validation_parts.append("Рыночная котировка отсутствует из SStats; другие источники не допускаются.")
-        if not c.get("winner_market_validation"):
+        if not competition_market_is_validated(c, "winner"):
             validation_parts.append(
-                "Модель пока не доказала статистически значимое улучшение над de-vig букмекерским рынком "
-                "на ≥500 парных исторических матчах. Это прогноз, не Value-ставка."
+                "Для этой лиги нет отдельного независимого holdout-бенчмарка. "
+                "Глобальный walk-forward — только исследовательский результат, не допуск к Value."
             )
         if not market_pair_validated:
             validation_parts.append(
@@ -837,7 +846,7 @@ def _render_manual_odds_block(
         )
         bookmaker_benchmark_validated = (
             abs(float(line_key or 0.0) - 2.5) < 1e-9
-            and bool(c.get("total_market_validation"))
+            and competition_market_is_validated(c, "goals")
         )
         market_is_validated = (
             history_validated and bookmaker_benchmark_validated
