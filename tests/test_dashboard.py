@@ -86,8 +86,36 @@ class DashboardHelperTests(unittest.TestCase):
             "_daily_strict_eligible": True,
             "_daily_quality_score": 76.4,
         })
-        self.assertIn("РЕЙТИНГ СОБЫТИЯ · 76/100", row)
+        self.assertIn("БАЛЛ СОРТИРОВКИ · 76/100", row)
         self.assertIn("neo-pick-note rank-score", row)
+
+    def test_fixture_row_distinguishes_forecast_from_value_approved_bet(self):
+        no_line = _match_table_row({
+            "home_team": "Forecast FC", "away_team": "Other FC",
+            "p1": 0.70, "px": 0.18, "p2": 0.12,
+            "market_odds": {},
+            "verdict": {"real_odds": False, "value_passed": False},
+        })
+        self.assertIn("ТОЛЬКО ПРОГНОЗ", no_line)
+        self.assertNotIn("VALUE · СТАВКА ДОПУЩЕНА", no_line)
+
+        rejected = _match_table_row({
+            "home_team": "Rejected FC", "away_team": "Other FC",
+            "p1": 0.70, "px": 0.18, "p2": 0.12,
+            "market_odds": {"П1": 1.9, "X": 3.5, "П2": 4.5},
+            "odds_source": "sstats",
+            "verdict": {"real_odds": False, "value_passed": False},
+        })
+        self.assertIn("НЕ ДОПУЩЕНО К СТАВКЕ", rejected)
+
+        approved = _match_table_row({
+            "home_team": "Approved FC", "away_team": "Other FC",
+            "p1": 0.70, "px": 0.18, "p2": 0.12,
+            "market_odds": {"П1": 1.9, "X": 3.5, "П2": 4.5},
+            "odds_source": "sstats",
+            "verdict": {"real_odds": True, "value_passed": True},
+        })
+        self.assertIn("VALUE · СТАВКА ДОПУЩЕНА", approved)
 
     def test_fixture_row_labels_provisional_daily_forecasts(self):
         row = _match_table_row({
