@@ -68,7 +68,7 @@ class IndependentMarketRankingTests(unittest.TestCase):
 
     def test_strong_forecasts_require_ten_home_and_away_history_rows(self):
         card = _card(
-            "Sparse venue sample vs Team", p1=0.80, over=0.80, btts=0.80,
+            "Sparse venue sample vs Team", p1=0.75, over=0.80, btts=0.80,
             corners=10.0, cards=5.0, games=40,
         )
         card["independent_features"] = {
