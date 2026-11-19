@@ -375,6 +375,7 @@ class ModelFavoriteTests(unittest.TestCase):
             },
             "xg_used": True,
             "xg_modelled_used": False,
+            "xg_source": "provider",
             "market_odds": {"П1": 1.90, "X": 3.40, "П2": 4.20},
         }
         ranked = rank_best_fixtures(
