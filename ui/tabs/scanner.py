@@ -16,7 +16,8 @@ from datetime import datetime, timedelta
 import streamlit as st
 
 from config import (
-    APP_VERSION, DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE,
+    APP_VERSION, DEFAULT_SCAN_HORIZON_DAYS,
+    DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE,
     STRONG_FORECAST_MIN_PROB, MIN_RECOMMENDED_MATCHES,
     MAX_RECOMMENDED_MATCHES, MIN_FAVORITE_HISTORY, llm_provider_key_config,
 )
@@ -1239,8 +1240,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 unsafe_allow_html=True)
     c1, c2 = st.columns([1.25, 1], vertical_alignment="bottom")
     days = c1.slider(
-        "Горизонт матчей", 1, 14, 7, key="scanner_horizon_days_v4",
-        help="Ищет матчи на ближайшие 7 дней по умолчанию; можно расширить до 14."
+        "Горизонт матчей", 1, 14, DEFAULT_SCAN_HORIZON_DAYS,
+        key="scanner_horizon_days_v5",
+        help="По умолчанию ищет матчи на ближайшие 3 дня; горизонт можно расширить до 14."
     )
     scan = c2.button("⚡ Запустить сканирование", type="primary",
                      width="stretch",
