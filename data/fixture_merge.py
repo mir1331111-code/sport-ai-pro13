@@ -152,6 +152,57 @@ def _generic_league(value) -> bool:
     }
 
 
+def supplemental_schedule_rows(primary_rows, secondary_rows, *, max_date_delta=1):
+    """Return reliable secondary fixtures absent from the primary schedule.
+
+    Secondary feeds expand forecast coverage only. Their bookmaker prices are
+    stripped later by enforce_sstats_odds_only; this helper never promotes them
+    to an odds source. Exact ordered team pairs within the configured date
+    tolerance are considered the same fixture and are not duplicated.
+    """
+    primary_by_pair: dict[tuple[str, str], list[date]] = {}
+    for row in primary_rows or []:
+        if not isinstance(row, dict):
+            continue
+        pair = _fixture_team_pair(row)
+        day = _fixture_day(row)
+        if all(pair) and day is not None:
+            primary_by_pair.setdefault(pair, []).append(day)
+
+    result = []
+    seen = set()
+    for row in secondary_rows or []:
+        if not isinstance(row, dict):
+            continue
+        pair = _fixture_team_pair(row)
+        day = _fixture_day(row)
+        if not all(pair) or day is None:
+            continue
+        # Do not add vague "Soccer"/"Football" records to the general model
+        # division: that would silently borrow unrelated competition history.
+        division = row.get("Div") or row.get("div")
+        league = row.get("League") or row.get("league")
+        if _generic_div(division) or _generic_league(league):
+            continue
+        if row.get("sstats_game_id") not in (None, ""):
+            continue
+        if str(row.get("source") or "").strip().casefold() == "sstats":
+            continue
+
+        if any(
+            abs((day - primary_day).days) <= max(0, int(max_date_delta))
+            for primary_day in primary_by_pair.get(pair, [])
+        ):
+            continue
+
+        key = fixture_key(row)
+        if not all(key) or key in seen:
+            continue
+        seen.add(key)
+        result.append(dict(row))
+    return result
+
+
 def merge_fixture_sources(*sources) -> list:
     """Merge source lists, keeping the earliest provider's richer row.
 
