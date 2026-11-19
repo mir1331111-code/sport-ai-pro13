@@ -33,10 +33,12 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertFalse(has_prices(mixed_bookmakers))
 
     def _approved_card(self, pick):
+        odds = {"П1": 2.10, "X": 3.40, "П2": 4.10}
+        quoted_odd = odds[pick]
         return {
             "div": "E0",
             "odds_source": "sstats",
-            "market_odds": {"П1": 2.10, "X": 3.40, "П2": 4.10},
+            "market_odds": odds,
             "bookmaker_by_pick": {
                 "П1": "Book A", "X": "Book A", "П2": "Book A",
             },
@@ -47,7 +49,7 @@ class DashboardHelperTests(unittest.TestCase):
             "market_holdout_id": "holdout-e0-v1",
             "best_by_market": {
                 "winner": {
-                    "best": ("1X2", pick, 2.10, 0.12, 0.52, 1.0),
+                    "best": ("1X2", pick, quoted_odd, 0.12, 0.52, 1.0),
                     "verdict": {
                         "real_odds": True, "value_passed": True,
                         "is_bet": True, "edge": 0.08,
@@ -64,6 +66,13 @@ class DashboardHelperTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(recommendation)
                 self.assertEqual(recommendation["best"][1], pick)
+
+    def test_main_dashboard_rejects_stale_or_mismatched_approved_price(self):
+        card = self._approved_card("П2")
+        card["best_by_market"]["winner"]["best"] = (
+            "1X2", "П2", 2.10, 0.12, 0.52, 1.0,
+        )
+        self.assertIsNone(approved_1x2_recommendation(card))
 
     def test_main_dashboard_hides_forecast_only_or_global_only_matches(self):
         forecast_only = self._approved_card("П1")
