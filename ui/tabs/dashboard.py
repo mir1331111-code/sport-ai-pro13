@@ -729,8 +729,8 @@ def render():
         card["_daily_away_sample"] = int(item.get("away_sample") or 0)
         card["_daily_league_sample"] = int(item.get("league_history_matches") or 0)
         selected_event_cards.append(card)
-    market_count = int(selection_diagnostics.get("market_candidates", 0) or 0)
-    model_only_count = int(selection_diagnostics.get("model_only_candidates", 0) or 0)
+    market_count = int(selection_diagnostics.get("market_unique_candidates", 0) or 0)
+    model_only_count = int(selection_diagnostics.get("model_only_unique_candidates", 0) or 0)
     available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
     scan_diagnostics_text = (
         f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
