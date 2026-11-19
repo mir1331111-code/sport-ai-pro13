@@ -305,18 +305,15 @@ def _match_table_row(card):
     value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
     strict_daily = card.get("_daily_strict_eligible")
     daily_note = str(card.get("_daily_selection_note") or "").strip()
-    daily_samples = (
-        f"Дом/гость: {int(card.get('_daily_home_sample') or 0)}/"
-        f"{int(card.get('_daily_away_sample') or 0)}"
-    )
     if strict_daily is True:
         selection_html = (
             "<small class='neo-pick-note proven'>ИСТОРИЯ И ФАВОРИТ ПОДТВЕРЖДЕНЫ</small>"
         )
     elif strict_daily is False:
+        note_text = daily_note.replace("Ознакомительный прогноз · ", "", 1)
         selection_html = (
             f"<small class='neo-pick-note provisional'>ОЗНАКОМИТЕЛЬНО · "
-            f"{esc(daily_samples)}</small>"
+            f"{esc(note_text or 'ограниченная доказательная база')}</small>"
         )
     else:
         selection_html = ""
