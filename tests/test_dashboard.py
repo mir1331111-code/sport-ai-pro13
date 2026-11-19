@@ -78,6 +78,19 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("neo-league-flag", row)
         self.assertIn("Premier League", row)
 
+    def test_fixture_row_labels_provisional_daily_forecasts(self):
+        row = _match_table_row({
+            "home_team": "Home FC", "away_team": "Away FC",
+            "p1": 0.44, "px": 0.30, "p2": 0.26,
+            "market_odds": {},
+            "_daily_strict_eligible": False,
+            "_daily_home_sample": 1,
+            "_daily_away_sample": 2,
+            "_daily_selection_note": "Ознакомительный прогноз",
+        })
+        self.assertIn("neo-pick-note provisional", row)
+        self.assertIn("Дом/гость: 1/2", row)
+
     def test_fixture_rows_keep_initial_fallback_when_badges_are_missing(self):
         row = _match_table_row({
             "home_team": "Home FC",
