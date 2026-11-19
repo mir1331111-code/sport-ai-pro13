@@ -299,9 +299,17 @@ def _match_table_row(card):
             f"<td class='neo-odds'>{f'{price:.2f}' if price is not None else '—'}</td>"
         )
 
-    pick = str(prediction.get("pick") or "—")
-    probability = num(prediction.get("probability"))
-    pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
+    model_pick = str(prediction.get("pick") or "—")
+    model_probability = num(prediction.get("probability"))
+    pass_pick = str(card.get("_daily_pass_pick") or model_pick)
+    pass_probability = num(card.get("_daily_pass_probability"))
+    pass_source = str(card.get("_daily_pass_source") or "model_supported")
+    if pass_probability is None:
+        pass_probability = model_probability
+    pick_text = (
+        f"{pass_pick} · {pass_probability:.0%}"
+        if pass_probability is not None else pass_pick
+    )
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
     single_book_line = proportional_devig(
         card.get("market_odds") or {},
@@ -334,32 +342,35 @@ def _match_table_row(card):
             "<small class='neo-bet-status forecast-only'>ТОЛЬКО ПРОГНОЗ · "
             "нет подтверждённой полной линии 1X2</small>"
         )
-    strict_daily = card.get("_daily_strict_eligible")
     daily_note = str(card.get("_daily_selection_note") or "").strip()
-    quality_score = num(card.get("_daily_quality_score"))
-    score_html = (
-        f"<small class='neo-pick-note rank-score'>БАЛЛ СОРТИРОВКИ · {quality_score:.0f}/100</small>"
-        if quality_score is not None else ""
+    home_sample = int(card.get("_daily_home_sample") or 0)
+    away_sample = int(card.get("_daily_away_sample") or 0)
+    league_sample = int(card.get("_daily_league_sample") or 0)
+    sample_text = (
+        f"история: лига {league_sample}/30 · дома {home_sample}/5 · в гостях {away_sample}/5"
     )
-    if strict_daily is True:
+    model_market_gap = num(card.get("_daily_model_market_gap"))
+    model_pass_probability = num(card.get("_daily_model_probability_for_pass"))
+    if pass_source == "market_no_vig":
+        disagreement = ""
+        if model_market_gap is not None and abs(model_market_gap) >= 0.10:
+            disagreement = (
+                f" · модель: {model_pass_probability:.0%} "
+                f"({model_market_gap:+.0%} к рынку)"
+                if model_pass_probability is not None else ""
+            )
         selection_html = (
-            "<small class='neo-pick-note proven'>ИСТОРИЯ И ФАВОРИТ ПОДТВЕРЖДЕНЫ</small>"
-            + score_html
-        )
-    elif strict_daily is False:
-        note_text = daily_note.replace("Ознакомительный прогноз · ", "", 1)
-        sample_text = (
-            f"Дом/гость: {int(card.get('_daily_home_sample') or 0)}/"
-            f"{int(card.get('_daily_away_sample') or 0)}"
-        )
-        selection_html = (
-            f"<small class='neo-pick-note provisional'>ОЗНАКОМИТЕЛЬНО · "
-            f"{esc(note_text or 'ограниченная доказательная база')} · "
-            f"{esc(sample_text)}</small>"
-            + score_html
+            "<small class='neo-pick-note proven'>РЫНОК БЕЗ МАРЖИ · ОЦЕНКА ПРОХОДА</small>"
+            f"<small class='neo-pick-note rank-score'>{esc(sample_text)}{esc(disagreement)}</small>"
+            "<small class='neo-pick-note provisional'>Это рыночный ориентир, не модельная вероятность и не допуск к ставке.</small>"
         )
     else:
-        selection_html = score_html
+        selection_html = (
+            "<small class='neo-pick-note provisional'>МОДЕЛЬНЫЙ ПРОГНОЗ · "
+            "линия рынка без маржи отсутствует</small>"
+            f"<small class='neo-pick-note rank-score'>{esc(sample_text)}</small>"
+            "<small class='neo-pick-note provisional'>Не подтверждён рынком; не является допуском к ставке.</small>"
+        )
 
     league = str(card.get("league") or card.get("div") or "Футбол")
     league_code = str(card.get("div") or "")
@@ -706,20 +717,27 @@ def render():
     selected_event_cards = []
     for item in ranked_events:
         card = dict(item["card"])
-        card["_daily_strict_eligible"] = bool(item.get("strict_eligible"))
+        card["_daily_pass_pick"] = str(item.get("pass_pick") or "")
+        card["_daily_pass_probability"] = float(item.get("pass_probability") or 0.0)
+        card["_daily_pass_source"] = str(item.get("pass_probability_source") or "")
+        card["_daily_market_probabilities"] = item.get("market_probabilities") or {}
+        card["_daily_model_probability_for_pass"] = item.get("model_probability_for_pass")
+        card["_daily_model_market_gap"] = item.get("model_market_gap")
+        card["_daily_model_supported"] = bool(item.get("model_supported"))
         card["_daily_selection_note"] = str(item.get("selection_note") or "")
         card["_daily_home_sample"] = int(item.get("home_sample") or 0)
         card["_daily_away_sample"] = int(item.get("away_sample") or 0)
-        card["_daily_quality_score"] = float(item.get("quality_score") or 0.0)
+        card["_daily_league_sample"] = int(item.get("league_history_matches") or 0)
         selected_event_cards.append(card)
-    strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
-    provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
+    market_count = int(selection_diagnostics.get("market_candidates", 0) or 0)
+    model_only_count = int(selection_diagnostics.get("model_only_candidates", 0) or 0)
     available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
     scan_diagnostics_text = (
         f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
         f"уже начались: {selection_diagnostics.get('already_started', 0)} · "
         f"вне периода: {selection_diagnostics.get('outside_window', 0)} · "
-        f"некорректный 1X2: {selection_diagnostics.get('invalid_forecast', 0)}"
+        f"нет полной линии одного букмекера: {selection_diagnostics.get('incoherent_market_line', 0)} · "
+        f"нет рынка и достаточной истории модели: {selection_diagnostics.get('no_market_or_supported_model', 0)}"
     )
 
     brier = f"{metrics['brier']:.3f}" if metrics.get("brier") is not None else "—"
