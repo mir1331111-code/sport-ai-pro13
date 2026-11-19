@@ -1837,10 +1837,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             for family in ("winner", "goals", "btts", "corners", "cards")
         }
         top_match_diagnostics = top_match_shortlist_diagnostics(
-            market_pool, min_team_history=5,
+            market_pool, min_team_history=MIN_FAVORITE_HISTORY,
         )
         top_match_candidates = select_top_matches(
-            market_pool, limit=MAX_TOP_MATCHES, min_team_history=5,
+            market_pool, limit=MAX_TOP_MATCHES, min_team_history=MIN_FAVORITE_HISTORY,
         )
         forecast_counts = {
             family: len(items) for family, items in ranked_forecast_pool.items()
@@ -1920,7 +1920,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     summary.get("strength_threshold") or STRONG_FORECAST_MIN_PROB
                 )
                 if not summary.get("history_sufficient", True):
-                    strength_label = "НЕДОСТАТОЧНО ИСТОРИИ КОМАНД (нужно не менее 5 матчей)"
+                    strength_label = "НЕДОСТАТОЧНО ИСТОРИИ КОМАНД (нужно не менее 10 матчей)"
                 elif (
                     summary.get("strong_forecast")
                     and bool((card.get("context_quality") or {}).get("strong_value_eligible"))
@@ -3531,6 +3531,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "odds_source": odds_source,
                 "market_odds": dict(market_odds),
                 "bookmaker_by_pick": dict(bookmaker_by_pick),
+                "market_odds_source_by_pick": dict(market_source_by_pick),
                 "one_x_two_diagnostics": dict(one_x_two_diagnostics),
                 "total_market_odds": dict(total_market_odds),
                 "total_market_book_count": dict(total_market_book_count),
@@ -3637,10 +3638,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         llm_done = 0
 
         top_diagnostics = top_match_shortlist_diagnostics(
-            cards, min_team_history=5,
+            cards, min_team_history=MIN_FAVORITE_HISTORY,
         )
         top_match_items = select_top_matches(
-            cards, limit=MAX_TOP_MATCHES, min_team_history=5,
+            cards, limit=MAX_TOP_MATCHES, min_team_history=MIN_FAVORITE_HISTORY,
             allow_low_history=True,
         )
         strict_top_count = sum(bool(item.get("history_ready")) for item in top_match_items)
@@ -4051,4 +4052,6 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         return
     finally:
         st.session_state["_scan_in_progress"] = False
+    # A completed scan should land on the dashboard with the new results visible.
+    st.session_state["terminal_navigation_v16"] = "🏠 Дашборд"
     st.rerun()

@@ -66,6 +66,22 @@ class IndependentMarketRankingTests(unittest.TestCase):
         self.assertEqual(ranked[0]["pick"], "BTTS Да")
         self.assertAlmostEqual(ranked[0]["probability"], 0.86)
 
+    def test_strong_forecasts_require_ten_home_and_away_history_rows(self):
+        card = _card(
+            "Sparse venue sample vs Team", p1=0.75, over=0.80, btts=0.80,
+            corners=10.0, cards=5.0, games=40,
+        )
+        card["independent_features"] = {
+            "home_home_sample": 9,
+            "away_away_sample": 20,
+        }
+        for family in ("winner", "goals", "btts", "corners", "cards"):
+            with self.subTest(family=family):
+                summary = market_forecast_summary(card, family)
+                self.assertFalse(summary["history_sufficient"])
+                self.assertFalse(summary["strong_forecast"])
+                self.assertEqual(summary["home_team_sample"], 9)
+
     def test_stat_markets_require_sufficient_market_specific_history(self):
         insufficient = _card(
             "Thin data vs Team", p1=0.90, over=0.9, btts=0.9,

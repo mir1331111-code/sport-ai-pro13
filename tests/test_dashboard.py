@@ -9,6 +9,7 @@ from ui.tabs.dashboard import (
     _forecast_rejection_reason, _grok_panel, _https_image_url,
     _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
+    dashboard_strong_events, strong_events_html,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
 )
 from config import MIN_FAVORITE_HISTORY, DEFAULT_SCAN_HORIZON_DAYS
@@ -49,6 +50,98 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertEqual(len(ranked), 1)
         self.assertFalse(ranked[0]["history_ready"])
         self.assertFalse(ranked[0]["strict_eligible"])
+
+    def test_strong_events_require_real_validated_price_probability_and_value(self):
+        card = {
+            "fixture_id": "sstats:strong-1",
+            "date": "20.11 18:00",
+            "league": "Premier League",
+            "home_team": "Home FC",
+            "away_team": "Away FC",
+            "context_quality": {"strong_value_eligible": True},
+            "independent_features": {
+                "home_home_sample": 14,
+                "away_away_sample": 12,
+            },
+            "market_odds_source_by_pick": {"П1": "sstats"},
+            "bookmaker_by_pick": {"П1": "Book A"},
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", "П1", 1.85, 0.12, 0.68, 10.0),
+                    "verdict": {
+                        "real_odds": True, "value_passed": True, "is_bet": True,
+                        "prob": 0.68, "ev": 0.12, "edge": 0.08, "stake": 10.0,
+                    },
+                },
+            },
+        }
+        events = dashboard_strong_events([card])
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["pick"], "П1")
+        self.assertEqual(events[0]["odds"], 1.85)
+        self.assertIn("1.85", strong_events_html(events))
+
+    def test_strong_events_reject_low_odds_probability_and_insufficient_history(self):
+        base = {
+            "fixture_id": "sstats:strong-2",
+            "context_quality": {"strong_value_eligible": True},
+            "independent_features": {
+                "home_home_sample": 12, "away_away_sample": 12,
+            },
+            "market_odds_source_by_pick": {"П1": "sstats"},
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", "П1", 1.69, 0.12, 0.68, 10.0),
+                    "verdict": {
+                        "real_odds": True, "value_passed": True, "is_bet": True,
+                        "prob": 0.68, "ev": 0.12, "edge": 0.08, "stake": 10.0,
+                    },
+                },
+            },
+        }
+        self.assertEqual(dashboard_strong_events([base]), [])
+        low_probability = {
+            **base,
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", "П1", 1.85, 0.12, 0.64, 10.0),
+                    "verdict": {
+                        "real_odds": True, "value_passed": True, "is_bet": True,
+                        "prob": 0.64, "ev": 0.12, "edge": 0.08, "stake": 10.0,
+                    },
+                },
+            },
+        }
+        self.assertEqual(dashboard_strong_events([low_probability]), [])
+        thin_history = {
+            **base,
+            "independent_features": {
+                "home_home_sample": 9, "away_away_sample": 12,
+            },
+        }
+        self.assertEqual(dashboard_strong_events([thin_history]), [])
+
+    def test_strong_events_reject_unverified_quote_or_context(self):
+        base = {
+            "fixture_id": "sstats:strong-3",
+            "context_quality": {"strong_value_eligible": True},
+            "independent_features": {
+                "home_home_sample": 12, "away_away_sample": 12,
+            },
+            "market_odds_source_by_pick": {"П1": "model_only"},
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", "П1", 1.85, 0.12, 0.68, 10.0),
+                    "verdict": {
+                        "real_odds": True, "value_passed": True, "is_bet": True,
+                        "prob": 0.68, "ev": 0.12, "edge": 0.08, "stake": 10.0,
+                    },
+                },
+            },
+        }
+        self.assertEqual(dashboard_strong_events([base]), [])
+        no_context = {**base, "context_quality": {"strong_value_eligible": False}}
+        self.assertEqual(dashboard_strong_events([no_context]), [])
 
     def test_only_complete_sstats_prices_are_displayed_as_real_line(self):
         complete = {

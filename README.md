@@ -108,7 +108,7 @@ Official documentation: https://api.sstats.net/docs/
 
 ## TOP MATCHES · Independent AI Deep Analysis
 
-After the standard scanner completes, the app builds a separate shortlist of up to seven fixtures for independent AI review. Selection is based on at least five completed home matches for the home team and five away matches for the away team, then ranks candidates by available venue-specific history, xG/xGA coverage, and historical corners/cards coverage. It does **not** require a 65% favourite from the primary model, a complete SStats odds line, or any bookmaker quote. Missing SStats context is reported as missing evidence; it does not silently disable historical analysis.
+After the standard scanner completes, the app builds a separate shortlist of up to seven fixtures for independent AI review. Selection is based on at least ten completed home matches for the home team and ten away matches for the away team, then ranks candidates by available venue-specific history, xG/xGA coverage, and historical corners/cards coverage. It does **not** require a 65% favourite from the primary model, a complete SStats odds line, or any bookmaker quote. Missing SStats context is reported as missing evidence; it does not silently disable historical analysis.
 
 The selected provider receives one compact batch request. Groq remains available through its own API key. **Grok (xAI) is a separate provider** and uses model `grok-4.7` with `XAI_API_KEY`; this key is stored separately from `LLM_API_KEY`. For compatibility, an existing Grok key previously entered in the generic LLM field can still be used until a dedicated xAI key is provided. The current provider key is selected automatically from the configured provider.
 
@@ -149,6 +149,21 @@ Important separation:
 - The 65% label is not a claim of 65% historical accuracy and is not a guarantee. Actual calibration and profitability must still be measured from immutable pre-match forecasts and settled outcomes.
 
 The scanner's manual 1X2 view also now requires a complete P1/X/P2 line attributed to the same named bookmaker before it labels the market line coherent.
+
+## One-click dashboard strong-event shortlist
+
+A completed scan returns the user to the main dashboard automatically. The dashboard's **Strong events · all verified markets** section consolidates actionable recommendations across the market families that have actually passed their own historical bookmaker validation.
+
+A dashboard row is shown only when all of the following are true:
+- A real SStats quote is recorded for the exact selected outcome; estimated/fair odds are never substituted.
+- Decimal odds are at least 1.70.
+- The final market-blended probability is at least 65%.
+- The already validated recommendation passed at least 5% no-vig Edge, 5% executable EV, positive Kelly, and the selector's exact coherent same-bookmaker line checks.
+- The fixture passed the Strong/Value context gate and both teams have at least ten venue-specific historical matches.
+
+The scanner persists per-selection odds-source provenance so the dashboard can reject model-only or unknown prices. The current historical benchmark deliberately limits actionable Value to 1X2 and full-time O/U 2.5 where the independent out-of-sample gates pass. BTTS, corners and cards remain visible as forecasts but are not promoted to Value until their own paired bookmaker benchmarks pass. If no fixture satisfies every requirement, the dashboard reports an empty qualified shortlist rather than lowering thresholds or fabricating candidates.
+
+This is a conservative operational shortlist, not a promise that each event will win or that a fixed daily number of bets will exist. The 65% figure is a model probability after the market blend, not a measured hit rate. Monitor realized Brier, log loss, calibration, closing-line value and paper-portfolio ROI before considering any change to the filters.
 
 
 

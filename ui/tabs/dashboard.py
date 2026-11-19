@@ -12,7 +12,9 @@ from betting.ranking import model_favorite, rank_best_fixtures
 from data.fixture_time import app_timezone
 from config import (
     APP_VERSION, DB_FILE, LLM_PROVIDERS, MIN_FAVORITE_HISTORY,
+    STRONG_FORECAST_MIN_PROB,
 )
+from betting.risk import MIN_BET_ODDS
 from ui.cards import _LEAGUE_FLAGS
 from model.forecast_ledger import ForecastLedger
 
@@ -27,6 +29,151 @@ DASHBOARD_PERIOD_OPTIONS = (
 )
 DASHBOARD_DEFAULT_PERIOD = "Весь горизонт скана · лучшие события"
 DASHBOARD_FORECAST_VISIBLE_LIMIT = 50
+STRONG_EVENT_MIN_EDGE = 0.05
+STRONG_EVENT_MIN_EV = 0.05
+
+
+def dashboard_strong_events(
+    cards,
+    *,
+    min_probability=STRONG_FORECAST_MIN_PROB,
+    min_odds=MIN_BET_ODDS,
+    min_team_history=MIN_FAVORITE_HISTORY,
+    min_edge=STRONG_EVENT_MIN_EDGE,
+    min_ev=STRONG_EVENT_MIN_EV,
+):
+    """Collect only independently validated, executable strong market signals.
+
+    The scanner's best_by_market selector has already enforced exact coherent
+    same-bookmaker lines and market walk-forward validation. This final
+    dashboard gate applies the user-facing probability/price/value floor.
+    """
+    if not isinstance(cards, list):
+        return []
+    selected = {}
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        context = card.get("context_quality")
+        if not isinstance(context, dict) or not context.get("strong_value_eligible"):
+            continue
+        features = card.get("independent_features")
+        features = features if isinstance(features, dict) else {}
+        home_n = num(features.get("home_home_sample"))
+        away_n = num(features.get("away_away_sample"))
+        if home_n is None or away_n is None:
+            continue
+        if min(home_n, away_n) < min_team_history:
+            continue
+        recommendations = card.get("best_by_market")
+        if not isinstance(recommendations, dict):
+            continue
+        for family, recommendation in recommendations.items():
+            if not isinstance(recommendation, dict):
+                continue
+            verdict = recommendation.get("verdict")
+            best = recommendation.get("best")
+            if not isinstance(verdict, dict) or not isinstance(best, (tuple, list)) or len(best) < 6:
+                continue
+            try:
+                pick = str(best[1])
+                odds = float(best[2])
+                ev = float(verdict.get("ev"))
+                edge = float(verdict.get("edge"))
+                probability = float(verdict.get("prob"))
+                stake = float(verdict.get("stake"))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not all(math.isfinite(value) for value in (odds, ev, edge, probability, stake)):
+                continue
+            if (
+                not verdict.get("real_odds")
+                or not verdict.get("value_passed")
+                or not verdict.get("is_bet")
+                or odds < min_odds
+                or probability < min_probability
+                or ev < min_ev
+                or edge < min_edge
+                or stake <= 0
+            ):
+                continue
+            # Every actionable recommendation must carry explicit SStats
+            # quote provenance; a fair/model price is never an executable odd.
+            sources = card.get("market_odds_source_by_pick")
+            source = str((sources or {}).get(pick) or "").casefold() if isinstance(sources, dict) else ""
+            if "sstats" not in source:
+                continue
+            fixture_id = str(card.get("fixture_id") or "")
+            fixture_key = fixture_id or "|".join((
+                str(card.get("date_iso") or ""),
+                str(card.get("home_team") or ""),
+                str(card.get("away_team") or ""),
+            ))
+            key = (fixture_key, str(family))
+            item = {
+                "card": card,
+                "family": str(family),
+                "pick": pick,
+                "odds": odds,
+                "probability": probability,
+                "ev": ev,
+                "edge": edge,
+                "stake": stake,
+                "home_sample": int(home_n),
+                "away_sample": int(away_n),
+                "bookmaker": str((card.get("bookmaker_by_pick") or {}).get(pick) or ""),
+            }
+            previous = selected.get(key)
+            if previous is None or (
+                item["probability"], item["ev"], item["edge"]
+            ) > (
+                previous["probability"], previous["ev"], previous["edge"]
+            ):
+                selected[key] = item
+    return sorted(
+        selected.values(),
+        key=lambda item: (
+            item["probability"], item["ev"], item["edge"], -item["odds"]
+        ),
+        reverse=True,
+    )
+
+
+def strong_events_html(events):
+    """Render the actionable strong-event shortlist with transparent metrics."""
+    if not events:
+        return (
+            "<div class='neo-empty-cell'>"
+            "Пока нет событий, одновременно прошедших все фильтры: "
+            f"вероятность ≥{STRONG_FORECAST_MIN_PROB:.0%}, коэффициент ≥{MIN_BET_ODDS:.2f}, "
+            "EV ≥5%, Edge ≥5%, история обеих команд ≥10 и проверенная линия SStats. "
+            "Неподходящие матчи не добавляются искусственно."
+            "</div>"
+        )
+    rows = []
+    for item in events:
+        card = item["card"]
+        rows.append(
+            "<tr>"
+            f"<td>{esc(card.get('date') or card.get('date_iso') or '—')}</td>"
+            f"<td>{esc(card.get('league') or card.get('div') or '—')}</td>"
+            f"<td>{esc(match_name(card))}</td>"
+            f"<td><b>{esc(item['pick'])}</b></td>"
+            f"<td><b>{item['odds']:.2f}</b></td>"
+            f"<td>{item['probability']:.1%}</td>"
+            f"<td>{item['ev']:+.1%}</td>"
+            f"<td>{item['edge']:+.1%}</td>"
+            f"<td>{item['home_sample']}/{item['away_sample']}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='neo-table-scroll'><table class='neo-match-table'>"
+        "<thead><tr><th>Время</th><th>Лига</th><th>Матч</th><th>Событие</th>"
+        "<th>Коэф.</th><th>Вероятность</th><th>EV</th><th>Edge</th>"
+        "<th>История Д/Г</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )
 
 
 def esc(value):
@@ -987,6 +1134,24 @@ def render():
     probability_warning = _probability_health_note(cards)
     if probability_warning:
         st.warning(probability_warning)
+
+    strong_events = dashboard_strong_events(cards)
+    st.markdown(
+        "<section class='neo-panel neo-matches-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>STRONG EVENTS · VERIFIED VALUE</span>"
+        "<h3>Сильные события · все проверенные рынки</h3>"
+        "<div class='neo-ranking-disclaimer'>"
+        f"Только реальные цены от {MIN_BET_ODDS:.2f}, вероятность от "
+        f"{STRONG_FORECAST_MIN_PROB:.0%}, EV и Edge от 5%, "
+        f"домашняя/выездная история обеих команд не менее {MIN_FAVORITE_HISTORY}. "
+        "Каждый сигнал должен пройти независимую историческую проверку рынка и контекстный допуск."
+        "</div></div>"
+        f"<span class='neo-count-pill'>{len(strong_events)} событий</span></div>"
+        + strong_events_html(strong_events)
+        + "</section>",
+        unsafe_allow_html=True,
+    )
 
     left, right = st.columns([1.68, 1.0], gap="medium")
     with left:

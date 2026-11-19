@@ -11,7 +11,7 @@ from typing import Any
 
 from model.historical_match_stats import poisson_over_probability
 from model.market_forecasts import count_over_probability
-from config import STRONG_FORECAST_MIN_PROB
+from config import STRONG_FORECAST_MIN_PROB, MIN_FAVORITE_HISTORY
 from betting.ranking import balanced_value_score
 
 
@@ -180,9 +180,20 @@ def market_forecast_summary(card: object, family: str) -> dict | None:
     # probability without at least five observed matches per team is not a
     # strong forecast. Corners/cards already enforce their own stricter
     # market-specific history checks before a summary can be returned.
+    features = card.get("independent_features")
+    features = features if isinstance(features, dict) else {}
+    if "home_home_sample" in features and "away_away_sample" in features:
+        home_sample = _sample(features.get("home_home_sample"))
+        away_sample = _sample(features.get("away_away_sample"))
+    else:
+        # Backward compatibility for historical test fixtures and legacy cards.
+        # Current scanner cards always provide venue-specific samples.
+        home_sample = away_sample = _sample(summary.get("team_samples"))
+    summary["home_team_sample"] = home_sample
+    summary["away_team_sample"] = away_sample
     summary["history_sufficient"] = (
-        family in {"corners", "cards"}
-        or _sample(summary.get("team_samples")) >= 5
+        home_sample >= MIN_FAVORITE_HISTORY
+        and away_sample >= MIN_FAVORITE_HISTORY
     )
     summary["strong_forecast"] = (
         summary["history_sufficient"]
