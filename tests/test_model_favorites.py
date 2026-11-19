@@ -353,6 +353,70 @@ class ModelFavoriteTests(unittest.TestCase):
         self.assertEqual(ranked[1]["card"]["match"], "Provisional FC vs Guest FC")
         self.assertFalse(ranked[1]["strict_eligible"])
 
+    def test_daily_shortlist_quality_beats_earlier_kickoff(self):
+        tz = ZoneInfo("Europe/Warsaw")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        weak_early = {
+            "home": "Early FC", "away": "Guest FC",
+            "match": "Early FC vs Guest FC",
+            "date_iso": "2026-11-19", "time": "09:00",
+            "p1": 0.62, "px": 0.22, "p2": 0.16,
+            "independent_features": {
+                "home_home_sample": 5, "away_away_sample": 5,
+            },
+        }
+        strong_late = {
+            "home": "Late FC", "away": "Guest FC",
+            "match": "Late FC vs Guest FC",
+            "date_iso": "2026-11-19", "time": "20:00",
+            "p1": 0.62, "px": 0.22, "p2": 0.16,
+            "independent_features": {
+                "home_home_sample": 12, "away_away_sample": 12,
+            },
+            "xg_used": True,
+            "xg_modelled_used": False,
+            "xg_source": "provider",
+            "market_odds": {"П1": 1.90, "X": 3.40, "П2": 4.20},
+        }
+        ranked = rank_best_fixtures(
+            [weak_early, strong_late],
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+            limit=5,
+        )
+        self.assertEqual(ranked[0]["card"]["match"], "Late FC vs Guest FC")
+        self.assertGreater(ranked[0]["quality_score"], ranked[1]["quality_score"])
+        self.assertEqual(ranked[0]["quality_components"]["venue_history"], 1.0)
+        self.assertTrue(ranked[0]["has_provider_xg"])
+        self.assertTrue(ranked[0]["has_complete_market_line"])
+
+    def test_daily_shortlist_keeps_all_events_tied_at_display_cutoff(self):
+        tz = ZoneInfo("Europe/Warsaw")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        cards = [
+            {
+                "home": f"Home {i}", "away": f"Away {i}",
+                "match": f"Home {i} vs Away {i}",
+                "date_iso": "2026-11-19", "time": f"{10 + i:02d}:00",
+                "p1": 0.60, "px": 0.24, "p2": 0.16,
+                "independent_features": {
+                    "home_home_sample": 7, "away_away_sample": 7,
+                },
+            }
+            for i in range(6)
+        ]
+        ranked = rank_best_fixtures(
+            cards,
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+            limit=5,
+        )
+        self.assertEqual(len(ranked), 6)
+        self.assertEqual(
+            {item["card"]["match"] for item in ranked},
+            {card["match"] for card in cards},
+        )
+
     def test_daily_shortlist_respects_requested_window_and_limit(self):
         tz = ZoneInfo("Europe/Warsaw")
         now = datetime(2026, 11, 18, 8, 0, tzinfo=tz)

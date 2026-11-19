@@ -305,9 +305,15 @@ def _match_table_row(card):
     value_passed = bool(verdict.get("real_odds") and verdict.get("value_passed"))
     strict_daily = card.get("_daily_strict_eligible")
     daily_note = str(card.get("_daily_selection_note") or "").strip()
+    quality_score = num(card.get("_daily_quality_score"))
+    score_html = (
+        f"<small class='neo-pick-note rank-score'>РЕЙТИНГ СОБЫТИЯ · {quality_score:.0f}/100</small>"
+        if quality_score is not None else ""
+    )
     if strict_daily is True:
         selection_html = (
             "<small class='neo-pick-note proven'>ИСТОРИЯ И ФАВОРИТ ПОДТВЕРЖДЕНЫ</small>"
+            + score_html
         )
     elif strict_daily is False:
         note_text = daily_note.replace("Ознакомительный прогноз · ", "", 1)
@@ -319,9 +325,10 @@ def _match_table_row(card):
             f"<small class='neo-pick-note provisional'>ОЗНАКОМИТЕЛЬНО · "
             f"{esc(note_text or 'ограниченная доказательная база')} · "
             f"{esc(sample_text)}</small>"
+            + score_html
         )
     else:
-        selection_html = ""
+        selection_html = score_html
 
     league = str(card.get("league") or card.get("div") or "Футбол")
     league_code = str(card.get("div") or "")
@@ -659,22 +666,24 @@ def render():
         filtered_cards,
         now=now,
         period_end=period_end,
-        limit=None,
+        limit=5,
         min_sample_games=5,
         min_probability=0.52,
         include_limited_history=True,
         diagnostics=selection_diagnostics,
     )
     selected_event_cards = []
-    for item in ranked_events[:5]:
+    for item in ranked_events:
         card = dict(item["card"])
         card["_daily_strict_eligible"] = bool(item.get("strict_eligible"))
         card["_daily_selection_note"] = str(item.get("selection_note") or "")
         card["_daily_home_sample"] = int(item.get("home_sample") or 0)
         card["_daily_away_sample"] = int(item.get("away_sample") or 0)
+        card["_daily_quality_score"] = float(item.get("quality_score") or 0.0)
         selected_event_cards.append(card)
     strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
+    available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
     scan_diagnostics_text = (
         f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
         f"уже начались: {selection_diagnostics.get('already_started', 0)} · "
@@ -732,14 +741,14 @@ def render():
             "<section class='neo-panel neo-matches-panel'>"
             "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>MATCH INTELLIGENCE · DAILY RANKING</span>"
             f"<h3>{esc(table_title)}</h3></div>"
-            f"<span class='neo-count-pill'>{len(ranked_events)} событий</span></div>"
+            f"<span class='neo-count-pill'>{available_event_count} событий</span></div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
             "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Вариант</th>"
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} лучших из {len(ranked_events)} предстоящих событий · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. Сначала идут события с подтверждённой историей и фаворитом, затем прогнозы с ограниченными данными. Ознакомительный прогноз не является рекомендацией к ставке; Value/EV/Edge/Kelly не изменены.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} событий из {available_event_count} предстоящих · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. Рейтинг качества: 40% вероятность фаворита, 30% отрыв от второго исхода, 20% домашняя/выездная история, 5% реальный xG, 5% полная линия. Время начала не повышает рейтинг; все события с равным баллом на границе списка сохраняются. Балл — сортировка, не вероятность победы и не рекомендация к ставке. Value/EV/Edge/Kelly не изменены.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
