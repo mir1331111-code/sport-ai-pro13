@@ -1519,6 +1519,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     favorite_item["strength"] if favorite_history_sufficient
                     else "МАЛО ИСТОРИИ"
                 )
+                model_distribution = " · ".join(
+                    f"{label} {float(favorite_card.get(field) or 0):.1%}"
+                    for field, label in (("p1", "П1"), ("px", "X"), ("p2", "П2"))
+                )
+                market_distribution_html = ""
+                if market_line := proportional_devig(
+                    favorite_card.get("market_odds") or {},
+                    ("П1", "X", "П2"),
+                    bookmaker_by_pick=favorite_card.get("bookmaker_by_pick") or {},
+                ):
+                    market_pick = max(market_line, key=market_line.get)
+                    market_distribution = " · ".join(
+                        f"{label} {market_line[pick]:.1%}"
+                        for pick, label in (("П1", "П1"), ("X", "X"), ("П2", "П2"))
+                    )
+                    market_distribution_html = (
+                        "<div style='color:#82c8e5;font-size:11px;margin-top:4px'>"
+                        f"Рынок без маржи: {html.escape(market_distribution)} · "
+                        f"фаворит рынка: {html.escape(market_pick)}</div>"
+                    )
                 with favorite_columns[(favorite_rank - 1) % 2]:
                     st.markdown(
                         "<div style='padding:13px 15px;margin:7px 0;border:1px solid rgba(118,159,180,.28);"
@@ -1530,7 +1550,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"{html.escape(favorite_match)}</div>"
                         f"<div style='color:#8fd8bd;font-weight:800;font-size:19px'>"
                         f"{html.escape(favorite_item['label'])} · {favorite_probability:.1%}</div>"
-                        f"<div style='color:#b7c2c9;font-size:11px;margin-top:2px'>"
+                        f"<div style='color:#d4e0e6;font-size:11px;margin-top:4px'>"
+                        f"Вероятности модели: {html.escape(model_distribution)}</div>"
+                        + market_distribution_html
+                        + f"<div style='color:#b7c2c9;font-size:11px;margin-top:2px'>"
                         f"{html.escape(favorite_strength_label)}</div>"
                         f"<div style='color:#9aaab3;font-size:12px;margin-top:4px'>"
                         f"{html.escape(favorite_kickoff or 'Время начала уточняется')} · "
