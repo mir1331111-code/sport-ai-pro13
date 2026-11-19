@@ -902,6 +902,76 @@ def render():
             unsafe_allow_html=True,
         )
 
+    # Independent LLM analysis is surfaced separately from the approved-bet
+    # table. It can explain forecasts, but cannot authorize staking.
+    selected_provider = str(
+        (data.get("meta") or {}).get("llm_provider") or "Groq (бесплатно, быстро)"
+    )
+    provider_env = llm_provider_key_config(selected_provider).get("env") or "API key"
+    try:
+        ai_status = last_top_matches_status() or {}
+    except Exception:
+        ai_status = {}
+    ai_cards = [
+        card for card in filtered_cards
+        if isinstance(card, dict)
+        and (
+            isinstance(card.get("deep_analysis"), dict)
+            or str(card.get("llm_opinion") or "").strip()
+        )
+    ]
+    ai_cards.sort(
+        key=lambda card: (
+            str(card.get("date_iso") or "9999"),
+            str(card.get("time") or "23:59"),
+        )
+    )
+    st.markdown(
+        "<section class='neo-panel neo-ai-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>INDEPENDENT AI · NOT A BETTING GATE</span>"
+        f"<h3>{esc(ai_name)} Deep Analysis</h3></div>"
+        f"<span class='neo-count-pill'>{len(ai_cards)} разборов</span></div>"
+        "</section>",
+        unsafe_allow_html=True,
+    )
+    status_state = str(ai_status.get("state") or "not_run")
+    status_model = str(ai_status.get("model") or (data.get("meta") or {}).get("llm_model") or "модель не указана")
+    status_message = str(ai_status.get("message") or "")
+    st.caption(
+        f"Провайдер: {ai_name} · модель: {status_model} · "
+        f"статус: {status_state}"
+        + (f" · {status_message}" if status_message else "")
+    )
+    if ai_cards:
+        for ai_card in ai_cards[:7]:
+            analysis = ai_card.get("deep_analysis") or {}
+            opinion = str(ai_card.get("llm_opinion") or "").strip()
+            if not opinion and isinstance(analysis, dict):
+                pick = (favorite(ai_card) or {}).get("pick")
+                opinion = format_top_match_opinion(
+                    analysis,
+                    model_pick_code=pick if pick in {"П1", "X", "П2"} else None,
+                )
+            title = match_name(ai_card)
+            with st.expander(f"{title} · {ai_name}", expanded=False):
+                if opinion:
+                    st.markdown(opinion)
+                elif analysis:
+                    st.write(analysis)
+                else:
+                    st.caption("Провайдер вернул разбор без текстового резюме.")
+        st.caption(
+            "AI-разбор помогает оценить составы, контекст и альтернативные исходы. "
+            "Он не заменяет историческую проверку лиги, реальную котировку и Value/EV/Edge/Kelly."
+        )
+    else:
+        st.info(
+            f"Разбор {ai_name} ещё не сохранён для выбранных матчей. "
+            f"Проверьте ключ {provider_env} и выполните новый скан. "
+            f"Текущий статус: {status_state}."
+        )
+
     bottom_left, bottom_mid, bottom_right = st.columns(3, gap="medium")
     with bottom_left:
         st.markdown(_quality_panel(cards), unsafe_allow_html=True)
