@@ -31,6 +31,7 @@ from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_
 from data.fixture_merge import (
     enforce_sstats_market_card, enforce_sstats_odds_only,
     enrich_fixture_visual_metadata, is_sstats_market_source, merge_fixture_sources,
+    supplemental_schedule_rows,
 )
 from data.team_names import normalize_team
 from data.fixture_time import app_timezone, fixture_kickoff_local
@@ -2761,12 +2762,22 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"ℹ️ Visual metadata merge unavailable: {type(exc).__name__}; "
                     "SStats fixtures continue unchanged."
                 )
+            # SStats remains the sole source of bookmaker prices. Other
+            # providers may add a genuinely new fixture when they supply an
+            # explicit competition/division; generic Soccer rows are excluded.
+            # A same ordered team pair within +/- one day is considered the
+            # same event already represented by SStats.
+            supplemental_rows = supplemental_schedule_rows(
+                sstats_rows, visual_metadata_rows, max_date_delta=1,
+            )
             fixture_sources.extend(enriched_sstats_rows)
+            fixture_sources.extend(supplemental_rows)
             logs.append(
-                f"✅ SStats — единственный источник расписания и коэффициентов: "
-                f"{len(sstats_rows)} матчей. TSDB, ESPN и football-data.org "
-                "используются только для визуальных метаданных и не добавляют "
-                "матчи или букмекерские котировки."
+                f"✅ SStats — основной источник котировок: {len(sstats_rows)} матчей. "
+                f"Дополнительные расписания TSDB/ESPN/football-data.org: "
+                f"{len(supplemental_rows)} новых матчей с известной лигой; "
+                "дубликаты не добавляются, их коэффициенты не используются. "
+                "Новые события без SStats-линии остаются forecast-only."
             )
         else:
             if sstats_key:
