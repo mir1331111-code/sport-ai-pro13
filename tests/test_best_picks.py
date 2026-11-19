@@ -63,6 +63,32 @@ class BestValueMarketTests(unittest.TestCase):
         self.assertEqual(best[1], "П1")
         self.assertEqual(best[2], 2.10)
 
+    def test_draw_can_be_selected_when_it_passes_its_own_value_gate(self):
+        draw_row = [{"pick": "X", "label": "Ничья", "prob": 0.62}]
+        odds = {"П1": 3.80, "X": 3.20, "П2": 3.80}
+        books = {"П1": "Book A", "X": "Book A", "П2": "Book A"}
+        chosen, best = best_value_market(
+            _verdict(), draw_row, odds, bank=1000, kelly_frac=0.25,
+            min_prob=0.45, bookmaker_by_pick=books,
+            market_validation_by_pick={"X": True},
+        )
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen["pick"], "X")
+        self.assertEqual(best[1], "X")
+
+    def test_away_win_can_be_selected_when_it_passes_its_own_value_gate(self):
+        away_row = [{"pick": "П2", "label": "Победа гостей", "prob": 0.70}]
+        odds = {"П1": 4.50, "X": 3.50, "П2": 1.80}
+        books = {"П1": "Book A", "X": "Book A", "П2": "Book A"}
+        chosen, best = best_value_market(
+            _verdict(), away_row, odds, bank=1000, kelly_frac=0.25,
+            min_prob=0.55, bookmaker_by_pick=books,
+            market_validation_by_pick={"П2": True},
+        )
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen["pick"], "П2")
+        self.assertEqual(best[1], "П2")
+
     def test_confidence_uses_market_blended_probability_not_raw_model_probability(self):
         chosen, best = best_value_market(
             _verdict(), _rows(), {"П1": 2.10, "X": 3.80, "П2": 5.00},
