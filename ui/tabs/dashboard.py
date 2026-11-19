@@ -916,8 +916,10 @@ def render():
         ai_status = last_top_matches_status() or {}
     except Exception:
         ai_status = {}
+    # Dashboard scope is intentionally strict: do not leak forecast-only
+    # fixtures into the approved-bets view through the independent AI panel.
     ai_cards = [
-        card for card in filtered_cards
+        card for card in selected_event_cards
         if isinstance(card, dict)
         and (
             isinstance(card.get("deep_analysis"), dict)
