@@ -789,34 +789,270 @@ def sstats_account_check(api_key: str) -> dict:
     }
 
 
+def _sstats_mapping_value(source, names):
+    if not isinstance(source, dict):
+        return None
+    normalized = {
+        re.sub(r"[^a-z0-9]", "", str(key).casefold()): value
+        for key, value in source.items()
+    }
+    for name in names:
+        value = normalized.get(re.sub(r"[^a-z0-9]", "", str(name).casefold()))
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _sstats_league_info(game):
+    """Extract league ID/name/country across SStats Games/list response variants."""
+    game = game if isinstance(game, dict) else {}
+    season = game.get("season") if isinstance(game.get("season"), dict) else {}
+    candidates = []
+    for parent, keys in (
+        (game, ("league", "competition", "tournament")),
+        (season, ("league", "competition", "tournament")),
+    ):
+        for key in keys:
+            value = parent.get(key) if isinstance(parent, dict) else None
+            if isinstance(value, dict):
+                candidates.append(value)
+
+    league_id = None
+    for candidate in candidates:
+        league_id = _sstats_mapping_value(
+            candidate, ("id", "leagueId", "league_id", "leagueID", "LeagueId", "ID"),
+        )
+        if league_id not in (None, ""):
+            break
+    if league_id in (None, ""):
+        league_id = _sstats_mapping_value(
+            game, ("leagueId", "league_id", "leagueID", "LeagueId", "LeagueID"),
+        )
+    if league_id in (None, ""):
+        league_id = _sstats_mapping_value(
+            season, ("leagueId", "league_id", "leagueID", "LeagueId", "LeagueID"),
+        )
+
+    league_name = None
+    for candidate in candidates:
+        league_name = _sstats_mapping_value(
+            candidate, ("name", "leagueName", "title", "fullName", "shortName", "Name"),
+        )
+        if league_name not in (None, ""):
+            break
+    if league_name in (None, ""):
+        league_name = _sstats_mapping_value(
+            game, ("leagueName", "competitionName", "tournamentName"),
+        )
+    if league_name in (None, ""):
+        league_value = game.get("league")
+        if isinstance(league_value, str):
+            league_name = league_value
+    if league_name in (None, ""):
+        league_name = _sstats_mapping_value(
+            season, ("leagueName", "competitionName", "tournamentName"),
+        )
+
+    country_value = None
+    for source in candidates + [game, season]:
+        country_value = _sstats_mapping_value(
+            source, ("country", "countryName", "country_name", "nation"),
+        )
+        if country_value not in (None, ""):
+            break
+    if isinstance(country_value, dict):
+        country_value = _sstats_mapping_value(
+            country_value, ("name", "title", "countryName", "country"),
+        )
+    return (
+        str(league_name or "").strip(),
+        str(league_id or "").strip(),
+        str(country_value or "").strip(),
+    )
+
+
+def _sstats_league_text_key(value):
+    return _norm_name(str(value or ""))
+
+
+def _sstats_league_catalog(api_key: str, logs=None) -> list[dict]:
+    """Fetch/cache the SStats league directory used to resolve fixture LeagueIds."""
+    key = str(api_key or "").strip()
+    if not key:
+        return []
+    cache_key = (
+        "sstats_leagues_catalog_v1_"
+        + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    )
+    cached = cache_get(cache_key, 24 * 60 * 60)
+    if isinstance(cached, list):
+        return cached
+
+    try:
+        response = _sstats_request(
+            "Leagues", key, params={"Limit": 2000, "Offset": 0},
+            timeout=(5, 30),
+        )
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ SStats Leagues: {type(exc).__name__}.")
+        return []
+    if response.status_code != 200:
+        if logs is not None:
+            logs.append(f"⚠️ SStats Leagues: HTTP {response.status_code}.")
+        return []
+    try:
+        payload = _sstats_unwrap(response.json() or {})
+    except Exception as exc:
+        if logs is not None:
+            logs.append(f"⚠️ SStats Leagues: {type(exc).__name__}.")
+        return []
+
+    records = payload if isinstance(payload, list) else None
+    if records is None and isinstance(payload, dict):
+        for field in ("leagues", "items", "results", "list", "data"):
+            value = payload.get(field)
+            if isinstance(value, list):
+                records = value
+                break
+    if not isinstance(records, list):
+        if logs is not None:
+            logs.append("⚠️ SStats Leagues: каталог вернул неожиданный формат.")
+        return []
+
+    catalog = []
+    seen = set()
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        league_id = _sstats_mapping_value(
+            item, ("id", "leagueId", "league_id", "leagueID", "LeagueId", "ID"),
+        )
+        name = _sstats_mapping_value(
+            item, ("name", "leagueName", "league_name", "title", "fullName", "shortName"),
+        )
+        country = _sstats_mapping_value(
+            item, ("country", "countryName", "country_name", "nation"),
+        )
+        if isinstance(country, dict):
+            country = _sstats_mapping_value(
+                country, ("name", "title", "countryName"),
+            )
+        league_id = str(league_id or "").strip()
+        name = str(name or "").strip()
+        country = str(country or "").strip()
+        if not league_id.isdigit() or not name:
+            continue
+        identity = (league_id, _sstats_league_text_key(name), _sstats_league_text_key(country))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        catalog.append({
+            "id": league_id,
+            "name": name,
+            "country": country,
+        })
+    if catalog:
+        cache_put(cache_key, catalog)
+    if logs is not None:
+        logs.append(f"📚 SStats Leagues: прочитано {len(catalog)} записей каталога.")
+    return catalog
+
+
+def _sstats_resolve_fixture_league_ids(fixtures, catalog, logs=None) -> dict[str, int]:
+    """Resolve missing fixture LeagueIds by exact name/country, refusing ambiguous matches."""
+    by_name = {}
+    for item in catalog or []:
+        if not isinstance(item, dict):
+            continue
+        name_key = _sstats_league_text_key(item.get("name"))
+        league_id = str(item.get("id") or "").strip()
+        if not name_key or not league_id.isdigit():
+            continue
+        by_name.setdefault(name_key, []).append(item)
+
+    resolved = 0
+    ambiguous = 0
+    unresolved = 0
+    for row in fixtures or []:
+        if not isinstance(row, dict) or str(row.get("sstats_league_id") or "").strip().isdigit():
+            continue
+        league_name = str(row.get("League") or row.get("league") or "").strip()
+        name_key = _sstats_league_text_key(league_name)
+        if not name_key:
+            unresolved += 1
+            continue
+        candidates = by_name.get(name_key, [])
+        country_key = _sstats_league_text_key(
+            row.get("league_country") or row.get("country") or row.get("countryName")
+        )
+        if country_key:
+            candidates = [
+                item for item in candidates
+                if _sstats_league_text_key(item.get("country")) == country_key
+            ]
+        candidate_ids = {str(item.get("id")) for item in candidates}
+        if len(candidate_ids) != 1:
+            if len(candidate_ids) > 1:
+                ambiguous += 1
+            else:
+                unresolved += 1
+            continue
+
+        league_id = next(iter(candidate_ids))
+        row["sstats_league_id"] = league_id
+        # Keep recognized major divisions (E0, I1, etc.) on their existing
+        # validated archive. Unmapped competitions receive a stable ID namespace
+        # so two countries with the same display label cannot share team history.
+        mapped_division = _sstats_division_for_game(
+            {"leagueId": league_id, "country": row.get("league_country") or ""},
+            {"id": league_id, "name": league_name,
+             "country": row.get("league_country") or ""},
+            league_name,
+        )
+        if mapped_division:
+            row["Div"] = mapped_division
+            if row.get("div") is not None:
+                row["div"] = mapped_division
+        resolved += 1
+
+    report = {
+        "resolved": resolved,
+        "ambiguous": ambiguous,
+        "unresolved": unresolved,
+        "catalog_entries": len(catalog or []),
+    }
+    if logs is not None:
+        logs.append(
+            f"🔗 SStats LeagueId: разрешено по точному каталогу {resolved}; "
+            f"неоднозначных названий {ambiguous}; не найдено {unresolved}."
+        )
+    return report
+
+
 def _sstats_division_for_game(
     game: dict, league_obj: dict, league_name: str,
 ) -> str:
     """Resolve a league using its country when SStats supplies it separately."""
     game = game if isinstance(game, dict) else {}
     league_obj = league_obj if isinstance(league_obj, dict) else {}
-    season_obj = game.get("season")
-    season_obj = season_obj if isinstance(season_obj, dict) else {}
-    country_value = (
-        league_obj.get("country")
-        or league_obj.get("countryName")
-        or game.get("country")
-        or game.get("countryName")
-        or season_obj.get("country")
+    extracted_name, extracted_id, extracted_country = _sstats_league_info(game)
+    league_id = (
+        _sstats_mapping_value(league_obj, ("id", "leagueId", "league_id", "leagueID"))
+        or _sstats_mapping_value(game, ("leagueId", "league_id", "leagueID", "LeagueId"))
+        or extracted_id
     )
-    if isinstance(country_value, dict):
-        country = str(country_value.get("name") or country_value.get("title") or "").strip()
-    else:
+    country = extracted_country
+    if not country:
+        country_value = _sstats_mapping_value(
+            league_obj, ("country", "countryName", "country_name", "nation"),
+        )
+        if isinstance(country_value, dict):
+            country_value = _sstats_mapping_value(country_value, ("name", "title"))
         country = str(country_value or "").strip()
-    label = str(league_name or "").strip()
+    label = str(league_name or extracted_name or "").strip()
     if country and country.casefold() not in label.casefold():
         label = f"{country} {label}".strip()
-
-    league_id = (
-        league_obj.get("id") or league_obj.get("leagueId")
-        or game.get("leagueId") or game.get("LeagueId")
-        or (season_obj.get("leagueId") if isinstance(season_obj, dict) else None)
-    )
     # A bare label such as "Premier League", "Ligue 1" or "Serie A" is not
     # enough to identify a country. Do not silently train Mauritania/Egypt/etc.
     # in the English/French/Italian league namespace. SStats LeagueId gives a
@@ -845,7 +1081,12 @@ def _sstats_division_for_game(
         return "S_" + hashlib.sha1(
             stable_identity.encode("utf-8")
         ).hexdigest()[:10].upper()
-    return _sstats_div_code(label)
+    mapped = _sstats_div_code(label)
+    if mapped.startswith("S_") and str(league_id or "").strip().isdigit():
+        return "S_" + hashlib.sha1(
+            f"sstats-league:{str(league_id).strip()}".encode("utf-8")
+        ).hexdigest()[:10].upper()
+    return mapped
 
 
 def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
@@ -932,22 +1173,15 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             else ""
         )
 
-        season_obj = game.get("season")
-        season_obj = season_obj if isinstance(season_obj, dict) else {}
-        league_obj = season_obj.get("league") or {}
-        league_obj = league_obj if isinstance(league_obj, dict) else {}
-        league_name = str(
-            league_obj.get("name")
-            or game.get("leagueName")
-            or game.get("league")
-            or "SStats"
-        ).strip()
-        div = _sstats_division_for_game(game, league_obj, league_name)
-        sstats_league_id = (
-            league_obj.get("id") or league_obj.get("leagueId")
-            or game.get("leagueId") or game.get("LeagueId")
-            or season_obj.get("leagueId")
+        league_name, sstats_league_id, league_country = _sstats_league_info(game)
+        league_name = league_name or "SStats"
+        league_obj = (
+            (game.get("season") or {}).get("league")
+            if isinstance(game.get("season"), dict) else None
         )
+        if not isinstance(league_obj, dict):
+            league_obj = game.get("league") if isinstance(game.get("league"), dict) else {}
+        div = _sstats_division_for_game(game, league_obj or {}, league_name)
         normalized = _sstats_parse_markets(game.get("odds") or [])
         compact_1x2 = {
             key: normalized[key]
@@ -963,6 +1197,7 @@ def sstats_upcoming_matches(days: int, api_key: str, logs=None) -> list:
             "AwayTeam": away,
             "Div": div,
             "League": league_name,
+            "league_country": league_country,
             "sstats_league_id": (
                 str(sstats_league_id).strip()
                 if sstats_league_id not in (None, "") else ""
@@ -1074,6 +1309,19 @@ def sstats_historical_matches_for_fixtures(
     from_text, to_text = from_date.isoformat(), to_date.isoformat()
     token_tag = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
+    fixtures = list(fixtures)
+    missing_ids = [
+        row for row in fixtures
+        if isinstance(row, dict)
+        and not str(row.get("sstats_league_id") or "").strip().isdigit()
+        and str(row.get("League") or row.get("league") or "").strip()
+    ]
+    catalog_report = {"resolved": 0, "ambiguous": 0, "unresolved": 0, "catalog_entries": 0}
+    if missing_ids:
+        catalog = _sstats_league_catalog(key, logs=logs)
+        catalog_report = _sstats_resolve_fixture_league_ids(
+            fixtures, catalog, logs=logs,
+        )
     competitions = {}
     for fixture in fixtures:
         if not isinstance(fixture, dict):
@@ -1096,8 +1344,11 @@ def sstats_historical_matches_for_fixtures(
     if not competitions:
         if logs is not None:
             logs.append(
-                "ℹ️ SStats history: в текущих матчах нет LeagueId; "
-                "историю нельзя безопасно привязать к соревнованиям."
+                "⚠️ SStats history: нет ни одного безопасно определённого LeagueId; "
+                f"в скане матчей={len(fixtures)}, с ID=0, "
+                f"каталог={catalog_report.get('catalog_entries', 0)}, "
+                f"неоднозначных названий={catalog_report.get('ambiguous', 0)}. "
+                "История не присоединялась по догадке."
             )
         return []
 
