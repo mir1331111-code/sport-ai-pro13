@@ -891,6 +891,11 @@ class Engine:
 
             "games": games,
             "h2h_n": h2h_n,
+            # A raw probability is not a calibrated confidence estimate.
+            # Calibration is competition-specific and only becomes active after
+            # sufficient chronological observations in that exact division.
+            "probability_calibrated": bool(self.calibrators[_division_key(lg)].trained),
+            "calibration_matches": int(self.calibration_counts.get(_division_key(lg), 0)),
 
             "e": elo_home,
             "pde": pde,
