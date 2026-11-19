@@ -64,5 +64,25 @@ class CompetitionIsolationTests(unittest.TestCase):
         self.assertEqual(model.predict("Home FC", "Away FC")["h2h_n"], 6)
 
 
+    def test_predict_normalizes_competition_code_like_training_and_exposes_support(self):
+        model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        start = datetime(2024, 1, 1)
+        for index in range(8):
+            model.add(
+                "Home FC", "Away FC", 2, 0,
+                row={"Div": "E0"},
+                match_date=(start + timedelta(days=7 * index)).isoformat(),
+            )
+        upper = model.predict("Home FC", "Away FC", "E0", match_date="2025-01-01")
+        lower = model.predict("Home FC", "Away FC", " e0 ", match_date="2025-01-01")
+        self.assertEqual(upper["p1"], lower["p1"])
+        self.assertEqual(upper["x"], lower["x"])
+        self.assertEqual(upper["lams"], lower["lams"])
+        self.assertEqual(upper["league_history_matches"], 8)
+        self.assertEqual(lower["league_history_matches"], 8)
+        self.assertEqual(upper["home_home_samples"], 8)
+        self.assertEqual(upper["away_away_samples"], 8)
+
+
 if __name__ == "__main__":
     unittest.main()
