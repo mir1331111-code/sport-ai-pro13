@@ -3375,6 +3375,22 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"is_action={verdict.get('is_action')} | reason={no_best_reason}"
                 )
 
+            league_winner_report = (
+                getattr(engine, "winner_market_validation_by_league", {}) or {}
+            ).get(str(lg or "G").strip().upper(), {})
+            league_total_report = (
+                getattr(engine, "total_market_validation_by_league", {}) or {}
+            ).get(str(lg or "G").strip().upper(), {})
+            league_winner_validated = bool(
+                isinstance(league_winner_report, dict)
+                and league_winner_report.get("validation_passed")
+                and league_winner_report.get("holdout_id")
+            )
+            league_total_validated = bool(
+                isinstance(league_total_report, dict)
+                and league_total_report.get("validation_passed")
+                and league_total_report.get("holdout_id")
+            )
             cards.append({
                 "div": lg,
                 "league": r.get("League") or DIV_NAMES.get(lg, "Лига"),
@@ -3387,13 +3403,40 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "verdict": verdict, "best": best,
                 "best_by_market": best_by_market,
                 "games": P["games"], "fh": fh, "fa": fa,
+                "home_home_samples": int(P.get("home_home_samples") or 0),
+                "away_away_samples": int(P.get("away_away_samples") or 0),
+                "league_history_matches": int(P.get("league_history_matches") or 0),
                 "fixture_id": r.get("fixture_id"),
                 "sstats_game_id": r.get("sstats_game_id"),
                 "historical_stats": historical_stats,
-                "winner_market_validation": bool(getattr(engine, "winner_market_validation", False)),
-                "winner_market_validation_report": getattr(engine, "winner_market_validation_report", {}),
-                "total_market_validation": bool(getattr(engine, "total_market_validation", False)),
-                "total_market_validation_by_line": getattr(engine, "total_market_validation_by_line", {}),
+                # Aggregate walk-forward is research-only. A green Value gate
+                # requires a league-specific independent holdout report.
+                "winner_market_validation": league_winner_validated,
+                "winner_market_validation_global": bool(getattr(engine, "winner_market_validation", False)),
+                "winner_market_validation_scope": (
+                    "competition_independent_holdout" if league_winner_validated
+                    else "global_research_only"
+                ),
+                "winner_market_validation_division": str(lg).strip().upper() if league_winner_validated else "",
+                "winner_market_validation_report": (
+                    league_winner_report if league_winner_validated
+                    else getattr(engine, "winner_market_validation_report", {})
+                ),
+                "market_holdout_id": (
+                    str(league_winner_report.get("holdout_id") or "")
+                    if league_winner_validated else ""
+                ),
+                "total_market_validation": league_total_validated,
+                "total_market_validation_global": bool(getattr(engine, "total_market_validation", False)),
+                "total_market_validation_scope": (
+                    "competition_independent_holdout" if league_total_validated
+                    else "global_research_only"
+                ),
+                "total_market_validation_division": str(lg).strip().upper() if league_total_validated else "",
+                "total_market_validation_by_line": (
+                    league_total_report.get("by_line") or {}
+                    if league_total_validated else {}
+                ),
                 "btts_market_validation": bool(getattr(engine, "btts_market_validation", False)),
                 "btts_market_validation_report": getattr(engine, "btts_market_validation_report", {}),
                 "stat_market_validation": getattr(engine, "stat_market_validation", {}),
@@ -3409,6 +3452,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     **historical_features(
                         engine, h_en, a_en, league=lg, match_date=d,
                     ),
+                    "league_history_matches": int(P.get("league_history_matches") or 0),
+                    "home_home_sample": int(P.get("home_home_samples") or 0),
+                    "away_away_sample": int(P.get("away_away_samples") or 0),
                     "xg_history": historical_xg_features(
                         engine, h_en, a_en, league=lg, match_date=d,
                     ),
