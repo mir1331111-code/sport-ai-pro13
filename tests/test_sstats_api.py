@@ -52,6 +52,88 @@ class SStatsTests(unittest.TestCase):
         self.assertIs(sources.sstats_match_statistics, sstats.sstats_match_statistics)
         self.assertIs(sources.sstats_match_result, sstats.sstats_match_result)
 
+    def test_sstats_league_info_handles_top_level_and_nested_league_objects(self):
+        name, league_id, country = sstats._sstats_league_info({
+            "league": {
+                "LeagueID": 741,
+                "Name": "Pro League",
+                "Country": {"Name": "United Arab Emirates"},
+            },
+            "season": {"name": "2026/27"},
+        })
+        self.assertEqual(name, "Pro League")
+        self.assertEqual(league_id, "741")
+        self.assertEqual(country, "United Arab Emirates")
+
+        name, league_id, country = sstats._sstats_league_info({
+            "season": {
+                "league": {"id": 742, "name": "Iraqi League"},
+                "country": "Iraq",
+            }
+        })
+        self.assertEqual((name, league_id, country), ("Iraqi League", "742", "Iraq"))
+
+    def test_league_catalog_resolves_exact_name_and_country(self):
+        fixtures = [{
+            "League": "Pro League",
+            "league_country": "UAE",
+            "Div": "S_OLD_LABEL",
+            "sstats_league_id": "",
+        }]
+        catalog = [
+            {"id": "741", "name": "Pro League", "country": "UAE"},
+            {"id": "742", "name": "Pro League", "country": "Iraq"},
+        ]
+        report = sstats._sstats_resolve_fixture_league_ids(fixtures, catalog)
+        self.assertEqual(report["resolved"], 1)
+        self.assertEqual(report["ambiguous"], 0)
+        self.assertEqual(fixtures[0]["sstats_league_id"], "741")
+        self.assertEqual(
+            fixtures[0]["Div"],
+            "S_" + sstats.hashlib.sha1(b"sstats-league:741").hexdigest()[:10].upper(),
+        )
+
+    def test_league_catalog_does_not_guess_when_same_name_has_multiple_countries(self):
+        fixtures = [{
+            "League": "Pro League",
+            "Div": "S_OLD_LABEL",
+            "sstats_league_id": "",
+        }]
+        catalog = [
+            {"id": "741", "name": "Pro League", "country": "UAE"},
+            {"id": "742", "name": "Pro League", "country": "Iraq"},
+        ]
+        report = sstats._sstats_resolve_fixture_league_ids(fixtures, catalog)
+        self.assertEqual(report["resolved"], 0)
+        self.assertEqual(report["ambiguous"], 1)
+        self.assertEqual(fixtures[0]["sstats_league_id"], "")
+
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
+    def test_league_catalog_parser_reads_sstats_leagues_endpoint(
+        self, _cache_get, cache_put, request_mock
+    ):
+        request_mock.return_value = _Response(200, {
+            "status": "success",
+            "data": [
+                {"Id": 741, "Name": "Pro League",
+                 "Country": {"Name": "UAE"}},
+                {"LeagueId": 742, "LeagueName": "Iraqi League",
+                 "CountryName": "Iraq"},
+            ],
+        })
+        catalog = sstats._sstats_league_catalog("private-key", logs=[])
+        self.assertEqual(
+            catalog,
+            [
+                {"id": "741", "name": "Pro League", "country": "UAE"},
+                {"id": "742", "name": "Iraqi League", "country": "Iraq"},
+            ],
+        )
+        self.assertEqual(request_mock.call_args.args[0], "Leagues")
+        self.assertTrue(cache_put.called)
+
     def test_unwrap_api_response(self):
         self.assertEqual(
             sstats._sstats_unwrap({"status": "success", "count": 1, "data": [{"id": 7}]}),
@@ -213,6 +295,49 @@ class SStatsTests(unittest.TestCase):
     @patch.object(sstats, "_sstats_timezone")
     @patch.object(sstats, "cache_put")
     @patch.object(sstats, "cache_get", return_value=None)
+    @patch.object(sstats, "_sstats_league_catalog")
+    def test_historical_loader_resolves_league_id_from_catalog_before_query(
+        self, catalog_mock, _cache_get, _cache_put, timezone_mock, request_mock
+    ):
+        from datetime import datetime
+        timezone_mock.return_value = (datetime(2026, 11, 19, 12, 0), 3)
+        catalog_mock.return_value = [
+            {"id": "741", "name": "Pro League", "country": "UAE"},
+        ]
+        request_mock.return_value = _Response(200, {
+            "status": "success",
+            "data": [{
+                "id": 12, "date": "2026-06-01T18:00:00",
+                "status": 8,
+                "homeTeam": {"name": "Al Ain"},
+                "awayTeam": {"name": "Al Dhafra"},
+                "homeResult": 2, "awayResult": 0,
+            }],
+        })
+        fixture = {
+            "League": "Pro League",
+            "league_country": "UAE",
+            "Div": "S_OLD_LABEL",
+            "sstats_league_id": "",
+        }
+        logs = []
+        rows = sstats.sstats_historical_matches_for_fixtures(
+            [fixture], "private-key", logs=logs,
+        )
+        self.assertEqual(fixture["sstats_league_id"], "741")
+        self.assertEqual(
+            fixture["Div"],
+            "S_" + sstats.hashlib.sha1(b"sstats-league:741").hexdigest()[:10].upper(),
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["Div"], fixture["Div"])
+        self.assertEqual(request_mock.call_args.kwargs["params"]["LeagueId"], "741")
+        self.assertIn("разрешено по точному каталогу 1", "\n".join(logs))
+
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "_sstats_timezone")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
     def test_historical_league_results_are_loaded_as_strict_ft_rows(
         self, _cache_get, cache_put, timezone_mock, request_mock
     ):
@@ -294,12 +419,14 @@ class SStatsTests(unittest.TestCase):
         self.assertIn("1 FT-матчей", "\n".join(logs))
 
     def test_historical_loader_does_not_fetch_without_sstats_league_ids(self):
-        logs = []
-        rows = sstats.sstats_historical_matches_for_fixtures(
-            [{"Div": "S_NO_ID", "League": "Unknown"}], "private-key", logs=logs,
-        )
+        with patch.object(sstats, "_sstats_league_catalog", return_value=[]):
+            logs = []
+            rows = sstats.sstats_historical_matches_for_fixtures(
+                [{"Div": "S_NO_ID", "League": "Unknown"}],
+                "private-key", logs=logs,
+            )
         self.assertEqual(rows, [])
-        self.assertIn("нет LeagueId", "\n".join(logs))
+        self.assertIn("нет ни одного безопасно определённого LeagueId", "\n".join(logs))
 
     @patch.object(sstats, "_sstats_request")
     @patch.object(sstats, "_sstats_timezone", return_value=(None, 2))
