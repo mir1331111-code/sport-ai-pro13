@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from data.fixture_time import app_timezone
 from betting.ranking import rank_best_fixtures
 from ui.tabs.dashboard import (
+    DASHBOARD_FORECAST_FEED_LIMIT, _forecast_feed_cards,
     _forecast_rejection_reason, _grok_panel, _https_image_url,
     _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
@@ -122,6 +123,66 @@ class DashboardHelperTests(unittest.TestCase):
             **approved,
             "market_odds": {"П1": 2.2, "X": 3.1},
         }))
+
+    def test_forecast_feed_ranks_by_quality_not_kickoff_time(self):
+        early_low_quality = {
+            "date_iso": "2026-11-20",
+            "time": "09:00",
+            "match": "Early FC vs Other",
+        }
+        later_high_quality = {
+            "date_iso": "2026-11-22",
+            "time": "20:00",
+            "match": "Later FC vs Other",
+        }
+        candidates = [
+            ({
+                "strict_eligible": False, "quality_score": 35,
+                "probability_margin": 0.05, "sample_games": 0,
+                "probability": 0.42,
+            }, early_low_quality),
+            ({
+                "strict_eligible": False, "quality_score": 82,
+                "probability_margin": 0.31, "sample_games": 12,
+                "probability": 0.71,
+            }, later_high_quality),
+        ]
+        ranked = _forecast_feed_cards(candidates)
+        self.assertEqual(
+            [card["match"] for card in ranked],
+            ["Later FC vs Other", "Early FC vs Other"],
+        )
+
+    def test_strict_history_candidate_outranks_higher_quality_provisional_candidate(self):
+        candidates = [
+            ({
+                "strict_eligible": False, "quality_score": 99,
+                "probability_margin": 0.5, "sample_games": 0,
+                "probability": 0.95,
+            }, {"match": "Prior-only vs Other"}),
+            ({
+                "strict_eligible": True, "quality_score": 55,
+                "probability_margin": 0.12, "sample_games": 10,
+                "probability": 0.60,
+            }, {"match": "Supported vs Other"}),
+        ]
+        ranked = _forecast_feed_cards(candidates)
+        self.assertEqual(ranked[0]["match"], "Supported vs Other")
+
+    def test_forecast_feed_is_bounded_to_readable_top_twenty(self):
+        candidates = [
+            ({
+                "strict_eligible": False, "quality_score": float(index),
+                "probability_margin": 0.01, "sample_games": 1,
+                "probability": 0.40,
+            }, {"match": f"Team {index} vs Other"})
+            for index in range(30)
+        ]
+        ranked = _forecast_feed_cards(candidates)
+        self.assertEqual(DASHBOARD_FORECAST_FEED_LIMIT, 20)
+        self.assertEqual(len(ranked), 20)
+        self.assertEqual(ranked[0]["match"], "Team 29 vs Other")
+        self.assertEqual(ranked[-1]["match"], "Team 10 vs Other")
 
     def test_repeated_probability_vector_is_flagged_as_prior_only_risk(self):
         cards = [
