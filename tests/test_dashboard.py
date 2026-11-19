@@ -78,6 +78,17 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("neo-league-flag", row)
         self.assertIn("Premier League", row)
 
+    def test_fixture_row_displays_daily_event_quality_score(self):
+        row = _match_table_row({
+            "home_team": "Home FC", "away_team": "Away FC",
+            "p1": 0.62, "px": 0.22, "p2": 0.16,
+            "market_odds": {"П1": 1.90, "X": 3.40, "П2": 4.20},
+            "_daily_strict_eligible": True,
+            "_daily_quality_score": 76.4,
+        })
+        self.assertIn("РЕЙТИНГ СОБЫТИЯ · 76/100", row)
+        self.assertIn("neo-pick-note rank-score", row)
+
     def test_fixture_row_labels_provisional_daily_forecasts(self):
         row = _match_table_row({
             "home_team": "Home FC", "away_team": "Away FC",
