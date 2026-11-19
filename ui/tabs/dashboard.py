@@ -812,26 +812,26 @@ def render():
             datetime.min.time(),
             tzinfo=now.tzinfo,
         )
-        table_title = "Лучшие события сегодня · 1X2"
+        table_title = "Допущенные ставки сегодня · 1X2"
     elif selected_period == "Ближайшие 24 часа · лучшие события":
         period_end = now + timedelta(hours=24)
-        table_title = "Лучшие события ближайших 24 часов · 1X2"
+        table_title = "Допущенные ставки ближайших 24 часов · 1X2"
     else:
         period_end = None
-        table_title = "Лучшие события всего горизонта · 1X2"
+        table_title = "Допущенные ставки всего горизонта · 1X2"
 
     selection_diagnostics = {}
     ranked_events = rank_best_fixtures(
         filtered_cards,
         now=now,
         period_end=period_end,
-        limit=5,
+        limit=None,
         min_sample_games=5,
         min_probability=0.52,
         include_limited_history=False,
         diagnostics=selection_diagnostics,
     )
-    selected_event_cards = []
+    approved_event_cards = []
     for item in ranked_events:
         card = dict(item["card"])
         card["_daily_strict_eligible"] = bool(item.get("strict_eligible"))
@@ -839,10 +839,13 @@ def render():
         card["_daily_home_sample"] = int(item.get("home_sample") or 0)
         card["_daily_away_sample"] = int(item.get("away_sample") or 0)
         card["_daily_quality_score"] = float(item.get("quality_score") or 0.0)
-        selected_event_cards.append(card)
-    strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
+        if dashboard_bet_approved(card):
+            approved_event_cards.append(card)
+    selected_event_cards = approved_event_cards[:5]
+    strict_count = len(ranked_events)
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
-    available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
+    value_blocked_count = max(0, strict_count - len(approved_event_cards))
+    available_event_count = strict_count
     scan_diagnostics_text = (
         f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
         f"уже начались: {selection_diagnostics.get('already_started', 0)} · "
@@ -881,7 +884,7 @@ def render():
         "<span>СРАВНЕНИЕ С РЫНКОМ · Δ BRIER</span>"
         f"<b>{esc(market_delta_text)}</b>"
         f"<small>{esc(market_note)}</small>"
-        f"<small class='neo-meta-spacer'>В скане: {len(cards):,} · полных линий 1X2: {priced:,} · FT: {metrics.get('n', 0):,}</small>"
+        f"<small class='neo-meta-spacer'>В скане: {len(cards):,} · полных линий 1X2: {priced:,} · эмблемы с URL у обеих команд: {sum(bool(card.get('home_badge')) and bool(card.get('away_badge')) for card in cards):,} · FT: {metrics.get('n', 0):,}</small>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -896,19 +899,19 @@ def render():
         if not table_rows:
             table_rows = (
                 "<tr><td colspan='10' class='neo-empty-cell'>"
-                "В выбранном периоде нет будущих матчей с корректным прогнозом 1X2. "
-                "Проверь время начала, выбранный турнир и актуальность сканирования."
+                "В выбранном периоде нет матчей, прошедших все условия допуска: "
+                "достаточная история, фаворит ≥52%, полная линия 1X2 и Value/EV/Edge/Kelly."
                 "</td></tr>"
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DAILY FORECAST RANKING · НЕ СПИСОК СТАВОК</span>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>BET APPROVAL · ТОЛЬКО ДОПУЩЕННЫЕ</span>"
             f"<h3>{esc(table_title)}</h3></div>"
-            f"<span class='neo-count-pill'>{available_event_count} событий</span></div>"
+            f"<span class='neo-count-pill'>{len(selected_event_cards)} ставок</span></div>"
             "<div class='neo-ranking-disclaimer'>"
-            "<b>Место в списке = качество прогноза, а не допуск к ставке.</b> "
-            "Ставка разрешена только при отдельной зелёной метке "
-            "<strong>VALUE · СТАВКА ДОПУЩЕНА</strong>."
+            "<b>Основной список содержит только допущенные ставки.</b> "
+            "Прогнозы без истории, без полной линии 1X2 или без прохождения Value/EV/Edge/Kelly "
+            "здесь не показываются."
             "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
@@ -916,10 +919,11 @@ def render():
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} событий из {available_event_count} предстоящих · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. ПОРЯДОК СПИСКА = рейтинг прогноза, НЕ одобрение ставки. Балл сортировки: 40% вероятность фаворита, 30% отрыв от второго исхода, 20% домашняя/выездная история, 5% реальный xG, 5% полная линия. Только зелёная метка VALUE · СТАВКА ДОПУЩЕНА означает прохождение отдельного Value/EV/Edge/Kelly-фильтра.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · кандидатов с достаточной историей: {strict_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count} · прогнозов с недостаточной историей скрыто: {provisional_count}. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
+        st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
 
     with right:
         reliability = snapshot.get("reliability") or {"rows": [], "n": 0}
@@ -952,8 +956,6 @@ def render():
             _history_panel(snapshot, roi or 0.0, profit, turnover),
             unsafe_allow_html=True,
         )
-
-    st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
 
     if not snapshot.get("ok"):
         st.caption(
