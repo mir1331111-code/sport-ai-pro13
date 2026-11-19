@@ -959,6 +959,17 @@ def render():
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
     available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
     history_blocked_count = sum(not bool(item.get("history_ready")) for item in ranked_events)
+    home_history_ready_count = sum(
+        int(item.get("home_sample") or 0) >= 5 for item in ranked_events
+    )
+    away_history_ready_count = sum(
+        int(item.get("away_sample") or 0) >= 5 for item in ranked_events
+    )
+    both_history_ready_count = sum(bool(item.get("history_ready")) for item in ranked_events)
+    any_history_count = sum(
+        max(int(item.get("home_sample") or 0), int(item.get("away_sample") or 0)) > 0
+        for item in ranked_events
+    )
     probability_blocked_count = sum(not bool(item.get("probability_ready")) for item in ranked_events)
     context_blocked_count = sum(
         not bool(
@@ -1014,13 +1025,34 @@ def render():
     if probability_warning:
         st.warning(probability_warning)
 
+    scan_report = data.get("report") if isinstance(data.get("report"), list) else []
+    history_ingest_lines = [
+        str(line).strip() for line in scan_report
+        if "SStats history:" in str(line)
+        or "Пользовательский исторический архив:" in str(line)
+    ]
+    if history_ingest_lines:
+        st.caption(
+            "📚 Диагностика загрузки истории: "
+            + " · ".join(history_ingest_lines[-2:])
+        )
+    else:
+        st.caption(
+            "📚 В журнале последнего скана нет отчёта загрузчика SStats history. "
+            "Запустите сканирование, чтобы увидеть число реально загруженных исторических матчей."
+        )
+
     left, right = st.columns([1.68, 1.0], gap="medium")
     with left:
         table_rows = "".join(_match_table_row(card) for card in selected_event_cards)
         if not table_rows:
             empty_summary = (
                 f"Нет допущенных ставок. В выбранном периоде: {available_event_count} матчей; "
-                f"без домашней/выездной истории ≥5 — {history_blocked_count}; "
+                f"есть хотя бы одна история команды: {any_history_count}/{available_event_count}; "
+                f"домашняя история ≥5: {home_history_ready_count}/{available_event_count}; "
+                f"выездная история ≥5: {away_history_ready_count}/{available_event_count}; "
+                f"обе стороны ≥5: {both_history_ready_count}/{available_event_count}; "
+                f"без полной домашней/выездной истории — {history_blocked_count}; "
                 f"без фаворита ≥52% — {probability_blocked_count}; "
                 f"без подтверждённого Strong/Value-контекста — {context_blocked_count}; "
                 f"строгих кандидатов по истории и вероятности — {strict_count}; "
@@ -1048,7 +1080,7 @@ def render():
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · всего матчей в периоде: {available_event_count} · строгих кандидатов (история + фаворит): {strict_count} · без истории/вероятности: {provisional_count} · не подтверждён Strong/Value-контекст: {context_blocked_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count}. Причины пересекаются. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · всего матчей: {available_event_count} · история дом ≥5: {home_history_ready_count} · история гость ≥5: {away_history_ready_count} · обе ≥5: {both_history_ready_count} · строгих кандидатов: {strict_count} · без истории/вероятности: {provisional_count} · не подтверждён Strong/Value-контекст: {context_blocked_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count}. Причины пересекаются. <br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
