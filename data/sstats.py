@@ -1218,7 +1218,9 @@ def sstats_historical_matches_for_fixtures(
         normalized.sort(key=lambda row: (
             row["Date"], row["HomeTeam"].casefold(), row["AwayTeam"].casefold(),
         ))
-        cache_put(cache_key, normalized, 24 * 60 * 60)
+        # cache_get enforces the 24-hour freshness window; cache_put writes
+        # the atomic payload and intentionally has no TTL argument.
+        cache_put(cache_key, normalized)
         return item, normalized, "api"
 
     results = []
