@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 from data.fixture_time import app_timezone
 from betting.ranking import rank_best_fixtures
 from ui.tabs.dashboard import (
-    _grok_panel, _https_image_url, _match_table_row, _probability_health_note,
+    _forecast_rejection_reason, _grok_panel, _https_image_url,
+    _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
 )
@@ -203,6 +204,41 @@ class DashboardHelperTests(unittest.TestCase):
         })
         self.assertIn("БАЛЛ СОРТИРОВКИ · 76/100", row)
         self.assertIn("neo-pick-note rank-score", row)
+
+    def test_preview_forecast_rows_are_never_labeled_as_bets(self):
+        card = {
+            "home_team": "Forecast FC",
+            "away_team": "Other FC",
+            "p1": 0.42, "px": 0.29, "p2": 0.29,
+            "market_odds": {"П1": 2.5, "X": 3.1, "П2": 2.8},
+            "odds_source": "sstats",
+            "verdict": {
+                "real_odds": True, "value_passed": True, "is_bet": True,
+            },
+        }
+        row = _match_table_row(card, preview_only=True)
+        self.assertIn("ПРОГНОЗ · НЕ ДОПУЩЕН К СТАВКЕ", row)
+        self.assertNotIn("VALUE · СТАВКА ДОПУЩЕНА", row)
+        self.assertNotIn("class='neo-pick value'", row)
+
+    def test_forecast_rejection_reason_explains_history_context_and_market(self):
+        card = {
+            "_daily_selection_note": (
+                "Ознакомительный прогноз · дома 0/5; в гостях 0/5; "
+                "нет выраженного фаворита (42% < 52%)"
+            ),
+            "context_quality": {
+                "strong_value_eligible": False,
+                "reason": "нет подтверждённого стартового XI и/или судьи",
+            },
+            "market_odds": {},
+            "verdict": {"real_odds": False, "value_passed": False, "is_bet": False},
+        }
+        reason = _forecast_rejection_reason(card)
+        self.assertIn("дома 0/5", reason)
+        self.assertIn("52%", reason)
+        self.assertIn("стартового XI", reason)
+        self.assertIn("полной подтверждённой линии", reason)
 
     def test_fixture_row_distinguishes_forecast_from_value_approved_bet(self):
         no_line = _match_table_row({
