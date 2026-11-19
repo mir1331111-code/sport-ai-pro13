@@ -4,14 +4,52 @@ from datetime import datetime, timedelta
 from data.fixture_time import app_timezone
 from betting.ranking import rank_best_fixtures
 from ui.tabs.dashboard import (
+    DASHBOARD_DEFAULT_PERIOD, DASHBOARD_PERIOD_OPTIONS,
+    DASHBOARD_FORECAST_VISIBLE_LIMIT,
     _forecast_rejection_reason, _grok_panel, _https_image_url,
     _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
 )
+from config import MIN_FAVORITE_HISTORY, DEFAULT_SCAN_HORIZON_DAYS
 
 
 class DashboardHelperTests(unittest.TestCase):
+    def test_dashboard_defaults_to_the_full_scan_horizon(self):
+        self.assertEqual(DASHBOARD_DEFAULT_PERIOD, DASHBOARD_PERIOD_OPTIONS[-1])
+        self.assertEqual(DASHBOARD_FORECAST_VISIBLE_LIMIT, 50)
+
+    def test_scan_defaults_to_three_days(self):
+        self.assertEqual(DEFAULT_SCAN_HORIZON_DAYS, 3)
+
+    def test_dashboard_history_floor_matches_strong_forecast_policy(self):
+        self.assertEqual(MIN_FAVORITE_HISTORY, 10)
+        now = datetime.now(app_timezone())
+        kickoff = now + timedelta(hours=2)
+        card = {
+            "fixture_id": "sstats:eight-sample",
+            "date_iso": kickoff.date().isoformat(),
+            "time": kickoff.strftime("%H:%M"),
+            "kickoff_utc": kickoff.astimezone(__import__("datetime").timezone.utc).isoformat(),
+            "home_team": "Home FC", "away_team": "Away FC",
+            "p1": 0.929, "px": 0.040, "p2": 0.031,
+            "probability_calibrated": True,
+            "independent_features": {
+                "home_home_sample": 8, "away_away_sample": 8,
+            },
+        }
+        diagnostics = {}
+        ranked = rank_best_fixtures(
+            [card], now=now, limit=None,
+            min_sample_games=MIN_FAVORITE_HISTORY,
+            min_probability=0.52,
+            include_limited_history=True,
+            diagnostics=diagnostics,
+        )
+        self.assertEqual(len(ranked), 1)
+        self.assertFalse(ranked[0]["history_ready"])
+        self.assertFalse(ranked[0]["strict_eligible"])
+
     def test_only_complete_sstats_prices_are_displayed_as_real_line(self):
         complete = {
             "odds_source": "sstats",

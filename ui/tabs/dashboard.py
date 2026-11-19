@@ -10,13 +10,23 @@ import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
 from data.fixture_time import app_timezone
-from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
+from config import (
+    APP_VERSION, DB_FILE, LLM_PROVIDERS, MIN_FAVORITE_HISTORY,
+)
 from ui.cards import _LEAGUE_FLAGS
 from model.forecast_ledger import ForecastLedger
 
 
 OUTCOMES = ("H", "D", "A")
 OUTCOME_LABELS = {"H": "П1", "D": "X", "A": "П2"}
+
+DASHBOARD_PERIOD_OPTIONS = (
+    "Сегодня · лучшие события",
+    "Ближайшие 24 часа · лучшие события",
+    "Весь горизонт скана · лучшие события",
+)
+DASHBOARD_DEFAULT_PERIOD = "Весь горизонт скана · лучшие события"
+DASHBOARD_FORECAST_VISIBLE_LIMIT = 50
 
 
 def esc(value):
@@ -842,14 +852,12 @@ def render():
     with filter_period:
         selected_period = st.selectbox(
             "Период",
-            [
-                "Сегодня · лучшие события",
-                "Ближайшие 24 часа · лучшие события",
-                "Весь горизонт скана · лучшие события",
-            ],
-            index=0,
+            DASHBOARD_PERIOD_OPTIONS,
+            index=DASHBOARD_PERIOD_OPTIONS.index(DASHBOARD_DEFAULT_PERIOD),
             label_visibility="collapsed",
-            key="dashboard_period_filter_v2",
+            # Version the key so an old saved "today only" choice cannot
+            # silently override the new full-scan default.
+            key="dashboard_period_filter_v3",
         )
     with filter_refresh:
         refresh_dashboard = st.button(
@@ -888,7 +896,7 @@ def render():
         now=now,
         period_end=period_end,
         limit=None,
-        min_sample_games=5,
+        min_sample_games=MIN_FAVORITE_HISTORY,
         min_probability=0.52,
         # Keep provisional candidates in diagnostics only. They are never
         # admitted to the visible bet table unless every approval gate passes.
@@ -912,7 +920,14 @@ def render():
     forecast_candidates.sort(
         key=lambda pair: pair[0] if pair[0] is not None else datetime.max.replace(tzinfo=now.tzinfo)
     )
-    forecast_event_cards = [card for _kickoff, card in forecast_candidates[:12]]
+    forecast_event_cards = [
+        card for _kickoff, card in
+        forecast_candidates[:DASHBOARD_FORECAST_VISIBLE_LIMIT]
+    ]
+    remaining_forecast_cards = [
+        card for _kickoff, card in
+        forecast_candidates[DASHBOARD_FORECAST_VISIBLE_LIMIT:]
+    ]
     selected_event_cards = approved_event_cards[:5]
     strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
@@ -979,7 +994,7 @@ def render():
         if not table_rows:
             empty_summary = (
                 f"Нет допущенных ставок. В выбранном периоде: {available_event_count} матчей; "
-                f"без домашней/выездной истории ≥5 — {history_blocked_count}; "
+                f"без домашней/выездной истории ≥{MIN_FAVORITE_HISTORY} — {history_blocked_count}; "
                 f"без фаворита ≥52% — {probability_blocked_count}; "
                 f"без подтверждённого Strong/Value-контекста — {context_blocked_count}; "
                 f"строгих кандидатов по истории и вероятности — {strict_count}; "
@@ -1007,7 +1022,7 @@ def render():
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · всего матчей в периоде: {available_event_count} · строгих кандидатов (история + фаворит): {strict_count} · без истории/вероятности: {provisional_count} · не подтверждён Strong/Value-контекст: {context_blocked_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count}. Причины пересекаются. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · всего матчей в периоде: {available_event_count} · строгих кандидатов (история ≥{MIN_FAVORITE_HISTORY} + фаворит): {strict_count} · без истории/вероятности: {provisional_count} · не подтверждён Strong/Value-контекст: {context_blocked_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count}. Причины пересекаются. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
@@ -1039,10 +1054,30 @@ def render():
             )
             + "</tbody></table></div>"
             f"<div class='neo-table-footer'>Показаны ближайшие по времени {len(forecast_event_cards)} непринятых прогнозов из {len(forecast_candidates)}. "
-            "Статус «НЕ ДОПУЩЕН» означает, что ставку делать нельзя. Список ограничен 12 строками для читаемости.</div>"
+            "Статус «НЕ ДОПУЩЕН» означает, что ставку делать нельзя. "
+            f"Первые {DASHBOARD_FORECAST_VISIBLE_LIMIT} показаны сразу; "
+            f"остальные {len(remaining_forecast_cards)} доступны ниже.</div>"
             "</section>",
             unsafe_allow_html=True,
         )
+        if remaining_forecast_cards:
+            with st.expander(
+                f"Показать остальные {len(remaining_forecast_cards)} прогнозов всего горизонта"
+            ):
+                remaining_rows = "".join(
+                    _match_table_row(card, preview_only=True)
+                    for card in remaining_forecast_cards
+                )
+                st.markdown(
+                    "<div class='neo-table-scroll'><table class='neo-match-table'>"
+                    "<thead><tr><th>Время</th><th>Лига</th><th>Матч</th>"
+                    "<th>П1</th><th>X</th><th>П2</th><th>Коэф. 1</th>"
+                    "<th>Коэф. X</th><th>Коэф. 2</th>"
+                    "<th>Прогноз и причина недопуска</th></tr></thead><tbody>"
+                    + remaining_rows
+                    + "</tbody></table></div>",
+                    unsafe_allow_html=True,
+                )
         st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
 
     with right:
