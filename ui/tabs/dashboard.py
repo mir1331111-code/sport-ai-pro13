@@ -842,7 +842,9 @@ def render():
         limit=None,
         min_sample_games=5,
         min_probability=0.52,
-        include_limited_history=False,
+        # Keep provisional candidates in diagnostics only. They are never
+        # admitted to the visible bet table unless every approval gate passes.
+        include_limited_history=True,
         diagnostics=selection_diagnostics,
     )
     approved_event_cards = []
@@ -856,10 +858,18 @@ def render():
         if dashboard_bet_approved(card):
             approved_event_cards.append(card)
     selected_event_cards = approved_event_cards[:5]
-    strict_count = len(ranked_events)
+    strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
+    available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
+    history_blocked_count = sum(not bool(item.get("history_ready")) for item in ranked_events)
+    probability_blocked_count = sum(not bool(item.get("probability_ready")) for item in ranked_events)
+    context_blocked_count = sum(
+        not bool(
+            (item.get("card", {}).get("context_quality") or {}).get("strong_value_eligible")
+        )
+        for item in ranked_events
+    )
     value_blocked_count = max(0, strict_count - len(approved_event_cards))
-    available_event_count = strict_count
     scan_diagnostics_text = (
         f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
         f"уже начались: {selection_diagnostics.get('already_started', 0)} · "
@@ -911,11 +921,19 @@ def render():
     with left:
         table_rows = "".join(_match_table_row(card) for card in selected_event_cards)
         if not table_rows:
+            empty_summary = (
+                f"Нет допущенных ставок. В выбранном периоде: {available_event_count} матчей; "
+                f"без домашней/выездной истории ≥5 — {history_blocked_count}; "
+                f"без фаворита ≥52% — {probability_blocked_count}; "
+                f"без подтверждённого Strong/Value-контекста — {context_blocked_count}; "
+                f"строгих кандидатов по истории и вероятности — {strict_count}; "
+                f"отклонено Value/EV/Edge/Kelly — {value_blocked_count}. "
+                "Причины могут пересекаться. Остальные прогнозы остаются вне списка ставок."
+            )
             table_rows = (
                 "<tr><td colspan='10' class='neo-empty-cell'>"
-                "В выбранном периоде нет матчей, прошедших все условия допуска: "
-                "достаточная история, фаворит ≥52%, полная линия 1X2 и Value/EV/Edge/Kelly."
-                "</td></tr>"
+                + esc(empty_summary)
+                + "</td></tr>"
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
@@ -933,7 +951,7 @@ def render():
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · кандидатов с достаточной историей: {strict_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count} · прогнозов с недостаточной историей скрыто: {provisional_count}. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · всего матчей в периоде: {available_event_count} · строгих кандидатов (история + фаворит): {strict_count} · без истории/вероятности: {provisional_count} · не подтверждён Strong/Value-контекст: {context_blocked_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count}. Причины пересекаются. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
