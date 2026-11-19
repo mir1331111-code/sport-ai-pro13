@@ -141,12 +141,18 @@ def _grok_panel(cards, meta):
                     )
             independent_pick = str(analysis.get("independent_pick") or "").strip()
             model_prediction = favorite(card) or {}
-            model_pick = str(model_prediction.get("pick") or "")
+            _home_n, _away_n, model_history_supported = _forecast_history_support(card)
+            model_pick = (
+                str(model_prediction.get("pick") or "")
+                if model_history_supported else ""
+            )
             if independent_pick in {"П1", "X", "П2"}:
                 comparison = (
                     "совпадает с основной моделью"
-                    if independent_pick == model_pick
-                    else f"расходится с основной моделью ({model_pick or 'нет прогноза'})"
+                    if model_pick and independent_pick == model_pick
+                    else f"расходится с основной моделью ({model_pick})"
+                    if model_pick
+                    else "у основной модели нет подтверждённой истории для выбора исхода"
                 )
                 body.append(
                     f"<div class='neo-grok-meta'>Grok: <b>{esc(independent_pick)}</b> · "
@@ -438,6 +444,27 @@ def _https_image_url(value):
     return ""
 
 
+def _forecast_history_support(card, minimum=5):
+    """Return venue-specific sample counts and whether the forecast has support."""
+    features = card.get("independent_features")
+    features = features if isinstance(features, dict) else {}
+
+    def sample(primary, secondary):
+        value = card.get(primary)
+        if value is None:
+            value = features.get(secondary)
+        parsed = num(value)
+        return max(0, int(parsed)) if parsed is not None else 0
+
+    home_n = sample("_daily_home_sample", "home_home_sample")
+    away_n = sample("_daily_away_sample", "away_away_sample")
+    try:
+        floor = max(1, int(minimum))
+    except (TypeError, ValueError):
+        floor = 5
+    return home_n, away_n, home_n >= floor and away_n >= floor
+
+
 def _forecast_rejection_reason(card):
     """Explain why a visible forecast is not an approved bet."""
     reasons = []
@@ -496,7 +523,13 @@ def _match_table_row(card, *, preview_only=False):
 
     pick = str(prediction.get("pick") or "—")
     probability = num(prediction.get("probability"))
-    pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
+    home_history_n, away_history_n, history_supported = _forecast_history_support(card)
+    prior_only = bool(preview_only and not history_supported)
+    pick_text = (
+        "PRIOR-ONLY · НЕ ВЫБИРАЕМ ИСХОД"
+        if prior_only else
+        f"{pick} · {probability:.0%}" if probability is not None else pick
+    )
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
     value_passed = bool(
         not preview_only and verdict.get("real_odds")
@@ -505,9 +538,17 @@ def _match_table_row(card, *, preview_only=False):
     has_confirmed_line = has_prices(card)
     if preview_only:
         reason_text = _forecast_rejection_reason(card)
+        history_note = (
+            "<small class='neo-pick-note provisional'>"
+            f"Нет достаточной домашней/выездной истории: {home_history_n}/5 и "
+            f"{away_history_n}/5. Вероятности показаны как prior; фаворит не выбирается."
+            "</small>"
+            if prior_only else ""
+        )
         bet_status_html = (
             "<small class='neo-bet-status blocked'>ПРОГНОЗ · НЕ ДОПУЩЕН К СТАВКЕ</small>"
-            f"<small class='neo-pick-note provisional'>{esc(reason_text)}</small>"
+            + history_note
+            + f"<small class='neo-pick-note provisional'>{esc(reason_text)}</small>"
         )
     elif value_passed and verdict.get("is_bet"):
         bet_status_html = (
@@ -583,7 +624,7 @@ def _match_table_row(card, *, preview_only=False):
         "</div></td>"
         + "".join(f"<td class='neo-prob'>{value}</td>" for value in values)
         + "".join(odds_cells)
-        + f"<td class='neo-pick-cell'><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span>{bet_status_html}{selection_html}</td>"
+        + f"<td class='neo-pick-cell'><span class='neo-pick {'prior-only' if prior_only else 'value' if value_passed else ''}'>{esc(pick_text)}</span>{bet_status_html}{selection_html}</td>"
         + "</tr>"
     )
 
@@ -918,6 +959,17 @@ def render():
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
     available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
     history_blocked_count = sum(not bool(item.get("history_ready")) for item in ranked_events)
+    home_history_ready_count = sum(
+        int(item.get("home_sample") or 0) >= 5 for item in ranked_events
+    )
+    away_history_ready_count = sum(
+        int(item.get("away_sample") or 0) >= 5 for item in ranked_events
+    )
+    both_history_ready_count = sum(bool(item.get("history_ready")) for item in ranked_events)
+    any_history_count = sum(
+        max(int(item.get("home_sample") or 0), int(item.get("away_sample") or 0)) > 0
+        for item in ranked_events
+    )
     probability_blocked_count = sum(not bool(item.get("probability_ready")) for item in ranked_events)
     context_blocked_count = sum(
         not bool(
@@ -973,13 +1025,34 @@ def render():
     if probability_warning:
         st.warning(probability_warning)
 
+    scan_report = data.get("report") if isinstance(data.get("report"), list) else []
+    history_ingest_lines = [
+        str(line).strip() for line in scan_report
+        if "SStats history:" in str(line)
+        or "Пользовательский исторический архив:" in str(line)
+    ]
+    if history_ingest_lines:
+        st.caption(
+            "📚 Диагностика загрузки истории: "
+            + " · ".join(history_ingest_lines[-2:])
+        )
+    else:
+        st.caption(
+            "📚 В журнале последнего скана нет отчёта загрузчика SStats history. "
+            "Запустите сканирование, чтобы увидеть число реально загруженных исторических матчей."
+        )
+
     left, right = st.columns([1.68, 1.0], gap="medium")
     with left:
         table_rows = "".join(_match_table_row(card) for card in selected_event_cards)
         if not table_rows:
             empty_summary = (
                 f"Нет допущенных ставок. В выбранном периоде: {available_event_count} матчей; "
-                f"без домашней/выездной истории ≥5 — {history_blocked_count}; "
+                f"есть хотя бы одна история команды: {any_history_count}/{available_event_count}; "
+                f"домашняя история ≥5: {home_history_ready_count}/{available_event_count}; "
+                f"выездная история ≥5: {away_history_ready_count}/{available_event_count}; "
+                f"обе стороны ≥5: {both_history_ready_count}/{available_event_count}; "
+                f"без полной домашней/выездной истории — {history_blocked_count}; "
                 f"без фаворита ≥52% — {probability_blocked_count}; "
                 f"без подтверждённого Strong/Value-контекста — {context_blocked_count}; "
                 f"строгих кандидатов по истории и вероятности — {strict_count}; "
@@ -1007,7 +1080,7 @@ def render():
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · всего матчей в периоде: {available_event_count} · строгих кандидатов (история + фаворит): {strict_count} · без истории/вероятности: {provisional_count} · не подтверждён Strong/Value-контекст: {context_blocked_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count}. Причины пересекаются. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · всего матчей: {available_event_count} · история дом ≥5: {home_history_ready_count} · история гость ≥5: {away_history_ready_count} · обе ≥5: {both_history_ready_count} · строгих кандидатов: {strict_count} · без истории/вероятности: {provisional_count} · не подтверждён Strong/Value-контекст: {context_blocked_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count}. Причины пересекаются. <br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
