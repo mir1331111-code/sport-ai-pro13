@@ -761,6 +761,13 @@ section[data-testid="stSidebar"] div[data-testid="stExpander"] summary {
 .neo-bet-status.forecast-only {
   color:#d7c18c;background:rgba(112,89,35,.18);border:1px solid #756037;
 }
+.neo-ranking-disclaimer {
+  margin:0 0 8px;padding:8px 10px;border-radius:7px;
+  background:rgba(104,76,31,.16);border:1px solid #725c32;
+  color:#d7c18c;font-size:.58rem;line-height:1.45;
+}
+.neo-ranking-disclaimer b {color:#f0d79b;}
+.neo-ranking-disclaimer strong {color:#a8f3cd;font-weight:900;}
 .neo-pick-cell {min-width:160px;}
 .neo-empty-cell {padding:34px 12px !important;text-align:center;color:#91a8a4 !important;white-space:normal !important;}
 .neo-table-footer {padding-top:9px;color:#78928e;font-size:.6rem;line-height:1.4;}
