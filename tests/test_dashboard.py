@@ -144,6 +144,10 @@ class DashboardHelperTests(unittest.TestCase):
             "home_team": "Home FC",
             "away_team": "Away FC",
             "p1": 0.55, "px": 0.25, "p2": 0.20,
+            "independent_features": {
+                "home_home_sample": 8,
+                "away_away_sample": 8,
+            },
             "deep_analysis_provider": "Grok (x.ai)",
             "deep_analysis_model": "grok-4.7",
             "deep_analysis": {
