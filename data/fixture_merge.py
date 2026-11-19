@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from data.team_names import normalize_team
 
 
@@ -14,6 +15,21 @@ def fixture_key(row: dict) -> tuple:
     """Stable date/team key across providers with different fixture IDs."""
     return (
         str(row.get("Date") or row.get("date") or "")[:10],
+        _team_key(row.get("HomeTeam") or row.get("home_team")),
+        _team_key(row.get("AwayTeam") or row.get("away_team")),
+    )
+
+
+def _fixture_day(row: dict):
+    raw = str(row.get("Date") or row.get("date") or "").strip()
+    try:
+        return date.fromisoformat(raw[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _fixture_team_pair(row: dict) -> tuple[str, str]:
+    return (
         _team_key(row.get("HomeTeam") or row.get("home_team")),
         _team_key(row.get("AwayTeam") or row.get("away_team")),
     )
@@ -37,48 +53,78 @@ _FIXTURE_PROVIDER_ID_FIELDS = (
 def enrich_fixture_visual_metadata(
     primary_rows, metadata_rows,
 ) -> tuple[list[dict], dict[str, int]]:
-    """Overlay only visual fixture metadata without adding/replacing fixtures.
+    """Overlay visual fields, using a guarded one-day date fallback for timezone drift.
 
     The primary feed remains authoritative for fixture identity, kickoff,
-    competition and bookmaker odds. Secondary feeds can fill only known image
-    and venue fields on an exact normalized date/team match.
+    competition and bookmaker odds. Secondary feeds may enrich only a unique
+    ordered home/away team pair. Exact date matches win; a +/- 1 day fallback
+    is allowed only when the nearest calendar day is unambiguous.
     """
     metadata_by_fixture: dict[tuple, list[dict]] = {}
+    metadata_by_pair: dict[tuple[str, str], list[tuple[date, dict]]] = {}
     for row in metadata_rows or []:
         if not isinstance(row, dict):
             continue
         key = fixture_key(row)
-        if all(key):
-            metadata_by_fixture.setdefault(key, []).append(row)
+        if not all(key):
+            continue
+        metadata_by_fixture.setdefault(key, []).append(row)
+        day = _fixture_day(row)
+        pair = _fixture_team_pair(row)
+        if day is not None and all(pair):
+            metadata_by_pair.setdefault(pair, []).append((day, row))
 
     result = []
     fixtures_matched = 0
+    date_fallback_matches = 0
+    ambiguous_team_pair_matches = 0
     assets_added = 0
     fixtures_with_assets = 0
+    metadata_fields = _FIXTURE_VISUAL_FIELDS + _FIXTURE_PROVIDER_ID_FIELDS
+
     for row in primary_rows or []:
         if not isinstance(row, dict):
             continue
         clean = dict(row)
         key = fixture_key(row)
         candidates = metadata_by_fixture.get(key, []) if all(key) else []
+        if not candidates:
+            pair = _fixture_team_pair(row)
+            primary_day = _fixture_day(row)
+            nearby = []
+            if all(pair) and primary_day is not None:
+                for metadata_day, metadata_row in metadata_by_pair.get(pair, []):
+                    delta_days = abs((metadata_day - primary_day).days)
+                    if delta_days <= 1:
+                        nearby.append((delta_days, metadata_day, metadata_row))
+            if nearby:
+                nearest_distance = min(item[0] for item in nearby)
+                nearest = [item for item in nearby if item[0] == nearest_distance]
+                nearest_days = {item[1] for item in nearest}
+                if len(nearest_days) == 1:
+                    candidates = [item[2] for item in nearest]
+                    date_fallback_matches += 1
+                else:
+                    ambiguous_team_pair_matches += 1
+
         if candidates:
             fixtures_matched += 1
-            # Prefer the matching provider event with the broadest visual
-            # coverage when a feed contains duplicate rows for the same game.
-            metadata_fields = _FIXTURE_VISUAL_FIELDS + _FIXTURE_PROVIDER_ID_FIELDS
-            source = max(
+            # Multiple rows at the same nearest date may be duplicate provider
+            # metadata for one fixture. Fill fields from the richest rows first;
+            # never copy schedules, prices, team names or competition IDs here.
+            ordered_candidates = sorted(
                 candidates,
-                key=lambda candidate: sum(
-                    bool(candidate.get(field)) for field in metadata_fields
-                ),
+                key=lambda candidate: sum(bool(candidate.get(field)) for field in metadata_fields),
+                reverse=True,
             )
-            for field in metadata_fields:
-                if clean.get(field) in (None, "", {}, []) and source.get(field) not in (
-                    None, "", {}, [],
-                ):
-                    clean[field] = source[field]
-                    if field in _FIXTURE_VISUAL_FIELDS:
-                        assets_added += 1
+            for source in ordered_candidates:
+                for field in metadata_fields:
+                    if clean.get(field) in (None, "", {}, []) and source.get(field) not in (
+                        None, "", {}, [],
+                    ):
+                        clean[field] = source[field]
+                        if field in _FIXTURE_VISUAL_FIELDS:
+                            assets_added += 1
         if any(clean.get(field) not in (None, "", {}, []) for field in _FIXTURE_VISUAL_FIELDS):
             fixtures_with_assets += 1
         result.append(clean)
@@ -87,6 +133,8 @@ def enrich_fixture_visual_metadata(
         "primary_fixtures": len(result),
         "metadata_fixtures": len(metadata_by_fixture),
         "fixtures_matched": fixtures_matched,
+        "date_fallback_matches": date_fallback_matches,
+        "ambiguous_team_pair_matches": ambiguous_team_pair_matches,
         "assets_added": assets_added,
         "fixtures_with_assets": fixtures_with_assets,
     }
