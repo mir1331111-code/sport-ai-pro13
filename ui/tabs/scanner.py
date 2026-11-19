@@ -3240,8 +3240,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             }
             # Value flags are stricter than forecast flags. A full historical
             # bookmaker benchmark must pass before any market enters the selector.
+            league_winner_report = (
+                getattr(engine, "winner_market_validation_by_league", {}) or {}
+            ).get(str(lg or "G").strip().upper(), {})
             winner_market_validation = bool(
-                getattr(engine, "winner_market_validation", False)
+                isinstance(league_winner_report, dict)
+                and league_winner_report.get("validation_passed")
+                and league_winner_report.get("holdout_id")
             )
             market_validation_by_pick = {
                 pick: winner_market_validation for pick in ("П1", "X", "П2")
