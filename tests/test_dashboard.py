@@ -2,7 +2,7 @@ import unittest
 
 from ui.tabs.dashboard import (
     _match_table_row, _quality_panel, _reliability_svg, _sparkline_svg,
-    context_summary, favorite, has_prices, match_name,
+    approved_1x2_recommendation, context_summary, favorite, has_prices, match_name,
 )
 
 
@@ -31,6 +31,50 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertFalse(has_prices(partial))
         self.assertFalse(has_prices(invalid))
         self.assertFalse(has_prices(mixed_bookmakers))
+
+    def _approved_card(self, pick):
+        return {
+            "div": "E0",
+            "odds_source": "sstats",
+            "market_odds": {"П1": 2.10, "X": 3.40, "П2": 4.10},
+            "bookmaker_by_pick": {
+                "П1": "Book A", "X": "Book A", "П2": "Book A",
+            },
+            "context_quality": {"strong_value_eligible": True},
+            "winner_market_validation": True,
+            "winner_market_validation_scope": "competition_independent_holdout",
+            "winner_market_validation_division": "E0",
+            "market_holdout_id": "holdout-e0-v1",
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", pick, 2.10, 0.12, 0.52, 1.0),
+                    "verdict": {
+                        "real_odds": True, "value_passed": True,
+                        "is_bet": True, "edge": 0.08,
+                    },
+                },
+            },
+        }
+
+    def test_main_dashboard_approval_accepts_draw_and_away_outcomes(self):
+        for pick in ("X", "П2"):
+            with self.subTest(pick=pick):
+                recommendation = approved_1x2_recommendation(
+                    self._approved_card(pick)
+                )
+                self.assertIsNotNone(recommendation)
+                self.assertEqual(recommendation["best"][1], pick)
+
+    def test_main_dashboard_hides_forecast_only_or_global_only_matches(self):
+        forecast_only = self._approved_card("П1")
+        forecast_only["best_by_market"] = {}
+        self.assertIsNone(approved_1x2_recommendation(forecast_only))
+
+        global_only = self._approved_card("П1")
+        global_only["winner_market_validation_scope"] = "global_research_only"
+        global_only["winner_market_validation_division"] = ""
+        global_only["market_holdout_id"] = ""
+        self.assertIsNone(approved_1x2_recommendation(global_only))
 
     def test_context_summary_never_promotes_unknown_fields(self):
         card = {
