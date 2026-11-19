@@ -1570,6 +1570,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"{label} {float(favorite_card.get(field) or 0):.1%}"
                     for field, label in (("p1", "П1"), ("px", "X"), ("p2", "П2"))
                 )
+                model_distribution_label = (
+                    "Вероятности модели"
+                    if favorite_calibration_ready
+                    else "СЫРЫЕ вероятности · калибратор этой лиги не обучен"
+                )
                 market_distribution_html = ""
                 if market_line := proportional_devig(
                     favorite_card.get("market_odds") or {},
@@ -1598,7 +1603,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"<div style='color:#8fd8bd;font-weight:800;font-size:17px'>"
                         f"{favorite_outcome_html}</div>"
                         f"<div style='color:#d4e0e6;font-size:11px;margin-top:4px'>"
-                        f"Вероятности модели: {html.escape(model_distribution)}</div>"
+                        f"{html.escape(model_distribution_label)}: {html.escape(model_distribution)}</div>"
                         + market_distribution_html
                         + f"<div style='color:#b7c2c9;font-size:11px;margin-top:2px'>"
                         f"{html.escape(favorite_strength_label)}</div>"
