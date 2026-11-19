@@ -58,6 +58,151 @@ def has_prices(card):
         and all(1.01 < (num(prices.get(k)) or 0) <= 100 for k in ("П1", "X", "П2"))
     )
 
+def dashboard_bet_approved(card):
+    """Only admit a match to the dashboard bet list after every gate passes."""
+    if not isinstance(card, dict) or card.get("_daily_strict_eligible") is not True:
+        return False
+    verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
+    pick = str(verdict.get("pick") or "").strip()
+    return bool(
+        has_prices(card)
+        and verdict.get("real_odds")
+        and verdict.get("value_passed")
+        and verdict.get("is_bet")
+        and pick in {"П1", "X", "П2"}
+    )
+
+
+def _provider_is_grok(provider):
+    name = str(provider or "").strip()
+    details = LLM_PROVIDERS.get(name, {})
+    base = str(details.get("base") or "").casefold()
+    return "api.x.ai" in base or "grok" in name.casefold()
+
+
+def _probability_health_note(cards):
+    """Detect a repeated probability vector that usually signals prior-only forecasts."""
+    counts = {}
+    valid = 0
+    for card in cards or []:
+        values = [num(card.get(key)) for key in ("p1", "px", "p2")]
+        if any(value is None or not 0 <= value <= 1 for value in values):
+            continue
+        if not 0.90 <= sum(values) <= 1.10:
+            continue
+        valid += 1
+        signature = tuple(round(value, 3) for value in values)
+        counts[signature] = counts.get(signature, 0) + 1
+    if valid < 5 or not counts:
+        return ""
+    signature, repeated = max(counts.items(), key=lambda item: item[1])
+    if repeated < max(5, math.ceil(valid * 0.60)):
+        return ""
+    return (
+        f"⚠️ Повторяется один и тот же вектор 1X2 у {repeated} из {valid} матчей "
+        f"(П1 {signature[0]:.0%} · X {signature[1]:.0%} · П2 {signature[2]:.0%}). "
+        "Это похоже на прогноз по нейтральным priors при недостатке истории команд. "
+        "Такие матчи не должны попадать в список допущенных ставок."
+    )
+
+
+def _grok_panel(cards, meta):
+    """Show only analyses explicitly recorded as Grok/xAI; never relabel another LLM."""
+    meta = meta if isinstance(meta, dict) else {}
+    selected_provider = str(meta.get("llm_provider") or "")
+    selected_is_grok = _provider_is_grok(selected_provider)
+    rows = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        analysis = card.get("deep_analysis")
+        analysis = analysis if isinstance(analysis, dict) else {}
+        analysis_provider = str(card.get("deep_analysis_provider") or "")
+        grok_comment = str(card.get("grok_comment") or "").strip()
+        explicit_grok_analysis = _provider_is_grok(analysis_provider)
+        if not explicit_grok_analysis and not grok_comment:
+            continue
+        title = match_name(card)
+        body = []
+        if explicit_grok_analysis:
+            probabilities = analysis.get("probabilities")
+            probabilities = probabilities if isinstance(probabilities, dict) else {}
+            values = {key: num(probabilities.get(key)) for key in ("П1", "X", "П2")}
+            if all(value is not None and 0 <= value <= 100 for value in values.values()):
+                total = sum(values.values())
+                if total > 0 and abs(total - 100) <= 5:
+                    body.append(
+                        "<div class='neo-grok-probs'>"
+                        + "".join(
+                            f"<span>{key}<b>{value:.1f}%</b></span>"
+                            for key, value in values.items()
+                        )
+                        + "</div>"
+                    )
+            independent_pick = str(analysis.get("independent_pick") or "").strip()
+            model_prediction = favorite(card) or {}
+            model_pick = str(model_prediction.get("pick") or "")
+            if independent_pick in {"П1", "X", "П2"}:
+                comparison = (
+                    "совпадает с основной моделью"
+                    if independent_pick == model_pick
+                    else f"расходится с основной моделью ({model_pick or 'нет прогноза'})"
+                )
+                body.append(
+                    f"<div class='neo-grok-meta'>Grok: <b>{esc(independent_pick)}</b> · "
+                    f"{esc(comparison)} · модель {esc(card.get('deep_analysis_model') or 'xAI')}</div>"
+                )
+            assessment = str(
+                analysis.get("match_assessment") or analysis.get("opinion") or ""
+            ).strip()
+            if assessment:
+                body.append(f"<p class='neo-grok-copy'>{esc(assessment)}</p>")
+            risks = str(analysis.get("risks") or "").strip()
+            if risks:
+                body.append(f"<p class='neo-grok-risk'><b>Риски:</b> {esc(risks)}</p>")
+            quality = str(analysis.get("data_quality") or "").strip()
+            if quality:
+                body.append(f"<small class='neo-grok-meta'>Качество данных: {esc(quality)}</small>")
+        if grok_comment:
+            bookmaker = str(card.get("grok_bookmaker") or "источник не указан")
+            body.append(
+                f"<p class='neo-grok-copy'>{esc(grok_comment)}</p>"
+                f"<small class='neo-grok-meta'>Источник: {esc(bookmaker)}</small>"
+            )
+        rows.append(
+            "<article class='neo-grok-row'><div class='neo-grok-match'>"
+            + esc(title) + "</div>" + "".join(body) + "</article>"
+        )
+        if len(rows) >= 4:
+            break
+
+    if not rows:
+        if selected_is_grok:
+            message = (
+                "Grok выбран как AI-провайдер, но сохранённого разбора пока нет. "
+                "Запустите TOP MATCHES / обновление AI-досье в сканере."
+            )
+        else:
+            active = ai_provider_label({"meta": meta})
+            message = (
+                f"Сейчас выбран {active}, а не Grok. Для независимого разбора Grok выберите "
+                "«Grok (x.ai)» в API Center, задайте XAI_API_KEY и обновите TOP MATCHES."
+            )
+        content = (
+            "<div class='neo-grok-empty'><b>Grok пока не предоставил разбор</b>"
+            f"<span>{esc(message)}</span></div>"
+        )
+    else:
+        content = "".join(rows)
+    return (
+        "<section class='neo-panel neo-grok-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>INDEPENDENT AI · xAI</span>"
+        "<h3>Grok · независимый анализ</h3></div>"
+        f"<span class='neo-count-pill'>{len(rows)} разборов</span></div>"
+        + content + "</section>"
+    )
+
 
 def context_summary(card):
     context = card.get("deep_analysis_context")
@@ -266,10 +411,10 @@ def _reliability_svg(report):
     )
 
 def _team_badge_html(name, url="", size=24):
-    safe_url = str(url or "").strip()
+    safe_url = _https_image_url(url)
     initial = esc((str(name or "?").strip()[:1] or "?").upper())
     inner = initial
-    if safe_url.startswith("https://"):
+    if safe_url:
         inner += (
             f"<img src='{esc(safe_url)}' alt='{esc(name)}' loading='lazy' "
             "decoding='async' referrerpolicy='no-referrer' "
@@ -279,6 +424,18 @@ def _team_badge_html(name, url="", size=24):
         f"<span class='neo-team-badge' style='--badge-size:{int(size)}px' "
         f"aria-label='{esc(name)}'>{inner}</span>"
     )
+
+
+def _https_image_url(value):
+    """Normalize safe provider image URLs, including legacy HTTP and // URLs."""
+    source = str(value or "").strip()
+    if source.startswith("//"):
+        return "https:" + source
+    if source.casefold().startswith("http://"):
+        return "https://" + source[7:]
+    if source.casefold().startswith("https://"):
+        return source
+    return ""
 
 
 def _match_table_row(card):
@@ -348,10 +505,11 @@ def _match_table_row(card):
     league = str(card.get("league") or card.get("div") or "Футбол")
     league_code = str(card.get("div") or "")
     league_logo = str(card.get("league_badge") or "")
+    safe_league_logo = _https_image_url(league_logo)
     league_mark = (
-        f"<img src='{esc(league_logo)}' alt='' loading='lazy' decoding='async' "
+        f"<img src='{esc(safe_league_logo)}' alt='' loading='lazy' decoding='async' "
         "referrerpolicy='no-referrer' onerror=\"this.style.display='none'\"/>"
-        if league_logo.startswith("https://")
+        if safe_league_logo
         else f"<span class='neo-league-flag'>{esc(_LEAGUE_FLAGS.get(league_code, '⚽'))}</span>"
     )
     time_text = str(card.get("time") or "").strip()
@@ -668,26 +826,26 @@ def render():
             datetime.min.time(),
             tzinfo=now.tzinfo,
         )
-        table_title = "Лучшие события сегодня · 1X2"
+        table_title = "Допущенные ставки сегодня · 1X2"
     elif selected_period == "Ближайшие 24 часа · лучшие события":
         period_end = now + timedelta(hours=24)
-        table_title = "Лучшие события ближайших 24 часов · 1X2"
+        table_title = "Допущенные ставки ближайших 24 часов · 1X2"
     else:
         period_end = None
-        table_title = "Лучшие события всего горизонта · 1X2"
+        table_title = "Допущенные ставки всего горизонта · 1X2"
 
     selection_diagnostics = {}
     ranked_events = rank_best_fixtures(
         filtered_cards,
         now=now,
         period_end=period_end,
-        limit=5,
+        limit=None,
         min_sample_games=5,
         min_probability=0.52,
-        include_limited_history=True,
+        include_limited_history=False,
         diagnostics=selection_diagnostics,
     )
-    selected_event_cards = []
+    approved_event_cards = []
     for item in ranked_events:
         card = dict(item["card"])
         card["_daily_strict_eligible"] = bool(item.get("strict_eligible"))
@@ -695,10 +853,13 @@ def render():
         card["_daily_home_sample"] = int(item.get("home_sample") or 0)
         card["_daily_away_sample"] = int(item.get("away_sample") or 0)
         card["_daily_quality_score"] = float(item.get("quality_score") or 0.0)
-        selected_event_cards.append(card)
-    strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
+        if dashboard_bet_approved(card):
+            approved_event_cards.append(card)
+    selected_event_cards = approved_event_cards[:5]
+    strict_count = len(ranked_events)
     provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
-    available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
+    value_blocked_count = max(0, strict_count - len(approved_event_cards))
+    available_event_count = strict_count
     scan_diagnostics_text = (
         f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
         f"уже начались: {selection_diagnostics.get('already_started', 0)} · "
@@ -737,10 +898,14 @@ def render():
         "<span>СРАВНЕНИЕ С РЫНКОМ · Δ BRIER</span>"
         f"<b>{esc(market_delta_text)}</b>"
         f"<small>{esc(market_note)}</small>"
-        f"<small class='neo-meta-spacer'>В скане: {len(cards):,} · полных линий 1X2: {priced:,} · FT: {metrics.get('n', 0):,}</small>"
+        f"<small class='neo-meta-spacer'>В скане: {len(cards):,} · полных линий 1X2: {priced:,} · эмблемы с URL у обеих команд: {sum(bool(card.get('home_badge')) and bool(card.get('away_badge')) for card in cards):,} · FT: {metrics.get('n', 0):,}</small>"
         "</div>",
         unsafe_allow_html=True,
     )
+
+    probability_warning = _probability_health_note(cards)
+    if probability_warning:
+        st.warning(probability_warning)
 
     left, right = st.columns([1.68, 1.0], gap="medium")
     with left:
@@ -748,19 +913,19 @@ def render():
         if not table_rows:
             table_rows = (
                 "<tr><td colspan='10' class='neo-empty-cell'>"
-                "В выбранном периоде нет будущих матчей с корректным прогнозом 1X2. "
-                "Проверь время начала, выбранный турнир и актуальность сканирования."
+                "В выбранном периоде нет матчей, прошедших все условия допуска: "
+                "достаточная история, фаворит ≥52%, полная линия 1X2 и Value/EV/Edge/Kelly."
                 "</td></tr>"
             )
         st.markdown(
             "<section class='neo-panel neo-matches-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>DAILY FORECAST RANKING · НЕ СПИСОК СТАВОК</span>"
+            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>BET APPROVAL · ТОЛЬКО ДОПУЩЕННЫЕ</span>"
             f"<h3>{esc(table_title)}</h3></div>"
-            f"<span class='neo-count-pill'>{available_event_count} событий</span></div>"
+            f"<span class='neo-count-pill'>{len(selected_event_cards)} ставок</span></div>"
             "<div class='neo-ranking-disclaimer'>"
-            "<b>Место в списке = качество прогноза, а не допуск к ставке.</b> "
-            "Ставка разрешена только при отдельной зелёной метке "
-            "<strong>VALUE · СТАВКА ДОПУЩЕНА</strong>."
+            "<b>Основной список содержит только допущенные ставки.</b> "
+            "Прогнозы без истории, без полной линии 1X2 или без прохождения Value/EV/Edge/Kelly "
+            "здесь не показываются."
             "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
@@ -768,10 +933,11 @@ def render():
             "</tr></thead><tbody>"
             + table_rows
             + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} событий из {available_event_count} предстоящих · строгий уровень: {strict_count} · ознакомительный уровень: {provisional_count}. ПОРЯДОК СПИСКА = рейтинг прогноза, НЕ одобрение ставки. Балл сортировки: 40% вероятность фаворита, 30% отрыв от второго исхода, 20% домашняя/выездная история, 5% реальный xG, 5% полная линия. Только зелёная метка VALUE · СТАВКА ДОПУЩЕНА означает прохождение отдельного Value/EV/Edge/Kelly-фильтра.<br>{esc(scan_diagnostics_text)}</div>"
+            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · кандидатов с достаточной историей: {strict_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count} · прогнозов с недостаточной историей скрыто: {provisional_count}. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
             "</section>",
             unsafe_allow_html=True,
         )
+        st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
 
     with right:
         reliability = snapshot.get("reliability") or {"rows": [], "n": 0}

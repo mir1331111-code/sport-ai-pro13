@@ -1,8 +1,9 @@
 import unittest
 
 from ui.tabs.dashboard import (
-    _match_table_row, _quality_panel, _reliability_svg, _sparkline_svg,
-    context_summary, favorite, has_prices, match_name,
+    _grok_panel, _https_image_url, _match_table_row, _probability_health_note,
+    _quality_panel, _reliability_svg, _sparkline_svg,
+    context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
 )
 
 
@@ -54,6 +55,79 @@ class DashboardHelperTests(unittest.TestCase):
         malformed = dict(card, p1=71, px=18, p2=11)
         self.assertIsNone(favorite(malformed))
 
+    def test_model_favorite_can_select_draw_or_away_win(self):
+        draw = favorite({
+            "p1": 0.24, "px": 0.52, "p2": 0.24,
+            "home_team": "Home FC", "away_team": "Away FC",
+            "games": 8,
+        })
+        away = favorite({
+            "p1": 0.20, "px": 0.25, "p2": 0.55,
+            "home_team": "Home FC", "away_team": "Away FC",
+            "games": 8,
+        })
+        self.assertEqual(draw["pick"], "X")
+        self.assertEqual(away["pick"], "П2")
+
+    def test_dashboard_shows_only_strict_value_and_kelly_approved_bets(self):
+        approved = {
+            "_daily_strict_eligible": True,
+            "odds_source": "sstats",
+            "market_odds": {"П1": 2.2, "X": 3.1, "П2": 3.4},
+            "verdict": {
+                "pick": "X", "real_odds": True,
+                "value_passed": True, "is_bet": True,
+            },
+        }
+        self.assertTrue(dashboard_bet_approved(approved))
+        self.assertFalse(dashboard_bet_approved(dict(
+            approved, _daily_strict_eligible=False,
+        )))
+        self.assertFalse(dashboard_bet_approved({
+            **approved,
+            "verdict": {**approved["verdict"], "is_bet": False},
+        }))
+        self.assertFalse(dashboard_bet_approved({
+            **approved,
+            "market_odds": {"П1": 2.2, "X": 3.1},
+        }))
+
+    def test_repeated_probability_vector_is_flagged_as_prior_only_risk(self):
+        cards = [
+            {"p1": 0.42, "px": 0.29, "p2": 0.29}
+            for _ in range(6)
+        ]
+        note = _probability_health_note(cards)
+        self.assertIn("Повторяется один и тот же вектор 1X2", note)
+        self.assertIn("42%", note)
+        self.assertEqual(_probability_health_note(cards[:4]), "")
+
+    def test_grok_panel_never_mislabels_groq_as_grok(self):
+        panel = _grok_panel([], {"llm_provider": "Groq GPT-OSS 20B"})
+        self.assertIn("Grok · независимый анализ", panel)
+        self.assertIn("выбран Groq", panel)
+        self.assertIn("XAI_API_KEY", panel)
+
+    def test_grok_panel_renders_only_explicit_xai_analysis(self):
+        panel = _grok_panel([{
+            "home_team": "Home FC",
+            "away_team": "Away FC",
+            "p1": 0.55, "px": 0.25, "p2": 0.20,
+            "deep_analysis_provider": "Grok (x.ai)",
+            "deep_analysis_model": "grok-4.7",
+            "deep_analysis": {
+                "independent_pick": "X",
+                "probabilities": {"П1": 40, "X": 35, "П2": 25},
+                "match_assessment": "Независимая оценка матча.",
+                "risks": "Составы не подтверждены.",
+                "data_quality": "medium",
+            },
+        }], {"llm_provider": "Groq GPT-OSS 20B"})
+        self.assertIn("40.0%", panel)
+        self.assertIn("Grok: <b>X</b>", panel)
+        self.assertIn("расходится с основной моделью", panel)
+        self.assertIn("Независимая оценка матча.", panel)
+
     def test_match_name_uses_existing_fixture_names(self):
         self.assertEqual(
             match_name({"home_team": "Home FC", "away_team": "Away FC",
@@ -77,6 +151,17 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("https://assets.test/chelsea.png", row)
         self.assertIn("neo-league-flag", row)
         self.assertIn("Premier League", row)
+
+    def test_badge_urls_upgrade_http_and_protocol_relative_sources(self):
+        self.assertEqual(
+            _https_image_url("http://assets.test/crest.png"),
+            "https://assets.test/crest.png",
+        )
+        self.assertEqual(
+            _https_image_url("//assets.test/crest.png"),
+            "https://assets.test/crest.png",
+        )
+        self.assertEqual(_https_image_url("javascript:alert(1)"), "")
 
     def test_fixture_row_displays_daily_event_quality_score(self):
         row = _match_table_row({
@@ -113,7 +198,7 @@ class DashboardHelperTests(unittest.TestCase):
             "p1": 0.70, "px": 0.18, "p2": 0.12,
             "market_odds": {"П1": 1.9, "X": 3.5, "П2": 4.5},
             "odds_source": "sstats",
-            "verdict": {"real_odds": True, "value_passed": True},
+            "verdict": {"real_odds": True, "value_passed": True, "is_bet": True},
         })
         self.assertIn("VALUE · СТАВКА ДОПУЩЕНА", approved)
 

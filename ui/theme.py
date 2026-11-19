@@ -1021,6 +1021,22 @@ div[data-testid="stButton"] > button {
   .neo-dashboard-header {position:relative;}
 }
 
+
+/* Grok independent-analysis panel for Neural Terminal */
+.neo-grok-panel { margin-top:12px; border-color:#2b4d68; background:linear-gradient(145deg,#101d2a,#101a21 65%,#10231e); }
+.neo-grok-panel .neo-panel-kicker { color:#83c7f5; }
+.neo-grok-probs { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:8px 0; }
+.neo-grok-probs span { display:flex;align-items:center;justify-content:space-between;gap:5px;padding:6px 8px;border:1px solid #30485a;border-radius:7px;background:#142534;color:#aec8d8;font-size:.65rem; }
+.neo-grok-probs b { color:#d5ecff;font:800 .72rem 'IBM Plex Mono',monospace; }
+.neo-grok-row { padding:9px 0;border-top:1px solid #293b47; }
+.neo-grok-match { color:#eef7fc;font-size:.74rem;font-weight:850;margin-bottom:5px; }
+.neo-grok-meta { display:block;color:#8eabbc;font-size:.58rem;line-height:1.45;margin:4px 0; }
+.neo-grok-meta b { color:#a9e0ff; }
+.neo-grok-copy { color:#c4d4df;font-size:.67rem;line-height:1.5;margin:5px 0; }
+.neo-grok-risk { color:#edc78c;font-size:.62rem;line-height:1.45;margin:5px 0; }
+.neo-grok-empty { display:flex;flex-direction:column;gap:5px;padding:13px;border:1px dashed #385266;border-radius:9px;background:#111f2a;color:#a9c0cf;font-size:.64rem;line-height:1.5; }
+.neo-grok-empty b { color:#d4eaff;font-size:.72rem; }
+
 </style>
 """
 
