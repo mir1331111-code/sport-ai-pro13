@@ -284,9 +284,8 @@ def _fixture_key(card: dict, index: int) -> tuple:
     home, away = _teams(card)
     date = str(card.get("date_iso") or card.get("date") or "")[:10]
     home_key, away_key = _team_key(home), _team_key(away)
-    division = str(card.get("div") or card.get("league") or "").strip().casefold()
     if date and home_key and away_key:
-        return ("fixture", date, division, home_key, away_key)
+        return ("fixture", date, home_key, away_key)
     fixture_id = str(card.get("fixture_id") or card.get("sstats_game_id") or "").strip()
     if fixture_id:
         return ("id", fixture_id)
