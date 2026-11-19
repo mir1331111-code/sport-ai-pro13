@@ -704,6 +704,57 @@ def rank_best_fixtures(
     return ranked
 
 
+
+def supported_1x2_favorite_cards(
+    cards: object, *, min_team_samples: int = 5, min_league_history: int = 30,
+) -> list[dict]:
+    """Keep only 1X2 forecasts with competition and venue-specific pre-match support.
+
+    The neutral model prior is useful as a fallback to keep the engine numerically
+    stable, but it is not evidence for a favourite. Do not promote it into the
+    model-favourites panel when the league or either team's venue sample is sparse.
+    """
+    if not isinstance(cards, list):
+        return []
+    try:
+        team_floor = max(0, int(min_team_samples))
+    except (TypeError, ValueError, OverflowError):
+        team_floor = 5
+    try:
+        league_floor = max(0, int(min_league_history))
+    except (TypeError, ValueError, OverflowError):
+        league_floor = 30
+
+    supported = []
+    for card in cards:
+        if not isinstance(card, dict) or model_favorite(card) is None:
+            continue
+        features = card.get("independent_features")
+        if not isinstance(features, dict):
+            continue
+        # Missing fields are not interchangeable with zero or with all-venue
+        # games: the scanner must explicitly report same-venue counts.
+        if (
+            "home_home_sample" not in features
+            or "away_away_sample" not in features
+        ):
+            continue
+        home_n = _number(features.get("home_home_sample"), 0.0) or 0.0
+        away_n = _number(features.get("away_away_sample"), 0.0) or 0.0
+        league_n = _number(
+            card.get("league_history_matches"),
+            _number(features.get("league_history_matches"), 0.0),
+        ) or 0.0
+        if (
+            home_n < team_floor
+            or away_n < team_floor
+            or league_n < league_floor
+        ):
+            continue
+        supported.append(card)
+    return supported
+
+
 def rank_model_favorites_with_minimum(
     cards: object, *, minimum: int = 7, limit: int = 10,
     min_sample_games: int = 5,
