@@ -11,6 +11,7 @@ class DashboardHelperTests(unittest.TestCase):
         complete = {
             "odds_source": "sstats",
             "market_odds": {"П1": 2.1, "X": 3.3, "П2": 3.6},
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book A", "П2": "Book A"},
         }
         partial = {
             "odds_source": "sstats",
@@ -19,10 +20,17 @@ class DashboardHelperTests(unittest.TestCase):
         invalid = {
             "odds_source": "model_only",
             "market_odds": {"П1": 2.1, "X": 3.3, "П2": 3.6},
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book A", "П2": "Book A"},
+        }
+        mixed_bookmakers = {
+            "odds_source": "sstats",
+            "market_odds": {"П1": 2.1, "X": 3.3, "П2": 3.6},
+            "bookmaker_by_pick": {"П1": "Book A", "X": "Book B", "П2": "Book A"},
         }
         self.assertTrue(has_prices(complete))
         self.assertFalse(has_prices(partial))
         self.assertFalse(has_prices(invalid))
+        self.assertFalse(has_prices(mixed_bookmakers))
 
     def test_context_summary_never_promotes_unknown_fields(self):
         card = {
