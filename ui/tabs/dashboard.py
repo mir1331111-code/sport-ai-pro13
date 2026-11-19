@@ -684,7 +684,7 @@ def render():
         limit=5,
         min_sample_games=5,
         min_probability=0.52,
-        include_limited_history=True,
+        include_limited_history=False,
         diagnostics=selection_diagnostics,
     )
     selected_event_cards = []
