@@ -303,6 +303,69 @@ class ModelFavoriteTests(unittest.TestCase):
         self.assertEqual(diagnostics["market_unique_candidates"], 2)
         self.assertEqual(diagnostics["model_only_unique_candidates"], 0)
 
+    def test_daily_ranking_can_select_draw_as_strongest_market_outcome(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        draw_favourite = self._daily_card(
+            "Draw FC", "Other FC", "19:00",
+            {"П1": 4.20, "X": 2.05, "П2": 3.90},
+        )
+        ranked = rank_best_fixtures(
+            [draw_favourite],
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+        )
+        self.assertEqual(ranked[0]["pass_pick"], "X")
+        self.assertGreater(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["П1"],
+        )
+        self.assertGreater(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["П2"],
+        )
+
+    def test_daily_ranking_can_select_away_win_as_strongest_market_outcome(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        away_favourite = self._daily_card(
+            "Home FC", "Away FC", "19:00",
+            {"П1": 4.40, "X": 3.70, "П2": 1.72},
+        )
+        ranked = rank_best_fixtures(
+            [away_favourite],
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+        )
+        self.assertEqual(ranked[0]["pass_pick"], "П2")
+        self.assertGreater(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["П1"],
+        )
+        self.assertGreater(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["X"],
+        )
+
+    def test_approved_pick_override_ranks_exact_selection_not_generic_favourite(self):
+        tz = ZoneInfo("Europe/Paris")
+        now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
+        card = self._daily_card(
+            "Away Value FC", "Other FC", "19:00",
+            {"П1": 1.95, "X": 3.30, "П2": 4.10},
+        )
+        card["_daily_required_pick"] = "П2"
+        ranked = rank_best_fixtures(
+            [card],
+            now=now,
+            period_end=datetime(2026, 11, 20, 0, 0, tzinfo=tz),
+        )
+        self.assertEqual(ranked[0]["pass_pick"], "П2")
+        self.assertAlmostEqual(
+            ranked[0]["pass_probability"],
+            ranked[0]["market_probabilities"]["П2"],
+        )
+
     def test_daily_ranking_uses_market_probability_not_kickoff_time(self):
         tz = ZoneInfo("Europe/Paris")
         now = datetime(2026, 11, 19, 8, 0, tzinfo=tz)
