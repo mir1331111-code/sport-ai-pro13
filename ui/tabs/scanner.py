@@ -3531,6 +3531,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "odds_source": odds_source,
                 "market_odds": dict(market_odds),
                 "bookmaker_by_pick": dict(bookmaker_by_pick),
+                "market_odds_source_by_pick": dict(market_source_by_pick),
                 "one_x_two_diagnostics": dict(one_x_two_diagnostics),
                 "total_market_odds": dict(total_market_odds),
                 "total_market_book_count": dict(total_market_book_count),
