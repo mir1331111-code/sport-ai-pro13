@@ -803,6 +803,34 @@ def _sstats_mapping_value(source, names):
     return None
 
 
+def _sstats_country_name(value):
+    if isinstance(value, dict):
+        value = _sstats_mapping_value(
+            value, ("name", "title", "countryName", "country"),
+        )
+    return str(value or "").strip()
+
+
+def _sstats_team_country(game, side):
+    """Read country metadata from a home/away team object when supplied."""
+    game = game if isinstance(game, dict) else {}
+    team = _sstats_mapping_value(
+        game, (side, "home_team" if side.casefold().startswith("home") else "away_team"),
+    ) or {}
+    if isinstance(team, dict):
+        value = _sstats_mapping_value(
+            team, ("country", "countryName", "country_name", "nation"),
+        )
+        country = _sstats_country_name(value)
+        if country:
+            return country
+    side_prefix = "home" if side.casefold().startswith("home") else "away"
+    value = _sstats_mapping_value(
+        game, (f"{side_prefix}Country", f"{side_prefix}CountryName"),
+    )
+    return _sstats_country_name(value)
+
+
 def _sstats_league_info(game):
     """Extract league ID/name/country across SStats Games/list response variants."""
     game = game if isinstance(game, dict) else {}
@@ -820,17 +848,26 @@ def _sstats_league_info(game):
     league_id = None
     for candidate in candidates:
         league_id = _sstats_mapping_value(
-            candidate, ("id", "leagueId", "league_id", "leagueID", "LeagueId", "ID"),
+            candidate, (
+                "id", "leagueId", "league_id", "leagueID", "LeagueId", "ID",
+                "competitionId", "tournamentId",
+            ),
         )
         if league_id not in (None, ""):
             break
     if league_id in (None, ""):
         league_id = _sstats_mapping_value(
-            game, ("leagueId", "league_id", "leagueID", "LeagueId", "LeagueID"),
+            game, (
+                "leagueId", "league_id", "leagueID", "LeagueId", "LeagueID",
+                "competitionId", "tournamentId",
+            ),
         )
     if league_id in (None, ""):
         league_id = _sstats_mapping_value(
-            season, ("leagueId", "league_id", "leagueID", "LeagueId", "LeagueID"),
+            season, (
+                "leagueId", "league_id", "leagueID", "LeagueId", "LeagueID",
+                "competitionId", "tournamentId",
+            ),
         )
 
     league_name = None
@@ -860,14 +897,22 @@ def _sstats_league_info(game):
         )
         if country_value not in (None, ""):
             break
-    if isinstance(country_value, dict):
-        country_value = _sstats_mapping_value(
-            country_value, ("name", "title", "countryName", "country"),
-        )
+    country = _sstats_country_name(country_value)
+    if not country:
+        home_country = _sstats_team_country(game, "homeTeam")
+        away_country = _sstats_team_country(game, "awayTeam")
+        # Only infer the league country when both clubs explicitly agree.
+        # Conflicting/missing club countries remain unresolved.
+        if (
+            home_country and away_country
+            and _sstats_league_text_key(home_country)
+            == _sstats_league_text_key(away_country)
+        ):
+            country = home_country
     return (
         str(league_name or "").strip(),
         str(league_id or "").strip(),
-        str(country_value or "").strip(),
+        country,
     )
 
 
@@ -1370,7 +1415,9 @@ def sstats_historical_matches_for_fixtures(
         )
         cached = cache_get(cache_key, 24 * 60 * 60)
         if isinstance(cached, list):
-            return item, cached, "cache"
+            return item, cached, "cache", {
+                "fetched": len(cached), "accepted": len(cached),
+            }
 
         records = []
         offsets = (0, 1000)
@@ -1405,17 +1452,46 @@ def sstats_historical_matches_for_fixtures(
 
         normalized = []
         seen = set()
+        parser_counts = {
+            "fetched": len(records),
+            "accepted": 0,
+            "missing_status": 0,
+            "rejected_status": 0,
+            "invalid_score": 0,
+            "missing_date": 0,
+            "missing_teams": 0,
+        }
         for game in records:
-            try:
-                status = int(game.get("status"))
-            except (TypeError, ValueError):
-                status = None
-            if status != 8:
-                continue
+            raw_status = _sstats_mapping_value(
+                game, ("status", "gameStatus", "statusId", "gameStatusId"),
+            )
+            if isinstance(raw_status, dict):
+                raw_status = _sstats_mapping_value(
+                    raw_status, ("id", "code", "value", "name", "status"),
+                )
+            status_text = str(raw_status or "").strip().casefold()
+            accepted_text_statuses = {
+                "ft", "full time", "full-time", "finished", "ended",
+                "final", "completed", "match finished",
+            }
+            if raw_status in (None, ""):
+                # The request itself includes Ended=true. Some API response
+                # variants omit a per-game status field; explicit final scores
+                # below are still required before accepting that row.
+                parser_counts["missing_status"] += 1
+            elif status_text not in accepted_text_statuses:
+                try:
+                    status_number = int(float(status_text))
+                except (TypeError, ValueError, OverflowError):
+                    status_number = None
+                if status_number != 8:
+                    parser_counts["rejected_status"] += 1
+                    continue
 
-            raw_date = game.get("date") or game.get("Date")
+            raw_date = _sstats_mapping_value(game, ("date", "gameDate", "kickoff"))
             match_date = _parse_provider_date(raw_date)
             if match_date is None:
+                parser_counts["missing_date"] += 1
                 continue
             if match_date.tzinfo is not None and now.tzinfo is not None:
                 match_date = match_date.astimezone(now.tzinfo)
@@ -1423,19 +1499,28 @@ def sstats_historical_matches_for_fixtures(
             if not from_date <= day <= to_date:
                 continue
 
-            home_obj = game.get("homeTeam") or {}
-            away_obj = game.get("awayTeam") or {}
+            home_obj = _sstats_mapping_value(
+                game, ("homeTeam", "home_team"),
+            ) or {}
+            away_obj = _sstats_mapping_value(
+                game, ("awayTeam", "away_team"),
+            ) or {}
             if not isinstance(home_obj, dict):
                 home_obj = {}
             if not isinstance(away_obj, dict):
                 away_obj = {}
             home = str(
-                home_obj.get("name") or game.get("homeTeamName") or ""
+                _sstats_mapping_value(home_obj, ("name", "teamName", "title"))
+                or _sstats_mapping_value(game, ("homeTeamName", "home_team_name"))
+                or ""
             ).strip()
             away = str(
-                away_obj.get("name") or game.get("awayTeamName") or ""
+                _sstats_mapping_value(away_obj, ("name", "teamName", "title"))
+                or _sstats_mapping_value(game, ("awayTeamName", "away_team_name"))
+                or ""
             ).strip()
             if not home or not away:
+                parser_counts["missing_teams"] += 1
                 continue
 
             def _score(value):
@@ -1449,9 +1534,14 @@ def sstats_historical_matches_for_fixtures(
                     return None
                 return int(number)
 
-            home_goals = _score(game.get("homeResult"))
-            away_goals = _score(game.get("awayResult"))
+            home_goals = _score(_sstats_mapping_value(
+                game, ("homeResult", "home_result", "homeGoals", "homeScore"),
+            ))
+            away_goals = _score(_sstats_mapping_value(
+                game, ("awayResult", "away_result", "awayGoals", "awayScore"),
+            ))
             if home_goals is None or away_goals is None:
+                parser_counts["invalid_score"] += 1
                 continue
             identity = (
                 day.isoformat(), _norm_name(home), _norm_name(away),
@@ -1471,13 +1561,14 @@ def sstats_historical_matches_for_fixtures(
                 "source": "sstats_history",
             })
 
+        parser_counts["accepted"] = len(normalized)
         normalized.sort(key=lambda row: (
             row["Date"], row["HomeTeam"].casefold(), row["AwayTeam"].casefold(),
         ))
         # cache_get enforces the 24-hour freshness window; cache_put writes
         # the atomic payload and intentionally has no TTL argument.
         cache_put(cache_key, normalized)
-        return item, normalized, "api"
+        return item, normalized, "api", parser_counts
 
     results = []
     errors = []
@@ -1487,7 +1578,8 @@ def sstats_historical_matches_for_fixtures(
         futures = [pool.submit(_fetch_competition, item) for item in selected]
         for future in as_completed(futures):
             try:
-                results.append(future.result())
+                item, rows, source, *extra = future.result()
+                results.append((item, rows, source, extra[0] if extra else {}))
             except Exception as exc:
                 errors.append(type(exc).__name__)
 
@@ -1495,15 +1587,24 @@ def sstats_historical_matches_for_fixtures(
         result[0]["division"], result[0]["league_id"],
     ))
     output = []
+    aggregate_parser_counts = {
+        key: 0 for key in (
+            "fetched", "accepted", "missing_status", "rejected_status",
+            "invalid_score", "missing_date", "missing_teams",
+        )
+    }
     seen_global = set()
     successful_competitions = 0
     cached_competitions = 0
-    for item, rows, source in results:
+    for item, rows, source, parser_counts in results:
         if source in {"api", "cache"}:
             successful_competitions += 1
             cached_competitions += int(source == "cache")
         elif source:
             errors.append(f"{item['league']} [{item['league_id']}]: {source}")
+        if isinstance(parser_counts, dict):
+            for key in aggregate_parser_counts:
+                aggregate_parser_counts[key] += int(parser_counts.get(key) or 0)
         for row in rows:
             identity = (
                 row["Div"], row["Date"],
@@ -1519,6 +1620,16 @@ def sstats_historical_matches_for_fixtures(
             f"📚 SStats history: загружено {len(output)} FT-матчей за {successful_competitions}/"
             f"{len(selected)} соревнований за {year_span} лет; "
             f"кэш использован для {cached_competitions}, пропущено соревнований по лимиту {skipped_leagues}."
+        )
+        logs.append(
+            "🔎 SStats history parser: "
+            f"получено={aggregate_parser_counts['fetched']}, "
+            f"принято FT={aggregate_parser_counts['accepted']}, "
+            f"без поля Status (Ended=true)={aggregate_parser_counts['missing_status']}, "
+            f"отклонено по Status={aggregate_parser_counts['rejected_status']}, "
+            f"без валидного счёта={aggregate_parser_counts['invalid_score']}, "
+            f"без даты={aggregate_parser_counts['missing_date']}, "
+            f"без названий команд={aggregate_parser_counts['missing_teams']}."
         )
         if errors:
             logs.append(

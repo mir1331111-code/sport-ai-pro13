@@ -1424,8 +1424,32 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 f"💰 Заморожено {fn.get('frozen', 0):.0f} · "
                 f"🤖 LLM: {fn.get('llm', 0)}"
             )
-        with st.expander("🔌 Диагностика"):
-            for line in D.get("report", []):
+        report_lines = [
+            str(line) for line in (D.get("report", []) or [])
+        ]
+        history_lines = [
+            line for line in report_lines
+            if "SStats history" in line or "SStats LeagueId" in line
+        ]
+        history_is_unavailable = (
+            not history_lines
+            or any(
+                "загружено 0 FT-матчей" in line
+                or "нет ни одного безопасно определённого LeagueId" in line
+                or "API key отсутствует" in line
+                for line in history_lines
+            )
+        )
+        if history_is_unavailable:
+            st.warning(
+                "История команд SStats пока не подтверждена. "
+                "Раскрой диагностику ниже: там показаны LeagueId, "
+                "загруженные FT-результаты и точная причина отказа."
+            )
+        else:
+            st.caption(" · ".join(history_lines[-2:]))
+        with st.expander("🔌 Диагностика", expanded=history_is_unavailable):
+            for line in report_lines:
                 st.text(line)
 
         all_cards = [c for c in D.get("cards", []) if isinstance(c, dict)]
