@@ -10,8 +10,9 @@ import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
 from betting.market_math import proportional_devig, competition_market_is_validated
-from data.fixture_time import app_timezone
-from config import APP_VERSION, DB_FILE, LLM_PROVIDERS
+from data.fixture_time import app_timezone, fixture_kickoff_local
+from config import APP_VERSION, DB_FILE, LLM_PROVIDERS, llm_provider_key_config
+from llm.deep_analysis import format_top_match_opinion, last_top_matches_status
 from ui.cards import _LEAGUE_FLAGS
 from model.forecast_ledger import ForecastLedger
 
@@ -62,6 +63,50 @@ def has_prices(card):
             bookmaker_by_pick=card.get("bookmaker_by_pick") or {},
         ) is not None
     )
+
+
+def approved_1x2_recommendation(card):
+    """Return an actual 1X2 bet approval, never a forecast or market-only signal."""
+    if not isinstance(card, dict):
+        return None
+    if not bool((card.get("context_quality") or {}).get("strong_value_eligible")):
+        return None
+    if not competition_market_is_validated(card, "winner"):
+        return None
+    if not has_prices(card):
+        return None
+    recommendation = (card.get("best_by_market") or {}).get("winner")
+    if not isinstance(recommendation, dict):
+        return None
+    best = recommendation.get("best")
+    verdict = recommendation.get("verdict")
+    if (
+        not isinstance(best, (list, tuple))
+        or len(best) < 6
+        or not isinstance(verdict, dict)
+        or str(best[0] or "").upper() != "1X2"
+        or str(best[1] or "") not in {"П1", "X", "П2"}
+        or not verdict.get("real_odds")
+        or not verdict.get("value_passed")
+        or not verdict.get("is_bet")
+    ):
+        return None
+    try:
+        odd, ev, probability, stake = map(float, (best[2], best[3], best[4], best[5]))
+        edge_value = float(verdict.get("edge"))
+    except (TypeError, ValueError):
+        return None
+    bookmaker = str((card.get("bookmaker_by_pick") or {}).get(best[1]) or "").strip()
+    if (
+        not bookmaker
+        or odd < 1.70
+        or ev < 0.05
+        or edge_value < 0.05
+        or not 0.0 < probability < 1.0
+        or stake <= 0.0
+    ):
+        return None
+    return recommendation
 
 
 def context_summary(card):
