@@ -746,6 +746,22 @@ section[data-testid="stSidebar"] div[data-testid="stExpander"] summary {
 .neo-pick-note {display:block;margin-top:4px;font-size:.47rem;line-height:1.25;font-weight:800;white-space:normal;}
 .neo-pick-note.proven {color:#70d7ad;}
 .neo-pick-note.provisional {color:#d9b77b;}
+.neo-pick-note.rank-score {color:#8bb8d9;}
+.neo-bet-status {
+  display:block;margin-top:5px;padding:4px 6px;border-radius:5px;
+  font-size:.49rem;line-height:1.3;font-weight:900;letter-spacing:.025em;
+  white-space:normal;
+}
+.neo-bet-status.approved {
+  color:#a8f3cd;background:rgba(22,105,70,.26);border:1px solid #2e9566;
+}
+.neo-bet-status.blocked {
+  color:#efb0a0;background:rgba(118,48,38,.20);border:1px solid #8b5146;
+}
+.neo-bet-status.forecast-only {
+  color:#d7c18c;background:rgba(112,89,35,.18);border:1px solid #756037;
+}
+.neo-pick-cell {min-width:160px;}
 .neo-empty-cell {padding:34px 12px !important;text-align:center;color:#91a8a4 !important;white-space:normal !important;}
 .neo-table-footer {padding-top:9px;color:#78928e;font-size:.6rem;line-height:1.4;}
 .neo-chart-wrap {padding:2px 0 0;}
