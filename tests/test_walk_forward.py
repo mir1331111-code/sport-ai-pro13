@@ -53,6 +53,7 @@ class WalkForwardTests(unittest.TestCase):
         )
         # The first 19 dates warm every model; only the five later dates are scored.
         self.assertEqual(result["n"], 24)
+        self.assertEqual(result["evaluation_n"], 5)
         self.assertEqual(result["candidate"]["n"], 5)
         self.assertEqual(result["baseline"]["n"], 5)
 
