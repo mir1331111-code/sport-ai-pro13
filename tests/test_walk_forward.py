@@ -26,6 +26,10 @@ class WalkForwardTests(unittest.TestCase):
         self.assertEqual(result["skipped"], 0)
         self.assertEqual(result["baseline"]["n"], 24)
         self.assertEqual(result["candidate"]["n"], 24)
+        form_report = result["recent_form_ablation"]
+        self.assertEqual(form_report["candidate"]["n"], 24)
+        self.assertEqual(form_report["paired_vs_base_model"]["n"], 24)
+        self.assertEqual(form_report["production_weight"], 0.0)
         self.assertIsNotNone(result["delta_candidate_minus_baseline"]["brier"])
         self.assertIn("untouched chronological holdout", result["interpretation"])
         self.assertEqual(set(result["goals_totals_by_line"]), {"0.5", "1.5", "2.5", "3.5", "4.5", "5.5"})
