@@ -2989,7 +2989,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
                           "model_only": 0, "estimated": 0, "real": 0,
-                          "prior_only": 0, "partial_history": 0, "team_supported": 0}
+                          "prior_only": 0, "league_only": 0,
+                          "partial_history": 0, "team_supported": 0}
         logs.append(
             "🎯 Источник букмекерских коэффициентов: только SStats Games/list и Odds/{gameId}; "
             "коэффициенты других провайдеров и импортированные файлы в скане не используются."
@@ -3068,6 +3069,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             model_support_status = str(P.get("model_support_status") or "unknown")
             if model_support_status == "prior_only":
                 funnel_counts["prior_only"] = funnel_counts.get("prior_only", 0) + 1
+            elif model_support_status == "league_only":
+                funnel_counts["league_only"] = funnel_counts.get("league_only", 0) + 1
             elif model_support_status == "team_supported":
                 funnel_counts["team_supported"] = funnel_counts.get("team_supported", 0) + 1
             else:
@@ -3083,7 +3086,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 and int(P.get("away_venue_history_matches") or 0) >= MIN_FAVORITE_HISTORY
             )
             learning_preview = None
-            if scan_learning_service is not None and model_support_status != "prior_only":
+            if scan_learning_service is not None and model_support_status == "team_supported":
                 try:
                     learning_preview = scan_learning_service.preview(
                         raw_model_probabilities, as_of=scan_now,
@@ -4061,9 +4064,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         logs.append(
             "🧠 Поддержка модели: "
             f"полная история команд={funnel_counts.get('team_supported', 0)}, "
-            f"только лига/частичная история={funnel_counts.get('partial_history', 0)}, "
+            f"лига без данных одной из команд={funnel_counts.get('league_only', 0)}, "
+            f"частичная история={funnel_counts.get('partial_history', 0)}, "
             f"prior-only без истории турнира={funnel_counts.get('prior_only', 0)}. "
-            "Prior-only матчи не участвуют в выборе фаворита, Value и журнале основной модели."
+            "Матчи без истории обеих команд исключаются из выбора фаворита, Value и журнала основной модели."
         )
         logs.append(
             f"🗓 Горизонт последнего скана: {days} календарн. дн. "
@@ -4088,6 +4092,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "forecast_cards": len(cards),
             "model_support_counts": {
                 "prior_only": int(funnel_counts.get("prior_only", 0)),
+                "league_only": int(funnel_counts.get("league_only", 0)),
                 "partial_history": int(funnel_counts.get("partial_history", 0)),
                 "team_supported": int(funnel_counts.get("team_supported", 0)),
             },
