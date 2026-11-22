@@ -545,6 +545,23 @@ def _refresh_engine_market_validation(
             f"clusters={engine.winner_market_validation_report.get('cluster_count', 0)}; "
             f"Value-допуск={'да' if engine.winner_market_validation else 'нет'}"
         )
+        blend_report = totals_backtest.get("market_blends") or {}
+        blend_arms = (blend_report.get("weights_model_market") or {})
+        for weight in ("0.25", "0.50", "0.75"):
+            arm = blend_arms.get(weight) or {}
+            blend_metrics = arm.get("metrics") or {}
+            model_delta = (arm.get("vs_model") or {}).get("differences") or {}
+            market_delta = (arm.get("vs_market") or {}).get("differences") or {}
+            if blend_metrics.get("n"):
+                logs.append(
+                    f"Экспериментальный blend модель/рынок {weight}/{1-float(weight):.2f}: "
+                    f"n={blend_metrics.get('n')}, Brier={blend_metrics.get('brier')}, "
+                    f"LogLoss={blend_metrics.get('log_loss')}; "
+                    f"Δ к модели Brier/LogLoss={model_delta.get('brier')}/"
+                    f"{model_delta.get('log_loss')}; "
+                    f"Δ к рынку={market_delta.get('brier')}/{market_delta.get('log_loss')}. "
+                    "Только диагностика — боевые вероятности не меняются."
+                )
         if total_diff:
             logs.append(
                 f"ТБ/ТМ vs рынок: ΔBrier={total_diff.get('brier'):.4f}, "
