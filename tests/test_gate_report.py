@@ -78,5 +78,25 @@ class GateReportTests(unittest.TestCase):
         self.assertEqual(result[0]["match"], "Хозяева — Гости")
 
 
+    def test_fully_qualified_value_is_marked_approved(self):
+        card = make_card(
+            winner_market_validation=True,
+            winner_market_validation_report={"n": 640},
+            context_quality={"strong_value_eligible": True},
+            best_by_market={
+                "winner": {
+                    "best": ("1X2", "П1", 2.0, 0.12, 0.72, 1.1),
+                    "verdict": {
+                        "real_odds": True, "value_passed": True,
+                        "is_bet": True, "edge": 0.08,
+                    },
+                },
+            },
+        )
+        status, gates = classify_card(card, "winner")
+        self.assertEqual(status, "approved")
+        self.assertTrue(all(gate.passed for gate in gates))
+
+
 if __name__ == "__main__":
     unittest.main()
