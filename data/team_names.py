@@ -231,6 +231,7 @@ def _alias_key(value: str) -> str:
 
 
 _ALIAS_LOOKUP = {_alias_key(alias): canonical for alias, canonical in ALIASES.items()}
+_CANONICAL_LOOKUP = {_alias_key(canonical): canonical for canonical in ALIASES.values()}
 
 
 def normalize_team(name: str) -> str:
@@ -243,6 +244,10 @@ def normalize_team(name: str) -> str:
         return ""
     if key in _ALIAS_LOOKUP:
         return _ALIAS_LOOKUP[key]
+    # Canonical alias values (for example ``man_united``) must be idempotent:
+    # Engine stores these values as keys and later history lookups normalize them again.
+    if key in _CANONICAL_LOOKUP:
+        return _CANONICAL_LOOKUP[key]
 
     # Keep reserves, B teams, academies and age groups separate from senior teams.
     # In particular, never use substring aliases such as "Atletico Madrid" to
@@ -263,7 +268,7 @@ def normalize_team(name: str) -> str:
     suffixes = {"fc", "afc", "cf", "sc", "ac", "club"}
     if parts and parts[0] in prefixes:
         parts = parts[1:]
-    if parts and parts[-1] in suffixes:
+    while len(parts) > 1 and parts[-1] in suffixes:
         parts = parts[:-1]
     key = " ".join(parts)
     if key in _ALIAS_LOOKUP:
