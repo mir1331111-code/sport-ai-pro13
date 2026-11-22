@@ -168,7 +168,9 @@ class ChronologicalTrainingTests(unittest.TestCase):
         train_engine_chronologically(
             engine, stats, rows[2:], processed_offset=2, total_count=3,
         )
-        self.assertEqual(engine.batches, [[(0, 2)], [(2, 3)]])
+        self.assertEqual(
+            engine.batches, [[(0, 2)], [(1, 2)], [(2, 3)]],
+        )
         self.assertEqual(engine.trained_n, 3)
 
 
