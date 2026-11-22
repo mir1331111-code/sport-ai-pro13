@@ -707,6 +707,7 @@ def walk_forward_compare(
     goals_history = {}
     market_sources = {}
     total_market_sources = {}
+    market_blend_by_league = {}
     xg_forecasts = xg_eligible_rows = 0
     scored_rows = 0
     index = 0
@@ -878,6 +879,18 @@ def walk_forward_compare(
                 # Research-only fixed-weight blends. These arms are scored on
                 # exactly the same fixtures as the model and market; none is
                 # automatically promoted into production.
+                league_arms = market_blend_by_league.setdefault(
+                    league,
+                    {
+                        name: _ClusteredRecords()
+                        for name in ("model", "market", "blend_25", "blend_50", "blend_75")
+                    },
+                )
+                for league_record in league_arms.values():
+                    league_record.set_cluster(cluster_id)
+                    league_record.set_enabled(score_this_fixture)
+                league_arms["model"].append((model_probs, outcome))
+                league_arms["market"].append((market_p, outcome))
                 for weight, arm_name in (
                     (0.25, "blend_25"), (0.50, "blend_50"), (0.75, "blend_75"),
                 ):
@@ -886,6 +899,7 @@ def walk_forward_compare(
                         for key in ("H", "D", "A")
                     }
                     records[arm_name].append((blended, outcome))
+                    league_arms[arm_name].append((blended, outcome))
                 if score_this_fixture:
                     market_sources[market_source] = market_sources.get(market_source, 0) + 1
             for method in ("power", "shin"):
@@ -1186,10 +1200,33 @@ def walk_forward_compare(
                     ),
                 },
             },
+            "by_league": {
+                league: {
+                    weight: {
+                        "metrics": _metrics(
+                            arms["blend_" + weight.replace(".", "")],
+                            bootstrap_samples=min(market_bs, 250),
+                            seed=59000 + league_index * 10 + weight_index,
+                        ),
+                        "vs_model": _paired_differences(
+                            arms["blend_" + weight.replace(".", "")], arms["model"],
+                            bootstrap_samples=min(market_bs, 250),
+                            seed=60000 + league_index * 10 + weight_index,
+                        ),
+                        "vs_market": _paired_differences(
+                            arms["blend_" + weight.replace(".", "")], arms["market"],
+                            bootstrap_samples=min(market_bs, 250),
+                            seed=61000 + league_index * 10 + weight_index,
+                        ),
+                    }
+                    for weight_index, weight in enumerate(("0.25", "0.50", "0.75"))
+                }
+                for league_index, (league, arms) in enumerate(sorted(market_blend_by_league.items()))
+            },
             "note": (
                 "Research-only fixed model/market weights, evaluated on identical "
-                "chronological fixtures. Negative Brier/log-loss differences favour "
-                "the blend; no production probability or betting gate is changed."
+                "chronological fixtures and broken out by league. Negative Brier/log-loss "
+                "differences favour the blend; no production probability or betting gate is changed."
             ),
         },
         "market_sources": market_sources,
