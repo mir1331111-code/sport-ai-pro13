@@ -167,6 +167,13 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertIsNotNone(features["home_scored_at_home_avg"])
         self.assertIsNotNone(features["away_scored_away_avg"])
 
+    def test_team_alias_normalization_is_idempotent_for_engine_canonical_keys(self):
+        from data.team_names import normalize_team
+
+        for name in ("Man Utd", "Manchester United", "man_united",
+                     "Real Madrid", "real_madrid", "Brighton & Hove Albion"):
+            self.assertEqual(normalize_team(normalize_team(name)), normalize_team(name))
+
     def test_normalized_team_index_is_reused_and_invalidated_after_training(self):
         class CountingTeams(dict):
             def __init__(self, *args, **kwargs):
