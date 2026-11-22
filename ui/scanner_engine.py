@@ -545,6 +545,17 @@ def _refresh_engine_market_validation(
             f"clusters={engine.winner_market_validation_report.get('cluster_count', 0)}; "
             f"Value-допуск={'да' if engine.winner_market_validation else 'нет'}"
         )
+        form_report = totals_backtest.get("recent_form_ablation") or {}
+        form_candidate = form_report.get("candidate") or {}
+        form_delta = (form_report.get("paired_vs_base_model") or {}).get("differences") or {}
+        if form_candidate.get("n"):
+            logs.append(
+                f"Экспериментальная форма (вес={form_report.get('configured_research_weight')}): "
+                f"n={form_candidate.get('n')}, Brier={form_candidate.get('brier')}, "
+                f"LogLoss={form_candidate.get('log_loss')}; "
+                f"Δ к базовой модели Brier/LogLoss={form_delta.get('brier')}/"
+                f"{form_delta.get('log_loss')}. В production вес остаётся 0."
+            )
         blend_report = totals_backtest.get("market_blends") or {}
         blend_arms = (blend_report.get("weights_model_market") or {})
         for weight in ("0.25", "0.50", "0.75"):
