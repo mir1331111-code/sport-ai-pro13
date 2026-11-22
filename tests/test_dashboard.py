@@ -51,6 +51,35 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertFalse(ranked[0]["history_ready"])
         self.assertFalse(ranked[0]["strict_eligible"])
 
+    def test_dashboard_best_matches_render_as_a_separate_forecast_rank(self):
+        from ui.tabs.dashboard import best_matches_html
+
+        items = [{
+            "card": {
+                "date": "22.11 19:00", "time": "19:00",
+                "league": "Premier League",
+                "home_team": "Home FC", "away_team": "Away FC",
+            },
+            "pick": "П1", "label": "Победа Home FC",
+            "probability": 0.74, "probability_margin": 0.31,
+            "home_sample": 12, "away_sample": 11,
+            "quality_score": 84.5,
+            "calibration_ready": True, "calibration_matches": 150,
+        }]
+        rendered = best_matches_html(items)
+        self.assertIn("Home FC", rendered)
+        self.assertIn("74.0%", rendered)
+        self.assertIn("12/11", rendered)
+        self.assertIn("84/100", rendered)
+        self.assertIn("Да · n=150", rendered)
+
+    def test_dashboard_best_matches_empty_state_does_not_invent_candidates(self):
+        from ui.tabs.dashboard import best_matches_html
+
+        rendered = best_matches_html([])
+        self.assertIn("нет матчей", rendered)
+        self.assertIn("prior-only", rendered)
+
     def test_strong_events_require_real_validated_price_probability_and_value(self):
         card = {
             "fixture_id": "sstats:strong-1",
