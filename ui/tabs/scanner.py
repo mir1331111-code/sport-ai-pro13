@@ -4360,5 +4360,5 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     finally:
         st.session_state["_scan_in_progress"] = False
     # A completed scan should land on the dashboard with the new results visible.
-    st.session_state["terminal_navigation_v16"] = "🏠 Дашборд"
+    st.session_state["_pending_terminal_navigation_v16"] = "🏠 Дашборд"
     st.rerun()
