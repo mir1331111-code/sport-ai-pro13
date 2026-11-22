@@ -198,6 +198,9 @@ def best_matches_html(items):
         probability = num(item.get("probability"))
         margin = num(item.get("probability_margin"))
         quality = num(item.get("quality_score"))
+        probability_text = f"{probability:.1%}" if probability is not None else "—"
+        margin_text = f"{margin:.1%}" if margin is not None else "—"
+        quality_text = f"{quality:.0f}/100" if quality is not None else "—"
         rows.append(
             "<tr>"
             f"<td>{number}</td>"
@@ -206,30 +209,14 @@ def best_matches_html(items):
             f"<td>{esc(card.get('league') or card.get('div') or '—')}</td>"
             f"<td><b>{esc(match_name(card))}</b></td>"
             f"<td><b>{esc(item.get('label') or item.get('pick') or '—')}</b></td>"
-            f"<td>{probability:.1%}</td>" if probability is not None else
-            "<tr><td>—</td>"
+            f"<td>{probability_text}</td>"
+            f"<td>{margin_text}</td>"
+            f"<td>{int(item.get('home_sample') or 0)}/"
+            f"{int(item.get('away_sample') or 0)}</td>"
+            f"<td>{quality_text}</td>"
+            f"<td>{esc(calibration)}</td>"
+            "</tr>"
         )
-        # Complete the remaining cells after the conditional probability cell.
-        if probability is not None:
-            rows[-1] += (
-                f"<td>{margin:.1%}</td>" if margin is not None else "<td>—</td>"
-            )
-            rows[-1] += (
-                f"<td>{int(item.get('home_sample') or 0)}/"
-                f"{int(item.get('away_sample') or 0)}</td>"
-                f"<td>{quality:.0f}/100</td>" if quality is not None else
-                f"<td>{int(item.get('home_sample') or 0)}/"
-                f"{int(item.get('away_sample') or 0)}</td><td>—</td>"
-            )
-            rows[-1] += f"<td>{esc(calibration)}</td></tr>"
-        else:
-            rows[-1] += (
-                f"<td>{esc(card.get('date') or card.get('date_iso') or '—')}</td>"
-                f"<td>{esc(card.get('league') or card.get('div') or '—')}</td>"
-                f"<td>{esc(match_name(card))}</td>"
-                f"<td>{esc(item.get('label') or item.get('pick') or '—')}</td>"
-                "<td>—</td><td>—</td><td>—</td><td>—</td></tr>"
-            )
     return (
         "<div class='neo-table-scroll'><table class='neo-match-table'>"
         "<thead><tr><th>№</th><th>Время</th><th>Лига</th><th>Матч</th>"
