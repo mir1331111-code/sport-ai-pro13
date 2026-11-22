@@ -142,10 +142,18 @@ def _canonical_h2h_state_key(division, home, away):
 
 
 class Engine:
-    def __init__(self, matrix_n: int = 12, *, temporal_weighting: bool = True, league_rho_fitting: bool = True):
+    def __init__(
+        self, matrix_n: int = 12, *, temporal_weighting: bool = True,
+        league_rho_fitting: bool = True, form_adjustment_weight: float = 0.0,
+    ):
         self.matrix_n = int(matrix_n)
         self.temporal_weighting = bool(temporal_weighting)
         self.league_rho_fitting = bool(league_rho_fitting)
+        # Disabled in production by default. Walk-forward research arms may
+        # opt in to test whether recent points add information beyond goal rates.
+        self.form_adjustment_weight = max(
+            0.0, min(0.5, float(form_adjustment_weight))
+        )
 
         self.elo: dict = {}
         self.st = defaultdict(_new_team)
@@ -747,6 +755,18 @@ class Engine:
                 * defense_home,
             ),
         )
+
+        # Optional, deliberately disabled-by-default recent-form residual.
+        # It is a research feature, not a production adjustment unless a
+        # chronological ablation justifies a non-zero configured weight.
+        if self.form_adjustment_weight > 0:
+            form_delta = max(-1.0, min(1.0, fh - fa))
+            lam_g_h = max(
+                0.3, min(5.0, lam_g_h * math.exp(self.form_adjustment_weight * form_delta))
+            )
+            lam_g_a = max(
+                0.25, min(4.5, lam_g_a * math.exp(-self.form_adjustment_weight * form_delta))
+            )
 
         # ---------------------------------------------------------
         # Rest days
