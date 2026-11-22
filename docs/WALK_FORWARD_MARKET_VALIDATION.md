@@ -22,9 +22,13 @@ The walk-forward report now includes fixed model weights of 25%, 50%, and 75%, w
 
 These are research diagnostics only. They do not alter production probabilities, Value calculations, or betting permissions. A weight should only be considered for production after it wins on an untouched later holdout, remains calibrated by league, and is stable across seasons and market sources.
 
+## Recent-form research arm
+
+The walk-forward now also evaluates an isolated recent-form residual arm. It uses the same chronological Engine state and feature set as the candidate model, with a small fixed research weight (0.10) applied to the difference between the teams' last-five points-per-match form. The base Engine default remains 0.0, so this experiment does not alter production forecasts. The report compares the form arm with the base model on identical fixtures and matchday clusters. Promotion requires a later untouched holdout to improve both Brier and Log Loss and show stability across leagues and seasons.
+
 ## Explicitly not promoted
 
-- Recent form is displayed elsewhere but is not yet a validated probability feature. Do not add a heuristic multiplier without a same-sample chronological ablation.
+- Recent form is not yet a validated probability feature. Its research arm is diagnostic only; the production weight remains zero.
 - Context/lineup probabilities remain Base-equivalent unless the existing context model has passed its paired chronological promotion checks using confirmed pre-kickoff snapshots.
 - The production model remains unchanged by this benchmark patch.
 - Historical closing odds are stored by the forecast ledger when supplied at settlement; this patch does not fabricate or backfill missing closing prices. CLV reporting is meaningful only where the closing quote, bookmaker, and timestamp are genuinely recorded.
