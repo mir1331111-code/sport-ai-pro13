@@ -40,12 +40,13 @@ def _matching_team_state(engine: Any, team: str, division: str) -> dict[str, Any
     index once reduces repeated lookup work from O(fixtures × teams) to
     O(teams + fixtures).
     """
+    from data.team_names import normalize_team
     from model.engine import _norm, _team_state_key
 
     teams = getattr(engine, "st", {})
     if not hasattr(teams, "items"):
         return {}
-    wanted = _norm(team)
+    wanted = normalize_team(team) or _norm(team)
     if not wanted:
         return {}
     direct_key = _team_state_key(division, team)
@@ -80,7 +81,7 @@ def _matching_team_state(engine: Any, team: str, division: str) -> dict[str, Any
             state_division, state_team = "G", key
         if str(state_division or "G").strip().upper() != division:
             continue
-        normalized = _norm(state_team)
+        normalized = normalize_team(state_team) or _norm(state_team)
         if not normalized:
             continue
         history_count = sum(len(state.get(field) or []) for field in history_fields)
