@@ -650,6 +650,11 @@ def walk_forward_compare(
 
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    # Recent-form residual is an isolated research arm; production weight remains 0.
+    candidate_form = Engine(
+        matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True,
+        form_adjustment_weight=0.10,
+    )
     temporal_goals = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     provider_xg_only = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     proxy_xg_only = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
@@ -659,14 +664,14 @@ def walk_forward_compare(
     candidate_no_h2h = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     candidate_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     candidate_no_h2h_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
-    for model in (candidate, temporal_goals, provider_xg_only, proxy_xg_only,
+    for model in (candidate, candidate_form, temporal_goals, provider_xg_only, proxy_xg_only,
                   candidate_no_h2h, candidate_no_rest, candidate_no_h2h_no_rest):
         model.half_life_days = float(half_life_days)
     candidate_no_rest.rest_days_adjustment = False
     candidate_no_h2h_no_rest.rest_days_adjustment = False
 
     record_names = (
-        "baseline", "candidate", "temporal_goals_only",
+        "baseline", "candidate", "candidate_with_form", "temporal_goals_only",
         "candidate_without_h2h", "candidate_without_rest_days",
         "candidate_without_h2h_or_rest_days",
         "market", "candidate_on_market",
@@ -761,6 +766,7 @@ def walk_forward_compare(
 
             pred_base = baseline.predict(home, away, league, match_date=stamp.isoformat())
             pred_candidate = candidate.predict(home, away, league, match_date=stamp.isoformat())
+            pred_form = candidate_form.predict(home, away, league, match_date=stamp.isoformat())
             pred_temporal_goals = temporal_goals.predict(home, away, league, match_date=stamp.isoformat())
             pred_provider_xg = provider_xg_only.predict(home, away, league, match_date=stamp.isoformat())
             pred_proxy_xg = proxy_xg_only.predict(home, away, league, match_date=stamp.isoformat())
@@ -859,6 +865,7 @@ def walk_forward_compare(
 
             records["baseline"].append((_probs(pred_base), outcome))
             records["candidate"].append((_probs(pred_candidate), outcome))
+            records["candidate_with_form"].append((_probs(pred_form), outcome))
             records["temporal_goals_only"].append((_probs(pred_temporal_goals), outcome))
             records["candidate_without_h2h"].append((_probs(pred_without_h2h), outcome))
             records["candidate_without_rest_days"].append((_probs(pred_without_rest), outcome))
@@ -889,7 +896,7 @@ def walk_forward_compare(
             pending.append((
                 home, away, hg, ag, row_copy, no_xg_row,
                 provider_xg_row, proxy_xg_row, stamp,
-                pred_base, pred_candidate, pred_temporal_goals,
+                pred_base, pred_candidate, pred_form, pred_temporal_goals,
                 pred_provider_xg, pred_proxy_xg,
                 pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
                 outcome,
@@ -898,7 +905,7 @@ def walk_forward_compare(
         # Ingest outcomes only after every forecast for this date has been made.
         for (home, away, hg, ag, row_copy, no_xg_row,
              provider_xg_row, proxy_xg_row, match_stamp,
-             pred_base, pred_candidate, pred_temporal_goals,
+             pred_base, pred_candidate, pred_form, pred_temporal_goals,
              pred_provider_xg, pred_proxy_xg,
              pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
              outcome) in pending:
@@ -907,7 +914,7 @@ def walk_forward_compare(
             one_hot = [1.0 if target == cls else 0.0 for cls in range(3)]
             for model, prediction in (
                 (baseline, pred_base), (candidate, pred_candidate),
-                (temporal_goals, pred_temporal_goals),
+                (candidate_form, pred_form), (temporal_goals, pred_temporal_goals),
                 (provider_xg_only, pred_provider_xg),
                 (proxy_xg_only, pred_proxy_xg),
                 (candidate_no_h2h, pred_without_h2h),
@@ -921,6 +928,7 @@ def walk_forward_compare(
                 )
             baseline.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            candidate_form.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             provider_xg_only.add(home, away, hg, ag, provider_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             proxy_xg_only.add(home, away, hg, ag, proxy_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
@@ -995,6 +1003,11 @@ def walk_forward_compare(
     )
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
+    form_metrics = metrics["candidate_with_form"]
+    form_paired = _paired_differences(
+        records["candidate_with_form"], records["candidate"],
+        bootstrap_samples=bootstrap_samples, seed=55204,
+    )
     xg_arm_metrics = {
         name: _metrics(value, bootstrap_samples=xg_bs, seed=61000 + index)
         for index, (name, value) in enumerate(xg_arm_records.items())
@@ -1121,6 +1134,17 @@ def walk_forward_compare(
             ),
         },
         "feature_ablation": feature_ablation,
+        "recent_form_ablation": {
+            "candidate": form_metrics,
+            "paired_vs_base_model": form_paired,
+            "configured_research_weight": 0.10,
+            "production_weight": 0.0,
+            "promotion_note": (
+                "Recent form is research-only. Promote only after a separate untouched "
+                "chronological holdout improves both Brier and Log Loss with adequate "
+                "matchday coverage and league/season stability."
+            ),
+        },
         "baseline": base_metrics,
         "candidate": candidate_metrics,
         "temporal_goals_only": temporal_metrics,
