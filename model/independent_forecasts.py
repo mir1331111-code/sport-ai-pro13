@@ -435,7 +435,7 @@ def _odds_from_card(card: dict) -> dict[str, float] | None:
 
 
 def _main_probabilities(card: dict) -> dict[str, float] | None:
-    if card.get("model_support_status") == "prior_only":
+    if card.get("model_support_status") in {"prior_only", "league_only"}:
         return None
     raw_model = card.get("raw_model_probabilities")
     if isinstance(raw_model, dict):
@@ -456,7 +456,7 @@ def record_scan_forecasts(
     stats = {
         "main_recorded": 0, "ai_recorded": 0, "market_recorded": 0,
         "learning_recorded": 0, "learning_promoted": 0, "learning_errors": 0,
-        "prior_only_skipped": 0,
+        "prior_only_skipped": 0, "unsupported_history_skipped": 0,
         "skipped_no_time": 0, "skipped_started": 0, "invalid": 0,
     }
     ledger = ForecastLedger(db_path)
@@ -506,6 +506,8 @@ def record_scan_forecasts(
         league = str(card.get("league") or card.get("div") or "")
         if card.get("model_support_status") == "prior_only":
             stats["prior_only_skipped"] += 1
+        if card.get("model_support_status") in {"prior_only", "league_only"}:
+            stats["unsupported_history_skipped"] += 1
         main_probs = _main_probabilities(card)
         common = dict(
             fixture_id=fixture_id, home_team=home, away_team=away,
