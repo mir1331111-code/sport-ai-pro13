@@ -776,7 +776,7 @@ def rank_model_favorites(
     for index, card in enumerate(cards):
         # A zero-history fallback vector is a generic prior, not a fixture
         # forecast. Keep it out of probability-ranked model favorites.
-        if isinstance(card, dict) and card.get("model_support_status") == "prior_only":
+        if isinstance(card, dict) and card.get("model_support_status") in {"prior_only", "league_only"}:
             continue
         favorite = model_favorite(card)
         if favorite is None or favorite["sample_games"] < minimum_history:
