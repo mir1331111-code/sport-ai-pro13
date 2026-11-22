@@ -1204,17 +1204,17 @@ def walk_forward_compare(
                 league: {
                     weight: {
                         "metrics": _metrics(
-                            arms["blend_" + weight.replace(".", "")],
+                            arms["blend_" + weight.split(".")[1]],
                             bootstrap_samples=min(market_bs, 250),
                             seed=59000 + league_index * 10 + weight_index,
                         ),
                         "vs_model": _paired_differences(
-                            arms["blend_" + weight.replace(".", "")], arms["model"],
+                            arms["blend_" + weight.split(".")[1]], arms["model"],
                             bootstrap_samples=min(market_bs, 250),
                             seed=60000 + league_index * 10 + weight_index,
                         ),
                         "vs_market": _paired_differences(
-                            arms["blend_" + weight.replace(".", "")], arms["market"],
+                            arms["blend_" + weight.split(".")[1]], arms["market"],
                             bootstrap_samples=min(market_bs, 250),
                             seed=61000 + league_index * 10 + weight_index,
                         ),
