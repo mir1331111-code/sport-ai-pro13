@@ -253,6 +253,9 @@ class WalkForwardTests(unittest.TestCase):
             self.assertEqual(arm["metrics"]["n"], 40)
             self.assertEqual(arm["vs_model"]["n"], 40)
             self.assertEqual(arm["vs_market"]["n"], 40)
+            league_arm = result["market_blends"]["by_league"]["E0"][weight]
+            self.assertEqual(league_arm["metrics"]["n"], 40)
+            self.assertEqual(league_arm["vs_market"]["n"], 40)
 
 
 
