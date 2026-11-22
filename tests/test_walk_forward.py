@@ -68,6 +68,17 @@ class WalkForwardTests(unittest.TestCase):
         self.assertEqual(result["candidate"]["n"], 0)
         self.assertEqual(result["market"]["n"], 0)
 
+    def test_clustered_records_can_suppress_warmup_observations(self):
+        records = _ClusteredRecords()
+        records.set_cluster("2024-01-01")
+        records.set_enabled(False)
+        records.append(({"H": 0.8, "D": 0.1, "A": 0.1}, "H"))
+        records.set_enabled(True)
+        records.set_cluster("2024-01-02")
+        records.append(({"H": 0.1, "D": 0.8, "A": 0.1}, "D"))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][2], "2024-01-02")
+
     def test_metrics_resample_calendar_day_clusters_not_individual_fixtures(self):
         records = _ClusteredRecords()
         records.set_cluster("2024-01-01")
@@ -222,6 +233,11 @@ class WalkForwardTests(unittest.TestCase):
         self.assertIsNotNone(paired["confidence_intervals_95"]["log_loss"]["high"])
         self.assertEqual(result["candidate"]["confidence_intervals_95"]["brier"]["low"], None)
         self.assertEqual(result["market_bootstrap_samples"], 30)
+        for weight in ("0.25", "0.50", "0.75"):
+            arm = result["market_blends"]["weights_model_market"][weight]
+            self.assertEqual(arm["metrics"]["n"], 40)
+            self.assertEqual(arm["vs_model"]["n"], 40)
+            self.assertEqual(arm["vs_market"]["n"], 40)
 
 
 
