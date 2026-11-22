@@ -34,6 +34,40 @@ class WalkForwardTests(unittest.TestCase):
             self.assertIsNotNone(line_report["metrics"]["brier"])
             self.assertIsNotNone(line_report["metrics"]["log_loss"])
 
+    def test_walk_forward_replays_warmup_but_scores_only_league_holdout(self):
+        rows = []
+        for index in range(24):
+            stamp = (date(2024, 1, 1) + timedelta(days=index)).isoformat()
+            rows.append({
+                "Date": stamp,
+                "Div": "E0",
+                "HomeTeam": f"Home{index % 4}",
+                "AwayTeam": f"Away{index % 5}",
+                "FTHG": index % 3,
+                "FTAG": (index + 1) % 3,
+            })
+        result = walk_forward_compare(
+            rows,
+            bootstrap_samples=0,
+            evaluation_start_by_league={"E0": "2024-01-20"},
+        )
+        # The first 19 dates warm every model; only the five later dates are scored.
+        self.assertEqual(result["n"], 24)
+        self.assertEqual(result["candidate"]["n"], 5)
+        self.assertEqual(result["baseline"]["n"], 5)
+
+    def test_warmup_only_leagues_do_not_enter_evaluation_metrics(self):
+        rows = [{
+            "Date": (date(2024, 1, 1) + timedelta(days=i)).isoformat(),
+            "Div": "E0", "HomeTeam": f"H{i % 3}", "AwayTeam": f"A{i % 4}",
+            "FTHG": i % 2, "FTAG": (i + 1) % 2,
+        } for i in range(8)]
+        result = walk_forward_compare(
+            rows, bootstrap_samples=0, evaluation_start_by_league={"D1": "2024-01-01"},
+        )
+        self.assertEqual(result["candidate"]["n"], 0)
+        self.assertEqual(result["market"]["n"], 0)
+
     def test_metrics_resample_calendar_day_clusters_not_individual_fixtures(self):
         records = _ClusteredRecords()
         records.set_cluster("2024-01-01")
