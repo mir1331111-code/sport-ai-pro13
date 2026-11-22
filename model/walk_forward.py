@@ -670,6 +670,7 @@ def walk_forward_compare(
         "candidate_without_h2h", "candidate_without_rest_days",
         "candidate_without_h2h_or_rest_days",
         "market", "candidate_on_market",
+        "blend_25", "blend_50", "blend_75",
         "market_power", "candidate_on_market_power",
         "market_shin", "candidate_on_market_shin",
         "goals_over25", "goals_over25_market",
@@ -860,8 +861,20 @@ def walk_forward_compare(
             records["candidate_without_h2h_or_rest_days"].append((_probs(pred_without_h2h_rest), outcome))
             market_p, market_source = _market_probs(row_copy, "proportional")
             if market_p:
+                model_probs = _probs(pred_candidate)
                 records["market"].append((market_p, outcome))
-                records["candidate_on_market"].append((_probs(pred_candidate), outcome))
+                records["candidate_on_market"].append((model_probs, outcome))
+                # Research-only fixed-weight blends. These arms are scored on
+                # exactly the same fixtures as the model and market; none is
+                # automatically promoted into production.
+                for weight, arm_name in (
+                    (0.25, "blend_25"), (0.50, "blend_50"), (0.75, "blend_75"),
+                ):
+                    blended = {
+                        key: weight * model_probs[key] + (1.0 - weight) * market_p[key]
+                        for key in ("H", "D", "A")
+                    }
+                    records[arm_name].append((blended, outcome))
                 market_sources[market_source] = market_sources.get(market_source, 0) + 1
             for method in ("power", "shin"):
                 method_probs, _ = _market_probs(row_copy, method)
@@ -1107,6 +1120,48 @@ def walk_forward_compare(
         "temporal_goals_only": temporal_metrics,
         "market": metrics["market"],
         "candidate_on_market_rows": metrics["candidate_on_market"],
+        "market_blends": {
+            "weights_model_market": {
+                "0.25": {
+                    "metrics": metrics["blend_25"],
+                    "vs_model": _paired_differences(
+                        records["blend_25"], records["candidate_on_market"],
+                        bootstrap_samples=market_bs, seed=57025,
+                    ),
+                    "vs_market": _paired_differences(
+                        records["blend_25"], records["market"],
+                        bootstrap_samples=market_bs, seed=58025,
+                    ),
+                },
+                "0.50": {
+                    "metrics": metrics["blend_50"],
+                    "vs_model": _paired_differences(
+                        records["blend_50"], records["candidate_on_market"],
+                        bootstrap_samples=market_bs, seed=57050,
+                    ),
+                    "vs_market": _paired_differences(
+                        records["blend_50"], records["market"],
+                        bootstrap_samples=market_bs, seed=58050,
+                    ),
+                },
+                "0.75": {
+                    "metrics": metrics["blend_75"],
+                    "vs_model": _paired_differences(
+                        records["blend_75"], records["candidate_on_market"],
+                        bootstrap_samples=market_bs, seed=57075,
+                    ),
+                    "vs_market": _paired_differences(
+                        records["blend_75"], records["market"],
+                        bootstrap_samples=market_bs, seed=58075,
+                    ),
+                },
+            },
+            "note": (
+                "Research-only fixed model/market weights, evaluated on identical "
+                "chronological fixtures. Negative Brier/log-loss differences favour "
+                "the blend; no production probability or betting gate is changed."
+            ),
+        },
         "market_sources": market_sources,
         "goals_over25": goals_over25_metrics,
         "goals_over25_market": goals_over25_market_metrics,
