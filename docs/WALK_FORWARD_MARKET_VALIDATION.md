@@ -18,7 +18,7 @@ The market-validation cache key now uses the full replay input and a new version
 
 ## Experimental model/market blends
 
-The walk-forward report now includes fixed model weights of 25%, 50%, and 75%, with the remainder assigned to the de-vigged bookmaker probability. Each blend is compared with both the model and market on the same fixtures and matchday clusters.
+The walk-forward report now includes fixed model weights of 25%, 50%, and 75%, with the remainder assigned to the de-vigged bookmaker probability. Each blend is compared with both the model and market on the same fixtures and matchday clusters, with aggregate and per-league reports.
 
 These are research diagnostics only. They do not alter production probabilities, Value calculations, or betting permissions. A weight should only be considered for production after it wins on an untouched later holdout, remains calibrated by league, and is stable across seasons and market sources.
 
