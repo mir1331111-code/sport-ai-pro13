@@ -1236,6 +1236,24 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     k5.metric("Value-проходы", qualified_count)
     k6.metric("Открытые ставки", pending_count)
 
+    last_scan_meta = D.get("scan_meta") if isinstance(D.get("scan_meta"), dict) else {}
+    if last_scan_meta:
+        last_horizon = max(1, int(last_scan_meta.get("horizon_days") or 1))
+        last_from = str(last_scan_meta.get("date_from") or "—")
+        last_to = str(last_scan_meta.get("date_to_inclusive") or last_from)
+        last_analysed = int(last_scan_meta.get("analysed_matches") or 0)
+        st.caption(
+            f"Последний завершённый скан: {last_horizon} календарн. дн. "
+            f"({last_from} — {last_to}) · в окне проанализировано {last_analysed} матчей. "
+            "Изменение ползунка применяется только к следующему запуску; "
+            "сохранённые карточки предыдущего скана не меняются."
+        )
+    else:
+        st.caption(
+            "Ползунок задаёт горизонт следующего сканирования. "
+            "Сохранённые результаты обновятся только после нажатия «Запустить сканирование»."
+        )
+
     st.markdown("<div class='scanner-section-label'>БЫСТРЫЙ ЗАПУСК</div>",
                 unsafe_allow_html=True)
     c1, c2 = st.columns([1.25, 1], vertical_alignment="bottom")
@@ -4005,9 +4023,32 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # Other markets stay visible as forecasts; size_bet enforces combined
         # market, fixture and daily exposure across every added selection.
 
+        logs.append(
+            f"🗓 Горизонт последнего скана: {days} календарн. дн. "
+            f"({today_date.isoformat()} — {(today_date + timedelta(days=days - 1)).isoformat()}); "
+            f"проанализировано в окне={date_filter_counts['inside_horizon']}, "
+            f"вне окна={date_filter_counts['outside_horizon']}, "
+            f"уже начались={date_filter_counts['past_kickoff']}, "
+            f"без времени сегодня={date_filter_counts['unknown_same_day_kickoff']}."
+        )
         D2 = dict(D)
         D2["cards"] = cards
         D2["report"] = logs
+        D2["scan_meta"] = {
+            "scan_started_at": scan_now.isoformat(),
+            "scan_completed_at": datetime.now(scan_timezone).isoformat(),
+            "horizon_days": int(days),
+            "date_from": today_date.isoformat(),
+            "date_to_inclusive": (today_date + timedelta(days=days - 1)).isoformat(),
+            "source_rows": len(fixture_sources),
+            "unique_fixtures": len(rows),
+            "analysed_matches": int(date_filter_counts["inside_horizon"]),
+            "forecast_cards": len(cards),
+            "date_filter_counts": dict(date_filter_counts),
+            "source_counts": {
+                str(name): int(count) for name, count in source_counts.items()
+            },
+        }
         D2["bets"] = list(D.get("bets") or []) + new_bets
         D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - total_stake)
         D2["funnel"] = {

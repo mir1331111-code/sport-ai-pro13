@@ -212,6 +212,23 @@ def historical_features(
         away_stats, "ac", "ac_dates", limit=limit,
         match_date=match_date, half_life_days=half_life,
     )
+
+    # Recent form averages intentionally use only the latest limit observations.
+    # History eligibility is a separate signal: report every available pre-match
+    # venue observation (Engine retains up to 12). Otherwise, an average window
+    # of 8 makes a 10-game approval threshold impossible to satisfy.
+    home_scored_all, _ = _history_series(
+        home_stats, "hs", "hs_dates", match_date=match_date,
+    )
+    home_conceded_all, _ = _history_series(
+        home_stats, "hc", "hc_dates", match_date=match_date,
+    )
+    away_scored_all, _ = _history_series(
+        away_stats, "as", "as_dates", match_date=match_date,
+    )
+    away_conceded_all, _ = _history_series(
+        away_stats, "ac", "ac_dates", match_date=match_date,
+    )
     lambda_home = (
         (home_scored + away_conceded) / 2
         if home_scored is not None and away_conceded is not None else None
@@ -234,8 +251,8 @@ def historical_features(
         "home_conceded_at_home_avg": home_conceded,
         "away_scored_away_avg": away_scored,
         "away_conceded_away_avg": away_conceded,
-        "home_home_sample": min(home_n, home_conceded_n),
-        "away_away_sample": min(away_n, away_conceded_n),
+        "home_home_sample": min(len(home_scored_all), len(home_conceded_all)),
+        "away_away_sample": min(len(away_scored_all), len(away_conceded_all)),
         "sample_limit": limit,
         "as_of_date": (
             _history_day(match_date).isoformat()

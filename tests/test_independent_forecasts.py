@@ -82,6 +82,44 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertAlmostEqual(features["simple_baseline_lambda_total"], 3.0)
         self.assertGreater(features["simple_baseline_over_25"], 0.5)
 
+    def test_history_support_counts_more_observations_than_average_window(self):
+        # The display average uses the latest 8 games, while eligibility must
+        # still see all pre-match venue observations needed by the 10-game gate.
+        dates = [f"2026-11-{day:02d}" for day in range(3, 17)]
+        engine = SimpleNamespace(st={
+            ("E0", "Home FC"): {
+                "hs": list(range(3, 17)),
+                "hc": list(range(4, 18)),
+                "hs_dates": dates,
+                "hc_dates": dates,
+            },
+            ("E0", "Away FC"): {
+                "as": list(range(5, 19)),
+                "ac": list(range(6, 20)),
+                "as_dates": dates,
+                "ac_dates": dates,
+            },
+        })
+        from model.temporal import weighted_mean
+
+        cutoff = datetime(2026, 11, 15, 18, 0)
+        result = historical_features(
+            engine, "Home FC", "Away FC", limit=8,
+            league="E0", match_date=cutoff,
+        )
+        # Twelve earlier observations count; matchday 15 and future day 16 do not.
+        self.assertEqual(result["home_home_sample"], 12)
+        self.assertEqual(result["away_away_sample"], 12)
+        # Averages retain the existing eight-observation, time-weighted window.
+        expected_home = weighted_mean(
+            list(range(7, 15)), dates[4:12], cutoff, half_life_days=180.0,
+        )
+        expected_away = weighted_mean(
+            list(range(9, 17)), dates[4:12], cutoff, half_life_days=180.0,
+        )
+        self.assertAlmostEqual(result["home_scored_at_home_avg"], expected_home)
+        self.assertAlmostEqual(result["away_scored_away_avg"], expected_away)
+
     def test_llm_historical_features_match_normalized_names_in_same_competition(self):
         engine = SimpleNamespace(st={
             ("E0", "Home"): {
