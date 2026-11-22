@@ -1,7 +1,7 @@
 import unittest
 from datetime import date, datetime
 
-from model.engine import Engine
+from model.engine import Engine, _team_state_key
 from model.historical_match_stats import HistoricalMatchStats
 from model.training import (
     prepare_completed_training_rows,
@@ -50,6 +50,36 @@ class ChronologicalTrainingTests(unittest.TestCase):
         prediction = model.predict("A", "B", "S_TEST")
         self.assertFalse(prediction["probability_calibrated"])
         self.assertEqual(prediction["calibration_matches"], 0)
+
+    def test_engine_joins_safe_provider_aliases_but_keeps_reserves_separate(self):
+        model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        first_day = datetime(2024, 1, 1)
+        model.add(
+            "Manchester United", "Brighton & Hove Albion", 2, 0,
+            {"Div": "E0"}, match_date=first_day,
+        )
+
+        self.assertEqual(
+            _team_state_key("E0", "Manchester United"),
+            _team_state_key("E0", "Man Utd"),
+        )
+        self.assertEqual(
+            _team_state_key("E0", "Brighton & Hove Albion"),
+            _team_state_key("E0", "Brighton"),
+        )
+        self.assertNotEqual(
+            _team_state_key("E0", "Manchester United"),
+            _team_state_key("E0", "Manchester United B"),
+        )
+
+        prediction = model.predict(
+            "Man Utd", "Brighton", "E0",
+            match_date=datetime(2024, 1, 8),
+        )
+        self.assertEqual(prediction["model_support_status"], "team_supported")
+        self.assertGreater(prediction["home_team_history_matches"], 0)
+        self.assertGreater(prediction["away_team_history_matches"], 0)
+        self.assertGreater(prediction["h2h_n"], 0)
 
     def test_batch_predicts_all_same_day_fixtures_before_ingesting_results(self):
         model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
