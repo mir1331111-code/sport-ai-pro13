@@ -150,6 +150,23 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(xg["provider"]["away_xg_samples"], 5)
         self.assertAlmostEqual(xg["provider"]["home_xg_for_avg"], 1.2)
 
+    def test_historical_features_join_team_aliases_used_by_upcoming_fixtures(self):
+        from model.engine import Engine
+
+        engine = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        engine.add(
+            "Manchester United", "Brighton & Hove Albion", 2, 0,
+            {"Div": "E0"}, match_date=datetime(2026, 11, 1),
+        )
+        features = historical_features(
+            engine, "Man Utd", "Brighton", league="E0",
+            match_date=datetime(2026, 11, 8),
+        )
+        self.assertEqual(features["home_home_sample"], 1)
+        self.assertEqual(features["away_away_sample"], 1)
+        self.assertIsNotNone(features["home_scored_at_home_avg"])
+        self.assertIsNotNone(features["away_scored_away_avg"])
+
     def test_normalized_team_index_is_reused_and_invalidated_after_training(self):
         class CountingTeams(dict):
             def __init__(self, *args, **kwargs):
