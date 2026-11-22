@@ -176,6 +176,70 @@ def strong_events_html(events):
     )
 
 
+def best_matches_html(items):
+    """Render the highest-quality team-supported forecasts independently of bet approval."""
+    if not items:
+        return (
+            "<div class='neo-empty-cell'>"
+            "В выбранном периоде нет матчей, одновременно имеющих подтверждённую "
+            f"историю дом/выезд не менее {MIN_FAVORITE_HISTORY} игр и фаворита от 52%. "
+            "Слабые и prior-only прогнозы в этот рейтинг не добавляются."
+            "</div>"
+        )
+    rows = []
+    for number, item in enumerate(items, start=1):
+        card = item.get("card") if isinstance(item, dict) else {}
+        card = card if isinstance(card, dict) else {}
+        calibration = (
+            f"Да · n={int(item.get('calibration_matches') or 0)}"
+            if item.get("calibration_ready")
+            else "нет · сырая вероятность"
+        )
+        probability = num(item.get("probability"))
+        margin = num(item.get("probability_margin"))
+        quality = num(item.get("quality_score"))
+        rows.append(
+            "<tr>"
+            f"<td>{number}</td>"
+            f"<td>{esc(card.get('date') or card.get('date_iso') or '—')} "
+            f"{esc(card.get('time') or '')}</td>"
+            f"<td>{esc(card.get('league') or card.get('div') or '—')}</td>"
+            f"<td><b>{esc(match_name(card))}</b></td>"
+            f"<td><b>{esc(item.get('label') or item.get('pick') or '—')}</b></td>"
+            f"<td>{probability:.1%}</td>" if probability is not None else
+            "<tr><td>—</td>"
+        )
+        # Complete the remaining cells after the conditional probability cell.
+        if probability is not None:
+            rows[-1] += (
+                f"<td>{margin:.1%}</td>" if margin is not None else "<td>—</td>"
+            )
+            rows[-1] += (
+                f"<td>{int(item.get('home_sample') or 0)}/"
+                f"{int(item.get('away_sample') or 0)}</td>"
+                f"<td>{quality:.0f}/100</td>" if quality is not None else
+                f"<td>{int(item.get('home_sample') or 0)}/"
+                f"{int(item.get('away_sample') or 0)}</td><td>—</td>"
+            )
+            rows[-1] += f"<td>{esc(calibration)}</td></tr>"
+        else:
+            rows[-1] += (
+                f"<td>{esc(card.get('date') or card.get('date_iso') or '—')}</td>"
+                f"<td>{esc(card.get('league') or card.get('div') or '—')}</td>"
+                f"<td>{esc(match_name(card))}</td>"
+                f"<td>{esc(item.get('label') or item.get('pick') or '—')}</td>"
+                "<td>—</td><td>—</td><td>—</td><td>—</td></tr>"
+            )
+    return (
+        "<div class='neo-table-scroll'><table class='neo-match-table'>"
+        "<thead><tr><th>№</th><th>Время</th><th>Лига</th><th>Матч</th>"
+        "<th>Наиболее вероятный исход</th><th>Вероятность</th><th>Отрыв от 2-го</th>"
+        "<th>История Д/Г</th><th>Качество</th><th>Калибровка</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )
+
+
 def esc(value):
     return html.escape(str(value or ""), quote=True)
 
@@ -1162,6 +1226,29 @@ def render():
     probability_warning = _probability_health_note(cards)
     if probability_warning:
         st.warning(probability_warning)
+
+    best_match_items = [
+        item for item in ranked_events
+        if item.get("strict_eligible")
+        and item.get("history_ready")
+        and item.get("probability_ready")
+    ][:10]
+    st.markdown(
+        "<section class='neo-panel neo-matches-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>BEST MATCHES · MODEL RANKING</span>"
+        "<h3>Лучшие матчи · рейтинг качества прогноза</h3>"
+        "<div class='neo-ranking-disclaimer'>"
+        f"Показаны до 10 лучших матчей выбранного периода: история хозяев дома и гостей "
+        f"в гостях ≥{MIN_FAVORITE_HISTORY}, модельный фаворит ≥52%, "
+        "сортировка по качеству данных, вероятности и отрыву от второго исхода. "
+        "Это рейтинг прогнозов, а не список ставок. Калибровка указана отдельно."
+        "</div></div>"
+        f"<span class='neo-count-pill'>{len(best_match_items)} матчей</span></div>"
+        + best_matches_html(best_match_items)
+        + "</section>",
+        unsafe_allow_html=True,
+    )
 
     strong_events = dashboard_strong_events(cards)
     st.markdown(
