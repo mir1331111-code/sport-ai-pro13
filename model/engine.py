@@ -118,6 +118,19 @@ def _team_state_key(division, team):
 
 
 def _h2h_state_key(division, home, away):
+    """Preserve the legacy raw-name key used by existing H2H consumers."""
+    code = _division_key(division)
+    home_name = str(home or "").strip()
+    away_name = str(away or "").strip()
+    return (
+        (home_name, away_name)
+        if code == "G"
+        else (code, home_name, away_name)
+    )
+
+
+def _canonical_h2h_state_key(division, home, away):
+    """Alias-safe H2H index, separate from the backwards-compatible public map."""
     code = _division_key(division)
     home_name = _canonical_team_name(home)
     away_name = _canonical_team_name(away)
@@ -178,6 +191,9 @@ class Engine:
         # Поэтому матч учитывается независимо от того,
         # кто в будущем будет хозяином.
         self.h2h = defaultdict(list)
+        # Canonical alias index is separate so legacy consumers can keep using
+        # the original raw-name self.h2h keys without losing alias-aware lookup.
+        self.h2h_aliases = defaultdict(list)
 
         # Calibration observations and transforms are isolated by competition.
         self.calib_logits = defaultdict(list)
@@ -496,6 +512,16 @@ class Engine:
         self.h2h[away_h2h_key].append(-diff)
         self.h2h[away_h2h_key] = self.h2h[away_h2h_key][-8:]
 
+        # The alias index joins historical H2H rows whose providers use a
+        # different exact spelling for the same club. The public raw-name map
+        # above remains backward-compatible for existing dashboards/tests.
+        alias_home_key = _canonical_h2h_state_key(div, h, a)
+        alias_away_key = _canonical_h2h_state_key(div, a, h)
+        self.h2h_aliases[alias_home_key].append(diff)
+        self.h2h_aliases[alias_home_key] = self.h2h_aliases[alias_home_key][-8:]
+        self.h2h_aliases[alias_away_key].append(-diff)
+        self.h2h_aliases[alias_away_key] = self.h2h_aliases[alias_away_key][-8:]
+
         # Ограничиваем историю команды.
         for team in (home_key, away_key):
             for key in teams[team]:
@@ -523,7 +549,12 @@ class Engine:
         полностью переопределить основную Poisson-модель.
         """
 
-        hist = self.h2h.get(_h2h_state_key(lg, h, a), [])
+        alias_key = _canonical_h2h_state_key(lg, h, a)
+        raw_key = _h2h_state_key(lg, h, a)
+        aliases = getattr(self, "h2h_aliases", {})
+        hist = aliases.get(alias_key) if aliases else None
+        if hist is None:
+            hist = self.h2h.get(raw_key, [])
         n = len(hist)
 
         if n < 6:
@@ -753,7 +784,11 @@ class Engine:
         else:
             # Counterfactual path for live A/B auditing; do not mutate state.
             lam_h, lam_a = lam_g_h, lam_g_a
-            h2h_n = len(self.h2h.get(_h2h_state_key(lg, h, a), []))
+            alias_key = _canonical_h2h_state_key(lg, h, a)
+            aliases = getattr(self, "h2h_aliases", {})
+            h2h_n = len(
+                aliases.get(alias_key, self.h2h.get(_h2h_state_key(lg, h, a), []))
+            )
 
         # ---------------------------------------------------------
         # Elo
