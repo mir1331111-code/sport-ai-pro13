@@ -703,6 +703,7 @@ def walk_forward_compare(
     market_sources = {}
     total_market_sources = {}
     xg_forecasts = xg_eligible_rows = 0
+    scored_rows = 0
     index = 0
     cursor = 0
     last_progress_report = 0
@@ -734,6 +735,8 @@ def walk_forward_compare(
                 raw_cutoff = evaluation_start_by_league.get(league)
                 cutoff = _parse_date(raw_cutoff) if raw_cutoff is not None else None
                 score_this_fixture = cutoff is not None and stamp >= cutoff
+            if score_this_fixture:
+                scored_rows += 1
             for record_list in (
                 *records.values(), *xg_arm_records.values(),
                 *goals_line_records.values(), *goals_line_baseline_records.values(),
@@ -749,10 +752,10 @@ def walk_forward_compare(
             provider_xg_row = _without_proxy_xg(row_copy)
             proxy_xg_row = _without_provider_xg(row_copy)
             xg_origin = _xg_origin(row_copy)
-            if xg_origin == "provider":
+            if score_this_fixture and xg_origin == "provider":
                 xg_eligible_rows += 1
                 xg_provider_rows += 1
-            elif xg_origin == "proxy":
+            elif score_this_fixture and xg_origin == "proxy":
                 xg_eligible_rows += 1
                 xg_proxy_rows += 1
 
@@ -770,7 +773,7 @@ def walk_forward_compare(
             pred_without_h2h_rest = candidate_no_h2h_no_rest.predict(
                 home, away, league, match_date=stamp.isoformat(), apply_h2h=False,
             )
-            if pred_candidate.get("xg_used"):
+            if score_this_fixture and pred_candidate.get("xg_used"):
                 xg_forecasts += 1
             total_outcome = "over" if hg + ag >= 3 else "under"
             over_prob = max(1e-6, min(1.0 - 1e-6, float(pred_candidate.get("over", 0.5))))
@@ -813,7 +816,8 @@ def walk_forward_compare(
             if total_market_p:
                 records["goals_over25_market"].append((total_market_p, total_outcome))
                 records["goals_over25_candidate_on_market"].append(({"over": over_prob, "under": 1.0 - over_prob}, total_outcome))
-                total_market_sources[total_market_source] = total_market_sources.get(total_market_source, 0) + 1
+                if score_this_fixture:
+                    total_market_sources[total_market_source] = total_market_sources.get(total_market_source, 0) + 1
             outcome = "H" if hg > ag else "A" if hg < ag else "D"
             arm_predictions = {
                 "goals_only": pred_temporal_goals,
@@ -824,7 +828,7 @@ def walk_forward_compare(
             for arm_name, arm_prediction in arm_predictions.items():
                 xg_record = (_probs(arm_prediction), outcome)
                 xg_arm_records[arm_name].append(xg_record)
-                if arm_prediction.get("xg_used"):
+                if score_this_fixture and arm_prediction.get("xg_used"):
                     xg_arm_usage[arm_name] += 1
                     if arm_prediction.get("xg_modelled_used"):
                         xg_arm_proxy_usage[arm_name] += 1
@@ -875,7 +879,8 @@ def walk_forward_compare(
                         for key in ("H", "D", "A")
                     }
                     records[arm_name].append((blended, outcome))
-                market_sources[market_source] = market_sources.get(market_source, 0) + 1
+                if score_this_fixture:
+                    market_sources[market_source] = market_sources.get(market_source, 0) + 1
             for method in ("power", "shin"):
                 method_probs, _ = _market_probs(row_copy, method)
                 if method_probs:
@@ -1083,12 +1088,13 @@ def walk_forward_compare(
 
     return {
         "n": len(prepared),
+        "evaluation_n": scored_rows,
         "skipped": skipped,
         "xg_rows_available": xg_eligible_rows,
         "xg_provider_rows_available": xg_provider_rows,
         "xg_proxy_rows_available": xg_proxy_rows,
         "xg_forecasts_used": xg_forecasts,
-        "xg_usage_share": xg_forecasts / len(prepared) if prepared else None,
+        "xg_usage_share": xg_forecasts / scored_rows if scored_rows else None,
         "xg_ablation": {
             "arms": xg_arm_metrics,
             "paired_differences": xg_arm_pairs,
@@ -1098,7 +1104,7 @@ def walk_forward_compare(
                     "forecasts_using_xg": xg_arm_usage[name],
                     "provider_xg_used": xg_arm_provider_usage[name],
                     "proxy_xg_used": xg_arm_proxy_usage[name],
-                    "share": xg_arm_usage[name] / len(prepared) if prepared else None,
+                    "share": xg_arm_usage[name] / scored_rows if scored_rows else None,
                 }
                 for name in xg_arm_names
             },
