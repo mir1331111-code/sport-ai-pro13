@@ -9,6 +9,10 @@ import re
 import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
+from betting.gate_report import (
+    classify_card, near_misses, render_gate_details_html,
+    render_near_misses_html, render_status_legend,
+)
 from data.fixture_time import app_timezone
 from config import (
     APP_VERSION, DB_FILE, LLM_PROVIDERS, MIN_FAVORITE_HISTORY,
@@ -783,6 +787,14 @@ def _match_table_row(card, *, preview_only=False):
 
     home_name = str(card.get("home_team") or "Хозяева")
     away_name = str(card.get("away_team") or "Гости")
+    chosen = card.get("best")
+    market_code = (
+        str(chosen[0]).upper()
+        if isinstance(chosen, (tuple, list)) and chosen else ""
+    )
+    gate_family = "goals" if market_code == "OU" else "winner"
+    gate_status, gate_results = classify_card(card, gate_family)
+    gate_details = render_gate_details_html(gate_status, gate_results)
     return (
         "<tr>"
         f"<td class='neo-time'>{esc(kickoff_text or '—')}</td>"
@@ -797,7 +809,7 @@ def _match_table_row(card, *, preview_only=False):
         "</div></td>"
         + "".join(f"<td class='neo-prob'>{value}</td>" for value in values)
         + "".join(odds_cells)
-        + f"<td class='neo-pick-cell'><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span>{bet_status_html}{selection_html}</td>"
+        + f"<td class='neo-pick-cell'><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span>{bet_status_html}{selection_html}{gate_details}</td>"
         + "</tr>"
     )
 
@@ -1237,7 +1249,56 @@ def render():
         unsafe_allow_html=True,
     )
 
+    st.markdown(
+        "<section class='neo-panel neo-status-legend'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>FORECAST STATUS · GATE LEGEND</span>"
+        "<h3>Что означает статус прогноза</h3>"
+        "</div></div></section>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(render_status_legend())
     strong_events = dashboard_strong_events(cards)
+    if not strong_events:
+        diagnostic_cards = [
+            item.get("card") for item in ranked_events
+            if isinstance(item.get("card"), dict)
+        ]
+        nearest = (
+            near_misses(diagnostic_cards, "winner", limit=3)
+            + near_misses(diagnostic_cards, "goals", limit=3)
+        )
+        nearest.sort(key=lambda item: (
+            len(item.get("failed_gates") or []),
+            -float(item.get("probability") or 0.0),
+        ))
+        unique_nearest = []
+        seen = set()
+        for item in nearest:
+            card = item.get("card") or {}
+            identity = (
+                str(card.get("fixture_id") or card.get("date_iso") or ""),
+                str(card.get("home_team") or ""),
+                str(card.get("away_team") or ""),
+                str(item.get("family") or ""),
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            unique_nearest.append(item)
+            if len(unique_nearest) >= 3:
+                break
+        st.markdown(
+            "<section class='neo-panel neo-near-miss-panel'>"
+            "<div class='neo-panel-heading'><div>"
+            "<span class='neo-panel-kicker'>NEAR MISSES · GATE DIAGNOSTICS</span>"
+            "<h3>Ближайшие кандидаты и недостающие проверки</h3>"
+            "<div class='neo-ranking-disclaimer'>Фильтры не ослаблены: панель показывает, какого именно гейта не хватает до допуска.</div>"
+            "</div></div>"
+            + render_near_misses_html(unique_nearest)
+            + "</section>",
+            unsafe_allow_html=True,
+        )
     st.markdown(
         "<section class='neo-panel neo-matches-panel'>"
         "<div class='neo-panel-heading'><div>"

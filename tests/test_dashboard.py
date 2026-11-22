@@ -486,5 +486,33 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertNotIn("100%", panel)
 
 
+    def test_dashboard_rows_expose_specific_gate_failures(self):
+        row = _match_table_row({
+            "home_team": "Home FC", "away_team": "Away FC",
+            "p1": 0.72, "px": 0.16, "p2": 0.12,
+            "model_support_status": "team_supported",
+            "independent_features": {
+                "home_home_sample": 12, "away_away_sample": 11,
+            },
+            "context_quality": {
+                "strong_value_eligible": False,
+                "reason": "нет подтверждённого XI",
+            },
+            "winner_market_validation": False,
+            "winner_market_validation_report": {"n": 420},
+            "market_odds": {"П1": 1.9, "X": 3.4, "П2": 4.0},
+            "odds_source": "sstats",
+            "market_odds_source_by_pick": {
+                "П1": "sstats", "X": "sstats", "П2": "sstats",
+            },
+            "bookmaker_by_pick": {
+                "П1": "Book A", "X": "Book A", "П2": "Book A",
+            },
+        }, preview_only=True)
+        self.assertIn("Почему такой статус", row)
+        self.assertIn("420/500", row)
+        self.assertIn("нет подтверждённого XI", row)
+
+
 if __name__ == "__main__":
     unittest.main()
