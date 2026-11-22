@@ -2929,7 +2929,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 history_league_limit = _runtime_int(
                     "sstats_history_max_leagues",
                     "SSTATS_HISTORY_MAX_LEAGUES",
-                    default=30,
+                    default=60,
                     minimum=1,
                 )
                 sstats_history_rows = sstats_historical_matches_for_fixtures(
@@ -2988,7 +2988,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
-                          "model_only": 0, "estimated": 0, "real": 0}
+                          "model_only": 0, "estimated": 0, "real": 0,
+                          "prior_only": 0, "partial_history": 0, "team_supported": 0}
         logs.append(
             "🎯 Источник букмекерских коэффициентов: только SStats Games/list и Odds/{gameId}; "
             "коэффициенты других провайдеров и импортированные файлы в скане не используются."
@@ -3064,8 +3065,25 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "H": float(P["p1"]), "D": float(P["x"]), "A": float(P["p2"]),
             }
             P_decision = dict(P)
+            model_support_status = str(P.get("model_support_status") or "unknown")
+            if model_support_status == "prior_only":
+                funnel_counts["prior_only"] = funnel_counts.get("prior_only", 0) + 1
+            elif model_support_status == "team_supported":
+                funnel_counts["team_supported"] = funnel_counts.get("team_supported", 0) + 1
+            else:
+                funnel_counts["partial_history"] = funnel_counts.get("partial_history", 0) + 1
+            # A generic 1.5/1.2 goals prior plus a fixed home Elo bonus is not a
+            # match-specific forecast. Keep it visible as a coverage diagnostic,
+            # but do not let online correction, market selection or the ledger
+            # turn it into an apparently informed P1/X/P2 pick.
+            model_bet_history_ready = bool(
+                model_support_status == "team_supported"
+                and int(P.get("league_history_matches") or 0) >= 20
+                and int(P.get("home_venue_history_matches") or 0) >= MIN_FAVORITE_HISTORY
+                and int(P.get("away_venue_history_matches") or 0) >= MIN_FAVORITE_HISTORY
+            )
             learning_preview = None
-            if scan_learning_service is not None:
+            if scan_learning_service is not None and model_support_status != "prior_only":
                 try:
                     learning_preview = scan_learning_service.preview(
                         raw_model_probabilities, as_of=scan_now,
@@ -3367,7 +3385,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 getattr(engine, "winner_market_validation", False)
             )
             market_validation_by_pick = {
-                pick: winner_market_validation for pick in ("П1", "X", "П2")
+                pick: bool(winner_market_validation and model_bet_history_ready)
+                for pick in ("П1", "X", "П2")
             }
             extra_rows = []
 
@@ -3429,7 +3448,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 min_prob, min_edge=max(min_edge, 0.05), min_ev=0.05,
                 bookmaker_by_pick=bookmaker_by_pick,
                 market_validation_by_pick=market_validation_by_pick,
-                context_qualified=context_quality["strong_value_eligible"],
+                context_qualified=bool(
+                    context_quality["strong_value_eligible"] and model_bet_history_ready
+                ),
             )
             best_odds_source = "no_market"
             if selection_odds and candidate_rows:
@@ -3444,7 +3465,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     min_ev=0.05,
                     bookmaker_by_pick=bookmaker_by_pick,
                     market_validation_by_pick=market_validation_by_pick,
-                    context_qualified=context_quality["strong_value_eligible"],
+                    context_qualified=bool(
+                        context_quality["strong_value_eligible"] and model_bet_history_ready
+                    ),
                 )
                 if best is not None:
                     verdict = chosen_verdict
@@ -3477,7 +3500,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"({best[0]} · {best_odds_source})"
                 )
             else:
-                if not context_quality.get("strong_value_eligible"):
+                if not model_bet_history_ready:
+                    no_best_reason = (
+                        "нет достаточной истории модели: нужны ≥20 матчей лиги и "
+                        f"≥{MIN_FAVORITE_HISTORY} домашних игр хозяев / гостевых игр гостей; "
+                        "общий prior не допускается к ставкам"
+                    )
+                elif not context_quality.get("strong_value_eligible"):
                     no_best_reason = (
                         "контекстный фильтр Strong/Value: нет подтверждённого стартового XI "
                         "обеих команд и/или назначенного судьи; ставки заблокированы"
@@ -3505,6 +3534,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "verdict": verdict, "best": best,
                 "best_by_market": best_by_market,
                 "games": P["games"], "fh": fh, "fa": fa,
+                "model_support_status": model_support_status,
+                "league_history_matches": int(P.get("league_history_matches") or 0),
+                "home_team_history_matches": int(P.get("home_team_history_matches") or 0),
+                "away_team_history_matches": int(P.get("away_team_history_matches") or 0),
+                "home_venue_history_matches": int(P.get("home_venue_history_matches") or 0),
+                "away_venue_history_matches": int(P.get("away_venue_history_matches") or 0),
                 "probability_calibrated": bool(P.get("probability_calibrated", False)),
                 "calibration_matches": int(P.get("calibration_matches") or 0),
                 "fixture_id": r.get("fixture_id"),
@@ -4024,6 +4059,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # market, fixture and daily exposure across every added selection.
 
         logs.append(
+            "🧠 Поддержка модели: "
+            f"полная история команд={funnel_counts.get('team_supported', 0)}, "
+            f"только лига/частичная история={funnel_counts.get('partial_history', 0)}, "
+            f"prior-only без истории турнира={funnel_counts.get('prior_only', 0)}. "
+            "Prior-only матчи не участвуют в выборе фаворита, Value и журнале основной модели."
+        )
+        logs.append(
             f"🗓 Горизонт последнего скана: {days} календарн. дн. "
             f"({today_date.isoformat()} — {(today_date + timedelta(days=days - 1)).isoformat()}); "
             f"проанализировано в окне={date_filter_counts['inside_horizon']}, "
@@ -4044,6 +4086,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "unique_fixtures": len(rows),
             "analysed_matches": int(date_filter_counts["inside_horizon"]),
             "forecast_cards": len(cards),
+            "model_support_counts": {
+                "prior_only": int(funnel_counts.get("prior_only", 0)),
+                "partial_history": int(funnel_counts.get("partial_history", 0)),
+                "team_supported": int(funnel_counts.get("team_supported", 0)),
+            },
             "date_filter_counts": dict(date_filter_counts),
             "source_counts": {
                 str(name): int(count) for name, count in source_counts.items()
