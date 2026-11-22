@@ -598,7 +598,7 @@ def _https_image_url(value):
 def _forecast_rejection_reason(card):
     """Explain why a visible forecast is not an approved bet."""
     reasons = []
-    if card.get("model_support_status") == "prior_only":
+    if card.get("model_support_status") in {"prior_only", "league_only"}:
         return (
             "нет истории завершённых матчей по этому турниру: показанный общий prior "
             "не является прогнозом по данным команд"
@@ -640,11 +640,11 @@ def _forecast_rejection_reason(card):
 
 
 def _match_table_row(card, *, preview_only=False):
-    prior_only = card.get("model_support_status") == "prior_only"
-    prediction = {} if prior_only else (favorite(card) or {})
+    unsupported = card.get("model_support_status") in {"prior_only", "league_only"}
+    prediction = {} if unsupported else (favorite(card) or {})
     values = []
     for key in ("p1", "px", "p2"):
-        value = None if prior_only else num(card.get(key))
+        value = None if unsupported else num(card.get(key))
         values.append(
             f"<span class='neo-prob-pill'>{f'{value:.0%}' if value is not None and 0 <= value <= 1 else '—'}</span>"
         )
@@ -657,8 +657,8 @@ def _match_table_row(card, *, preview_only=False):
             f"<td class='neo-odds'>{f'{price:.2f}' if price is not None else '—'}</td>"
         )
 
-    pick = "НЕТ ПРОГНОЗА · НЕТ ИСТОРИИ ЛИГИ" if prior_only else str(prediction.get("pick") or "—")
-    probability = None if prior_only else num(prediction.get("probability"))
+    pick = "НЕТ ПРОГНОЗА · НЕТ ИСТОРИИ КОМАНД" if unsupported else str(prediction.get("pick") or "—")
+    probability = None if unsupported else num(prediction.get("probability"))
     pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
     value_passed = bool(
@@ -1140,11 +1140,14 @@ def render():
     scan_meta = data.get("scan_meta") if isinstance(data.get("scan_meta"), dict) else {}
     if scan_meta:
         support_counts = scan_meta.get("model_support_counts") if isinstance(scan_meta.get("model_support_counts"), dict) else {}
-        prior_only_count = int(support_counts.get("prior_only") or 0)
-        if prior_only_count:
+        unsupported_count = (
+            int(support_counts.get("prior_only") or 0)
+            + int(support_counts.get("league_only") or 0)
+        )
+        if unsupported_count:
             st.caption(
-                f"Матчей без истории лиги: {prior_only_count}. Для них общий домашний prior "
-                "не считается прогнозом: вероятности П1/X/П2 скрыты, фаворит не выбирается."
+                f"Матчей без истории одной или обеих команд: {unsupported_count}. "
+                "Общий prior не считается прогнозом: вероятности П1/X/П2 скрыты, фаворит не выбирается."
             )
         scan_days = max(1, int(scan_meta.get("horizon_days") or 1))
         scan_from = str(scan_meta.get("date_from") or "—")
