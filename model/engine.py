@@ -6,6 +6,7 @@ import re
 import unicodedata
 from collections import defaultdict
 
+from data.team_names import normalize_team
 from model.calibration import PlattCalibrator
 from model.temporal import days_since_last_match, estimate_dixon_coles_rho, weighted_mean
 
@@ -101,16 +102,30 @@ def _division_key(value) -> str:
     return str(value or "G").strip().upper() or "G"
 
 
+def _canonical_team_name(team) -> str:
+    """Resolve conservative provider aliases before reading/writing team state."""
+    raw = str(team or "").strip()
+    if not raw:
+        return ""
+    return normalize_team(raw) or raw
+
+
 def _team_state_key(division, team):
-    """Keep team form/Elo/H2H/rest history inside one competition."""
+    """Keep normalized team form/Elo/H2H/rest history inside one competition."""
     code = _division_key(division)
-    name = str(team or "").strip()
+    name = _canonical_team_name(team)
     return name if code == "G" else (code, name)
 
 
 def _h2h_state_key(division, home, away):
     code = _division_key(division)
-    return (home, away) if code == "G" else (code, home, away)
+    home_name = _canonical_team_name(home)
+    away_name = _canonical_team_name(away)
+    return (
+        (home_name, away_name)
+        if code == "G"
+        else (code, home_name, away_name)
+    )
 
 
 class Engine:
