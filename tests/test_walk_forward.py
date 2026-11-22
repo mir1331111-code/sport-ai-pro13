@@ -1,6 +1,7 @@
 import unittest
 from datetime import date, timedelta
 
+from model.engine import Engine
 from model.walk_forward import (
     _ClusteredRecords, _metrics, _paired_differences,
     _binary_metrics, _binary_paired_differences,
@@ -9,6 +10,15 @@ from model.walk_forward import (
 
 
 class WalkForwardTests(unittest.TestCase):
+    def test_legacy_engine_without_form_weight_attribute_still_predicts(self):
+        # Existing on-disk Engine pickles predate the research-only attribute.
+        engine = Engine()
+        del engine.form_adjustment_weight
+        prediction = engine.predict("Home", "Away", "E0")
+        self.assertAlmostEqual(
+            prediction["p1"] + prediction["x"] + prediction["p2"], 1.0, places=8
+        )
+
     def test_compares_baseline_and_candidate_chronologically(self):
         rows = []
         for index in range(24):
