@@ -869,6 +869,13 @@ class Engine:
         )
 
         games = min(gh, ga)
+        league_history_matches = min(len(home_samples), len(away_samples))
+        if league_history_matches == 0:
+            model_support_status = "prior_only"
+        elif gh == 0 or ga == 0:
+            model_support_status = "league_only"
+        else:
+            model_support_status = "team_supported"
 
         return {
             "p1": c1,
@@ -891,6 +898,15 @@ class Engine:
 
             "games": games,
             "h2h_n": h2h_n,
+            # Explicitly separate a generic competition prior from an evidence-
+            # supported team forecast. Consumers must not present prior-only
+            # home-leaning probabilities as a match-specific P1 recommendation.
+            "league_history_matches": int(league_history_matches),
+            "home_team_history_matches": int(gh),
+            "away_team_history_matches": int(ga),
+            "home_venue_history_matches": int(len(sh["hs"])),
+            "away_venue_history_matches": int(len(sa["as"])),
+            "model_support_status": model_support_status,
             # A raw probability is not a calibrated confidence estimate.
             # Calibration is competition-specific and only becomes active after
             # sufficient chronological observations in that exact division.
