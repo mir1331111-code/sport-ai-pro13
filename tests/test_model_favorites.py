@@ -212,20 +212,24 @@ class ModelFavoriteTests(unittest.TestCase):
         self.assertFalse(presentation["history_sufficient"])
         self.assertIn("PRIOR-ONLY", presentation["label"])
 
-    def test_prior_only_competition_is_excluded_from_model_favorites(self):
-        cards = [{
-            "match": "Unknown Home vs Unknown Away",
-            "date_iso": "2026-11-19",
-            "p1": 0.421, "px": 0.290, "p2": 0.289,
-            "model_support_status": "prior_only",
-            "independent_features": {
-                "home_home_sample": 0,
-                "away_away_sample": 0,
+    def test_prior_only_and_league_only_fixtures_are_excluded_from_model_favorites(self):
+        cards = [
+            {
+                "match": "Unknown League Home vs Away",
+                "date_iso": "2026-11-19",
+                "p1": 0.421, "px": 0.290, "p2": 0.289,
+                "model_support_status": "prior_only",
             },
-        }]
+            {
+                "match": "New Team Home vs Away",
+                "date_iso": "2026-11-19",
+                "p1": 0.421, "px": 0.290, "p2": 0.289,
+                "model_support_status": "league_only",
+            },
+        ]
         self.assertEqual(rank_model_favorites(cards), [])
         self.assertEqual(
-            rank_model_favorites_with_minimum(cards, minimum=1, limit=1),
+            rank_model_favorites_with_minimum(cards, minimum=1, limit=2),
             [],
         )
 
