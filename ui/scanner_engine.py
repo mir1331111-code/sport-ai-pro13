@@ -293,13 +293,29 @@ def _refresh_engine_market_validation(
         ]
         for division, seasons in history.items()
     }
+    # Keep a bounded recent holdout per league for scoring, but replay the
+    # complete frozen history before it so teams and league priors are warmed
+    # exactly as they would be in production. The benchmark excludes warm-up
+    # rows from metrics; they are only ingested chronologically.
     validation_rows = select_validation_rows(
         frozen_history, validation_divs, max_rows_per_league=250,
     )
+    walk_forward_rows = select_validation_rows(
+        frozen_history, validation_divs, max_rows_per_league=1_000_000,
+    )
+    evaluation_start_by_league = {}
+    for row in validation_rows:
+        division = str(row.get("Div") or "").strip()
+        stamp = parse_date(row.get("Date") or row.get("date") or "")
+        if division and stamp is not None:
+            previous = evaluation_start_by_league.get(division)
+            if previous is None or stamp.date() < previous:
+                evaluation_start_by_league[division] = stamp.date()
     from security import cache_get, cache_put
     from model.walk_forward import walk_forward_compare, totals_market_is_validated
     validation_key = validation_cache_key(
-        validation_rows, matrix_n=matrix_n, model_version=APP_VERSION,
+        walk_forward_rows, matrix_n=matrix_n,
+        model_version=f"{APP_VERSION}-warmup-holdout-v1",
     )
     cached_validation = cache_get(validation_key, 30 * 86400)
 
@@ -307,12 +323,13 @@ def _refresh_engine_market_validation(
         totals_backtest = cached_validation.get("totals_backtest") or {}
         stat_report = cached_validation.get("stat_report") or {}
         logs.append(
-            f"⚡ Историческая проверка из кэша: {len(validation_rows)} матчей, "
-            f"{len(validation_divs)} лиг."
+            f"⚡ Историческая проверка из кэша: warm-up {len(walk_forward_rows)} матчей, "
+            f"holdout {len(validation_rows)} матчей, {len(validation_divs)} лиг."
         )
     else:
         update_loader(
-            f"Историческая проверка рынков: подготовлено {len(validation_rows)} матчей",
+            f"Историческая проверка рынков: warm-up {len(walk_forward_rows)} + "
+            f"holdout {len(validation_rows)} матчей",
             0.52, logs,
         )
 
@@ -334,9 +351,10 @@ def _refresh_engine_market_validation(
 
         try:
             totals_backtest = walk_forward_compare(
-                validation_rows, matrix_n=matrix_n, bootstrap_samples=0,
+                walk_forward_rows, matrix_n=matrix_n, bootstrap_samples=0,
                 totals_bootstrap_samples=1000, market_bootstrap_samples=1000,
                 progress_callback=_walk_forward_progress,
+                evaluation_start_by_league=evaluation_start_by_league,
             )
             update_loader(
                 "Хронологическая проверка угловых и карточек",
@@ -352,8 +370,9 @@ def _refresh_engine_market_validation(
                 "stat_report": stat_report,
             })
             logs.append(
-                f"Историческая проверка рассчитана: {len(validation_rows)} матчей, "
-                f"{len(validation_divs)} лиг; результат сохранён в кэш."
+                f"Историческая проверка рассчитана: warm-up {len(walk_forward_rows)} матчей, "
+                f"holdout {len(validation_rows)} матчей, {len(validation_divs)} лиг; "
+                "результат сохранён в кэш."
             )
         except Exception as exc:
             totals_backtest = {}
