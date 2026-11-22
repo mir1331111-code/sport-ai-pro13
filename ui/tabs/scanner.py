@@ -3653,8 +3653,20 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "away_team_history_matches": int(P.get("away_team_history_matches") or 0),
                 "home_venue_history_matches": int(P.get("home_venue_history_matches") or 0),
                 "away_venue_history_matches": int(P.get("away_venue_history_matches") or 0),
-                "probability_calibrated": bool(P.get("probability_calibrated", False)),
-                "calibration_matches": int(P.get("calibration_matches") or 0),
+                # Mark a forecast calibrated only when chronological learning
+                # actually promoted the correction into the served probabilities.
+                # A shadow-only adjustment is not a calibrated betting signal.
+                "probability_calibrated": bool(
+                    isinstance(learning_preview, dict)
+                    and learning_preview.get("correction_enabled")
+                ),
+                "calibration_matches": int(
+                    (learning_preview or {}).get("history_n") or 0
+                ),
+                "calibration_status": str(
+                    ((learning_preview or {}).get("learning_report") or {}).get("gate_reason")
+                    or "not_available"
+                ),
                 "fixture_id": r.get("fixture_id"),
                 "sstats_game_id": r.get("sstats_game_id"),
                 "historical_stats": historical_stats,
