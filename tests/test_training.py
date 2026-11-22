@@ -142,5 +142,35 @@ class ChronologicalTrainingTests(unittest.TestCase):
         self.assertEqual(model.match_count, 1)
 
 
+    def test_incremental_trainer_keeps_absolute_progress_counters(self):
+        class CaptureEngine:
+            def __init__(self):
+                self.batches = []
+                self.trained_n = 0
+            def learn_batch(self, batch):
+                self.batches.append([
+                    (item["match_num"], item["total"]) for item in batch
+                ])
+
+        class CaptureStats:
+            def learn_step(self, row, league):
+                return True
+
+        rows, _ = prepare_completed_training_rows({
+            "E0": [[
+                self.row("01/01/2024", "A", "B"),
+                self.row("02/01/2024", "C", "D"),
+                self.row("03/01/2024", "E", "F"),
+            ]],
+        }, ("E0",))
+        engine, stats = CaptureEngine(), CaptureStats()
+        train_engine_chronologically(engine, stats, rows[:2])
+        train_engine_chronologically(
+            engine, stats, rows[2:], processed_offset=2, total_count=3,
+        )
+        self.assertEqual(engine.batches, [[(0, 2)], [(2, 3)]])
+        self.assertEqual(engine.trained_n, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

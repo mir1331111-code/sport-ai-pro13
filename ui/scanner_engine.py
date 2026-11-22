@@ -9,7 +9,7 @@ import copy
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import streamlit as st
 
@@ -94,14 +94,9 @@ def _load_seasonal_history(logs, update_loader):
                 "history": history,
             }
 
-        history = {}
-        for i, division in enumerate(train_divs):
-            pct = 0.04 + (i + 1) / max(1, len(train_divs)) * 0.14
-            update_loader(
-                f"Проверка истории [{i+1}/{len(train_divs)}] — "
-                f"{DIV_NAMES.get(division, division)}",
-                pct, logs,
-            )
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _load_one_division(division):
             seasons = []
             for year in history_years:
                 rows = load_seasonal(division, season_str(year))
@@ -110,9 +105,24 @@ def _load_seasonal_history(logs, update_loader):
                     key=lambda row: parse_date(row.get("Date", "")) or datetime.min,
                 )
                 seasons.append(rows)
+            return division, seasons
+
+        # Independent CSV downloads run in parallel; map preserves deterministic order.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            loaded = list(pool.map(_load_one_division, train_divs))
+
+        history = {}
+        for i, (division, seasons) in enumerate(loaded):
+            history[division] = seasons
+            pct = 0.04 + (i + 1) / max(1, len(train_divs)) * 0.14
+            update_loader(
+                f"Проверка истории [{i+1}/{len(train_divs)}] — "
+                f"{DIV_NAMES.get(division, division)}",
+                pct, logs,
+            )
+            for year, rows in zip(history_years, seasons):
                 if rows:
                     logs.append(f"  {season_str(year)}: {len(rows)} матчей")
-            history[division] = seasons
             league_rows = sum(len(rows) for rows in seasons)
             logs.append(
                 f"OK {DIV_NAMES.get(division, division)}: {league_rows} матчей "
@@ -131,22 +141,14 @@ def _load_seasonal_history(logs, update_loader):
         }
 
 
-def _train_engine(
-    matrix_n, logs, update_loader, footballapi_key="",
-    footballapi_xg_rows=None, custom_historical_rows=None,
-    seasonal_snapshot=None,
+def _prepare_training_history(
+    seasonal_snapshot, *, footballapi_key="", footballapi_xg_rows=None,
+    custom_historical_rows=None, logs=None,
 ):
-    if seasonal_snapshot is None:
-        seasonal_snapshot = _load_seasonal_history(logs, update_loader)
+    """Apply custom rows and dated xG enrichment identically on full/delta paths."""
     history_years = list(seasonal_snapshot["history_years"])
     train_divs = list(seasonal_snapshot["train_divs"])
     history = copy.deepcopy(seasonal_snapshot["history"])
-    engine = Engine(matrix_n=matrix_n)
-    from model.historical_match_stats import (
-        HistoricalMatchStats, walk_forward_market_validation,
-    )
-    engine.match_stats = HistoricalMatchStats()
-
     # Optional user-supplied histories extend base training to competitions
     # not covered by football-data.co.uk (women's leagues, national teams, etc.).
     # They are kept in their own Div namespace and excluded from the existing
@@ -263,16 +265,36 @@ def _train_engine(
     # The function estimates a whole calendar day before learning that day's results.
     enrich_history_with_shot_xg(history, train_divs, logs)
 
-    # The validation sample is intentionally bounded: full replays over every
-    # competition/season on each cold start made Streamlit appear frozen.
-    # 15 main leagues × latest 500 complete fixtures retains >500 observations
-    # across competitions for each supported market while limiting CPU time.
+    return history, train_divs
+
+
+def _refresh_engine_market_validation(
+    engine, history, train_divs, matrix_n, logs, update_loader,
+):
+    """Reuse a frozen validation snapshot, recomputing only when its epoch changes."""
+    from model.historical_match_stats import walk_forward_market_validation
     validation_divs = _validation_divisions(train_divs)
     # Keep a broad multi-league validation set, but avoid replaying 7k+
     # fixtures through eight chronological model arms on the first cold start.
     # The global >=500 paired-observation promotion gates remain unchanged.
+    # Freeze recent validation data in fixed 48-hour epochs.
+    today = datetime.now().date()
+    epoch_start = today - timedelta(days=today.toordinal() % 2)
+    freeze_day = epoch_start - timedelta(days=2)
+
+    def _before_freeze(row):
+        stamp = parse_date(row.get("Date") or row.get("date") or "")
+        return stamp is not None and stamp.date() < freeze_day
+
+    frozen_history = {
+        division: [
+            [row for row in season if _before_freeze(row)]
+            for season in seasons
+        ]
+        for division, seasons in history.items()
+    }
     validation_rows = select_validation_rows(
-        history, validation_divs, max_rows_per_league=250,
+        frozen_history, validation_divs, max_rows_per_league=250,
     )
     from security import cache_get, cache_put
     from model.walk_forward import walk_forward_compare, totals_market_is_validated
@@ -575,6 +597,31 @@ def _train_engine(
             0.76, logs,
         )
 
+    engine._market_validation_cache_key = validation_key
+    engine._market_validation_freeze_day = freeze_day.isoformat()
+    return validation_key
+
+
+def _train_engine(
+    matrix_n, logs, update_loader, footballapi_key="",
+    footballapi_xg_rows=None, custom_historical_rows=None,
+    seasonal_snapshot=None,
+):
+    if seasonal_snapshot is None:
+        seasonal_snapshot = _load_seasonal_history(logs, update_loader)
+    history, train_divs = _prepare_training_history(
+        seasonal_snapshot,
+        footballapi_key=footballapi_key,
+        footballapi_xg_rows=footballapi_xg_rows,
+        custom_historical_rows=custom_historical_rows,
+        logs=logs,
+    )
+    engine = Engine(matrix_n=matrix_n)
+    from model.historical_match_stats import HistoricalMatchStats
+    engine.match_stats = HistoricalMatchStats()
+    _refresh_engine_market_validation(
+        engine, history, train_divs, matrix_n, logs, update_loader,
+    )
     training_rows, skipped_rows = prepare_completed_training_rows(
         history, train_divs,
     )
@@ -596,6 +643,8 @@ def _train_engine(
         on_progress=_training_progress,
     )
     engine.trained_n = training_summary["trained"]
+    from model.incremental import record_training_manifest
+    record_training_manifest(engine, training_rows)
     logs.append(
         f"Обучено хронологически: {training_summary['trained']} матчей, "
         f"{training_summary['days']} календарных дней; "
@@ -626,6 +675,127 @@ def _load_engine(
     # conditional on the actual data currently returned by the source cache.
     seasonal_snapshot = _load_seasonal_history(logs, update_loader)
     xg_enabled = bool(str(footballapi_key or "").strip())
+    # Stable-key reuse precedes the expensive full-history cache fingerprint.
+    from model.incremental import (
+        IncrementalHistoryChanged, bring_engine_up_to_date,
+        stable_engine_fingerprint,
+    )
+    custom_divisions = [
+        str(row.get("Div") or "").strip()
+        for row in (custom_historical_rows or [])
+        if isinstance(row, dict) and str(row.get("Div") or "").strip()
+    ]
+    stable_divisions = tuple(dict.fromkeys(
+        list(seasonal_snapshot["train_divs"]) + custom_divisions
+    ))
+    stable_key = stable_engine_fingerprint(
+        matrix_n=matrix_n, xg_enabled=xg_enabled,
+        divisions=stable_divisions,
+        history_years=seasonal_snapshot["history_years"],
+    )
+    stable_session_key = f"_trained_engine_{stable_key}"
+    shared_stable = _shared_engine_cache()
+    stable_guard = shared_stable.setdefault("lock", threading.RLock())
+    stable_candidate = None
+    with stable_guard:
+        stable_candidate = shared_stable.setdefault("engines", {}).get(stable_key)
+    if stable_candidate is None:
+        try:
+            stable_candidate = st.session_state.get(stable_session_key)
+        except Exception:
+            stable_candidate = None
+    stable_path = os.path.join(DISK_CACHE_DIR, f"{stable_key}.pkl.gz")
+    if stable_candidate is None and os.path.exists(stable_path):
+        try:
+            if os.path.getsize(stable_path) > 350 * 1024 * 1024:
+                raise ValueError("cache file exceeds 350 MB safety limit")
+            with open(stable_path, "rb") as file_obj:
+                stable_data = pickle.loads(gzip.decompress(file_obj.read()))
+            disk_engine = stable_data.get("engine") if isinstance(stable_data, dict) else None
+            if (
+                isinstance(stable_data, dict)
+                and stable_data.get("fp") == APP_VERSION
+                and stable_data.get("cache_key") == stable_key
+                and hasattr(disk_engine, "match_stats")
+                and getattr(disk_engine, "trained_n", 0) > 0
+                and getattr(disk_engine, "_incremental_manifest", None)
+            ):
+                stable_candidate = disk_engine
+                logs.append("💾 Найден стабильный дисковый кэш; сверяю историю перед догоном.")
+        except Exception as exc:
+            logs.append(f"ℹ️ Стабильный дисковый кэш не использован ({type(exc).__name__}).")
+    if (
+        stable_candidate is not None
+        and hasattr(stable_candidate, "match_stats")
+        and getattr(stable_candidate, "trained_n", 0) > 0
+        and getattr(stable_candidate, "_incremental_manifest", None)
+    ):
+        stable_lock = get_keyed_lock(shared_stable, stable_key)
+        acquired_stable = stable_lock.acquire(blocking=False)
+        waited_stable = 0
+        while not acquired_stable:
+            waited_stable += 5
+            update_loader(
+                f"⏳ Инкрементальная модель обновляется ({waited_stable} сек.)",
+                min(0.24, 0.20 + waited_stable / 600.0), logs,
+            )
+            if waited_stable >= 900:
+                raise RuntimeError("Стабильная модель не освободила блокировку за 15 минут.")
+            acquired_stable = stable_lock.acquire(timeout=5)
+        try:
+            with stable_guard:
+                latest = shared_stable.setdefault("engines", {}).get(stable_key)
+            if latest is not None:
+                stable_candidate = latest
+            engine = copy.deepcopy(stable_candidate)
+            history, train_divs = _prepare_training_history(
+                seasonal_snapshot,
+                footballapi_key=footballapi_key,
+                footballapi_xg_rows=footballapi_xg_rows,
+                custom_historical_rows=custom_historical_rows,
+                logs=logs,
+            )
+            added = bring_engine_up_to_date(engine, history, train_divs, logs)
+            _refresh_engine_market_validation(
+                engine, history, train_divs, matrix_n, logs, update_loader,
+            )
+            with stable_guard:
+                shared_stable.setdefault("engines", {})[stable_key] = engine
+            try:
+                st.session_state[stable_session_key] = engine
+            except Exception:
+                pass
+            logs.append(
+                f"🧠 Модель из стабильного кэша +{added} новых матчей; "
+                "полного переобучения нет."
+            )
+            try:
+                os.makedirs(DISK_CACHE_DIR, exist_ok=True)
+                packed = gzip.compress(
+                    pickle.dumps({"fp": APP_VERSION, "cache_key": stable_key, "engine": engine}),
+                    compresslevel=1,
+                )
+                temp_path = stable_path + ".tmp"
+                with open(temp_path, "wb") as file_obj:
+                    file_obj.write(packed)
+                os.replace(temp_path, stable_path)
+            except Exception as exc:
+                logs.append(
+                    f"ℹ️ Стабильный кэш остался в памяти ({type(exc).__name__} при записи)."
+                )
+            return engine
+        except IncrementalHistoryChanged as exc:
+            logs.append(
+                f"ℹ️ Инкремент небезопасен: {str(exc)[:180]}; запускаю полное обучение."
+            )
+        except Exception as exc:
+            logs.append(
+                f"⚠️ Инкремент не удался ({type(exc).__name__}: {str(exc)[:160]}); "
+                "запускаю полное обучение."
+            )
+        finally:
+            stable_lock.release()
+
     cache_key = engine_cache_fingerprint(
         app_version=APP_VERSION,
         data_version=DATA_VERSION,
@@ -705,11 +875,10 @@ def _load_engine(
             logs,
         )
         acquired = model_lock.acquire(timeout=5)
-        if waited_seconds >= 180 and not acquired:
+        if waited_seconds >= 900 and not acquired:
             raise RuntimeError(
-                "Та же модель более 3 минут обучается в другом запуске. "
-                "Не запускайте сканирование в нескольких вкладках одновременно; "
-                "проверьте вкладку, где началось первое обучение."
+                "Та же модель более 15 минут обучается в другом запуске. "
+                "Проверьте первую вкладку и её журнал сканирования."
             )
 
     try:
@@ -776,7 +945,15 @@ def _load_engine(
             with open(temporary_path, "wb") as file_obj:
                 file_obj.write(packed)
             os.replace(temporary_path, p)
-            logs.append("💾 Обученная модель сохранена в дисковый кэш.")
+            stable_packed = gzip.compress(
+                pickle.dumps({"fp": APP_VERSION, "cache_key": stable_key, "engine": engine}),
+                compresslevel=1,
+            )
+            stable_temp_path = stable_path + ".tmp"
+            with open(stable_temp_path, "wb") as stable_file:
+                stable_file.write(stable_packed)
+            os.replace(stable_temp_path, stable_path)
+            logs.append("💾 Обученная модель сохранена в обычный и стабильный дисковый кэш.")
         except Exception as exc:
             logs.append(
                 f"ℹ️ Дисковый кэш недоступен ({type(exc).__name__}); "
@@ -784,8 +961,10 @@ def _load_engine(
             )
         with guard:
             shared.setdefault("engines", {})[cache_key] = engine
+            shared.setdefault("engines", {})[stable_key] = engine
         try:
             st.session_state[session_key] = engine
+            st.session_state[stable_session_key] = engine
         except Exception:
             pass
         return engine
