@@ -573,6 +573,18 @@ def _refresh_engine_market_validation(
                     f"Δ к рынку={market_delta.get('brier')}/{market_delta.get('log_loss')}. "
                     "Только диагностика — боевые вероятности не меняются."
                 )
+        for league, weights in sorted((blend_report.get("by_league") or {}).items()):
+            for weight, arm in sorted(weights.items()):
+                metric = arm.get("metrics") or {}
+                model_delta = (arm.get("vs_model") or {}).get("differences") or {}
+                market_delta = (arm.get("vs_market") or {}).get("differences") or {}
+                if int(metric.get("n") or 0) >= 30:
+                    logs.append(
+                        f"Blend по лиге {league}, вес модели {weight}: n={metric.get('n')}, "
+                        f"Δ Brier к модели/рынку={model_delta.get('brier')}/"
+                        f"{market_delta.get('brier')}; "
+                        f"Δ LogLoss={model_delta.get('log_loss')}/{market_delta.get('log_loss')}."
+                    )
         if total_diff:
             logs.append(
                 f"ТБ/ТМ vs рынок: ΔBrier={total_diff.get('brier'):.4f}, "
