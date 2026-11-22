@@ -207,10 +207,11 @@ def _ev_edge_gate(card, family, market_gate, line_gate):
             )
         return GateResult("EV / edge / Kelly", False, detail)
 
-    odds, ev = _number(best[2]), _number(verdict.get("ev"))
+    odds = _number(best[2])
+    ev = _number(best[3])
+    probability = _number(best[4])
+    stake = _number(best[5])
     edge = _number(verdict.get("edge"))
-    probability = _number(verdict.get("prob"))
-    stake = _number(verdict.get("stake"))
     passed = bool(
         verdict.get("real_odds") and verdict.get("value_passed")
         and verdict.get("is_bet")
