@@ -759,13 +759,14 @@ class Engine:
         # Optional, deliberately disabled-by-default recent-form residual.
         # It is a research feature, not a production adjustment unless a
         # chronological ablation justifies a non-zero configured weight.
-        if self.form_adjustment_weight > 0:
+        form_weight = float(getattr(self, "form_adjustment_weight", 0.0) or 0.0)
+        if form_weight > 0:
             form_delta = max(-1.0, min(1.0, fh - fa))
             lam_g_h = max(
-                0.3, min(5.0, lam_g_h * math.exp(self.form_adjustment_weight * form_delta))
+                0.3, min(5.0, lam_g_h * math.exp(form_weight * form_delta))
             )
             lam_g_a = max(
-                0.25, min(4.5, lam_g_a * math.exp(-self.form_adjustment_weight * form_delta))
+                0.25, min(4.5, lam_g_a * math.exp(-form_weight * form_delta))
             )
 
         # ---------------------------------------------------------
