@@ -417,6 +417,56 @@ class ModelFavoriteTests(unittest.TestCase):
         )
         self.assertGreater(ranked[0]["kickoff"], ranked[1]["kickoff"])
 
+    def test_passable_shortlist_requires_team_support_history_probability_and_calibration(self):
+        tz = ZoneInfo("Europe/Warsaw")
+        now = datetime(2026, 11, 18, 8, 0, tzinfo=tz)
+        base = {
+            "home": "Data Home", "away": "Data Away",
+            "match": "Data Home vs Data Away",
+            "date_iso": "2026-11-18", "time": "19:00",
+            "p1": 0.72, "px": 0.17, "p2": 0.11,
+            "independent_features": {
+                "home_home_sample": 12, "away_away_sample": 11,
+            },
+            "model_support_status": "team_supported",
+        }
+        unsupported = [
+            {**base, "match": "Prior Home vs Prior Away", "model_support_status": "prior_only"},
+            {**base, "match": "League Home vs League Away", "model_support_status": "league_only"},
+        ]
+        uncalibrated = {**base, "fixture_id": "uncalibrated", "probability_calibrated": False}
+        diagnostics = {}
+        ranked = rank_best_fixtures(
+            unsupported + [uncalibrated],
+            now=now,
+            min_sample_games=10,
+            min_probability=0.65,
+            include_limited_history=True,
+            require_calibration=True,
+            limit=None,
+            diagnostics=diagnostics,
+        )
+        self.assertEqual(len(ranked), 1)
+        self.assertFalse(ranked[0]["strict_eligible"])
+        self.assertTrue(ranked[0]["history_ready"])
+        self.assertTrue(ranked[0]["probability_ready"])
+        self.assertFalse(ranked[0]["calibration_ready"])
+        self.assertEqual(diagnostics["unsupported_model"], 2)
+        calibrated = {
+            **base, "fixture_id": "calibrated", "probability_calibrated": True,
+            "calibration_matches": 150,
+        }
+        confirmed = rank_best_fixtures(
+            [calibrated],
+            now=now,
+            min_sample_games=10,
+            min_probability=0.65,
+            require_calibration=True,
+            limit=None,
+        )
+        self.assertEqual(len(confirmed), 1)
+        self.assertTrue(confirmed[0]["strict_eligible"])
+
     def test_daily_shortlist_keeps_limited_history_as_provisional(self):
         tz = ZoneInfo("Europe/Warsaw")
         now = datetime(2026, 11, 19, 9, 0, tzinfo=tz)
