@@ -1345,7 +1345,7 @@ def sstats_historical_matches_for_fixtures(
     try:
         league_limit = max(1, min(60, int(max_leagues)))
     except (TypeError, ValueError, OverflowError):
-        league_limit = 30
+        league_limit = 60
 
     now, timezone_offset = _sstats_timezone()
     to_date = now.date()
