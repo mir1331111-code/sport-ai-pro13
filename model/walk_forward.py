@@ -127,11 +127,17 @@ class _ClusteredRecords(list):
     def __init__(self):
         super().__init__()
         self.cluster = None
+        self.enabled = True
 
     def set_cluster(self, cluster):
         self.cluster = str(cluster) if cluster is not None else None
 
+    def set_enabled(self, enabled):
+        self.enabled = bool(enabled)
+
     def append(self, record):
+        if not self.enabled:
+            return
         if isinstance(record, tuple) and len(record) == 2:
             record = (record[0], record[1], self.cluster)
         super().append(record)
@@ -613,11 +619,15 @@ def walk_forward_compare(
     rows, *, matrix_n: int = 12, half_life_days: float = 180.0,
     bootstrap_samples: int = 1000, totals_bootstrap_samples: int | None = None,
     market_bootstrap_samples: int | None = None, progress_callback=None,
+    evaluation_start_by_league: dict | None = None,
 ) -> dict:
     """Compare goals-only and xG engines on identical chronological fixtures.
 
     All fixtures on the same calendar date are predicted before any result from
-    that date is added. The xG ablation pair uses identical temporal weighting
+    that date is added. When evaluation_start_by_league is supplied, earlier
+    fixtures are still replayed into every model as historical warm-up, but are
+    excluded from all reported forecast metrics. A missing league cutoff means
+    that league is warm-up-only. The xG ablation pair uses identical temporal weighting
     and rho settings; only historical xG ingestion differs. The overall
     baseline-vs-candidate comparison remains available for backwards compatibility.
     """
@@ -718,6 +728,18 @@ def walk_forward_compare(
 
         pending = []
         for _, league, home, away, hg, ag, row in group:
+            score_this_fixture = True
+            if evaluation_start_by_league is not None:
+                raw_cutoff = evaluation_start_by_league.get(league)
+                cutoff = _parse_date(raw_cutoff) if raw_cutoff is not None else None
+                score_this_fixture = cutoff is not None and stamp >= cutoff
+            for record_list in (
+                *records.values(), *xg_arm_records.values(),
+                *goals_line_records.values(), *goals_line_baseline_records.values(),
+                *goals_line_candidate_on_baseline_records.values(),
+                btts_records, btts_baseline_records,
+            ):
+                record_list.set_enabled(score_this_fixture)
             row_copy = dict(row) if isinstance(row, dict) else {}
             row_copy["Div"] = league
             season, season_basis = _season_label(row_copy, stamp)
@@ -817,6 +839,7 @@ def walk_forward_compare(
                         {name: _ClusteredRecords() for name in xg_arm_names},
                     )
                     bucket[arm_name].set_cluster(cluster_id)
+                    bucket[arm_name].set_enabled(score_this_fixture)
                     bucket[arm_name].append(xg_record)
 
                 league_seasons = xg_strata_records["by_league_season"].setdefault(
@@ -826,6 +849,7 @@ def walk_forward_compare(
                     season, {name: _ClusteredRecords() for name in xg_arm_names}
                 )
                 bucket[arm_name].set_cluster(cluster_id)
+                bucket[arm_name].set_enabled(score_this_fixture)
                 bucket[arm_name].append(xg_record)
 
             records["baseline"].append((_probs(pred_base), outcome))
