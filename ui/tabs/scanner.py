@@ -58,7 +58,7 @@ from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
 from betting.ranking import (
-    favorite_display, model_favorite, rank_model_favorites,
+    favorite_display, model_favorite, rank_best_fixtures, rank_model_favorites,
     rank_model_favorites_with_minimum, rank_score,
 )
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
@@ -1860,6 +1860,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         top_match_candidates = select_top_matches(
             market_pool, limit=MAX_TOP_MATCHES, min_team_history=MIN_FAVORITE_HISTORY,
         )
+        passable_diagnostics = {}
+        passable_pool = rank_best_fixtures(
+            market_pool,
+            now=datetime.now(app_timezone()),
+            limit=None,
+            min_sample_games=MIN_FAVORITE_HISTORY,
+            min_probability=STRONG_FORECAST_MIN_PROB,
+            include_limited_history=True,
+            require_calibration=True,
+            diagnostics=passable_diagnostics,
+        )
+        passable_certified = [
+            item for item in passable_pool if item.get("strict_eligible")
+        ][:10]
+        passable_watchlist = [
+            item for item in passable_pool
+            if item.get("history_ready")
+            and item.get("probability_ready")
+            and not item.get("calibration_ready")
+        ][:10]
         forecast_counts = {
             family: len(items) for family, items in ranked_forecast_pool.items()
         }
@@ -1876,7 +1896,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"Угловые · прогнозы {forecast_counts['corners']} (сильных {strong_forecast_counts['corners']}) / Value {signal_counts['corners']} / цены {quote_counts['corners']}",
             f"Карточки · прогнозы {forecast_counts['cards']} (сильных {strong_forecast_counts['cards']}) / Value {signal_counts['cards']} / цены {quote_counts['cards']}",
             f"Форы · котировки {quote_counts['handicap']}",
-            f"🏆 TOP MATCHES · AI {len(top_match_candidates)}/{MAX_TOP_MATCHES}",
+            f"✅ ПРОХОДНЫЕ · {len(passable_certified)}",
+            f"🔎 AI-ДОСЬЕ · {len(top_match_candidates)}/{MAX_TOP_MATCHES}",
         ])
 
         def _market_recommendation(card, family):
@@ -2169,6 +2190,95 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 )
 
         with market_tabs[8]:
+            st.subheader("Проходные матчи · строгий отбор")
+            st.caption(
+                "В основной список попадает только матч с поддержкой модели на уровне команд, "
+                "не менее 10 домашних матчей хозяев и 10 выездных матчей гостей, "
+                "вероятностью фаворита от 65% и включённой калибровкой вероятностей. "
+                "Это сильный прогноз, а не обещание результата; отдельный Value/Edge проверяется ниже."
+            )
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Прошли все фильтры", len(passable_certified))
+            m2.metric("Сильные, но без калибровки", len(passable_watchlist))
+            m3.metric("Отсечены prior/league-only", passable_diagnostics.get("unsupported_model", 0))
+
+            def _passable_rows(items):
+                rows = []
+                for number, item in enumerate(items, start=1):
+                    card = item.get("card") or {}
+                    pick = str(item.get("pick") or "")
+                    odds = (card.get("market_odds") or {}).get(pick)
+                    try:
+                        odds_text = f"{float(odds):.2f}" if odds is not None else "—"
+                    except (TypeError, ValueError):
+                        odds_text = "—"
+                    recommendation = (card.get("best_by_market") or {}).get("winner") or {}
+                    verdict = recommendation.get("verdict") or {}
+                    value_ok = bool(verdict.get("value_passed") and verdict.get("is_bet"))
+                    rows.append({
+                        "№": number,
+                        "Матч": card.get("match") or (
+                            f"{card.get('home_team') or card.get('HomeTeam') or 'Хозяева'} — "
+                            f"{card.get('away_team') or card.get('AwayTeam') or 'Гости'}"
+                        ),
+                        "Лига": card.get("league") or card.get("div") or "—",
+                        "Начало": " ".join(
+                            str(value) for value in (card.get("date") or card.get("date_iso"), card.get("time"))
+                            if value
+                        ),
+                        "Исход": item.get("label") or pick,
+                        "Вероятность": f"{float(item.get('probability') or 0):.1%}",
+                        "Отрыв от 2-го": f"{float(item.get('probability_margin') or 0):.1%}",
+                        "История дом/выезд": (
+                            f"{item.get('home_sample', 0)}/{item.get('away_sample', 0)}"
+                        ),
+                        "Калибратор": (
+                            f"Да · {item.get('calibration_matches', 0)}"
+                            if item.get("calibration_ready")
+                            else f"Нет · {item.get('calibration_matches', 0)}"
+                        ),
+                        "Кэф": odds_text,
+                        "Value 1X2": "подтверждён" if value_ok else "нет",
+                    })
+                return rows
+
+            if passable_certified:
+                st.dataframe(
+                    _passable_rows(passable_certified),
+                    width="stretch",
+                    hide_index=True,
+                    height=min(520, 42 + 36 * len(passable_certified)),
+                )
+            else:
+                st.info(
+                    "В этом сканировании нет матча, который прошёл все строгие фильтры. "
+                    "Список не заполняется слабыми или prior-only прогнозами."
+                )
+
+            if passable_watchlist:
+                st.markdown("**На наблюдение — вероятность высокая, но калибровки ещё нет**")
+                st.dataframe(
+                    _passable_rows(passable_watchlist),
+                    width="stretch",
+                    hide_index=True,
+                    height=min(420, 42 + 36 * len(passable_watchlist)),
+                )
+                st.caption(
+                    "Эти матчи не считаются проходными и не получают статус подтверждённого выбора, "
+                    "пока вероятность не откалибрована на результатах."
+                )
+
+            st.caption(
+                "Диагностика отбора: "
+                f"в пуле {passable_diagnostics.get('input_cards', 0)} · "
+                f"нет корректного прогноза {passable_diagnostics.get('invalid_forecast', 0)} · "
+                f"нет нужной истории хозяев {passable_diagnostics.get('insufficient_home_history', 0)} · "
+                f"нет нужной истории гостей {passable_diagnostics.get('insufficient_away_history', 0)} · "
+                f"ниже 65% {passable_diagnostics.get('below_probability', 0)} · "
+                f"не откалибровано {passable_diagnostics.get('uncalibrated_candidates', 0)}."
+            )
+
+        with market_tabs[9]:
             st.caption(
                 "Независимый список для глубокого анализа: минимум 5 домашних матчей хозяев "
                 "и 5 выездных матчей гостей. Отбор не зависит от фаворита основной модели "
