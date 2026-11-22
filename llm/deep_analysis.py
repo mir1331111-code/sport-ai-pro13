@@ -442,6 +442,43 @@ def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
     else:
         quality_cap = "low"
 
+    # SStats Glicko is a third-party model forecast, not an observed xG event
+    # feed. Keep it separate from provider historical xG and our shot proxy.
+    raw_glicko = context.get("glicko")
+    glicko_clean = {"available": False, "source_class": "external_model_forecast"}
+    if isinstance(raw_glicko, dict) and raw_glicko.get("available") is True:
+        glicko_clean["available"] = True
+        for field in (
+            "home_xg", "away_xg", "home_rating", "away_rating",
+            "home_rd", "away_rd", "home_win_probability", "away_win_probability",
+            "home_volatility", "away_volatility",
+        ):
+            value = _number(raw_glicko.get(field))
+            if value is None:
+                continue
+            if field in {"home_xg", "away_xg"} and not 0.0 <= value <= 8.0:
+                continue
+            if field.endswith("_probability") and not 0.0 <= value <= 1.0:
+                continue
+            if field.endswith("_rating") and not 0.0 <= value <= 4000.0:
+                continue
+            if field.endswith("_rd") and not 0.0 <= value <= 500.0:
+                continue
+            if field.endswith("_volatility") and not 0.0 <= value <= 1.0:
+                continue
+            glicko_clean[field] = round(value, 6 if field.endswith("probability") else 3)
+        if not all(field in glicko_clean for field in ("home_xg", "away_xg")):
+            glicko_clean["available"] = False
+            glicko_clean.pop("home_xg", None)
+            glicko_clean.pop("away_xg", None)
+        glicko_clean["is_observed_xg"] = False
+        glicko_clean["kind"] = "glicko2_expected_goals_forecast"
+        glicko_clean["retrieved_at"] = str(raw_glicko.get("retrieved_at") or "")[:40]
+        glicko_clean["upstream_updated_at"] = (
+            str(raw_glicko.get("upstream_updated_at") or "")[:40]
+            if raw_glicko.get("upstream_timestamp_valid") else None
+        )
+
     ref_stats_clean = {"available": bool(referee_stats.get("available"))}
     if referee_stats.get("available"):
         for field in ("n", "mean", "variance"):
@@ -488,6 +525,7 @@ def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
             "provider_history": _xg_history_block(features.get("xg_history")).get("provider"),
             "proxy_history": _xg_history_block(features.get("xg_history")).get("proxy"),
         },
+        "sstats_glicko": glicko_clean,
         "sstats_context": {
             "provider": str(context.get("provider") or "sstats"),
             "sstats_game_id": str(card.get("sstats_game_id") or context.get("sstats_game_id") or ""),
@@ -522,7 +560,7 @@ def build_match_dossier(card: dict, favorite: dict | None = None) -> dict:
 
 
 _DEEP_ANALYSIS_SYSTEM_PROMPT = """Ты — независимый предматчевый футбольный аналитик NEURO BET PRO.
-Тебе передают до семи матчей и только фактическое досье: историю голов, venue-specific xG/xGA (если есть), историю угловых/карточек и подтверждённый контекст SStats.
+Тебе передают до семи матчей и досье источников: историю голов, venue-specific xG/xGA (если есть), историю угловых/карточек и подтверждённый контекст SStats. Поле sstats_glicko — отдельный прогноз сторонней Glicko 2 модели SStats, а не наблюдённый xG; не добавляй его в исторические средние и не выдавай за shot-level/provider xG. Используй его только как отдельный ориентир и отмечай расхождение с историей как неопределённость.
 Для каждого матча дай самостоятельную оценку 1X2 и отдельные прогнозы рынков:
 - П1/X/П2: вероятности от 0 до 100, сумма ровно 100; independent_pick обязан совпадать с максимальной вероятностью.
 - Голы: ожидаемые голы хозяев/гостей, ТБ 1.5/2.5/3.5/4.5 и обе забьют. Используй goal history и доступную provider xG. Provider xG имеет приоритет; proxy — только отдельно помеченная оценка по агрегированным ударам, не настоящий shot-level xG.
@@ -690,6 +728,18 @@ def merge_context_snapshots(existing: object, refreshed: object) -> dict:
         new.get("injuries_source_reliability")
         or old.get("injuries_source_reliability")
     )
+    old_glicko = old.get("glicko") if isinstance(old.get("glicko"), dict) else {}
+    new_glicko = new.get("glicko") if isinstance(new.get("glicko"), dict) else {}
+    if new_glicko.get("available") is True:
+        merged["glicko"] = dict(new_glicko)
+    elif old_glicko.get("available") is True:
+        # A failed refresh must not erase the last known valid forecast.
+        merged["glicko"] = dict(old_glicko)
+    elif new_glicko:
+        merged["glicko"] = dict(new_glicko)
+    elif old_glicko:
+        merged["glicko"] = dict(old_glicko)
+
     merged["sstats_event_id"] = (
         new.get("sstats_event_id") or old.get("sstats_event_id")
     )

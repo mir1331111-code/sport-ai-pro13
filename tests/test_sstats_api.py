@@ -796,6 +796,93 @@ class SStatsTests(unittest.TestCase):
         self.assertNotIn("private-key", repr(mapping))
         self.assertTrue(any("confirmed XI=1" in line for line in logs))
 
+    def test_glicko_parser_keeps_external_forecast_separate_and_ignores_min_date(self):
+        from datetime import datetime, timezone
+        parsed = sstats._sstats_parse_glicko({
+            "status": "success",
+            "data": {"glicko": {
+                "homeRating": 1504.9141, "homeRd": 73.28318,
+                "awayRating": 1519.2953, "awayRd": 72.204124,
+                "homeXg": 1.1076576, "awayXg": 1.3408835,
+                "homeWinProbability": 0.30851427,
+                "awayWinProbability": 0.420413,
+                "updated": "0001-01-01T00:00:00+00:00",
+                "homeVolatility": 0.05915472, "awayVolatility": 0.05926681,
+            }},
+        }, retrieved_at=datetime(2026, 11, 15, 12, tzinfo=timezone.utc))
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["source_class"], "external_model_forecast")
+        self.assertFalse(parsed["is_observed_xg"])
+        self.assertAlmostEqual(parsed["home_xg"], 1.108)
+        self.assertAlmostEqual(parsed["away_xg"], 1.341)
+        self.assertAlmostEqual(parsed["home_rating"], 1504.9141)
+        self.assertEqual(parsed["upstream_updated_at"], None)
+        self.assertFalse(parsed["upstream_timestamp_valid"])
+
+    def test_glicko_parser_rejects_missing_or_implausible_expected_goals(self):
+        self.assertIsNone(sstats._sstats_parse_glicko({
+            "status": "success", "data": {"glicko": {"homeRating": 1500}}
+        }))
+        self.assertIsNone(sstats._sstats_parse_glicko({
+            "status": "success", "data": {"glicko": {
+                "homeXg": 9.0, "awayXg": 1.2,
+            }}
+        }))
+
+    @patch.object(sstats, "_sstats_request")
+    @patch.object(sstats, "cache_put")
+    @patch.object(sstats, "cache_get", return_value=None)
+    def test_glicko_endpoint_is_requested_only_for_explicitly_budgeted_fixtures(
+        self, _cache_get, cache_write, request_mock
+    ):
+        from datetime import datetime, timezone
+        from data.sstats import sstats_context_enrich
+
+        def response(data):
+            return _Response(200, {"status": "success", "data": data})
+
+        request_mock.side_effect = [
+            response([{
+                "id": "flash-home-away",
+                "date": "2026-11-11T14:00:00Z",
+                "homeTeam": {"name": "Home FC"},
+                "awayTeam": {"name": "Away FC"},
+            }]),
+            response({"glicko": {
+                "homeRating": 1504.9, "awayRating": 1519.3,
+                "homeRd": 73.2, "awayRd": 72.2,
+                "homeXg": 1.11, "awayXg": 1.34,
+                "homeWinProbability": 0.31, "awayWinProbability": 0.42,
+                "updated": "0001-01-01T00:00:00+00:00",
+            }}),
+        ]
+        rows = [{
+            "Date": "2026-11-11T14:00:00",
+            "kickoff_utc": "2026-11-11T14:00:00Z",
+            "date_iso": "2026-11-11",
+            "HomeTeam": "Home FC",
+            "AwayTeam": "Away FC",
+            "sstats_game_id": 777,
+        }]
+        mapping, logs = sstats_context_enrich(
+            rows, "private-key",
+            date_from="2026-11-11", date_to="2026-11-11",
+            now=datetime(2026, 11, 11, 10, tzinfo=timezone.utc),
+            max_injury_checks=0, max_lineup_checks=0, max_glicko_checks=1,
+        )
+        context = mapping[(
+            "2026-11-11", sstats._norm_name("Home FC"), sstats._norm_name("Away FC")
+        )]
+        self.assertTrue(context["glicko"]["available"])
+        self.assertFalse(context["glicko"]["is_observed_xg"])
+        self.assertEqual(context["glicko"]["source"], "sstats_games_glicko")
+        self.assertEqual(
+            [call.args[0] for call in request_mock.call_args_list],
+            ["Ls/List", "Games/glicko/777"],
+        )
+        self.assertNotIn("private-key", repr(mapping))
+        self.assertTrue(any("Glicko checked=1, valid=1" in line for line in logs))
+
     def test_injury_feed_requires_a_structured_list_response(self):
         from data.sstats import _sstats_context_injuries_confirmed
         self.assertTrue(_sstats_context_injuries_confirmed([]))
