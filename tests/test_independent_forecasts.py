@@ -284,24 +284,28 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertTrue(all(row["result"] is None for row in rows))
         self.assertTrue(all(row["kickoff_at"] for row in rows))
 
-    def test_prior_only_model_probability_is_not_added_to_main_forecast_ledger(self):
+    def test_prior_and_league_only_probabilities_are_not_added_to_main_forecast_ledger(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         path = tmp.name + "/forecasts.sqlite"
         now = datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc)
-        card = {
-            "match": "Unknown Home vs Unknown Away",
-            "match_ru": "Unknown Home — Unknown Away",
-            "div": "S_UNKNOWN", "league": "Unknown League",
-            "date_iso": "2026-10-25", "time": "16:30",
-            "kickoff_utc": "2026-10-25T16:30:00Z",
-            "p1": 0.421, "px": 0.290, "p2": 0.289,
-            "raw_model_probabilities": {"H": 0.421, "D": 0.290, "A": 0.289},
-            "model_support_status": "prior_only",
-        }
-        result = record_scan_forecasts([card], db_path=path, now=now)
+        cards = []
+        for index, status in enumerate(("prior_only", "league_only")):
+            cards.append({
+                "match": f"Unknown Home {index} vs Unknown Away {index}",
+                "match_ru": f"Unknown Home {index} — Unknown Away {index}",
+                "div": "S_UNKNOWN", "league": "Unknown League",
+                "date_iso": "2026-10-25", "time": "16:30",
+                "kickoff_utc": "2026-10-25T16:30:00Z",
+                "fixture_id": f"fixture-{index}",
+                "p1": 0.421, "px": 0.290, "p2": 0.289,
+                "raw_model_probabilities": {"H": 0.421, "D": 0.290, "A": 0.289},
+                "model_support_status": status,
+            })
+        result = record_scan_forecasts(cards, db_path=path, now=now)
         self.assertEqual(result["main_recorded"], 0)
         self.assertEqual(result["prior_only_skipped"], 1)
+        self.assertEqual(result["unsupported_history_skipped"], 2)
         self.assertEqual(ForecastLedger(path).rows(), [])
 
     def test_scan_records_market_recommendation_once(self):
