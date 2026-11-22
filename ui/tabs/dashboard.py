@@ -1131,6 +1131,18 @@ def render():
         unsafe_allow_html=True,
     )
 
+    scan_meta = data.get("scan_meta") if isinstance(data.get("scan_meta"), dict) else {}
+    if scan_meta:
+        scan_days = max(1, int(scan_meta.get("horizon_days") or 1))
+        scan_from = str(scan_meta.get("date_from") or "—")
+        scan_to = str(scan_meta.get("date_to_inclusive") or scan_from)
+        analysed = int(scan_meta.get("analysed_matches") or 0)
+        st.caption(
+            f"Последний скан: {scan_days} календарн. дн. ({scan_from} — {scan_to}) · "
+            f"матчей в окне {analysed}. Это число относится к последнему запуску, "
+            "а не к текущему значению ползунка сканера."
+        )
+
     probability_warning = _probability_health_note(cards)
     if probability_warning:
         st.warning(probability_warning)
@@ -1158,8 +1170,9 @@ def render():
         table_rows = "".join(_match_table_row(card) for card in selected_event_cards)
         if not table_rows:
             empty_summary = (
-                f"Нет допущенных ставок. В выбранном периоде: {available_event_count} матчей; "
-                f"без домашней/выездной истории ≥{MIN_FAVORITE_HISTORY} — {history_blocked_count}; "
+                f"Нет допущенных ставок. При этом в расписании есть {available_event_count} матчей — "
+                "их прогнозы показаны в отдельной ленте ниже. "
+                f"Без домашней/выездной истории ≥{MIN_FAVORITE_HISTORY} — {history_blocked_count}; "
                 f"без фаворита ≥52% — {probability_blocked_count}; "
                 f"без подтверждённого Strong/Value-контекста — {context_blocked_count}; "
                 f"строгих кандидатов по истории и вероятности — {strict_count}; "
