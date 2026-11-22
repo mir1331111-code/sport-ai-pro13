@@ -947,6 +947,14 @@ TERMINAL_SECTIONS = {
     ),
 }
 
+# Apply deferred navigation before the keyed radio widget is instantiated.
+# Streamlit forbids changing a widget's session_state key later in the same run.
+_pending_terminal_navigation = st.session_state.pop(
+    "_pending_terminal_navigation_v16", None
+)
+if _pending_terminal_navigation in TERMINAL_SECTIONS:
+    st.session_state["terminal_navigation_v16"] = _pending_terminal_navigation
+
 # ==================== SIDEBAR NAVIGATION & SETTINGS ====================
 with st.sidebar:
     st.markdown(
