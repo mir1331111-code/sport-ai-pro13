@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import Mock, patch
 
@@ -15,6 +16,12 @@ class _Response:
 
 
 class SStatsTests(unittest.TestCase):
+
+    def test_sstats_timezone_uses_deployment_environment_override(self):
+        with patch.dict(os.environ, {"APP_TIMEZONE": "Asia/Yekaterinburg"}):
+            now, offset = sstats._sstats_timezone()
+        self.assertEqual(getattr(now.tzinfo, "key", None), "Asia/Yekaterinburg")
+        self.assertEqual(offset, 5)
 
     def test_division_mapping_handles_second_bundesliga_before_first_division(self):
         self.assertEqual(sstats._sstats_div_code("2. Bundesliga"), "D2")
