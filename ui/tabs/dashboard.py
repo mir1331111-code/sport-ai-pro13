@@ -1668,6 +1668,18 @@ def render():
         + "</div>",
         unsafe_allow_html=True,
     )
+    priced_count = sum(bool(_dashboard_real_1x2_quotes(card)) for card in cards)
+    ai_count = sum(
+        isinstance(card.get("deep_analysis"), dict)
+        and bool(card.get("deep_analysis"))
+        for card in cards
+    )
+    st.caption(
+        f"Последний набор: {len(cards)} матчей · "
+        f"с реальными коэффициентами 1X2: {priced_count} · "
+        f"с сохранённым AI-разбором: {ai_count} · "
+        f"в трёх категориях: {sum(len(value) for value in groups.values())}."
+    )
     for _label, _count, status in counts:
         st.markdown(
             recommendation_group_html(status, groups[status]),
