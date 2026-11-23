@@ -2413,7 +2413,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     st.error("Дневной лимит LLM исчерпан.")
                 else:
                     with st.spinner(
-                        f"Обновляю доступный SStats-контекст и отправляю {refresh_provider_name} до {len(top_match_candidates)} матчей одним пакетом…"
+                        f"Обновляю SStats-контекст и отправляю {refresh_provider_name} до "
+                        f"{len(top_match_candidates)} матчей; для GPT-OSS 120B также запускаю "
+                        "Browser Search по точным командам и датам…"
                     ):
                         refresh_now = datetime.now(app_timezone())
                         refresh_rows = []
@@ -2515,6 +2517,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             refreshed_analyses = {}
                             refresh_logs.append(
                                 f"{refresh_provider_name} deep analysis error: {type(exc).__name__}"
+                            )
+                        ai_status = last_top_matches_status()
+                        if ai_status.get("browser_search_status") not in (None, "", "not_enabled"):
+                            refresh_logs.append(
+                                "Groq Browser Search: "
+                                + str(ai_status.get("browser_search_status"))
+                                + " · "
+                                + str(ai_status.get("message") or "")
                             )
                         for fixture_id, analysis in refreshed_analyses.items():
                             refresh_card = refresh_cards_by_id.get(fixture_id)
