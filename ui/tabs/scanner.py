@@ -1268,6 +1268,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "Коэффициенты автоматического сканирования поступают только из SStats. "
             "Резервные расписания не поставляют котировки."
         )
+        st.caption(
+            "Обычный скан использует уже обученную модель и не перечитывает 5 сезонов. "
+            "Исторические архивы и walk-forward benchmark обновляются отдельно."
+        )
+        if st.button(
+            "🔄 Обновить исторические архивы и модель",
+            key="scanner_force_history_refresh",
+            width="stretch",
+            help=(
+                "Следующий запуск скачает свежие сезонные результаты, проверит новые "
+                "завершённые матчи SStats и xG, выполнит безопасное инкрементальное "
+                "обучение и обновит исторический market benchmark."
+            ),
+        ):
+            st.session_state["_scanner_force_history_refresh_next"] = True
+        if st.session_state.get("_scanner_force_history_refresh_next"):
+            st.info(
+                "Обновление истории поставлено в очередь. Нажми «Запустить сканирование»: "
+                "оно выполнит обновление один раз, после чего обычные сканы снова будут быстрыми."
+            )
 
         st.markdown("**Контекст матча · SStats + исторический CSV**")
         st.caption("Составы, травмы и судьи запрашиваются через SStats для тех матчей, где поставщик отдаёт подтверждённые данные.")
@@ -1363,6 +1383,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "custom_historical_match_rows", history_payload["rows"],
                     )
                     st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
+                    st.session_state["_scanner_force_history_refresh_next"] = True
                     persistence_note = (
                         f"; сохранено в SQLite: {saved_history['row_count']} матчей"
                     )
@@ -2898,6 +2919,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
     # ==================== СКАН ====================
     st.session_state["_scan_in_progress"] = True
+    explicit_history_refresh = bool(
+        st.session_state.pop("_scanner_force_history_refresh_next", False)
+    )
     try:
         loader_ph = st.empty()
         log_ph = st.empty()
@@ -3142,37 +3166,66 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "🔒 SStats не настроен: контекст недоступен; Strong/Value остаются заблокированы."
             )
 
-        update_loader("📈 Загрузка xG-истории...", 0.16, logs)
-        footballapi_xg_rows = footballapi_xg_history(footballapi_key, logs)
-
-        update_loader("📚 Загрузка истории по текущим турнирам SStats...", 0.18, logs)
-        sstats_history_rows = []
-        if sstats_key and rows:
-            try:
-                history_league_limit = _runtime_int(
-                    "sstats_history_max_leagues",
-                    "SSTATS_HISTORY_MAX_LEAGUES",
-                    default=60,
-                    minimum=1,
-                )
-                sstats_history_rows = sstats_historical_matches_for_fixtures(
-                    rows, sstats_key, years_back=5,
-                    max_leagues=history_league_limit, logs=logs,
-                )
-            except Exception as exc:
+        model_cache_ready = has_cached_engine(
+            matrix_n,
+            footballapi_key=footballapi_key,
+            custom_historical_rows=custom_historical_rows,
+        )
+        refresh_history = bool(explicit_history_refresh or not model_cache_ready)
+        if refresh_history:
+            if explicit_history_refresh:
                 logs.append(
-                    f"⚠️ SStats historical archive: {type(exc).__name__}; "
-                    "forecast-only режим сохраняется."
+                    "🔄 Запрошено отдельное обновление исторических архивов: "
+                    "загружаю свежие результаты и xG, затем выполню инкрементальное обучение."
                 )
-        if sstats_history_rows:
-            custom_historical_rows = list(custom_historical_rows or []) + sstats_history_rows
+            else:
+                logs.append(
+                    "🧠 Обученная модель не найдена: выполняю первичную загрузку истории и обучение."
+                )
+            update_loader("📈 Обновляю исторические xG-данные...", 0.16, logs)
+            footballapi_xg_rows = footballapi_xg_history(
+                footballapi_key, logs,
+                force_refresh=explicit_history_refresh,
+            )
 
-        update_loader("🧠 Загрузка модели...", 0.20, logs)
+            update_loader("📚 Обновляю архивы завершённых матчей SStats...", 0.18, logs)
+            sstats_history_rows = []
+            if sstats_key and rows:
+                try:
+                    history_league_limit = _runtime_int(
+                        "sstats_history_max_leagues",
+                        "SSTATS_HISTORY_MAX_LEAGUES",
+                        default=60,
+                        minimum=1,
+                    )
+                    sstats_history_rows = sstats_historical_matches_for_fixtures(
+                        rows, sstats_key, years_back=5,
+                        max_leagues=history_league_limit, logs=logs,
+                        force_refresh=explicit_history_refresh,
+                    )
+                except Exception as exc:
+                    logs.append(
+                        f"⚠️ SStats historical archive: {type(exc).__name__}; "
+                        "forecast-only режим сохраняется."
+                    )
+            if sstats_history_rows:
+                custom_historical_rows = list(custom_historical_rows or []) + sstats_history_rows
+        else:
+            footballapi_xg_rows = None
+            logs.append(
+                "⚡ Исторические источники пропущены: использую готовую обученную модель. "
+                "SStats live-составы, травмы, расписание и текущие коэффициенты "
+                "по-прежнему обновляются для каждого скана."
+            )
+
+        update_loader("🧠 Загрузка обученной модели...", 0.20, logs)
         engine = _load_engine(
             matrix_n, logs, update_loader,
             footballapi_key=footballapi_key,
             footballapi_xg_rows=footballapi_xg_rows,
             custom_historical_rows=custom_historical_rows,
+            refresh_history=refresh_history,
+            force_source_refresh=explicit_history_refresh,
         )
 
         update_loader("🧠 Анализ матчей...", 0.80, logs)
