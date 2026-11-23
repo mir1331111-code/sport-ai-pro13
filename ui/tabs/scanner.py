@@ -9,6 +9,7 @@ import html
 import math
 import time
 import hashlib
+import copy
 import threading
 import requests
 from datetime import datetime, timedelta
@@ -84,6 +85,154 @@ from ui.cards import (render_verdict_card, translate_team,
 from ui.scanner_engine import (
     _train_engine, _shared_engine_cache, _load_engine, has_cached_engine,
 )
+
+def _recheck_value_after_priority_context(card, refreshed_context, *, bank=None):
+    """Re-run the exact original Value gates after a fresh SStats-only context update.
+
+    Only the SStats context snapshot can unlock this path. LLM/browser-search
+    text is intentionally never accepted as official XI/referee proof.
+    """
+    if not isinstance(card, dict) or not isinstance(refreshed_context, dict):
+        return {"updated": False, "reason": "no_priority_context"}
+
+    from llm.deep_analysis import merge_context_snapshots
+
+    old_context = card.get("api_context")
+    old_context = old_context if isinstance(old_context, dict) else {}
+    merged = merge_context_snapshots(old_context, refreshed_context)
+    old_quality = card.get("context_quality")
+    old_quality = old_quality if isinstance(old_quality, dict) else assess_context_quality(old_context)
+    new_quality = assess_context_quality(merged)
+
+    # Save the freshest verified provider snapshot for downstream dossier,
+    # training snapshots, Dashboard and later scans.
+    card["api_context"] = merged
+    card["context_quality"] = new_quality
+    if isinstance(card.get("verdict"), dict):
+        card["verdict"]["context_quality"] = new_quality
+
+    try:
+        kickoff_at = str(merged.get("kickoff_at") or card.get("kickoff_utc") or "")
+        observed_at = str(merged.get("timestamp") or "")
+        stable_id = str(card.get("fixture_id") or card.get("sstats_game_id") or "")
+        if stable_id:
+            from storage.context_store import ContextStore
+            store = ContextStore()
+            store.record_snapshot(
+                fixture_id=stable_id,
+                kickoff_at=kickoff_at,
+                observed_at=observed_at,
+                context=merged,
+                data_source="sstats-priority",
+            )
+    except Exception:
+        # The live card remains usable even if optional context persistence fails.
+        pass
+
+    payload = card.get("_value_recheck")
+    payload = payload if isinstance(payload, dict) else None
+    if not payload:
+        return {
+            "updated": True,
+            "old_eligible": bool(old_quality.get("strong_value_eligible")),
+            "new_eligible": bool(new_quality.get("strong_value_eligible")),
+            "rechecked": False,
+            "reason": "no_saved_value_inputs",
+        }
+
+    model_history_ready = bool(payload.get("model_bet_history_ready"))
+    old_eligible = bool(old_quality.get("strong_value_eligible") and model_history_ready)
+    new_eligible = bool(new_quality.get("strong_value_eligible") and model_history_ready)
+    if not new_eligible:
+        return {
+            "updated": True,
+            "old_eligible": old_eligible,
+            "new_eligible": False,
+            "rechecked": False,
+            "reason": "official_XI_referee_or_team_history_not_complete",
+        }
+
+    # Do not change probabilities or market prices here. Only re-run the same
+    # original EV/Edge/Kelly selectors with the newly confirmed SStats context.
+    verdict_base = payload.get("base_verdict")
+    candidate_rows = payload.get("candidate_rows")
+    selection_odds = payload.get("selection_odds")
+    bookmaker_by_pick = payload.get("bookmaker_by_pick")
+    market_validation_by_pick = payload.get("market_validation_by_pick")
+    if not isinstance(verdict_base, dict) or not isinstance(candidate_rows, list):
+        return {
+            "updated": True, "old_eligible": old_eligible,
+            "new_eligible": True, "rechecked": False,
+            "reason": "saved_value_inputs_invalid",
+        }
+
+    bank_value = payload.get("bank") if bank is None else bank
+    kelly_fraction = float(payload.get("kelly_frac") or 0.25)
+    min_probability = float(payload.get("min_prob") or 0.0)
+    min_edge = max(float(payload.get("min_edge") or 0.05), 0.05)
+    min_ev = max(float(payload.get("min_ev") or 0.05), 0.05)
+    best_by_market = best_value_markets(
+        copy.deepcopy(verdict_base),
+        candidate_rows,
+        selection_odds,
+        float(bank_value or 0.0),
+        kelly_fraction,
+        min_probability,
+        min_edge=min_edge,
+        min_ev=min_ev,
+        bookmaker_by_pick=bookmaker_by_pick,
+        market_validation_by_pick=market_validation_by_pick,
+        context_qualified=True,
+    )
+    chosen_verdict, best = best_value_market(
+        copy.deepcopy(verdict_base),
+        candidate_rows,
+        selection_odds,
+        float(bank_value or 0.0),
+        kelly_fraction,
+        min_probability,
+        min_edge=min_edge,
+        min_ev=min_ev,
+        bookmaker_by_pick=bookmaker_by_pick,
+        market_validation_by_pick=market_validation_by_pick,
+        context_qualified=True,
+    )
+
+    card["best_by_market"] = best_by_market
+    card["best"] = best
+    if best is not None and isinstance(chosen_verdict, dict):
+        card["verdict"] = chosen_verdict
+        sources = payload.get("market_source_by_pick")
+        sources = sources if isinstance(sources, dict) else {}
+        card["best_odds_source"] = str(sources.get(best[1]) or "sstats")
+    else:
+        rejected = copy.deepcopy(verdict_base)
+        rejected.update({
+            "context_quality": new_quality,
+            "real_odds": False,
+            "odd": None,
+            "ev": None,
+            "edge": None,
+            "stake": 0.0,
+            "is_bet": False,
+            "value_passed": False,
+        })
+        card["verdict"] = rejected
+        card["best"] = None
+        card["best_odds_source"] = "no_market"
+
+    # Inputs are a one-shot snapshot, not part of the permanent forecast card.
+    card.pop("_value_recheck", None)
+    return {
+        "updated": True,
+        "old_eligible": old_eligible,
+        "new_eligible": True,
+        "rechecked": True,
+        "approved": best is not None,
+        "best": best,
+        "reason": "value_gates_rechecked_with_priority_SStats_context",
+    }
+
 
 MAX_STAKE_PCT = MAX_DAILY_EXPOSURE_PCT  # Legacy name; enforced in betting.risk.
 AUTO_PORTFOLIO_MIN_PROB = STRONG_FORECAST_MIN_PROB  # Shared 65% gate; separate from Value proof.
