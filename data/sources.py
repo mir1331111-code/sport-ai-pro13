@@ -298,7 +298,10 @@ def _footballapi_take_rate_slot() -> bool:
     return True
 
 
-def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8) -> list:
+def footballapi_xg_history(
+    api_key: str, logs=None, *, max_detail_calls: int = 8,
+    force_refresh: bool = False,
+) -> list:
     """Fetch completed current-season Premier League xG gradually within the free quota.
 
     The complimentary key only reads the current Premier League season. /usage
@@ -349,7 +352,7 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
     season_start = today.year if today.month >= 7 else today.year - 1
     key_tag = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
     daily_batch_key = f"footballapi_xg_daily_batch_{season_start}_{key_tag}"
-    daily_batch = cache_get(daily_batch_key, 18 * 3600)
+    daily_batch = None if force_refresh else cache_get(daily_batch_key, 18 * 3600)
     if isinstance(daily_batch, list):
         if logs is not None:
             logs.append(
@@ -377,7 +380,7 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
         return []
 
     matches_cache_key = f"footballapi_epl_matches_{season_start}"
-    matches = cache_get(matches_cache_key, 6 * 3600)
+    matches = None if force_refresh else cache_get(matches_cache_key, 6 * 3600)
     if not isinstance(matches, list):
         if not _footballapi_take_rate_slot():
             if logs is not None:
