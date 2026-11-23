@@ -19,6 +19,7 @@ from config import (
 from model.engine_cache import engine_cache_fingerprint
 from data.sources import load_seasonal, season_str, parse_date
 from model.engine import Engine, _norm
+from data.team_names import normalize_team
 from model.shot_xg import enrich_history_with_shot_xg
 from model.validation_cache import select_validation_rows, validation_cache_key
 from model.training import (
@@ -245,6 +246,12 @@ def _load_seasonal_history(logs, update_loader, *, force_refresh=False):
         }
 
 
+def _history_team_key(value):
+    """Use the same conservative alias dictionary for every historical source."""
+    raw = str(value or "").strip()
+    return normalize_team(raw) or _norm(raw)
+
+
 def _prepare_training_history(
     seasonal_snapshot, *, footballapi_key="", footballapi_xg_rows=None,
     custom_historical_rows=None, logs=None,
@@ -272,8 +279,8 @@ def _prepare_training_history(
                 stamp = parse_date(existing.get("Date") or existing.get("date"))
                 key = (
                     stamp.date().isoformat() if stamp else "",
-                    _norm(existing.get("HomeTeam") or existing.get("home_team") or ""),
-                    _norm(existing.get("AwayTeam") or existing.get("away_team") or ""),
+                    _history_team_key(existing.get("HomeTeam") or existing.get("home_team") or ""),
+                    _history_team_key(existing.get("AwayTeam") or existing.get("away_team") or ""),
                 )
                 if all(key):
                     existing_keys.add(key)
@@ -282,8 +289,8 @@ def _prepare_training_history(
             stamp = parse_date(custom.get("Date") or custom.get("date"))
             key = (
                 stamp.date().isoformat() if stamp else "",
-                _norm(custom.get("HomeTeam") or ""),
-                _norm(custom.get("AwayTeam") or ""),
+                _history_team_key(custom.get("HomeTeam") or ""),
+                _history_team_key(custom.get("AwayTeam") or ""),
             )
             if not all(key) or key in existing_keys:
                 continue
