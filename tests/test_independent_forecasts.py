@@ -254,6 +254,46 @@ class IndependentForecastTests(unittest.TestCase):
             men["simple_baseline_lambda_total"],
         )
 
+    def test_structured_ai_probabilities_are_preferred_to_formatted_text(self):
+        card = {
+            "deep_analysis": {
+                "probabilities": {"П1": 40, "X": 35, "П2": 25},
+            },
+            "llm_opinion": "legacy text with no validated percentage line",
+        }
+        self.assertEqual(
+            structured_ai_probabilities(card), {"H": .4, "D": .35, "A": .25}
+        )
+        self.assertIsNone(structured_ai_probabilities({
+            "deep_analysis": {"probabilities": {"П1": 120, "X": -10, "П2": 0}},
+            "llm_opinion": "legacy text with no validated percentage line",
+        }))
+
+    def test_ai_crosscheck_compares_model_ai_and_value_without_changing_stakes(self):
+        card = {
+            "p1": .55, "px": .25, "p2": .20,
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", "X", 3.40, .12, .62, 1.0),
+                    "verdict": {"value_passed": True},
+                },
+            },
+        }
+        analysis = {
+            "probabilities": {"П1": 30, "X": 45, "П2": 25},
+            "data_quality": "medium",
+        }
+        before = dict(card)
+        check = build_ai_crosscheck(card, analysis)
+        self.assertEqual(check["status"], "disagreement")
+        self.assertEqual(check["main_pick"], "П1")
+        self.assertEqual(check["ai_pick"], "X")
+        self.assertTrue(check["ai_agrees_with_value_pick"])
+        self.assertEqual(check["validated_value_odds"], 3.40)
+        self.assertEqual(check["decision_role"],
+                         "diagnostic_only_not_used_to_change_probability_ev_edge_or_stake")
+        self.assertEqual(card, before)
+
     def test_scan_records_pre_kickoff_main_and_ai_once(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
