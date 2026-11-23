@@ -528,11 +528,43 @@ def _tsdb_league_meta(league_name: str):
     )
     age_code = re.sub(r"[^0-9]", "", age)
     women = any(token in ln for token in ("women", "womens", "ladies", "female", "женск"))
-    national = bool(age) or any(token in ln for token in (
-        "national", "international", "world cup", "euro", "nations league",
-        "friendl", "fifa", "copa america", "africa cup", "afcon",
-        "afc asian", "qualifier", "qualification",
+    # Do not infer national-team status from the broad word "national": for
+    # example, England's National League is a domestic club competition.
+    # "Europa" also contains the substring "euro", so only a standalone
+    # "Euro" token is a national-team marker.
+    # FIFA Club World Cup is a club competition despite containing both
+    # "FIFA" and "World Cup" markers. Keep it out of national-team histories.
+    if "club world cup" in ln:
+        return ("CLUB_WC", "club", False, False)
+
+    # Some UEFA youth competitions are inter-club tournaments, not
+    # national-team fixtures. Explicit club youth league names take priority
+    # over the governing-body marker (e.g. UEFA U19 Youth League).
+    age_club_competition = bool(age) and any(token in ln for token in (
+        "youth league", "academy league", "premier league", "elite league",
     ))
+    if age_club_competition:
+        digest = hashlib.sha1(ln.encode("utf-8")).hexdigest()[:8].upper()
+        if women:
+            return (f"W_Y_U{age_code}_{digest}"[:24], "women_youth", True, False)
+        return (f"Y_U{age_code}_{digest}"[:24], "youth_club", False, False)
+
+    age_international = bool(age) and any(token in ln for token in (
+        "uefa", "fifa", "afc", "caf", "concacaf", "conmebol", "ofc",
+    ))
+    national = age_international or any(token in ln for token in (
+        "national team", "national teams", "international", "world cup",
+        "nations league", "friendl", "fifa", "copa america", "africa cup",
+        "afcon", "afc asian", "qualifier", "qualification",
+    )) or bool(re.search(r"\beuro\b", ln))
+
+    # An age marker alone does not mean a national-team tournament:
+    # domestic U21/U19 club leagues have their own stable competition namespace.
+    if age and not national:
+        digest = hashlib.sha1(ln.encode("utf-8")).hexdigest()[:8].upper()
+        if women:
+            return (f"W_Y_U{age_code}_{digest}"[:24], "women_youth", True, False)
+        return (f"Y_U{age_code}_{digest}"[:24], "youth_club", False, False)
 
     if women:
         if national:
@@ -540,7 +572,7 @@ def _tsdb_league_meta(league_name: str):
                 competition = "UNL"
             elif "world cup" in ln:
                 competition = "WCQ" if any(x in ln for x in ("qualif", "qualification")) else "WC"
-            elif "euro" in ln:
+            elif re.search(r"\beuro\b", ln):
                 competition = "EURO"
             elif "friendl" in ln:
                 competition = "FR"
@@ -571,7 +603,7 @@ def _tsdb_league_meta(league_name: str):
             competition = "UNL"
         elif "world cup" in ln:
             competition = "WCQ" if any(x in ln for x in ("qualif", "qualification")) else "WC"
-        elif "euro" in ln:
+        elif re.search(r"\beuro\b", ln):
             competition = "EURO"
         elif "friendl" in ln:
             competition = "FR"
@@ -592,7 +624,7 @@ def _tsdb_league_meta(league_name: str):
         return ("US_MLS", "club", False, False)
     if "scottish" in ln or "scotland" in ln:
         return ("SC_", "club", False, False)
-    if "a-league" in ln or "a league" in ln or "australia" in ln:
+    if re.search(r"\ba[- ]league\b", ln) or "australia" in ln:
         return ("AU_", "club", False, False)
     if "j1" in ln or "j-league" in ln or "jleague" in ln or "japan" in ln:
         return ("JP_", "club", False, False)
@@ -627,9 +659,11 @@ def _tsdb_league_meta(league_name: str):
         (("turkish super", "super lig"), "T1"),
         (("greek super", "super league greece", "super league 1"), "G1"),
         (("russian premier", "russian football"), "R1"),
+        # Europa Conference is a distinct competition and contains "Europa";
+        # classify it before the broader Europa League aliases.
+        (("uefa conference", "europa conference", "conference league"), "EC"),
         (("uefa champions", "champions league"), "C1"),
         (("uefa europa", "europa league"), "EL"),
-        (("uefa conference", "conference league"), "EC"),
     ]
     for keys, code in mapping:
         if any(key in ln for key in keys):

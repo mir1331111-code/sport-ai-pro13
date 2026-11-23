@@ -35,6 +35,84 @@ class InternationalScheduleTests(unittest.TestCase):
         self.assertNotEqual(second, "G")
         self.assertNotEqual(first, second)
 
+    def test_tsdb_does_not_confuse_europa_club_competitions_with_euro_national_teams(self):
+        europa = _tsdb_league_meta("UEFA Europa League")
+        self.assertEqual(europa[0], "EL")
+        self.assertEqual(europa[1], "club")
+        self.assertFalse(europa[3])
+
+        conference = _tsdb_league_meta("UEFA Europa Conference League")
+        self.assertEqual(conference[0], "EC")
+        self.assertEqual(conference[1], "club")
+        self.assertFalse(conference[3])
+
+        womens_europa = _tsdb_league_meta("UEFA Women's Europa Cup")
+        self.assertEqual(womens_europa[1], "women")
+        self.assertTrue(womens_europa[2])
+        self.assertFalse(womens_europa[3])
+        self.assertFalse(womens_europa[0].startswith("W_NT"))
+
+    def test_tsdb_does_not_treat_domestic_national_league_as_national_teams(self):
+        for name in ("National League", "England National League",
+                     "National League North", "National League South",
+                     "Women's National League"):
+            with self.subTest(name=name):
+                div, kind, women, national = _tsdb_league_meta(name)
+                self.assertEqual(kind, "women" if women else "club")
+                self.assertFalse(national)
+                self.assertFalse(div.startswith("NT_"))
+                self.assertFalse(div.startswith("W_NT"))
+
+    def test_tsdb_still_recognizes_australian_a_league(self):
+        self.assertTrue(_tsdb_league_meta("A-League")[0].startswith("AU_"))
+        self.assertTrue(_tsdb_league_meta("A League")[0].startswith("AU_"))
+        self.assertTrue(_tsdb_league_meta("Australia A-League")[0].startswith("AU_"))
+
+    def test_tsdb_keeps_uefa_youth_league_club_teams_out_of_national_history(self):
+        youth = _tsdb_league_meta("UEFA U19 Youth League")
+        self.assertTrue(youth[0].startswith("Y_U19_"))
+        self.assertEqual(youth[1], "youth_club")
+        self.assertFalse(youth[3])
+
+        women_youth = _tsdb_league_meta("UEFA Women's U19 Youth League")
+        self.assertTrue(women_youth[0].startswith("W_Y_U19_"))
+        self.assertEqual(women_youth[1], "women_youth")
+        self.assertTrue(women_youth[2])
+        self.assertFalse(women_youth[3])
+
+        national = _tsdb_league_meta("UEFA U21 Championship")
+        self.assertEqual(national[0], "NT_U21")
+        self.assertTrue(national[3])
+
+    def test_tsdb_keeps_fifa_club_world_cup_out_of_national_team_history(self):
+        club_world_cup = _tsdb_league_meta("FIFA Club World Cup")
+        self.assertEqual(club_world_cup, ("CLUB_WC", "club", False, False))
+
+    def test_tsdb_keeps_standalone_euro_as_national_team_competition(self):
+        self.assertEqual(_tsdb_league_meta("UEFA Euro 2024")[0], "NT_EURO")
+        women = _tsdb_league_meta("UEFA Women's Euro 2025")
+        self.assertEqual(women[1], "women_national")
+        self.assertTrue(women[2])
+        self.assertTrue(women[3])
+
+    def test_tsdb_keeps_domestic_youth_club_leagues_out_of_national_team_history(self):
+        youth = _tsdb_league_meta("England U21 Premier League")
+        self.assertTrue(youth[0].startswith("Y_U21_"))
+        self.assertEqual(youth[1], "youth_club")
+        self.assertFalse(youth[2])
+        self.assertFalse(youth[3])
+
+        women_youth = _tsdb_league_meta("Women's U21 Premier League")
+        self.assertTrue(women_youth[0].startswith("W_Y_U21_"))
+        self.assertEqual(women_youth[1], "women_youth")
+        self.assertTrue(women_youth[2])
+        self.assertFalse(women_youth[3])
+
+        # A clear governing-body marker still identifies a youth national event.
+        national_youth = _tsdb_league_meta("UEFA U21 Championship")
+        self.assertEqual(national_youth[0], "NT_U21")
+        self.assertTrue(national_youth[3])
+
     def test_tsdb_classifies_senior_youth_and_womens_national_competitions(self):
         self.assertEqual(_tsdb_league_meta("UEFA Nations League")[0], "NT_UNL")
         self.assertEqual(_tsdb_league_meta("International Friendlies")[0], "NT_FR")
