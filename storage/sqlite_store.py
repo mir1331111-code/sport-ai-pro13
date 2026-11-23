@@ -252,7 +252,6 @@ def update_bet(bet_id: int, **fields) -> None:
     invalidate_caches()
 
 
-@_cache(ttl=30, show_spinner=False)
 def update_bet_by_identity(match, market, pick, date_iso, **fields) -> None:
     """Update the latest pending bet when legacy local records lack SQLite id."""
     allowed = {"odds", "closing_odds", "stake", "prob", "status", "score",
@@ -262,7 +261,7 @@ def update_bet_by_identity(match, market, pick, date_iso, **fields) -> None:
         return
     set_sql = ", ".join(f"{k}=?" for k in safe)
     values = list(safe.values())
-    with _connect() as c:
+    with _db() as c:
         row = c.execute(
             """SELECT id FROM bets
                WHERE match=? AND market=? AND pick=? AND date_iso=?
@@ -274,10 +273,9 @@ def update_bet_by_identity(match, market, pick, date_iso, **fields) -> None:
             return
         c.execute(
             f"UPDATE bets SET {set_sql} WHERE id=?",
-            (*values, row["id"]),
+            (*values, int(row[0])),
         )
-        c.commit()
-    _invalidate()
+    invalidate_caches()
 
 
 def fetch_bets(status: Optional[str] = None, limit: int = 100000) -> list:

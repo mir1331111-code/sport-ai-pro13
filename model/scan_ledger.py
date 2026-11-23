@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS scan_run_fixtures (
     league TEXT,
     model_support_status TEXT,
     has_bookmaker_odds INTEGER NOT NULL DEFAULT 0,
+    quality_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (scan_run_id, fixture_id)
 );
 CREATE INDEX IF NOT EXISTS idx_scan_fixtures_fixture ON scan_run_fixtures(fixture_id);
@@ -95,6 +96,15 @@ class ScanLedger:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            columns = {
+                str(row[1]) for row in conn.execute(
+                    "PRAGMA table_info(scan_run_fixtures)"
+                ).fetchall()
+            }
+            if "quality_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE scan_run_fixtures ADD COLUMN quality_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=15)
@@ -134,6 +144,9 @@ class ScanLedger:
         # Import locally to keep this storage primitive independent of scanner UI.
         from betting.gate_report import classify_card
         from betting.market_ranking import market_forecast_summary
+        from model.analytics_quality import card_quality
+
+        api_football_configured = bool(metadata.get("api_football_configured"))
 
         for card in cards or []:
             if not isinstance(card, dict):
@@ -157,6 +170,9 @@ class ScanLedger:
                 str(card.get("league") or card.get("div") or "") or None,
                 str(card.get("model_support_status") or "") or None,
                 int(bool(card.get("market_odds")) or bool(card.get("total_market_odds"))),
+                _json(card_quality(
+                    card, api_football_configured=api_football_configured,
+                )),
             ))
 
             keys = [
@@ -263,8 +279,9 @@ class ScanLedger:
             conn.executemany(
                 """INSERT INTO scan_run_fixtures (
                     scan_run_id,fixture_id,provider_fixture_id,kickoff_at,
-                    home_team,away_team,league,model_support_status,has_bookmaker_odds
-                ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                    home_team,away_team,league,model_support_status,has_bookmaker_odds,
+                    quality_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 fixture_rows,
             )
             conn.executemany(
@@ -331,6 +348,32 @@ class ScanLedger:
             except (TypeError, ValueError):
                 row["gates"] = []
         return rows
+
+    def quality_rows(self, scan_run_id: str | None = None, limit: int = 500) -> list[dict]:
+        """Load persisted data-quality snapshots for one scan, newest run by default."""
+        run_id = str(scan_run_id or "").strip()
+        if not run_id:
+            latest = self.latest_run()
+            if not latest:
+                return []
+            run_id = str(latest.get("scan_run_id") or "")
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT fixture_id,provider_fixture_id,kickoff_at,home_team,away_team,
+                          league,model_support_status,has_bookmaker_odds,quality_json
+                   FROM scan_run_fixtures WHERE scan_run_id=?
+                   ORDER BY kickoff_at,fixture_id LIMIT ?""",
+                (run_id, max(1, min(5000, int(limit)))),
+            ).fetchall()
+        result = []
+        for raw in rows:
+            item = dict(raw)
+            try:
+                item["quality"] = json.loads(item.pop("quality_json") or "{}")
+            except (TypeError, ValueError):
+                item["quality"] = {}
+            result.append(item)
+        return result
 
     def forecast_links(self, scan_run_id: str) -> list[dict]:
         with self._connect() as conn:
