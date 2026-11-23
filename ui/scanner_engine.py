@@ -40,25 +40,31 @@ _HISTORY_SNAPSHOT_CACHE = {}
 _HISTORY_SNAPSHOT_LOCK = threading.RLock()
 
 
-def _validation_divisions(train_divs):
-    """Return priority validation leagues in stable order, limited to trained divisions."""
-    available = set(train_divs or ())
-    return tuple(division for division in _PRIORITY_DIVS if division in available)
-
-
-def _load_seasonal_history(logs, update_loader):
-    """Load a deterministic seasonal snapshot with a short-lived process cache."""
+def _history_catalog():
+    """Return the fixed training catalogue without reading historical rows."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     cur_year = today.year if today.month >= 7 else today.year - 1
     history_years = list(range(cur_year - 4, cur_year + 1))
     priority_divs = list(_PRIORITY_DIVS)
     supported_divs = list(DIV_TO_TSDB.keys()) + ["E2", "E3", "D3"]
     train_divs = list(dict.fromkeys(priority_divs + supported_divs))
+    return history_years, train_divs
+
+
+def _validation_divisions(train_divs):
+    """Return priority validation leagues in stable order, limited to trained divisions."""
+    available = set(train_divs or ())
+    return tuple(division for division in _PRIORITY_DIVS if division in available)
+
+
+def _load_seasonal_history(logs, update_loader, *, force_refresh=False):
+    """Load the assembled history snapshot; ordinary scans must never call this."""
+    history_years, train_divs = _history_catalog()
     cache_key = (DATA_VERSION, tuple(history_years), tuple(train_divs))
     now_mono = time.monotonic()
 
     with _HISTORY_SNAPSHOT_LOCK:
-        cached = _HISTORY_SNAPSHOT_CACHE.get(cache_key)
+        cached = None if force_refresh else _HISTORY_SNAPSHOT_CACHE.get(cache_key)
         if (
             isinstance(cached, tuple)
             and len(cached) == 2
@@ -99,7 +105,7 @@ def _load_seasonal_history(logs, update_loader):
         def _load_one_division(division):
             seasons = []
             for year in history_years:
-                rows = load_seasonal(division, season_str(year))
+                rows = load_seasonal(division, season_str(year), force_refresh=force_refresh)
                 rows = sorted(
                     rows,
                     key=lambda row: parse_date(row.get("Date", "")) or datetime.min,
@@ -721,36 +727,132 @@ def _shared_engine_cache():
     return {"engines": {}, "locks": {}, "lock": threading.RLock()}
 
 
-def _load_engine(
-    matrix_n, logs, update_loader, footballapi_key="",
-    footballapi_xg_rows=None, custom_historical_rows=None,
+def has_cached_engine(
+    matrix_n, *, footballapi_key="", custom_historical_rows=None,
+    extra_divisions=None,
 ):
-    """Reuse a fitted model; serialize training only for an identical cache key."""
-    import pickle, gzip, os, json
+    """Check only the fitted-engine cache; does not read any historical source."""
+    import gzip
+    import os
+    import pickle
     from config import DISK_CACHE_DIR
-    from model.cache_locks import get_keyed_lock
+    from model.incremental import stable_engine_fingerprint
 
-    # Load the historical inputs once, before cache lookup, so cache reuse is
-    # conditional on the actual data currently returned by the source cache.
-    seasonal_snapshot = _load_seasonal_history(logs, update_loader)
-    xg_enabled = bool(str(footballapi_key or "").strip())
-    # Stable-key reuse precedes the expensive full-history cache fingerprint.
-    from model.incremental import (
-        IncrementalHistoryChanged, bring_engine_up_to_date,
-        stable_engine_fingerprint,
-    )
+    history_years, train_divs = _history_catalog()
     custom_divisions = [
         str(row.get("Div") or "").strip()
         for row in (custom_historical_rows or [])
         if isinstance(row, dict) and str(row.get("Div") or "").strip()
     ]
     stable_divisions = tuple(dict.fromkeys(
-        list(seasonal_snapshot["train_divs"]) + custom_divisions
+        list(train_divs)
+        + custom_divisions
+        + [
+            str(value).strip() for value in (extra_divisions or [])
+            if str(value).strip()
+        ]
     ))
     stable_key = stable_engine_fingerprint(
-        matrix_n=matrix_n, xg_enabled=xg_enabled,
+        matrix_n=matrix_n,
+        xg_enabled=bool(str(footballapi_key or "").strip()),
         divisions=stable_divisions,
-        history_years=seasonal_snapshot["history_years"],
+        history_years=history_years,
+    )
+    shared = _shared_engine_cache()
+    guard = shared.setdefault("lock", threading.RLock())
+    with guard:
+        candidate = shared.setdefault("engines", {}).get(stable_key)
+    if (
+        candidate is not None
+        and hasattr(candidate, "match_stats")
+        and getattr(candidate, "trained_n", 0) > 0
+        and getattr(candidate, "_incremental_manifest", None)
+    ):
+        return True
+
+    try:
+        session_key = f"_trained_engine_{stable_key}"
+        candidate = st.session_state.get(session_key)
+        if (
+            candidate is not None
+            and hasattr(candidate, "match_stats")
+            and getattr(candidate, "trained_n", 0) > 0
+            and getattr(candidate, "_incremental_manifest", None)
+        ):
+            with guard:
+                shared.setdefault("engines", {})[stable_key] = candidate
+            return True
+    except Exception:
+        pass
+
+    path = os.path.join(DISK_CACHE_DIR, f"{stable_key}.pkl.gz")
+    if not os.path.exists(path):
+        return False
+    try:
+        if os.path.getsize(path) > 350 * 1024 * 1024:
+            return False
+        with open(path, "rb") as handle:
+            data = pickle.loads(gzip.decompress(handle.read()))
+        candidate = data.get("engine") if isinstance(data, dict) else None
+        if not (
+            isinstance(data, dict)
+            and data.get("fp") == APP_VERSION
+            and data.get("cache_key") == stable_key
+            and hasattr(candidate, "match_stats")
+            and getattr(candidate, "trained_n", 0) > 0
+            and getattr(candidate, "_incremental_manifest", None)
+        ):
+            return False
+        with guard:
+            shared.setdefault("engines", {})[stable_key] = candidate
+        try:
+            st.session_state[session_key] = candidate
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _load_engine(
+    matrix_n, logs, update_loader, footballapi_key="",
+    footballapi_xg_rows=None, custom_historical_rows=None,
+    *, refresh_history=False, force_source_refresh=False,
+    extra_divisions=None,
+):
+    """Use the fitted engine for normal scans; read/replay history only on explicit refresh or cold start."""
+    import pickle, gzip, os, json
+    from config import DISK_CACHE_DIR
+    from model.cache_locks import get_keyed_lock
+
+    from model.incremental import (
+        IncrementalHistoryChanged, bring_engine_up_to_date,
+        stable_engine_fingerprint,
+    )
+    history_years, catalogue_divisions = _history_catalog()
+    xg_enabled = bool(str(footballapi_key or "").strip())
+
+    # The stable key describes the engine schema/configuration, not the
+    # optional rows appended during the last explicit history refresh. Their
+    # full content is verified by the immutable incremental training manifest.
+    custom_divisions = [
+        str(row.get("Div") or "").strip()
+        for row in (custom_historical_rows or [])
+        if isinstance(row, dict) and str(row.get("Div") or "").strip()
+    ]
+    stable_divisions = tuple(dict.fromkeys(
+        list(catalogue_divisions)
+        + custom_divisions
+        + [
+            str(value).strip() for value in (extra_divisions or [])
+            if str(value).strip()
+        ]
+    ))
+    stable_key = stable_engine_fingerprint(
+        matrix_n=matrix_n,
+        xg_enabled=xg_enabled,
+        divisions=stable_divisions,
+        history_years=history_years,
     )
     stable_session_key = f"_trained_engine_{stable_key}"
     shared_stable = _shared_engine_cache()
@@ -780,9 +882,37 @@ def _load_engine(
                 and getattr(disk_engine, "_incremental_manifest", None)
             ):
                 stable_candidate = disk_engine
-                logs.append("💾 Найден стабильный дисковый кэш; сверяю историю перед догоном.")
+                logs.append("💾 Найден стабильный дисковый кэш обученной модели.")
         except Exception as exc:
             logs.append(f"ℹ️ Стабильный дисковый кэш не использован ({type(exc).__name__}).")
+
+    # Fast path: the normal live scanner only reads the fitted model. It does
+    # not download/reparse the 5-season archive, rebuild validation samples,
+    # recalculate the historical walk-forward benchmark, or replay training.
+    if (
+        stable_candidate is not None
+        and hasattr(stable_candidate, "match_stats")
+        and getattr(stable_candidate, "trained_n", 0) > 0
+        and getattr(stable_candidate, "_incremental_manifest", None)
+        and not refresh_history
+    ):
+        with stable_guard:
+            shared_stable.setdefault("engines", {})[stable_key] = stable_candidate
+        try:
+            st.session_state[stable_session_key] = stable_candidate
+        except Exception:
+            pass
+        logs.append(
+            f"⚡ Исторический архив не перечитывался: готовая модель из кэша "
+            f"({stable_candidate.trained_n} обучающих матчей). "
+            "Для обновления истории используй отдельную кнопку в блоке архивов."
+        )
+        return stable_candidate
+
+    # Only a cold start or an explicit history refresh enters this block.
+    seasonal_snapshot = _load_seasonal_history(
+        logs, update_loader, force_refresh=bool(force_source_refresh)
+    )
     if (
         stable_candidate is not None
         and hasattr(stable_candidate, "match_stats")
