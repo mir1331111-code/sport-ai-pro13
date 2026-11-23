@@ -210,6 +210,64 @@ class RiskSizingTests(unittest.TestCase):
         self.assertEqual(info["daily_used"], 48.0)
         self.assertEqual(info["reason"], "daily_limit_reached")
 
+    def test_negative_and_non_finite_stakes_cannot_reduce_daily_exposure(self):
+        settled = _bet(stake=45.0, fixture_id="settled-fixture")
+        settled["status"] = "lost"
+        corrupted = _bet(stake=-40.0, fixture_id="corrupted-fixture")
+        corrupted["status"] = "won"
+        stake, info = size_bet(
+            probability=0.90,
+            odds=2.0,
+            bank=1000,
+            bets=[settled, corrupted],
+            fixture_id="new-fixture",
+            match="New FC vs Other FC",
+            date_iso="2026-11-11",
+            market="1X2",
+            pick="П1",
+            now=NOW,
+        )
+        # The negative settled record must not offset the valid 45-unit
+        # cumulative daily turnover; only 5 units of the 5% cap remain.
+        self.assertEqual(info["daily_used"], 45.0)
+        self.assertEqual(stake, 5.0)
+
+    def test_invalid_stakes_do_not_reduce_pending_or_match_exposure(self):
+        snapshot = risk_snapshot(
+            960,
+            [
+                _bet(stake=40.0, fixture_id="fixture-1"),
+                _bet(stake=-25.0, fixture_id="fixture-2"),
+                _bet(stake=float("nan"), fixture_id="fixture-3"),
+                _bet(stake=float("inf"), fixture_id="fixture-4"),
+                _bet(stake=True, fixture_id="fixture-5"),
+            ],
+            now=NOW,
+        )
+        self.assertEqual(snapshot["pending_exposure"], 40.0)
+        self.assertEqual(snapshot["bankroll_basis"], 1000.0)
+        self.assertEqual(snapshot["daily_exposure"], 40.0)
+        self.assertEqual(snapshot["max_match_exposure"], 40.0)
+
+    def test_negative_same_match_stake_does_not_open_extra_match_room(self):
+        stake, info = size_bet(
+            probability=0.90,
+            odds=2.0,
+            bank=985,
+            bets=[
+                _bet(stake=15.0, market="1X2", pick="П1"),
+                _bet(stake=-14.0, market="OU", pick="ТБ 2.5"),
+            ],
+            fixture_id="fixture-1",
+            match="Home FC vs Away FC",
+            date_iso="2026-11-11",
+            market="OU",
+            pick="ТБ 2.5",
+            now=NOW,
+        )
+        self.assertEqual(info["match_used"], 15.0)
+        self.assertEqual(stake, 5.0)
+
     def test_non_finite_prices_and_probabilities_are_rejected(self):
         self.assertEqual(kelly(float("nan"), 2.0, 1000), 0.0)
         self.assertEqual(kelly(0.75, float("inf"), 1000), 0.0)
