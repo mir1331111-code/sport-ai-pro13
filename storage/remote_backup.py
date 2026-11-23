@@ -368,18 +368,43 @@ def _decode_remote_snapshot(
     manifest = _manifest_from_gist(gist, token)
     if manifest is None:
         raise FileNotFoundError("Remote SQLite backup does not exist")
+    # Validate declared sizes before joining attacker-controlled Gist contents.
+    raw_bytes = manifest.get("raw_bytes")
+    if isinstance(raw_bytes, bool) or not isinstance(raw_bytes, int):
+        raise ValueError("Remote SQLite backup has an invalid raw size")
+    if raw_bytes < 0 or raw_bytes > MAX_SQLITE_BYTES:
+        raise ValueError("Remote SQLite backup exceeds the safety limit")
+    encrypted_bytes = manifest.get("encrypted_bytes")
+    if isinstance(encrypted_bytes, bool) or not isinstance(encrypted_bytes, int):
+        raise ValueError("Remote SQLite backup has an invalid encrypted size")
+    if encrypted_bytes <= 0 or encrypted_bytes > MAX_ENCRYPTED_BYTES:
+        raise ValueError("Remote SQLite backup exceeds the encrypted size limit")
+
     fernet = _fernet(key)
     parts = []
+    total_chars = 0
     for index in range(int(manifest["parts"])):
         filename = f"{PART_PREFIX}{index:03d}.txt"
-        parts.append(_read_text_file(files, filename, token))
-    encrypted = "".join(parts).encode("ascii")
+        part = _read_text_file(files, filename, token)
+        if len(part) > PART_BYTES:
+            raise ValueError("Remote SQLite backup part exceeds the safety limit")
+        total_chars += len(part)
+        if total_chars > MAX_ENCRYPTED_BYTES:
+            raise ValueError("Remote SQLite backup exceeds the encrypted size limit")
+        parts.append(part)
+    try:
+        encrypted = "".join(parts).encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Remote SQLite backup contains invalid encoded data") from exc
+    if len(encrypted) != encrypted_bytes:
+        raise ValueError("Remote SQLite backup encrypted size does not match its manifest")
     if hashlib.sha256(encrypted).hexdigest() != manifest.get("encrypted_sha256"):
         raise ValueError("Remote SQLite backup encrypted checksum mismatch")
     compressed = fernet.decrypt(encrypted)
-    raw = gzip.decompress(compressed)
-    raw_bytes = int(manifest.get("raw_bytes") or 0)
-    if raw_bytes != len(raw) or len(raw) > MAX_SQLITE_BYTES:
+    # The manual-restore path is bounded too; the remote encrypted path must be
+    # equally resistant to authenticated gzip bombs and corrupted snapshots.
+    raw = _bounded_gzip_decompress(compressed, max_bytes=MAX_SQLITE_BYTES)
+    if raw_bytes != len(raw):
         raise ValueError("Remote SQLite backup size does not match its manifest")
     raw_sha = hashlib.sha256(raw).hexdigest()
     if raw_sha != manifest.get("raw_sha256"):
