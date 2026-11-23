@@ -37,6 +37,18 @@ def make_rows(days=32, matches_per_league=2, market="B365"):
 
 
 class FixedHoldoutModelLabTests(unittest.TestCase):
+
+    def test_saved_dataset_rows_are_validated_for_fixed_holdout_aliases(self):
+        from model.holdout import validate_historical_rows
+
+        rows, fields = validate_historical_rows([{
+            "Date": "2024-01-01", "Div": "E0",
+            "HomeTeam": "Home FC", "AwayTeam": "Away FC",
+            "FTHG": 2, "FTAG": 1,
+        }])
+        self.assertEqual(rows[0]["HomeTeam"], "Home FC")
+        self.assertNotIn("B365H", fields)
+
     def test_uploaded_csv_parser_accepts_supported_football_columns(self):
         from model.holdout import read_historical_csv_bytes
 
@@ -80,6 +92,18 @@ class FixedHoldoutModelLabTests(unittest.TestCase):
         self.assertEqual(report["manifest"]["holdout_start"], "2024-01-17")
         self.assertEqual(report["manifest"]["holdout_end"], "2024-02-01")
         self.assertEqual(set(report["stratified"]["by_league"]), {"E0", "D1", "I1", "SP1", "F1"})
+
+
+    def test_dataset_source_is_traceable_in_the_experiment_manifest(self):
+        report = self._run(
+            make_rows(),
+            dataset_sha256="a" * 64,
+            dataset_source="sqlite:user_datasets.custom_historical_match_rows",
+        )
+        self.assertEqual(
+            report["manifest"]["dataset_source"],
+            "sqlite:user_datasets.custom_historical_match_rows",
+        )
 
     def test_market_comparison_uses_only_the_selected_bookmaker(self):
         rows = make_rows(market="Pinnacle")

@@ -114,3 +114,6 @@ The UI runner uses the fixed evaluator configuration and writes the JSON, Markdo
 promotion-gate JSON under `reports/model_lab` (or the directory containing `MODEL_LAB_GATE_PATH`).
 If the gate file path is overridden, the generated marker is also copied to that exact configured path.
 A PASS marker is consumed by the live scanner; absence or malformed content fails closed.
+
+
+The runner also offers the existing durable `custom_historical_match_rows` archive from SQLite. This is the same raw imported match-history dataset protected by the app's encrypted SQLite backup. Its canonical JSON content is SHA-256 hashed in the report manifest. Only E0, D1, I1, SP1 and F1 are scored; other saved divisions remain visible in data-quality exclusions, not silently relabelled.

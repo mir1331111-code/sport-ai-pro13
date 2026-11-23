@@ -195,8 +195,10 @@ def _render_fixed_holdout_runner():
         evaluate_fixed_holdout,
         load_fixed_holdout_gate_status,
         read_historical_csv_bytes,
+        validate_historical_rows,
         write_model_lab_artifacts,
     )
+    from storage import user_datasets
 
     st.subheader("Fixed Holdout Model Lab v1 · независимая проверка 1X2")
     st.caption(
@@ -222,29 +224,78 @@ def _render_fixed_holdout_runner():
             "не получают автоматический допуск только от этой панели."
         )
 
-    uploaded = st.file_uploader(
-        "Исторический CSV (football-data.co.uk или совместимая таблица)",
-        type=["csv"],
-        key="model_lab_v1_csv_upload",
-        help=(
-            "Нужны дата, лига, хозяева, гости и счёт FT. Для подтверждённого "
-            "pre-kickoff сравнения с рынком дополнительно нужны две timezone-aware "
-            "колонки: время снятия коэффициента и время начала матча."
-        ),
+    data_source = st.radio(
+        "Источник исторических матчей",
+        ("Новый CSV", "Сохранённый архив из SQLite"),
+        horizontal=True,
+        key="model_lab_v1_data_source",
     )
     parsed_rows = None
     field_names = []
     raw = b""
-    if uploaded is not None:
-        raw = uploaded.getvalue()
-        try:
-            parsed_rows, field_names = read_historical_csv_bytes(raw)
-            st.caption(
-                f"Файл: {uploaded.name} · строк матчей: {len(parsed_rows):,} · "
-                f"размер: {len(raw) / (1024 * 1024):.2f} МБ."
+    dataset_source = "uploaded_csv"
+    if data_source == "Новый CSV":
+        uploaded = st.file_uploader(
+            "Исторический CSV (football-data.co.uk или совместимая таблица)",
+            type=["csv"],
+            key="model_lab_v1_csv_upload",
+            help=(
+                "Нужны дата, лига, хозяева, гости и счёт FT. Для подтверждённого "
+                "pre-kickoff сравнения с рынком дополнительно нужны две timezone-aware "
+                "колонки: время снятия коэффициента и время начала матча."
+            ),
+        )
+        if uploaded is not None:
+            raw = uploaded.getvalue()
+            try:
+                parsed_rows, field_names = read_historical_csv_bytes(raw)
+                st.caption(
+                    f"Файл: {uploaded.name} · строк матчей: {len(parsed_rows):,} · "
+                    f"размер: {len(raw) / (1024 * 1024):.2f} МБ."
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+    else:
+        saved_rows = st.session_state.get("_model_lab_v1_saved_rows")
+        refresh_saved = st.button(
+            "Перечитать сохранённый архив из SQLite",
+            key="model_lab_v1_reload_saved_archive",
+        )
+        if saved_rows is None or refresh_saved:
+            try:
+                saved_rows = user_datasets.load_user_dataset("custom_historical_match_rows")
+                st.session_state["_model_lab_v1_saved_rows"] = saved_rows
+            except Exception as exc:
+                saved_rows = []
+                st.error(f"Не удалось прочитать архив из SQLite: {type(exc).__name__}: {exc}")
+        if saved_rows:
+            try:
+                parsed_rows, field_names = validate_historical_rows(saved_rows)
+                raw = json.dumps(
+                    parsed_rows, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), default=str,
+                ).encode("utf-8")
+                dataset_source = "sqlite:user_datasets.custom_historical_match_rows"
+                divisions = sorted({
+                    str(row.get("Div") or row.get("div") or row.get("league") or "").strip()
+                    for row in parsed_rows
+                } - {""})
+                st.caption(
+                    f"SQLite архив: {len(parsed_rows):,} матчей · "
+                    f"лиги/Div: {', '.join(divisions[:20]) or 'не указаны'} · "
+                    f"SHA-256: {hashlib.sha256(raw).hexdigest()[:16]}…"
+                )
+                st.info(
+                    "Model Lab v1 считает только E0, D1, I1, SP1 и F1. "
+                    "Другие сохранённые дивизионы будут прозрачно исключены из отчёта."
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+        else:
+            st.warning(
+                "В SQLite пока нет custom_historical_match_rows. Сначала импортируй "
+                "архив в Сканере → Данные контекста и исторические архивы или переключись на CSV."
             )
-        except ValueError as exc:
-            st.error(str(exc))
 
     c1, c2, c3 = st.columns([1, 1, 1.2])
     with c1:
@@ -328,6 +379,7 @@ def _render_fixed_holdout_runner():
                     holdout_end=holdout_end,
                     market_source=market_source,
                     dataset_sha256=hashlib.sha256(raw).hexdigest(),
+                    dataset_source=dataset_source,
                     odds_timestamp_field=(
                         odds_timestamp if odds_timestamp != "— не указано —" else None
                     ),
