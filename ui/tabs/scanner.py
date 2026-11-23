@@ -3508,19 +3508,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             sstats_history_rows = []
             if sstats_key and rows:
                 try:
-                    league_ids = {
-                        str(item.get("sstats_league_id") or "").strip()
-                        for item in rows if isinstance(item, dict)
-                    }
+                    # sstats_historical_matches_for_fixtures resolves missing IDs
+                    # from the exact Leagues catalogue before applying this limit.
+                    # Do not cap it by the IDs present in the initial fixture payload.
                     history_league_limit = _runtime_int(
                         "sstats_history_max_leagues",
                         "SSTATS_HISTORY_MAX_LEAGUES",
                         default=30,
                         minimum=1,
                     )
-                    history_league_limit = min(
-                        history_league_limit, max(1, len(league_ids)),
-                    ) if league_ids else history_league_limit
                     sstats_history_rows = sstats_historical_matches_for_fixtures(
                         rows, sstats_key, years_back=5,
                         max_leagues=history_league_limit, logs=logs,
