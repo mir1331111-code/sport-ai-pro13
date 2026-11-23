@@ -1,12 +1,23 @@
-"""ui/tabs/backtest.py — walk-forward бэктест."""
+"""ui/tabs/backtest.py — leakage-safe, risk-capped walk-forward backtest."""
 from __future__ import annotations
 
+import math
+from datetime import datetime
 import streamlit as st
 
 from config import DIV_NAMES
-from data.sources import load_seasonal, parse_date
+from data.sources import load_seasonal
 from model.engine import Engine
+from model.training import (
+    iter_calendar_day_batches,
+    prepare_completed_training_rows,
+)
 from betting.kelly import edge, expected_value, kelly
+from betting.risk import (
+    KELLY_FRACTION,
+    MAX_MARKET_STAKE_PCT,
+    size_bet,
+)
 
 
 def _f(value):
@@ -170,8 +181,9 @@ def render(matrix_n):
     st.header("Бэктест (walk-forward)")
 
     st.caption(
-        "Исторические букмекерские коэффициенты. "
-        "Модель не видит результат матча до формирования сигнала."
+        "Исторические букмекерские коэффициенты. Все матчи одной календарной даты "
+        "прогнозируются до загрузки любого результата этого дня. Размер позиций "
+        "ограничен live-политикой: quarter Kelly, 1% на рынок, 2% на матч и 5% на день."
     )
 
     b1, b2, b3, b4 = st.columns(4)
@@ -221,8 +233,8 @@ def render(matrix_n):
     flat_pct = b6.slider(
         "Flat % банка",
         0.25,
-        3.00,
-        1.00,
+        MAX_MARKET_STAKE_PCT * 100.0,
+        min(1.00, MAX_MARKET_STAKE_PCT * 100.0),
         0.25,
         disabled=bt_mode != "Flat",
     )
@@ -230,8 +242,8 @@ def render(matrix_n):
     kelly_frac = b7.slider(
         "Kelly fraction",
         0.05,
-        1.00,
-        0.25,
+        KELLY_FRACTION,
+        KELLY_FRACTION,
         0.05,
         disabled=bt_mode != "Kelly",
     )
@@ -246,28 +258,20 @@ def render(matrix_n):
     # Загрузка истории
     # ================================================================
 
-    rows_all = load_seasonal(
+    raw_rows = load_seasonal(
         bt_div,
         bt_season,
     )
-
-    rows_all = [
-        r
-        for r in rows_all
-        if r.get("FTHG") not in (None, "")
-        and r.get("FTAG") not in (None, "")
-        and parse_date(
-            r.get("Date", "")
-        )
-    ]
-
-    rows_all.sort(
-        key=lambda r: parse_date(
-            r.get("Date", "")
-        )
+    prepared_rows, skipped_rows = prepare_completed_training_rows(
+        {bt_div: [raw_rows]},
+        (bt_div,),
     )
 
-    if len(rows_all) < 150:
+    skipped_total = sum(skipped_rows.values())
+    if skipped_total:
+        st.caption(f"Пропущено некорректных исторических строк: {skipped_total}")
+
+    if len(prepared_rows) < 150:
         st.error(
             "Мало матчей для бэктеста. "
             "Нужно минимум 150."
@@ -298,228 +302,195 @@ def render(matrix_n):
         0.0
     )
 
-    total = len(rows_all)
+    total = len(prepared_rows)
+    processed = 0
 
     # ================================================================
-    # WALK-FORWARD
+    # WALK-FORWARD — all fixtures from one calendar day are forecast
+    # from the same pre-day model state before any result is ingested.
     # ================================================================
 
-    for j, r in enumerate(rows_all):
-        h = (
-            r.get("HomeTeam")
-            or ""
-        ).strip()
+    last_progress_report = 0
+    for day_batch in iter_calendar_day_batches(prepared_rows):
+        day_start_bank = bank
+        day_date = day_batch[0]["match_date"].date()
+        day_stamp = datetime.combine(day_date, datetime.min.time())
+        candidates = []
 
-        a = (
-            r.get("AwayTeam")
-            or ""
-        ).strip()
+        # Phase 1: generate every same-day forecast without learning any
+        # result from that day. CSV row order is not a reliable kickoff order.
+        for offset, item in enumerate(day_batch):
+            index = processed + offset
+            h = item["home"]
+            a = item["away"]
+            hg = item["home_goals"]
+            ag = item["away_goals"]
+            md = item["match_date"]
+            row = item["row"]
 
-        if not h or not a:
-            continue
+            if index < MIN_TRAIN_MATCHES:
+                continue
 
-        try:
-            hg = float(
-                r["FTHG"]
-            )
-
-            ag = float(
-                r["FTAG"]
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            continue
-
-        md = parse_date(
-            r.get("Date", "")
-        )
-
-        if not md:
-            continue
-
-        # ------------------------------------------------------------
-        # После начального training window начинаем тестировать.
-        #
-        # ВАЖНО:
-        # predict вызывается ДО learn_step текущего матча.
-        # Значит результат текущего матча не попадает в модель.
-        # ------------------------------------------------------------
-
-        if j >= MIN_TRAIN_MATCHES:
             try:
-                P = engine.predict(
+                prediction = engine.predict(
                     h,
                     a,
                     bt_div,
                     match_date=md,
-                    cup=bt_div in (
-                        "C1",
-                        "EL",
-                        "EC",
-                    ),
+                    cup=bt_div in ("C1", "EL", "EC"),
                 )
-
             except Exception:
-                P = None
+                prediction = None
 
-            if P:
-                historical_odds = (
-                    _pick_historical_odds(r)
+            if not prediction:
+                continue
+
+            signal = _best_signal(
+                prediction,
+                _pick_historical_odds(row),
+                bt_edge,
+                bt_ev,
+            )
+            if signal is None:
+                continue
+
+            fixture_id = (
+                f"backtest:{day_date.isoformat()}:{bt_div}:"
+                f"{h.casefold()}:{a.casefold()}"
+            )
+            candidates.append({
+                "date": day_date.isoformat(),
+                "home": h,
+                "away": a,
+                "home_goals": hg,
+                "away_goals": ag,
+                "fixture_id": fixture_id,
+                "match": f"{h} vs {a}",
+                "pick": signal["pick"],
+                "prob": signal["prob"],
+                "odd": signal["odd"],
+                "edge": signal["edge"],
+                "ev": signal["ev"],
+            })
+
+        # Phase 2: size positions against one opening-of-day bankroll.
+        # The central size_bet() policy applies quarter Kelly, 1% market,
+        # 2% match and 5% daily exposure limits to this simulated portfolio.
+        # Strongest same-day EV candidates receive the limited daily room first;
+        # same-day outcomes cannot change another fixture's stake.
+        virtual_day_bets = []
+        day_free_bank = day_start_bank
+        allocated = []
+        for candidate in sorted(
+            candidates,
+            key=lambda item: (
+                item["ev"], item["edge"], item["prob"],
+                item["home"].casefold(), item["away"].casefold(),
+            ),
+            reverse=True,
+        ):
+            _, risk = size_bet(
+                probability=candidate["prob"],
+                odds=candidate["odd"],
+                bank=day_free_bank,
+                bets=virtual_day_bets,
+                fixture_id=candidate["fixture_id"],
+                match=candidate["match"],
+                date_iso=candidate["date"],
+                market="1X2",
+                pick=candidate["pick"],
+                division=bt_div,
+                now=day_stamp,
+            )
+            if risk.get("reason") != "approved":
+                continue
+
+            if bt_mode == "Kelly":
+                requested_stake = kelly(
+                    prob=candidate["prob"],
+                    odds=candidate["odd"],
+                    bank=day_start_bank,
+                    frac=min(float(kelly_frac), KELLY_FRACTION),
+                    cap=MAX_MARKET_STAKE_PCT,
                 )
+            else:
+                requested_stake = day_start_bank * (float(flat_pct) / 100.0)
 
-                signal = _best_signal(
-                    P,
-                    historical_odds,
-                    bt_edge,
-                    bt_ev,
-                )
+            room = min(
+                max(0.0, float(risk.get("market_limit", 0.0)) - float(risk.get("market_used", 0.0))),
+                max(0.0, float(risk.get("match_limit", 0.0)) - float(risk.get("match_used", 0.0))),
+                max(0.0, float(risk.get("daily_limit", 0.0)) - float(risk.get("daily_used", 0.0))),
+                max(0.0, day_free_bank),
+            )
+            stake = math.floor(max(0.0, min(requested_stake, room)) * 100.0 + 1e-9) / 100.0
+            if stake <= 0.0:
+                continue
 
-                if signal is not None:
-                    pick = signal["pick"]
-                    prob = signal["prob"]
-                    odd = signal["odd"]
-                    market_edge = signal["edge"]
-                    ev = signal["ev"]
+            virtual_day_bets.append({
+                "fixture_id": candidate["fixture_id"],
+                "match": candidate["match"],
+                "date_iso": candidate["date"],
+                "div": bt_div,
+                "market": "1X2",
+                "pick": candidate["pick"],
+                "stake": stake,
+                "status": "pending",
+                "placed_at": day_stamp.isoformat(),
+            })
+            day_free_bank = max(0.0, day_free_bank - stake)
+            allocated.append({**candidate, "stake": stake})
 
-                    # ------------------------------------------------
-                    # Размер ставки
-                    # ------------------------------------------------
+        # Phase 3: settle the day's simulated positions together. Equity is
+        # marked once per day, avoiding arbitrary same-day drawdown ordering.
+        day_pnl = 0.0
+        settled_day = []
+        for candidate in allocated:
+            won = _result(
+                candidate["pick"],
+                candidate["home_goals"],
+                candidate["away_goals"],
+            )
+            pnl = (
+                candidate["stake"] * (candidate["odd"] - 1.0)
+                if won else -candidate["stake"]
+            )
+            day_pnl += pnl
+            settled_day.append({**candidate, "won": won, "pnl": pnl})
 
-                    if bt_mode == "Kelly":
-                        stake = kelly(
-                            prob=prob,
-                            odds=odd,
-                            bank=bank,
-                            frac=kelly_frac,
-                            cap=0.05,
-                        )
+        bank = day_start_bank + day_pnl
+        if settled_day:
+            equity_curve.append(bank)
+            peak_bank = max(peak_bank, bank)
+            for candidate in settled_day:
+                log.append({
+                    "date": candidate["date"],
+                    "home": candidate["home"],
+                    "away": candidate["away"],
+                    "pick": candidate["pick"],
+                    "prob": round(candidate["prob"], 4),
+                    "odd": round(candidate["odd"], 3),
+                    "edge": round(candidate["edge"], 4),
+                    "ev": round(candidate["ev"], 4),
+                    "stake": round(candidate["stake"], 2),
+                    "won": candidate["won"],
+                    "pnl": round(candidate["pnl"], 2),
+                    "bank": round(bank, 2),
+                })
 
-                    else:
-                        stake = round(
-                            bank
-                            * (
-                                flat_pct
-                                / 100.0
-                            ),
-                            2,
-                        )
-
-                    # Без отрицательных/нулевых ставок.
-                    stake = max(
-                        0.0,
-                        float(stake),
-                    )
-
-                    # Абсолютный safety cap:
-                    # максимум 5% банка.
-                    stake = round(
-                        min(
-                            stake,
-                            bank * 0.05,
-                        ),
-                        2,
-                    )
-
-                    if stake > 0:
-                        won = _result(
-                            pick,
-                            hg,
-                            ag,
-                        )
-
-                        if won:
-                            pnl = (
-                                stake
-                                * (odd - 1.0)
-                            )
-
-                        else:
-                            pnl = -stake
-
-                        bank += pnl
-
-                        equity_curve.append(
-                            bank
-                        )
-
-                        peak_bank = max(
-                            peak_bank,
-                            bank,
-                        )
-
-                        log.append(
-                            {
-                                "date": md.strftime(
-                                    "%Y-%m-%d"
-                                ),
-                                "home": h,
-                                "away": a,
-                                "pick": pick,
-                                "prob": round(
-                                    prob,
-                                    4,
-                                ),
-                                "odd": round(
-                                    odd,
-                                    3,
-                                ),
-                                "edge": round(
-                                    market_edge,
-                                    4,
-                                ),
-                                "ev": round(
-                                    ev,
-                                    4,
-                                ),
-                                "stake": round(
-                                    stake,
-                                    2,
-                                ),
-                                "won": won,
-                                "pnl": round(
-                                    pnl,
-                                    2,
-                                ),
-                                "bank": round(
-                                    bank,
-                                    2,
-                                ),
-                            }
-                        )
-
-        # ------------------------------------------------------------
-        # После прогноза текущий матч добавляется в модель.
-        # ------------------------------------------------------------
-
+        # Phase 4: only now let any score from this day enter the model.
         try:
-            engine.learn_step(
-                h,
-                a,
-                hg,
-                ag,
-                r,
-                lg=bt_div,
-                match_num=j,
-                total=total,
-                match_date=md,
+            engine.learn_batch(day_batch)
+        except Exception as exc:
+            st.error(
+                f"Обучение остановлено после {day_date.isoformat()}: "
+                f"{type(exc).__name__}. Неполная хронология не продолжена."
             )
+            return
 
-        except Exception:
-            pass
-
-        if j % 25 == 0:
-            progress.progress(
-                min(
-                    1.0,
-                    j / max(
-                        1,
-                        total,
-                    ),
-                )
-            )
+        processed += len(day_batch)
+        if processed == total or processed - last_progress_report >= 25:
+            progress.progress(min(1.0, processed / max(1, total)))
+            last_progress_report = processed
 
     progress.progress(1.0)
 

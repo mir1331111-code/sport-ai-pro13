@@ -97,6 +97,45 @@ def prepare_completed_training_rows(
     return prepared, skipped
 
 
+def iter_calendar_day_batches(rows: list[dict]):
+    """Yield contiguous calendar-day batches from an already sorted timeline.
+
+    Same-day fixtures must be predicted from one shared pre-day model state;
+    their observed scores are only ingested after the complete batch has been
+    processed. Reject unsorted/undated input rather than silently weakening
+    that leakage boundary.
+    """
+    if not isinstance(rows, list):
+        raise TypeError("rows must be a list")
+    cursor = 0
+    previous_day = None
+    while cursor < len(rows):
+        item = rows[cursor]
+        if not isinstance(item, dict):
+            raise TypeError("each training row must be a mapping")
+        match_day = _parse_match_date(item.get("match_date"))
+        if match_day is None:
+            raise ValueError("each training row requires a valid match_date")
+        if previous_day is not None and match_day < previous_day:
+            raise ValueError("training rows must be sorted by calendar day")
+        end = cursor + 1
+        while end < len(rows):
+            next_item = rows[end]
+            if not isinstance(next_item, dict):
+                raise TypeError("each training row must be a mapping")
+            next_day = _parse_match_date(next_item.get("match_date"))
+            if next_day is None:
+                raise ValueError("each training row requires a valid match_date")
+            if next_day < match_day:
+                raise ValueError("training rows must be sorted by calendar day")
+            if next_day != match_day:
+                break
+            end += 1
+        yield rows[cursor:end]
+        previous_day = match_day
+        cursor = end
+
+
 def train_engine_chronologically(
     engine: Any,
     match_stats: Any,
@@ -121,13 +160,7 @@ def train_engine_chronologically(
         raise ValueError("total_count is smaller than the absolute processed total")
     processed = 0
     days = 0
-    cursor = 0
-    while cursor < total:
-        match_day = rows[cursor]["match_date"].date()
-        end = cursor + 1
-        while end < total and rows[end]["match_date"].date() == match_day:
-            end += 1
-        batch = rows[cursor:end]
+    for batch in iter_calendar_day_batches(rows):
         for offset, item in enumerate(batch):
             item["match_num"] = processed_offset + processed + offset
             item["total"] = absolute_total
@@ -143,7 +176,6 @@ def train_engine_chronologically(
 
         processed += len(batch)
         days += 1
-        cursor = end
         if on_progress is not None:
             on_progress(processed_offset + processed, absolute_total)
 
