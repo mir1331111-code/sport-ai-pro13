@@ -1322,6 +1322,7 @@ def sstats_historical_matches_for_fixtures(
     years_back: int = 5,
     max_leagues: int = 30,
     logs=None,
+    force_refresh: bool = False,
 ) -> list[dict]:
     """Load completed results for competitions present in the current SStats scan.
 
@@ -1413,7 +1414,7 @@ def sstats_historical_matches_for_fixtures(
             f"sstats_history_v1_{league_id}_{item['division']}_"
             f"{from_text}_{to_text}_{token_tag}"
         )
-        cached = cache_get(cache_key, 24 * 60 * 60)
+        cached = None if force_refresh else cache_get(cache_key, 24 * 60 * 60)
         if isinstance(cached, list):
             return item, cached, "cache", {
                 "fetched": len(cached), "accepted": len(cached),
