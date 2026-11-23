@@ -10,7 +10,8 @@ from ui.tabs.dashboard import (
     _ai_comparison_html, _match_table_row, _probability_health_note,
     _dashboard_real_1x2_quotes, _dashboard_latest_ai_status,
     _quality_panel, _reliability_svg, _sparkline_svg,
-    dashboard_recommendation_groups, recommendation_group_html,
+    dashboard_recommendation_groups, dashboard_schedule_diagnostics,
+    recommendation_group_html,
     dashboard_strong_events, strong_events_html,
     all_market_candidates_html, dashboard_all_market_candidates,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
@@ -91,7 +92,8 @@ class DashboardHelperTests(unittest.TestCase):
             item["card"]["home_team"]
             for group in groups.values() for item in group
         ]
-        self.assertNotIn("Background FC", all_visible)
+        self.assertEqual([item["card"]["home_team"] for item in groups["background"]],
+                         ["Background FC"])
         self.assertEqual(len(all_visible), len(set(all_visible)))
 
     def test_recommendation_groups_keep_real_market_price_for_nonapproved_matches(self):
@@ -211,7 +213,7 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertEqual(_dashboard_latest_ai_status([]), "")
         self.assertEqual(_dashboard_latest_ai_status(None), "")
 
-    def test_dashboard_does_not_show_unknown_model_support_as_near_strong(self):
+    def test_dashboard_keeps_unknown_model_support_in_provisional_section(self):
         from data.fixture_time import app_timezone
 
         now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
@@ -231,7 +233,66 @@ class DashboardHelperTests(unittest.TestCase):
         groups = dashboard_recommendation_groups(
             [unsupported], now=now, period_end=now + timedelta(days=3),
         )
-        self.assertEqual(sum(len(value) for value in groups.values()), 0)
+        self.assertEqual(len(groups["near_strong"]), 0)
+        self.assertEqual(len(groups["approved"]), 0)
+        self.assertEqual(len(groups["provisional"]), 1)
+        self.assertIn("поддержка модели: unknown", groups["provisional"][0]["reason"])
+
+    def test_dashboard_schedule_diagnostics_explain_missing_started_and_outside_window(self):
+        now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
+        cards = [
+            {
+                "fixture_id": "future",
+                "date_iso": "2026-11-23", "time": "12:00",
+                "p1": .5, "px": .3, "p2": .2,
+            },
+            {
+                "fixture_id": "missing-time",
+                "date_iso": "2026-11-23",
+                "p1": .5, "px": .3, "p2": .2,
+            },
+            {
+                "fixture_id": "started",
+                "date_iso": "2026-11-23", "time": "09:00",
+                "p1": .5, "px": .3, "p2": .2,
+            },
+            {
+                "fixture_id": "outside",
+                "date_iso": "2026-11-26", "time": "12:00",
+                "p1": .5, "px": .3, "p2": .2,
+            },
+        ]
+        result = dashboard_schedule_diagnostics(
+            cards, now=now, period_end=now + timedelta(days=1),
+        )
+        self.assertEqual(result["total"], 4)
+        self.assertEqual(result["in_period"], 1)
+        self.assertEqual(result["missing_kickoff"], 1)
+        self.assertEqual(result["already_started"], 1)
+        self.assertEqual(result["outside_period"], 1)
+        self.assertEqual(result["valid_1x2"], 4)
+
+    def test_dashboard_preserves_low_history_forecasts_as_non_actionable(self):
+        now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
+        card = {
+            "fixture_id": "thin-history",
+            "date_iso": "2026-11-24",
+            "time": "18:00",
+            "home_team": "Thin FC",
+            "away_team": "Away FC",
+            "p1": .62, "px": .23, "p2": .15,
+            "model_support_status": "team_supported",
+            "independent_features": {
+                "home_home_sample": 4,
+                "away_away_sample": 6,
+            },
+        }
+        groups = dashboard_recommendation_groups(
+            [card], now=now, period_end=now + timedelta(days=2),
+        )
+        self.assertEqual(len(groups["provisional"]), 1)
+        self.assertIn("4/10", groups["provisional"][0]["reason"])
+        self.assertIn("ставка заблокирована", groups["provisional"][0]["reason"])
 
     def test_model_only_prices_are_not_rendered_as_real_1x2_quotes(self):
         card = {
@@ -314,7 +375,7 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("Одобрено к ставке", rendered)
         self.assertIn("Сейчас нет матчей", rendered)
         self.assertNotIn("Фоновый прогноз", rendered)
-        self.assertEqual(recommendation_group_html("background", []), "")
+        self.assertIn("Фоновый прогноз", recommendation_group_html("background", []))
 
     def test_scan_defaults_to_three_days(self):
         self.assertEqual(DEFAULT_SCAN_HORIZON_DAYS, 3)
