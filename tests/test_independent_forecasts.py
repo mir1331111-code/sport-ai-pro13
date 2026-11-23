@@ -10,6 +10,8 @@ from model.independent_forecasts import (
     historical_features,
     historical_xg_features,
     parse_llm_probabilities,
+    structured_ai_probabilities,
+    build_ai_crosscheck,
     record_scan_forecasts,
     settle_due_forecasts,
 )
