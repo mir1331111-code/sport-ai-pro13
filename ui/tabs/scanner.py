@@ -3894,8 +3894,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             )
             value_recheck_inputs = None
             if not initial_context_qualified:
+                base_value_verdict = copy.deepcopy(verdict)
+                # The initial context block is superseded only if a fresh,
+                # confirmed SStats XI + referee snapshot passes the same gates.
+                # Do not carry its stale reason into a subsequently approved pick.
+                base_value_verdict.pop("strong_blocked", None)
+                base_value_verdict["reasons"] = [
+                    reason for reason in (base_value_verdict.get("reasons") or [])
+                    if not str(reason).startswith("Strong/Value заблокированы:")
+                ]
                 value_recheck_inputs = {
-                    "base_verdict": copy.deepcopy(verdict),
+                    "base_verdict": base_value_verdict,
                     "candidate_rows": copy.deepcopy(candidate_rows),
                     "selection_odds": dict(selection_odds),
                     "bank": float(D["bank"]),
