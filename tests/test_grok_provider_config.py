@@ -9,9 +9,9 @@ from config import (
 
 class GrokProviderConfigurationTests(unittest.TestCase):
     def test_fresh_or_invalid_provider_defaults_to_xai_grok(self):
-        self.assertEqual(DEFAULT_LLM_PROVIDER, "Grok (x.ai)")
-        self.assertEqual(normalize_llm_provider(None), "Grok (x.ai)")
-        self.assertEqual(normalize_llm_provider("unknown-provider"), "Grok (x.ai)")
+        self.assertEqual(DEFAULT_LLM_PROVIDER, "Groq GPT-OSS 120B")
+        self.assertEqual(normalize_llm_provider(None), "Groq GPT-OSS 120B")
+        self.assertEqual(normalize_llm_provider("unknown-provider"), "Groq GPT-OSS 120B")
 
     def test_explicit_existing_provider_selection_is_preserved(self):
         self.assertEqual(

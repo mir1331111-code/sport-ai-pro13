@@ -292,6 +292,8 @@ class PrognozistOddsParserTests(unittest.TestCase):
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
             with (
                 patch.object(sources, "prognozist_permission_enabled", return_value=True),
+                # Isolate permission behavior from live robots.txt/network policy.
+                patch.object(sources, "_prognozist_allowed", return_value=True),
                 patch.object(sources, "cache_get", return_value=None),
                 patch.object(sources, "_prognozist_line_index", return_value=[
                     {"text": "Arsenal Chelsea П1 2.10 X 3.20 П2 3.50", "odds": odds}
@@ -330,6 +332,8 @@ class PrognozistOddsParserTests(unittest.TestCase):
         odds = {"П1": 2.1, "X": 3.2, "П2": 3.5}
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": "1"}):
             with (
+                # This deterministic exact-line test is intentionally offline.
+                patch.object(sources, "_prognozist_allowed", return_value=True),
                 patch.object(sources, "cache_get", return_value=None),
                 patch.object(sources, "_prognozist_line_index", return_value=[
                     {"text": "Arsenal Chelsea П1 2.10 X 3.20 П2 3.50", "odds": odds}
