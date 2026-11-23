@@ -77,7 +77,7 @@ from llm.deep_analysis import (
 )
 from model.independent_forecasts import (
     historical_features, historical_xg_features,
-    record_scan_forecasts, parse_llm_probabilities,
+    record_scan_forecasts, parse_llm_probabilities, build_ai_crosscheck,
 )
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label, render_fixture_header)
@@ -4090,6 +4090,21 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         analysis, model_pick_code=model_pick_code
                     )
                     card["deep_analysis_fixture_id"] = fixture_id
+                    card["ai_crosscheck"] = build_ai_crosscheck(card, analysis)
+                    if card["ai_crosscheck"].get("status") == "disagreement":
+                        logs.append(
+                            f"⚠️ AI CROSS-CHECK: {card.get('match_ru') or card.get('match')}: "
+                            f"модель {card['ai_crosscheck'].get('main_pick')} · "
+                            f"AI {card['ai_crosscheck'].get('ai_pick')} · "
+                            "ручная проверка расхождения; Value/EV/Edge/Kelly не изменены."
+                        )
+                    elif card["ai_crosscheck"].get("status") == "agreement":
+                        logs.append(
+                            f"✅ AI CROSS-CHECK: {card.get('match_ru') or card.get('match')}: "
+                            f"модель и независимый AI согласны по "
+                            f"{card['ai_crosscheck'].get('main_pick')}; "
+                            "это диагностическое согласие, не дополнительное доказательство Value."
+                        )
                     llm_done += 1
 
                 logs.append(
