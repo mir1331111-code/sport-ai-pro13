@@ -437,7 +437,8 @@ def build_ai_crosscheck(card: dict, analysis: dict | None = None) -> dict[str, A
         "validated_value_pick": value_pick if value_pick in {"П1", "X", "П2"} else None,
         "validated_value_odds": value_odds,
         "ai_agrees_with_value_pick": (
-            ai_pick == value_pick if value_pick in {"П1", "X", "П2"} else None
+            labels[ai_pick] == value_pick
+            if value_pick in {"П1", "X", "П2"} else None
         ),
         "value_passed": bool(
             isinstance(winner_verdict, dict) and winner_verdict.get("value_passed")
