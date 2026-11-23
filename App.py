@@ -33,7 +33,7 @@ st.set_page_config(page_title="NEURO BET PRO",
                    page_icon="🏟", layout="wide",
                    initial_sidebar_state="expanded")
 
-from config import (APP_VERSION, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
+from config import (APP_VERSION, APP_BUILD_ID, LLM_PROVIDERS, DATA_VERSION,  # noqa: E402
                     AUTO_SETTLE_THROTTLE_SEC, DB_FILE, normalize_llm_provider)
 from llm.deep_analysis import check_provider_connection  # noqa: E402
 from storage import sqlite_store as db  # noqa: E402
@@ -984,7 +984,8 @@ with st.sidebar:
         "<div class='neo-side-status'><div class='neo-side-status-head'>"
         "<i class='neo-side-status-dot'></i> Система активна</div>"
         f"<small>{_model_health_label}<br/>Матчей в скане: {len(D.get('cards') or [])}"
-        f"<br/>{_backup_label}<br/>Устаревших ставок: {stale_count}<br/>Версия: {APP_VERSION}</small></div>",
+        f"<br/>{_backup_label}<br/>Устаревших ставок: {stale_count}"
+        f"<br/>Версия: {APP_VERSION} · сборка: {APP_BUILD_ID}</small></div>",
         unsafe_allow_html=True,
     )
     with st.expander("⚙️ Настройки и обслуживание", expanded=False):
@@ -1152,6 +1153,62 @@ with st.sidebar:
         _keys_saved = save_local_secrets(_keys_to_save)
         if not _keys_saved:
             st.caption("⚠️ Не удалось сохранить ключи на диске. Проверьте права записи хостинга.")
+        _api_key_labels = {
+            "fdorg_token": "football-data.org",
+            "sstats_api_key": "SStats.net",
+            "footballapi_key": "Football API xG",
+            "llm_api_key": "Groq / Gemini",
+            "xai_api_key": "Grok xAI",
+        }
+        _api_key_status = {}
+        for _storage_key, (_widget_key, _env_names, _secret_names) in _widget_key_map.items():
+            if any(os.environ.get(name, "").strip() for name in _env_names):
+                _api_key_status[_storage_key] = "серверная переменная окружения"
+            elif _configured_secret(*_secret_names, "api_key", "key" if _storage_key == "sstats_api_key" else ""):
+                _api_key_status[_storage_key] = "Streamlit Secrets"
+            elif _storage_key in _keys_to_save and _keys_saved:
+                _api_key_status[_storage_key] = "локальный файл приложения"
+            elif _storage_key in _user_entered_keys:
+                _api_key_status[_storage_key] = "введён, но не сохранён"
+            else:
+                _api_key_status[_storage_key] = "не настроен"
+
+        st.markdown("**Состояние хранения ключей**")
+        st.caption(
+            "Поля ввода намеренно не заполняются при перезагрузке браузера. "
+            "Пустое поле само по себе не означает, что ключ потерян: сканер читает "
+            "ключ на сервере из ENV, Streamlit Secrets или локального хранилища."
+        )
+        for _storage_key, _label in _api_key_labels.items():
+            st.caption(f"{_label}: {_api_key_status.get(_storage_key, 'не настроен')}")
+        _local_only_keys = [
+            _api_key_labels[key] for key, state in _api_key_status.items()
+            if state == "локальный файл приложения"
+        ]
+        if _local_only_keys:
+            st.warning(
+                "Ключи " + ", ".join(_local_only_keys) +
+                " есть только в локальном файле. На Streamlit Community Cloud "
+                "локальные файлы могут исчезнуть после перезапуска или пересборки. "
+                "Для постоянного хранения добавьте их в Manage app → Settings → Secrets."
+            )
+            st.code(
+                'FDORG_TOKEN = "..."\n'
+                'SSTATS_API_KEY = "..."\n'
+                'FOOTBALLAPI_KEY = "..."\n'
+                'LLM_API_KEY = "..."\n'
+                'XAI_API_KEY = "..."',
+                language="toml",
+            )
+        elif not any(
+            state in {"серверная переменная окружения", "Streamlit Secrets"}
+            for state in _api_key_status.values()
+        ):
+            st.info(
+                "Ни один API-ключ не найден в постоянной серверной конфигурации. "
+                "Сканирование будет работать только с доступными публичными источниками."
+            )
+
         # Keep provider and model in sync. Older saved sessions can retain a
         # Groq model ID after changing the provider to Grok; that makes xAI return
         # an empty/HTTP error and leaves every independent analysis at zero.
