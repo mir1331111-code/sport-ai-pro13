@@ -34,6 +34,49 @@ from model.walk_forward import (
     _without_xg,
 )
 
+MAX_HOLDOUT_CSV_BYTES = 100 * 1024 * 1024
+_REQUIRED_CSV_ALIASES = (
+    ("Date", "date", "match_date", "kickoff_date"),
+    ("Div", "league", "competition"),
+    ("HomeTeam", "home_team", "home"),
+    ("AwayTeam", "away_team", "away"),
+    ("FTHG", "home_goals", "hg"),
+    ("FTAG", "away_goals", "ag"),
+)
+
+
+def read_historical_csv_bytes(raw: bytes) -> tuple[list[dict[str, str]], list[str]]:
+    """Parse and validate an uploaded historical football CSV without guessing columns."""
+    if not isinstance(raw, (bytes, bytearray)):
+        raise ValueError("Загруженный CSV должен быть двоичным файлом.")
+    if not raw:
+        raise ValueError("CSV-файл пуст.")
+    if len(raw) > MAX_HOLDOUT_CSV_BYTES:
+        raise ValueError(
+            f"Размер CSV превышает лимит {MAX_HOLDOUT_CSV_BYTES // (1024 * 1024)} МБ."
+        )
+    try:
+        decoded = bytes(raw).decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("CSV должен быть сохранён в UTF-8 или UTF-8 с BOM.") from exc
+    reader = csv.DictReader(io.StringIO(decoded, newline=""))
+    fields = [str(field or "").strip() for field in (reader.fieldnames or [])]
+    reader.fieldnames = fields
+    if not fields:
+        raise ValueError("В CSV отсутствует строка заголовков.")
+    missing = [
+        "/".join(aliases)
+        for aliases in _REQUIRED_CSV_ALIASES
+        if not any(alias in fields for alias in aliases)
+    ]
+    if missing:
+        raise ValueError("В CSV не хватает обязательных колонок: " + ", ".join(missing))
+    rows = [dict(row) for row in reader if row and any(value not in (None, "") for value in row.values())]
+    if not rows:
+        raise ValueError("В CSV нет строк матчей.")
+    return rows, fields
+
+
 TOP_FIVE_LEAGUES = {
     "E0": "English Premier League",
     "D1": "German Bundesliga",

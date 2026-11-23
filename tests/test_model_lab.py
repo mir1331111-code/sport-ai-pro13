@@ -37,6 +37,28 @@ def make_rows(days=32, matches_per_league=2, market="B365"):
 
 
 class FixedHoldoutModelLabTests(unittest.TestCase):
+    def test_uploaded_csv_parser_accepts_supported_football_columns(self):
+        from model.holdout import read_historical_csv_bytes
+
+        raw = (
+            b"Date,Div,HomeTeam,AwayTeam,FTHG,FTAG,B365H,B365D,B365A\r\n"
+            b"2024-01-01,E0,Home FC,Away FC,2,1,2.1,3.4,3.7\r\n"
+        )
+        rows, fields = read_historical_csv_bytes(raw)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("B365H", fields)
+        self.assertEqual(rows[0]["HomeTeam"], "Home FC")
+
+    def test_uploaded_csv_parser_rejects_missing_columns_empty_and_oversized_files(self):
+        from model.holdout import MAX_HOLDOUT_CSV_BYTES, read_historical_csv_bytes
+
+        with self.assertRaisesRegex(ValueError, "не хватает"):
+            read_historical_csv_bytes(b"Date,Div,HomeTeam\r\n2024-01-01,E0,Home\r\n")
+        with self.assertRaisesRegex(ValueError, "пуст"):
+            read_historical_csv_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "превышает лимит"):
+            read_historical_csv_bytes(b"x" * (MAX_HOLDOUT_CSV_BYTES + 1))
+
     def _run(self, rows, **kwargs):
         params = {
             "holdout_start": "2024-01-17",
