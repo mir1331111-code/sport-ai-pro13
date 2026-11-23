@@ -170,7 +170,6 @@ def all_market_candidates_html(events):
     rows = []
     verified = sum(bool(item.get("value_verified")) for item in events)
     for item in events:
-        card = item
         probability = num(item.get("probability"))
         odds = num(item.get("odds"))
         if probability is None or odds is None:
