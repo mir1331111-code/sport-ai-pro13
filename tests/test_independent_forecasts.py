@@ -296,6 +296,36 @@ class IndependentForecastTests(unittest.TestCase):
                          "diagnostic_only_not_used_to_change_probability_ev_edge_or_stake")
         self.assertEqual(card, before)
 
+    def test_scan_records_structured_ai_probabilities_without_text_fallback(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        now = datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc)
+        card = {
+            "match": "Home FC vs Away FC",
+            "match_ru": "Home FC — Away FC",
+            "div": "E0", "league": "Premier League",
+            "date_iso": "2026-10-25", "time": "16:30",
+            "p1": .52, "px": .28, "p2": .20,
+            "raw_model_probabilities": {"H": .52, "D": .28, "A": .20},
+            "deep_analysis_provider": "Groq GPT-OSS 120B",
+            "deep_analysis_model": "openai/gpt-oss-120b",
+            "deep_analysis": {
+                "probabilities": {"П1": 40, "X": 35, "П2": 25},
+                "data_quality": "medium",
+            },
+        }
+        result = record_scan_forecasts(
+            [card], provider="Groq GPT-OSS 120B",
+            model="openai/gpt-oss-120b", db_path=path, now=now,
+        )
+        self.assertEqual(result["main_recorded"], 1)
+        self.assertEqual(result["ai_recorded"], 1)
+        rows = ForecastLedger(path).rows()
+        ai = next(row for row in rows if row["model_version"].startswith("independent-llm-"))
+        self.assertEqual(ai["probabilities"], {"H": .4, "D": .35, "A": .25})
+        self.assertIn("groq-gpt-oss-120b", ai["model_version"])
+
     def test_scan_records_pre_kickoff_main_and_ai_once(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
