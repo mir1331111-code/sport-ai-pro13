@@ -8,6 +8,7 @@ from ui.tabs.dashboard import (
     DASHBOARD_FORECAST_VISIBLE_LIMIT,
     _forecast_rejection_reason, _grok_panel, _https_image_url,
     _ai_comparison_html, _match_table_row, _probability_health_note,
+    _dashboard_real_1x2_quotes,
     _quality_panel, _reliability_svg, _sparkline_svg,
     dashboard_recommendation_groups, recommendation_group_html,
     dashboard_strong_events, strong_events_html,
@@ -133,7 +134,98 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("1.91", rendered)
         self.assertIn("Bet365", rendered)
         self.assertIn("SStats", rendered)
-        self.assertIn("Реальный кэф. / букмекер", rendered)
+        self.assertIn("Реальные коэффициенты 1X2", rendered)
+        self.assertIn("Цена выбранного рынка", rendered)
+
+    def test_compact_recommendation_rows_keep_all_three_real_odds_badges_and_ai_context(self):
+        from data.fixture_time import app_timezone
+
+        now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
+        card = {
+            "fixture_id": "full-recommendation-row",
+            "date_iso": "2026-11-24", "time": "18:00",
+            "league": "Premier League", "div": "E0",
+            "home_team": "Home FC", "away_team": "Away FC",
+            "home_badge": "https://assets.example/home.png",
+            "away_badge": "https://assets.example/away.png",
+            "league_badge": "https://assets.example/league.png",
+            "p1": .70, "px": .18, "p2": .12,
+            "model_support_status": "team_supported",
+            "context_quality": {"strong_value_eligible": True},
+            "independent_features": {
+                "home_home_sample": 14, "away_away_sample": 12,
+            },
+            "winner_market_validation": False,
+            "winner_market_validation_report": {"n": 120},
+            "odds_source": "SStats",
+            "market_odds": {"П1": 1.91, "X": 3.40, "П2": 4.20},
+            "market_odds_source_by_pick": {
+                "П1": "SStats", "X": "SStats", "П2": "SStats",
+            },
+            "bookmaker_by_pick": {
+                "П1": "Bet365", "X": "Pinnacle", "П2": "Betano",
+            },
+            "deep_analysis_provider": "Groq GPT-OSS 120B",
+            "deep_analysis_model": "openai/gpt-oss-120b",
+            "deep_analysis": {
+                "independent_pick": "П1",
+                "probabilities": {"П1": 62, "X": 24, "П2": 14},
+                "lineup_assessment": "PREDICTED XI · https://club.example/lineup",
+                "injury_assessment": "Один игрок под вопросом",
+                "referee_assessment": "Назначение пока не опубликовано",
+                "match_assessment": "Фактор домашнего поля положительный",
+                "risks": "Стартовый XI ещё не подтверждён",
+                "data_quality": "medium",
+            },
+        }
+        self.assertEqual(
+            [item["odds"] for item in _dashboard_real_1x2_quotes(card)],
+            [1.91, 3.40, 4.20],
+        )
+        groups = dashboard_recommendation_groups(
+            [card], now=now, period_end=now + timedelta(days=3),
+        )
+        self.assertEqual(len(groups["forecast"]), 1)
+        rendered = recommendation_group_html("forecast", groups["forecast"])
+        for value in (
+            "1.91", "3.40", "4.20",
+            "Bet365", "Pinnacle", "Betano",
+            "assets.example/home.png", "assets.example/away.png",
+            "assets.example/league.png",
+            "Groq GPT-OSS 120B", "openai/gpt-oss-120b",
+            "PREDICTED XI", "Один игрок под вопросом",
+            "Назначение пока не опубликовано",
+        ):
+            self.assertIn(value, rendered)
+
+    def test_dashboard_does_not_show_unknown_model_support_as_near_strong(self):
+        from data.fixture_time import app_timezone
+
+        now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
+        unsupported = {
+            "fixture_id": "unknown-support",
+            "date_iso": "2026-11-24", "time": "18:00",
+            "league": "Premier League",
+            "home_team": "Unknown FC", "away_team": "Away FC",
+            "p1": .61, "px": .23, "p2": .16,
+            "model_support_status": "unknown",
+            "independent_features": {
+                "home_home_sample": 12, "away_away_sample": 12,
+            },
+            "odds_source": "SStats",
+            "market_odds": {"П1": 1.9, "X": 3.5, "П2": 4.0},
+        }
+        groups = dashboard_recommendation_groups(
+            [unsupported], now=now, period_end=now + timedelta(days=3),
+        )
+        self.assertEqual(sum(len(value) for value in groups.values()), 0)
+
+    def test_model_only_prices_are_not_rendered_as_real_1x2_quotes(self):
+        card = {
+            "market_odds": {"П1": 1.9, "X": 3.5, "П2": 4.0},
+            "odds_source": "model_only",
+        }
+        self.assertEqual(_dashboard_real_1x2_quotes(card), [])
 
     def test_approved_recommendation_uses_exact_value_price_not_recomputed_price(self):
         from data.fixture_time import app_timezone
