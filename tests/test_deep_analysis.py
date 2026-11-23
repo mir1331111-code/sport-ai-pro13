@@ -370,6 +370,93 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         increment.assert_called_once_with(1)
         cache_write.assert_called_once()
 
+    def test_groq_gpt_oss_120b_searches_exact_fixture_before_structured_analysis(self):
+        from llm import deep_analysis
+
+        dossier = build_match_dossier(make_card(date="2026-11-24"))
+        browser_text = (
+            f"fixture_id: {dossier['fixture_id']}\\n"
+            "OFFICIAL XI: NOT PUBLISHED as of 2026-11-23 12:00 UTC. "
+            "Predicted XI is not confirmed. Source: https://club.example/match-preview"
+        )
+        analysis_text = json.dumps({
+            "analyses": [{
+                "fixture_id": dossier["fixture_id"],
+                "independent_pick": "П1",
+                "probabilities": {"П1": 48, "X": 29, "П2": 23},
+                "goal_markets": None,
+                "corner_markets": None,
+                "card_markets": None,
+                "lineup_assessment": (
+                    "NOT PUBLISHED: официальный XI не объявлен. "
+                    "Предварительный материал: https://club.example/match-preview"
+                ),
+                "injury_assessment": "Подтверждённых сведений не найдено.",
+                "referee_assessment": "Назначение судьи не подтверждено.",
+                "form_assessment": "История команд доступна.",
+                "match_assessment": "Матч требует осторожной оценки.",
+                "risks": "Стартовые составы пока неизвестны.",
+                "data_quality": "medium",
+            }]
+        }, ensure_ascii=False)
+        browser_response = SimpleNamespace(
+            status_code=200,
+            text=browser_text,
+            json=lambda: {"choices": [{
+                "message": {"content": browser_text},
+                "finish_reason": "stop",
+            }]},
+        )
+        structured_response = SimpleNamespace(
+            status_code=200,
+            text=analysis_text,
+            json=lambda: {"choices": [{
+                "message": {"content": analysis_text},
+                "finish_reason": "stop",
+            }]},
+        )
+        with (
+            patch.object(deep_analysis, "cache_get", return_value=None),
+            patch.object(deep_analysis, "cache_put") as cache_write,
+            patch.object(deep_analysis.usage, "llm_remaining", return_value=10),
+            patch.object(deep_analysis.usage, "llm_increment") as increment,
+            patch.object(
+                deep_analysis._sess, "post",
+                side_effect=[browser_response, structured_response],
+            ) as post,
+        ):
+            result = deep_analysis.analyze_top_matches({
+                "api_key": "groq-unit-test-key",
+                "provider": "Groq GPT-OSS 120B",
+                "model": "openai/gpt-oss-120b",
+                "candidates": [dossier],
+            })
+
+        self.assertIn(dossier["fixture_id"], result)
+        self.assertEqual(post.call_count, 2)
+        browser_request = post.call_args_list[0].kwargs["json"]
+        self.assertEqual(browser_request["model"], "openai/gpt-oss-120b")
+        self.assertEqual(browser_request["tool_choice"], "required")
+        self.assertEqual(browser_request["tools"], [{"type": "browser_search"}])
+        self.assertNotIn("response_format", browser_request)
+        search_prompt = browser_request["messages"][1]["content"]
+        self.assertIn("Home FC", search_prompt)
+        self.assertIn("Away FC", search_prompt)
+        self.assertIn("2026-11-24", search_prompt)
+
+        analysis_request = post.call_args_list[1].kwargs["json"]
+        self.assertEqual(analysis_request["model"], "openai/gpt-oss-120b")
+        self.assertEqual(analysis_request["response_format"]["type"], "json_schema")
+        analysis_prompt = analysis_request["messages"][0]["content"]
+        self.assertIn("OFFICIAL XI: NOT PUBLISHED", analysis_prompt)
+        self.assertIn("https://club.example/match-preview", analysis_prompt)
+        self.assertEqual(
+            deep_analysis.last_top_matches_status()["browser_search_status"],
+            "completed",
+        )
+        self.assertEqual(increment.call_count, 2)
+        cache_write.assert_called_once()
+
     def test_drops_unknown_fixture_ids_and_rejects_bad_probability_distributions(self):
         from llm import deep_analysis
 
