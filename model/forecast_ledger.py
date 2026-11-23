@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS forecasts (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  forecast_key TEXT NOT NULL UNIQUE,
  fixture_id TEXT NOT NULL,
+ scan_run_id TEXT,
  kickoff_at TEXT,
  forecast_at TEXT NOT NULL,
  model_version TEXT NOT NULL,
@@ -104,6 +105,8 @@ class ForecastLedger:
                     "ALTER TABLE forecasts ADD COLUMN xg_used INTEGER "
                     "CHECK(xg_used IS NULL OR xg_used IN (0,1))"
                 )
+            if "scan_run_id" not in columns:
+                conn.execute("ALTER TABLE forecasts ADD COLUMN scan_run_id TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=15)
@@ -116,6 +119,7 @@ class ForecastLedger:
         forecast_at: datetime | str, kickoff_at: datetime | str | None = None,
         league: str | None = None, entry_odds: Mapping[str, Any] | None = None,
         odds_source: str | None = None, xg_used: bool | None = None,
+        scan_run_id: str | None = None,
     ) -> int:
         """Insert one immutable forecast. Repeated keys return the original id."""
         return self.record_predictions_batch([{
@@ -131,6 +135,7 @@ class ForecastLedger:
             "entry_odds": entry_odds,
             "odds_source": odds_source,
             "xg_used": xg_used,
+            "scan_run_id": scan_run_id,
         }])[0]
 
     def record_predictions_batch(
@@ -166,9 +171,11 @@ class ForecastLedger:
             kickoff = _timestamp(kickoff_value) if kickoff_value is not None else None
             prices_json = json.dumps(prices, sort_keys=True) if prices is not None else None
             values = (
-                required["forecast_key"], required["fixture_id"], kickoff, stamp,
-                required["model_version"], required["home_team"], required["away_team"],
-                item.get("league"), json.dumps(probs, sort_keys=True), prices_json,
+                required["forecast_key"], required["fixture_id"],
+                str(item.get("scan_run_id") or "").strip() or None,
+                kickoff, stamp, required["model_version"], required["home_team"],
+                required["away_team"], item.get("league"),
+                json.dumps(probs, sort_keys=True), prices_json,
                 item.get("odds_source"), stored_xg, _timestamp(None),
             )
             expected = (
@@ -182,10 +189,10 @@ class ForecastLedger:
             return []
 
         insert_sql = """INSERT OR IGNORE INTO forecasts
-            (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,
+            (forecast_key,fixture_id,scan_run_id,kickoff_at,forecast_at,model_version,
              home_team,away_team,league,probabilities_json,entry_odds_json,
              odds_source,xg_used,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
         select_sql = """SELECT forecast_key,id,fixture_id,forecast_at,model_version,
             home_team,away_team,league,probabilities_json,entry_odds_json,odds_source,xg_used
             FROM forecasts WHERE forecast_key IN ({})"""
@@ -401,7 +408,8 @@ MARKET_FORECAST_SCHEMA = """
 CREATE TABLE IF NOT EXISTS market_forecasts (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  forecast_key TEXT NOT NULL UNIQUE,
- fixture_id TEXT NOT NULL, kickoff_at TEXT, forecast_at TEXT NOT NULL,
+ fixture_id TEXT NOT NULL, scan_run_id TEXT,
+ kickoff_at TEXT, forecast_at TEXT NOT NULL,
  model_version TEXT NOT NULL, home_team TEXT NOT NULL, away_team TEXT NOT NULL,
  league TEXT, market TEXT NOT NULL, selection TEXT NOT NULL,
  probability REAL NOT NULL, entry_odds REAL NOT NULL, odds_source TEXT,
@@ -425,6 +433,13 @@ class MarketForecastLedger:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(MARKET_FORECAST_SCHEMA)
+            columns = {
+                str(row[1]) for row in conn.execute(
+                    "PRAGMA table_info(market_forecasts)"
+                ).fetchall()
+            }
+            if "scan_run_id" not in columns:
+                conn.execute("ALTER TABLE market_forecasts ADD COLUMN scan_run_id TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=15)
@@ -437,6 +452,7 @@ class MarketForecastLedger:
         entry_odds: float, forecast_at: datetime | str,
         kickoff_at: datetime | str | None = None, league: str | None = None,
         odds_source: str | None = None, unit_stake: float = 1.0,
+        scan_run_id: str | None = None,
     ) -> int:
         """Insert one immutable best-market recommendation."""
         return self.record_recommendations_batch([{
@@ -454,6 +470,7 @@ class MarketForecastLedger:
             "league": league,
             "odds_source": odds_source,
             "unit_stake": unit_stake,
+            "scan_run_id": scan_run_id,
         }])[0]
 
     def record_recommendations_batch(
@@ -496,22 +513,28 @@ class MarketForecastLedger:
             kickoff_value = item.get("kickoff_at")
             kickoff = _timestamp(kickoff_value) if kickoff_value is not None else None
             values = (
-                str(required[0]), str(required[1]), kickoff, stamp,
-                str(required[4]), str(required[2]), str(required[3]),
+                str(required[0]), str(required[1]),
+                str(item.get("scan_run_id") or "").strip() or None,
+                kickoff, stamp, str(required[4]), str(required[2]), str(required[3]),
                 item.get("league"), market, str(required[5]),
                 probability, entry_odds, item.get("odds_source"), unit_stake,
                 _timestamp(None),
             )
-            expected = values[1:14]
+            expected = (
+                str(required[1]), kickoff, stamp, str(required[4]),
+                str(required[2]), str(required[3]), item.get("league"), market,
+                str(required[5]), probability, entry_odds, item.get("odds_source"),
+                unit_stake,
+            )
             prepared.append((str(required[0]), values, expected))
 
         if not prepared:
             return []
 
         insert_sql = """INSERT OR IGNORE INTO market_forecasts
-            (forecast_key,fixture_id,kickoff_at,forecast_at,model_version,home_team,
+            (forecast_key,fixture_id,scan_run_id,kickoff_at,forecast_at,model_version,home_team,
              away_team,league,market,selection,probability,entry_odds,odds_source,
-             unit_stake,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+             unit_stake,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
         select_sql = """SELECT forecast_key,id,fixture_id,kickoff_at,forecast_at,
             model_version,home_team,away_team,league,market,selection,probability,
             entry_odds,odds_source,unit_stake
@@ -598,9 +621,15 @@ class MarketForecastLedger:
             )
         return True
 
-    def rows(self) -> list[dict]:
+    def rows(self, *, model_version: str | None = None) -> list[dict]:
+        query = "SELECT * FROM market_forecasts"
+        params = []
+        if model_version is not None:
+            query += " WHERE model_version=?"
+            params.append(model_version)
+        query += " ORDER BY forecast_at,id"
         with self._connect() as conn:
-            return [dict(r) for r in conn.execute("SELECT * FROM market_forecasts ORDER BY forecast_at,id")]
+            return [dict(r) for r in conn.execute(query, params)]
 
     @staticmethod
     def _summary(rows: list[dict]) -> dict[str, Any]:
@@ -658,8 +687,8 @@ class MarketForecastLedger:
             return None
         return fixture_id, model_version, family
 
-    def metrics(self) -> dict[str, Any]:
-        raw_rows = self.rows()
+    def metrics(self, *, model_version: str | None = None) -> dict[str, Any]:
+        raw_rows = self.rows(model_version=model_version)
         # Rows are ordered by forecast time and ID. Keep the first immutable
         # forecast for each scan family; later reruns of the same fixture are
         # not independent observations and must not inflate ROI or accuracy.

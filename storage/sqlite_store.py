@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS bets (
     pick TEXT NOT NULL, odds REAL NOT NULL, closing_odds REAL,
     stake REAL NOT NULL, prob REAL, status TEXT DEFAULT 'pending',
     score TEXT, strat TEXT, odds_source TEXT, mode TEXT,
-    fixture_id TEXT, date TEXT, date_iso TEXT, date_time TEXT,
+    fixture_id TEXT, scan_run_id TEXT, forecast_key TEXT, market_forecast_key TEXT,
+    date TEXT, date_iso TEXT, date_time TEXT,
     ev REAL, clv REAL, settled_at TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -112,6 +113,12 @@ def db_init() -> bool:
                 "virtual_pnl": "REAL",
                 "evaluated_at": "TEXT",
             }
+            bet_columns = {
+                str(row[1]) for row in c.execute("PRAGMA table_info(bets)").fetchall()
+            }
+            for column in ("scan_run_id", "forecast_key", "market_forecast_key"):
+                if column not in bet_columns:
+                    c.execute(f"ALTER TABLE bets ADD COLUMN {column} TEXT")
             for column, kind in migrations.items():
                 if column not in existing:
                     c.execute(
@@ -150,6 +157,9 @@ def insert_bets_batch(bets: Iterable) -> int:
             b.get("prob"), b.get("status", "pending"), b.get("score"),
             b.get("strat"), b.get("odds_source"), b.get("mode"),
             str(b.get("fixture_id")) if b.get("fixture_id") else None,
+            str(b.get("scan_run_id")) if b.get("scan_run_id") else None,
+            str(b.get("forecast_key")) if b.get("forecast_key") else None,
+            str(b.get("market_forecast_key")) if b.get("market_forecast_key") else None,
             b.get("date"), b.get("date_iso"), b.get("date_time"),
             b.get("ev"), b.get("clv"), b.get("settled_at"),
         ))
@@ -161,9 +171,10 @@ def insert_bets_batch(bets: Iterable) -> int:
             c.executemany("""
                 INSERT INTO bets (match, match_ru, div, league, market, pick,
                                   odds, closing_odds, stake, prob, status, score,
-                                  strat, odds_source, mode, fixture_id,
+                                  strat, odds_source, mode, fixture_id, scan_run_id,
+                                  forecast_key, market_forecast_key,
                                   date, date_iso, date_time, ev, clv, settled_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, rows)
             c.execute("COMMIT")
         except Exception:

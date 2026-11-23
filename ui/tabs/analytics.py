@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 import os
 import streamlit as st
 
-from config import DB_FILE
+from config import APP_VERSION, DB_FILE
 from model.analytics_quality import card_quality, portfolio_risk
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger
+from model.scan_ledger import ScanLedger
 from model.error_learner import OnlineErrorLearner
 from model.learning_service import ForecastLearningService
 
@@ -63,14 +64,16 @@ def render_data_quality():
 
 
 def render_learning_center():
+    render_scan_history()
+    active_version = f"main-model-v{APP_VERSION}"
     try:
         ledger = ForecastLedger(DB_FILE)
-        metrics = ledger.metrics()
-        rows = ledger.rows(settled_only=True)
-        market = MarketForecastLedger(DB_FILE).metrics()
+        metrics = ledger.metrics(model_version=active_version)
+        rows = ledger.rows(settled_only=True, model_version=active_version)
+        market = MarketForecastLedger(DB_FILE).metrics(model_version=active_version)
         learning = ForecastLearningService(
             ledger,
-            OnlineErrorLearner(ledger, model_version_prefix="main-model-"),
+            OnlineErrorLearner(ledger, model_version_prefix=active_version),
             enabled=False,
             min_history=100,
             auto_promote=True,
@@ -81,11 +84,11 @@ def render_learning_center():
     except Exception as exc:
         st.error(f"Не удалось прочитать журнал: {type(exc).__name__}")
         return
-    total_forecasts = len(ledger.rows())
+    total_forecasts = len(ledger.rows(model_version=active_version))
     settled_forecasts = int(metrics.get("n", 0) or 0)
     pending_forecasts = max(0, total_forecasts - settled_forecasts)
     a, b, c, d = st.columns(4)
-    a.metric("Всего записано прогнозов", total_forecasts)
+    a.metric("Прогнозов текущей версии", total_forecasts)
     b.metric("Ожидают подтверждённого FT", pending_forecasts)
     c.metric("Закрыто", settled_forecasts)
     d.metric("Средний CLV", f"{metrics['mean_clv']:+.2%}" if metrics.get("mean_clv") is not None else "—")
@@ -93,6 +96,10 @@ def render_learning_center():
     e.metric("Brier score · только FT", f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—")
     f.metric("Log loss · только FT", f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—")
 
+    st.caption(
+        f"Качество и калибровка ниже рассчитаны только для активной версии {active_version}; "
+        "старые версии остаются в истории и не смешиваются с текущей."
+    )
     st.subheader("Постоянное накопление и обучение")
     l1, l2, l3 = st.columns(3)
     l1.metric("Записано решений калибровки", learning_status["decisions"])
@@ -180,13 +187,14 @@ def render_learning_center():
 def render_model_lab():
     try:
         ledger = ForecastLedger(DB_FILE)
-        metrics = ledger.metrics()
-        reliability = ledger.reliability_bins(bins=10)
-        market_metrics = MarketForecastLedger(DB_FILE).metrics()
+        active_version = f"main-model-v{APP_VERSION}"
+        metrics = ledger.metrics(model_version=active_version)
+        reliability = ledger.reliability_bins(bins=10, model_version=active_version)
+        market_metrics = MarketForecastLedger(DB_FILE).metrics(model_version=active_version)
     except Exception as exc:
         st.error(f"Ошибка чтения модельного аудита: {type(exc).__name__}")
         return
-    all_forecasts = ledger.rows()
+    all_forecasts = ledger.rows(model_version=active_version)
     n = int(metrics.get("n", 0) or 0)
     total_forecasts = len(all_forecasts)
     pending_forecasts = max(0, total_forecasts - n)
@@ -196,6 +204,10 @@ def render_model_lab():
     c2.metric("Ожидают результата", pending_forecasts)
     c3.metric("Закрыто · FT", n)
     c4.metric("xG coverage", f"{xg.get('share'):.1%}" if xg.get("share") is not None else "—")
+    st.caption(
+        f"Все показатели этого блока относятся к активной версии {active_version}. "
+        "Исторические версии показаны отдельно в журнале сканирований/прогнозов."
+    )
     c5,c6 = st.columns(2)
     c5.metric("Brier · только FT", f"{metrics['brier']:.4f}" if metrics.get("brier") is not None else "—")
     c6.metric("Log loss · только FT", f"{metrics['log_loss']:.4f}" if metrics.get("log_loss") is not None else "—")

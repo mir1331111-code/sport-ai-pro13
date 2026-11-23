@@ -172,6 +172,25 @@ def merge_fixture_sources(*sources) -> list:
                 # If no reliable identity is available, retain rather than
                 # silently discard the fixture.
                 key = ("provider-row", len(order), str(row.get("fixture_id") or ""))
+            if key not in merged and all(_fixture_team_pair(row)) and _fixture_day(row):
+                # Provider feeds can disagree by one calendar day when one
+                # emits UTC and another emits local kickoff dates. Only join
+                # a shifted date if exactly one existing fixture has the same
+                # ordered teams within ±1 day; ambiguous doubleheaders remain
+                # separate rather than being guessed together.
+                incoming_day = _fixture_day(row)
+                nearby = []
+                for existing_key in order:
+                    existing_row = merged[existing_key]
+                    existing_day = _fixture_day(existing_row)
+                    if (
+                        _fixture_team_pair(existing_row) == _fixture_team_pair(row)
+                        and existing_day is not None
+                        and abs((existing_day - incoming_day).days) <= 1
+                    ):
+                        nearby.append(existing_key)
+                if len(nearby) == 1:
+                    key = nearby[0]
             if key not in merged:
                 merged[key] = dict(row)
                 order.append(key)

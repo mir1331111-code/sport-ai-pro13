@@ -542,6 +542,24 @@ def record_scan_forecasts(
         "prior_only_skipped": 0, "unsupported_history_skipped": 0,
         "skipped_no_time": 0, "skipped_started": 0, "invalid": 0,
     }
+    # Canonicalize card identity before touching SQLite. If persistence is
+    # temporarily unavailable, the in-memory bet still carries the same fixture
+    # ID the forecast ledger would have assigned.
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        identity = _fixture_identity(card)
+        if identity is None:
+            continue
+        fixture_id, _home, _away, _date_iso = identity
+        provider_fixture_id = str(card.get("fixture_id") or "").strip()
+        if provider_fixture_id and provider_fixture_id != fixture_id:
+            card.setdefault("provider_fixture_id", provider_fixture_id)
+        card["fixture_id"] = fixture_id
+        card["forecast_fixture_id"] = fixture_id
+        if scan_run_id:
+            card["scan_run_id"] = str(scan_run_id)
+
     ledger = ForecastLedger(db_path)
     market_ledger = MarketForecastLedger(db_path)
     # Read only idempotency keys. Decoding every historical JSON forecast row

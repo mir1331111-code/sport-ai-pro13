@@ -176,6 +176,24 @@ class RecommendationShortlistTests(unittest.TestCase):
         selected = _portfolio_auto_recommendation(card)
         self.assertEqual(selected["best"][1], "ТБ 2.5")
 
+
+    def test_portfolio_preview_reads_market_shortlist_even_without_legacy_global_best(self):
+        from ui.tabs.portfolio import _latest_value_signals
+
+        card = valid_card()
+        card.update({
+            "match": "Home FC vs Away FC",
+            "match_ru": "Home FC — Away FC",
+            "league": "Premier League",
+            "date": "24.11 18:00",
+            "fixture_id": "ind:2026-11-24:fixture",
+        })
+        card.pop("best", None)
+        rows = _latest_value_signals({"cards": [card], "bets": []})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["Исход"], "П1")
+        self.assertEqual(rows[0]["Семейство"], "winner")
+
     def test_legacy_cards_without_confirmed_context_are_not_portfolio_ready(self):
         card = valid_card()
         card.pop("context_quality")

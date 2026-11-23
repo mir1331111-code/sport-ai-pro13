@@ -517,6 +517,49 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(paired["ai"]["accuracy"], 0.0)
         self.assertEqual(paired["accuracy_delta"], -1.0)
 
+
+    def test_provider_fixture_and_scan_run_id_are_shared_across_forecast_ledgers(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        now = datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc)
+        card = {
+            "fixture_id": "sstats:987654",
+            "match": "Home FC vs Away FC",
+            "match_ru": "Home FC — Away FC",
+            "div": "E0",
+            "league": "Premier League",
+            "date_iso": "2026-10-25",
+            "time": "18:30",
+            "p1": .55, "px": .25, "p2": .20,
+            "raw_model_probabilities": {"H": .55, "D": .25, "A": .20},
+            "model_support_status": "team_supported",
+            "market_odds": {"П1": 2.1, "X": 3.4, "П2": 4.0},
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", "П1", 2.1, .15, .55, 1.0),
+                    "verdict": {"prob": .55},
+                },
+            },
+        }
+        result = record_scan_forecasts(
+            [card], db_path=path, now=now, timezone_name="UTC",
+            scan_run_id="scan-run-20261025-a",
+        )
+        self.assertEqual(result["main_recorded"], 1)
+        self.assertEqual(result["market_recorded"], 1)
+        self.assertEqual(card["provider_fixture_id"], "sstats:987654")
+        self.assertTrue(card["fixture_id"].startswith("ind:2026-10-25:"))
+        self.assertEqual(card["forecast_fixture_id"], card["fixture_id"])
+        self.assertEqual(card["scan_run_id"], "scan-run-20261025-a")
+
+        main = ForecastLedger(path).rows()[0]
+        market = MarketForecastLedger(path).rows()[0]
+        self.assertEqual(main["fixture_id"], card["fixture_id"])
+        self.assertEqual(market["fixture_id"], card["fixture_id"])
+        self.assertEqual(main["scan_run_id"], "scan-run-20261025-a")
+        self.assertEqual(market["scan_run_id"], "scan-run-20261025-a")
+
     def test_verified_ft_result_settles_both_forecasts(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
