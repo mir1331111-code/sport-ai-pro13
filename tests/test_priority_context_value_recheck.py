@@ -133,6 +133,37 @@ class PriorityContextValueRecheckTests(unittest.TestCase):
         self.assertFalse(result["rechecked"])
         self.assertIsNone(card["best"])
 
+    def test_priority_context_is_saved_as_a_new_confirmed_snapshot(self):
+        import tempfile
+        from pathlib import Path
+        from storage.context_store import ContextStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = ContextStore(Path(directory) / "context.sqlite")
+            card = self._card()
+            result = _recheck_value_after_priority_context(
+                card, _confirmed_sstats_context(), context_store=store,
+            )
+            self.assertTrue(result["updated"])
+            rows = store.snapshots()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["data_source"], "sstats-priority")
+            self.assertEqual(rows[0]["lineup_confirmed"], 1)
+            self.assertEqual(rows[0]["referee_id"] is not None, True)
+
+    def test_confirmed_context_does_not_bypass_market_validation(self):
+        card = self._card()
+        card["_value_recheck"]["market_validation_by_pick"] = {
+            "П1": False, "X": False, "П2": False,
+        }
+        result = _recheck_value_after_priority_context(
+            card, _confirmed_sstats_context(),
+        )
+        self.assertTrue(result["rechecked"])
+        self.assertFalse(result["approved"])
+        self.assertIsNone(card["best"])
+        self.assertFalse(card["verdict"]["value_passed"])
+
     def test_llm_or_browser_context_cannot_unlock_value(self):
         card = self._card()
         untrusted = _confirmed_sstats_context()
