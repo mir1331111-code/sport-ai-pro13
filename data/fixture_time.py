@@ -9,7 +9,14 @@ from zoneinfo import ZoneInfo
 
 def app_timezone(name: str | None = None) -> tzinfo:
     """Return the configured display timezone, defaulting to the app's documented zone."""
-    candidate = str(name or os.environ.get("APP_TIMEZONE") or "Europe/Warsaw").strip()
+    candidate = str(name or os.environ.get("APP_TIMEZONE") or "").strip()
+    if not candidate:
+        try:
+            import streamlit as st
+            candidate = str(st.secrets.get("APP_TIMEZONE", "") or "").strip()
+        except Exception:
+            candidate = ""
+    candidate = candidate or "Europe/Warsaw"
     try:
         return ZoneInfo(candidate)
     except Exception:
