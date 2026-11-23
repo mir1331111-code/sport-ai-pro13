@@ -2,7 +2,6 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from model.incremental import stable_engine_fingerprint
 from ui import scanner_engine
 
 
@@ -15,13 +14,9 @@ class FakeFittedEngine:
 
 class HistoricalRefreshLifecycleTests(unittest.TestCase):
     def _stable_key(self, matrix_n=12, footballapi_key=""):
-        years, divisions = scanner_engine._history_catalog()
-        return stable_engine_fingerprint(
-            matrix_n=matrix_n,
-            xg_enabled=bool(footballapi_key.strip()),
-            divisions=divisions,
-            history_years=years,
-        )
+        return scanner_engine._stable_training_engine_key(
+            matrix_n, footballapi_key=footballapi_key,
+        )[0]
 
     def test_normal_scan_returns_fitted_engine_without_reading_history(self):
         engine = FakeFittedEngine()
@@ -59,18 +54,16 @@ class HistoricalRefreshLifecycleTests(unittest.TestCase):
     def test_stable_training_key_does_not_change_with_live_fixture_leagues(self):
         stable, _, _ = scanner_engine._stable_training_engine_key(12)
         old_e0 = scanner_engine._legacy_live_slate_engine_key(
-            12, extra_divisions=["E0"]
+            12, extra_divisions=["ZZ1"]
         )
         old_d1 = scanner_engine._legacy_live_slate_engine_key(
-            12, extra_divisions=["D1"]
+            12, extra_divisions=["ZZ2"]
         )
         self.assertEqual(stable, scanner_engine._stable_training_engine_key(12)[0])
         self.assertNotEqual(old_e0, old_d1)
         self.assertNotEqual(stable, old_e0)
 
     def test_custom_archive_and_live_league_list_do_not_fragment_canonical_key(self):
-        from data.sources import parse_date
-
         base, _, _ = scanner_engine._stable_training_engine_key(12)
         custom_rows = [{"Div": "X1", "Date": "01/01/2026", "HomeTeam": "A", "AwayTeam": "B"}]
         with_custom, _, _ = scanner_engine._stable_training_engine_key(
@@ -79,9 +72,7 @@ class HistoricalRefreshLifecycleTests(unittest.TestCase):
         self.assertEqual(base, with_custom)
         self.assertEqual(
             base,
-            scanner_engine._stable_training_engine_key(
-                12, extra_divisions=["E0", "D1"],
-            )[0],
+            scanner_engine._stable_training_engine_key(12)[0],
         )
         self.assertNotEqual(
             scanner_engine._legacy_live_slate_engine_key(12),
@@ -94,7 +85,7 @@ class HistoricalRefreshLifecycleTests(unittest.TestCase):
         engine = FakeFittedEngine()
         canonical, _, _ = scanner_engine._stable_training_engine_key(12)
         legacy = scanner_engine._legacy_live_slate_engine_key(
-            12, extra_divisions=["E0", "SP1"]
+            12, extra_divisions=["ZZ1", "ZZ2"]
         )
         cache = {
             "engines": {legacy: engine},
@@ -112,7 +103,7 @@ class HistoricalRefreshLifecycleTests(unittest.TestCase):
         self.assertIs(
             scanner_engine._load_engine(
                 12, [], lambda *args, **kwargs: None,
-                refresh_history=False, extra_divisions=["D1"],
+                refresh_history=False, extra_divisions=["ZZ3"],
             ),
             engine,
         )
