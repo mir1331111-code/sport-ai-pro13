@@ -1226,6 +1226,10 @@ def render():
     if probability_warning:
         st.warning(probability_warning)
 
+    # Keep the independent Grok analysis visible near the top of Dashboard,
+    # rather than hiding it after dozens of forecast-feed rows.
+    st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
+
     best_match_items = [
         item for item in ranked_events
         if item.get("strict_eligible")
@@ -1407,7 +1411,6 @@ def render():
                     + "</tbody></table></div>",
                     unsafe_allow_html=True,
                 )
-        st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
 
     with right:
         reliability = snapshot.get("reliability") or {"rows": [], "n": 0}
