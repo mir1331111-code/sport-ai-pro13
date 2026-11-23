@@ -389,9 +389,9 @@ def _auto_settle(D, force: bool = False):
     bets = list(D2.get("bets", []))
     closed = tried = 0
     now = datetime.now()
-    token = (st.session_state.get("fdorg_token_input", "")
-             or os.environ.get("FDORG_TOKEN", "")
-             or _configured_secret("FDORG_TOKEN", "fdorg_token")).strip()
+    token = _api_key_default(
+        "fdorg_token", "FDORG_TOKEN", "fdorg_token"
+    ).strip()
     sstats_key = _api_key_default(
         "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
     ).strip()
@@ -703,16 +703,11 @@ def _sync_forecast_results(force: bool = False):
     # The API token is kept in a password widget/local secret store, not in
     # portfolio metadata. Pass it explicitly to the forecast-ledger score lookup;
     # data.meta.fdorg_token is intentionally stripped from persisted portfolio data.
-    score_token = (
-        st.session_state.get("fdorg_token_input", "")
-        or os.environ.get("FDORG_TOKEN", "")
-        or _configured_secret("FDORG_TOKEN", "fdorg_token")
+    score_token = _api_key_default(
+        "fdorg_token", "FDORG_TOKEN", "fdorg_token"
     ).strip()
-    sstats_score_key = (
-        st.session_state.get("sstats_api_key_input", "")
-        or _api_key_default(
-            "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
-        )
+    sstats_score_key = _api_key_default(
+        "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
     ).strip()
     try:
         with st.spinner("Автоматически сверяю прогнозы с завершёнными матчами…"):
@@ -980,21 +975,38 @@ with st.sidebar:
             "margin-bottom:12px;'>🔑 API ключи</div>",
             unsafe_allow_html=True)
 
-        fdorg_token = st.text_input(
+        # Never send server-stored credentials to the browser as widget defaults.
+        # An empty field means "use the server-side configured/saved value".
+        fdorg_token_input = st.text_input(
             "football-data.org token",
-            value=_api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token"),
+            value="",
             type="password", key="fdorg_token_input")
-        sstats_key = st.text_input(
+        fdorg_token = str(
+            fdorg_token_input or _api_key_default(
+                "fdorg_token", "FDORG_TOKEN", "fdorg_token"
+            )
+        ).strip()
+        sstats_key_input = st.text_input(
             "SStats.net API key (бесплатные футбольные коэффициенты)",
-            value=_api_key_default("sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"),
+            value="",
             type="password", key="sstats_api_key_input",
-            help="Ключ SStats.net. Сканирование получает рынки; после FT API также закрывает ставки на угловые и карточки по фактической статистике.")
+            help="Оставьте пустым, чтобы использовать ключ из серверной конфигурации/хранилища. Введите значение только для замены. Ключ не подставляется в поле из хранилища.")
+        sstats_key = str(
+            sstats_key_input or _api_key_default(
+                "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
+            )
+        ).strip()
 
-        footballapi_key = st.text_input(
+        footballapi_key_input = st.text_input(
             "Football API key (xG · бесплатно, текущий сезон АПЛ)",
-            value=_api_key_default("footballapi_key", "FOOTBALLAPI_KEY", "footballapi_key"),
+            value="",
             type="password", key="footballapi_key_input",
-            help="Даёт xG обеих команд для завершённых матчей текущего сезона Премьер-лиги. Бесплатный тариф: 50 запросов в день.")
+            help="Оставьте пустым, чтобы использовать ключ из серверной конфигурации/хранилища. Введите значение только для замены. Даёт xG обеих команд для завершённых матчей текущего сезона Премьер-лиги.")
+        footballapi_key = str(
+            footballapi_key_input or _api_key_default(
+                "footballapi_key", "FOOTBALLAPI_KEY", "footballapi_key"
+            )
+        ).strip()
 
         st.caption("SStats — единственный источник списка матчей и букмекерских коэффициентов. Контекст (составы, травмы и судьи) запрашивается у SStats там, где API подтверждает эти данные.")
 
@@ -1079,10 +1091,12 @@ with st.sidebar:
         llm_key_default = _api_key_default(
             llm_key_storage, llm_key_env, llm_key_env, llm_key_storage,
         )
-        llm_key = st.text_input(
+        llm_key_input = st.text_input(
             llm_key_label,
-            value=llm_key_default,
-            type="password", key=llm_key_session)
+            value="",
+            type="password", key=llm_key_session,
+            help="Оставьте пустым, чтобы использовать ключ из серверной конфигурации/хранилища. Введите значение только для замены.")
+        llm_key = str(llm_key_input or llm_key_default).strip()
         if llm_key_env == "XAI_API_KEY" and not llm_key_default:
             st.caption(
                 "Для Grok нужен отдельный API-ключ xAI. Создай ключ в консоли xAI, "
