@@ -7,7 +7,7 @@ from ui.tabs.dashboard import (
     DASHBOARD_DEFAULT_PERIOD, DASHBOARD_PERIOD_OPTIONS,
     DASHBOARD_FORECAST_VISIBLE_LIMIT,
     _forecast_rejection_reason, _grok_panel, _https_image_url,
-    _match_table_row, _probability_health_note,
+    _ai_comparison_html, _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
     dashboard_strong_events, strong_events_html,
     all_market_candidates_html, dashboard_all_market_candidates,
