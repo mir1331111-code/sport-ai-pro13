@@ -445,7 +445,11 @@ def get_local_data() -> dict:
         sqlite_stamp = int(sqlite_state["updated_at_ns"])
         if local and local_stamp > sqlite_stamp:
             safe_local = _safe_app_state(local)
-            _store_sqlite_app_state(safe_local, local_stamp)
+            if not _store_sqlite_app_state(safe_local, local_stamp):
+                log.error(
+                    "Newest local portfolio state could not be promoted to SQLite; "
+                    "remote SQLite backup must remain unconfirmed."
+                )
             return safe_local
         if local != sqlite_data or local_stamp != sqlite_stamp:
             _write_local_app_state(sqlite_data, sqlite_stamp)
@@ -465,7 +469,11 @@ def get_local_data() -> dict:
             remote_data = {}
         safe_remote = _safe_app_state(remote_data)
         stamp = time.time_ns()
-        _store_sqlite_app_state(safe_remote, stamp)
+        if not _store_sqlite_app_state(safe_remote, stamp):
+            log.error(
+                "Recovered legacy Gist portfolio is available in memory but could not "
+                "be persisted to SQLite; encrypted SQLite backup remains incomplete."
+            )
         _write_local_app_state(safe_remote, stamp)
         # Migrate a legacy plaintext Gist to the encrypted envelope on first
         # recovery. For an already-encrypted Gist this refreshes its snapshot.
@@ -486,10 +494,18 @@ def get_local_data() -> dict:
     return {}
 
 
-def set_local_data(data: dict) -> None:
-    """Persist app state to SQLite first, then update its local convenience mirror."""
+def set_local_data(data: dict) -> bool:
+    """Persist app state to SQLite first, then update local/legacy convenience mirrors."""
     safe = _safe_app_state(data)
     stamp = time.time_ns()
-    _store_sqlite_app_state(safe, stamp)
-    _write_local_app_state(safe, stamp)
+    sqlite_saved = _store_sqlite_app_state(safe, stamp)
+    if not sqlite_saved:
+        log.error(
+            "Portfolio/dashboard state was NOT persisted to SQLite. "
+            "Do not treat the encrypted SQLite remote backup as current."
+        )
+    local_saved = _write_local_app_state(safe, stamp)
+    if not local_saved:
+        log.error("Portfolio/dashboard local mirror was not saved.")
     _gist_write(safe)
+    return bool(sqlite_saved)
