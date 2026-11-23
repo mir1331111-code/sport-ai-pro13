@@ -2607,7 +2607,7 @@ def sstats_context_enrich(
         [
             row for row in valid_rows
             if kickoff_by_identity[id(row)] is not None
-            and timedelta(0) <= kickoff_by_identity[id(row)] - current_utc <= timedelta(hours=6)
+            and timedelta(0) <= kickoff_by_identity[id(row)] - current_utc <= timedelta(hours=24)
         ],
         key=lambda row: kickoff_by_identity[id(row)],
     )[:max(0, int(max_lineup_checks))]
