@@ -68,6 +68,28 @@ class HistoricalRefreshLifecycleTests(unittest.TestCase):
         self.assertNotEqual(old_e0, old_d1)
         self.assertNotEqual(stable, old_e0)
 
+    def test_custom_archive_and_live_league_list_do_not_fragment_canonical_key(self):
+        from data.sources import parse_date
+
+        base, _, _ = scanner_engine._stable_training_engine_key(12)
+        custom_rows = [{"Div": "X1", "Date": "01/01/2026", "HomeTeam": "A", "AwayTeam": "B"}]
+        with_custom, _, _ = scanner_engine._stable_training_engine_key(
+            12, custom_historical_rows=custom_rows,
+        )
+        self.assertEqual(base, with_custom)
+        self.assertEqual(
+            base,
+            scanner_engine._stable_training_engine_key(
+                12, extra_divisions=["E0", "D1"],
+            )[0],
+        )
+        self.assertNotEqual(
+            scanner_engine._legacy_live_slate_engine_key(12),
+            scanner_engine._legacy_live_slate_engine_key(
+                12, custom_historical_rows=custom_rows,
+            ),
+        )
+
     def test_legacy_live_slate_cache_is_promoted_to_canonical_key(self):
         engine = FakeFittedEngine()
         canonical, _, _ = scanner_engine._stable_training_engine_key(12)
