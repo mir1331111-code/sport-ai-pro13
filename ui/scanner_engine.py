@@ -729,6 +729,7 @@ def _shared_engine_cache():
 
 def has_cached_engine(
     matrix_n, *, footballapi_key="", custom_historical_rows=None,
+    extra_divisions=None,
 ):
     """Check only the fitted-engine cache; does not read any historical source."""
     import gzip
@@ -738,10 +739,23 @@ def has_cached_engine(
     from model.incremental import stable_engine_fingerprint
 
     history_years, train_divs = _history_catalog()
+    custom_divisions = [
+        str(row.get("Div") or "").strip()
+        for row in (custom_historical_rows or [])
+        if isinstance(row, dict) and str(row.get("Div") or "").strip()
+    ]
+    stable_divisions = tuple(dict.fromkeys(
+        list(train_divs)
+        + custom_divisions
+        + [
+            str(value).strip() for value in (extra_divisions or [])
+            if str(value).strip()
+        ]
+    ))
     stable_key = stable_engine_fingerprint(
         matrix_n=matrix_n,
         xg_enabled=bool(str(footballapi_key or "").strip()),
-        divisions=train_divs,
+        divisions=stable_divisions,
         history_years=history_years,
     )
     shared = _shared_engine_cache()
@@ -804,6 +818,7 @@ def _load_engine(
     matrix_n, logs, update_loader, footballapi_key="",
     footballapi_xg_rows=None, custom_historical_rows=None,
     *, refresh_history=False, force_source_refresh=False,
+    extra_divisions=None,
 ):
     """Use the fitted engine for normal scans; read/replay history only on explicit refresh or cold start."""
     import pickle, gzip, os, json
@@ -820,10 +835,23 @@ def _load_engine(
     # The stable key describes the engine schema/configuration, not the
     # optional rows appended during the last explicit history refresh. Their
     # full content is verified by the immutable incremental training manifest.
+    custom_divisions = [
+        str(row.get("Div") or "").strip()
+        for row in (custom_historical_rows or [])
+        if isinstance(row, dict) and str(row.get("Div") or "").strip()
+    ]
+    stable_divisions = tuple(dict.fromkeys(
+        list(catalogue_divisions)
+        + custom_divisions
+        + [
+            str(value).strip() for value in (extra_divisions or [])
+            if str(value).strip()
+        ]
+    ))
     stable_key = stable_engine_fingerprint(
         matrix_n=matrix_n,
         xg_enabled=xg_enabled,
-        divisions=catalogue_divisions,
+        divisions=stable_divisions,
         history_years=history_years,
     )
     stable_session_key = f"_trained_engine_{stable_key}"
