@@ -765,10 +765,33 @@ def _refresh_engine_market_validation(
     return validation_key
 
 
+def _defer_market_validation(engine, logs):
+    """Keep every market fail-closed when the expensive benchmark is deferred."""
+    message = (
+        "Рыночная проверка отложена до ручного обновления архивов; "
+        "непроверенные рынки остаются forecast-only, Value и автодопуск закрыты."
+    )
+    report = {"state": "deferred", "reason": message}
+    engine.winner_market_validation = False
+    engine.winner_market_validation_report = dict(report)
+    engine.total_market_validation = False
+    engine.total_market_validation_by_line = {}
+    engine.total_market_validation_report = dict(report)
+    engine.btts_market_validation = False
+    engine.btts_market_validation_report = dict(report)
+    engine.stat_market_validation = {}
+    engine.stat_market_validation_report = dict(report)
+    engine.xg_ablation_report = {}
+    engine._market_validation_cache_key = None
+    engine._market_validation_freeze_day = None
+    engine._market_validation_deferred = True
+    logs.append("⏭ " + message)
+
+
 def _train_engine(
     matrix_n, logs, update_loader, footballapi_key="",
     footballapi_xg_rows=None, custom_historical_rows=None,
-    seasonal_snapshot=None,
+    seasonal_snapshot=None, run_market_validation=True,
 ):
     if seasonal_snapshot is None:
         seasonal_snapshot = _load_seasonal_history(logs, update_loader)
@@ -782,9 +805,13 @@ def _train_engine(
     engine = Engine(matrix_n=matrix_n)
     from model.historical_match_stats import HistoricalMatchStats
     engine.match_stats = HistoricalMatchStats()
-    _refresh_engine_market_validation(
-        engine, history, train_divs, matrix_n, logs, update_loader,
-    )
+    if run_market_validation:
+        _refresh_engine_market_validation(
+            engine, history, train_divs, matrix_n, logs, update_loader,
+        )
+    else:
+        _defer_market_validation(engine, logs)
+        update_loader("⏭ Рыночный benchmark отложен; обучаю базовую модель", 0.24, logs)
     training_rows, skipped_rows = prepare_completed_training_rows(
         history, train_divs,
     )
@@ -794,11 +821,14 @@ def _train_engine(
             "командами и финальным счётом; обучение остановлено без подстановки 0:0."
         )
 
+    training_start = 0.76 if run_market_validation else 0.24
+
     def _training_progress(processed, total):
         if processed % 50 == 0 or processed == total:
             update_loader(
                 f"Хронологическое обучение [{processed}/{total}]",
-                0.76 + processed / max(1, total) * 0.22, logs,
+                training_start + processed / max(1, total) * (0.98 - training_start),
+                logs,
             )
 
     training_summary = train_engine_chronologically(
@@ -904,7 +934,7 @@ def _load_engine(
     matrix_n, logs, update_loader, footballapi_key="",
     footballapi_xg_rows=None, custom_historical_rows=None,
     *, refresh_history=False, force_source_refresh=False,
-    extra_divisions=None,
+    extra_divisions=None, run_market_validation=True,
 ):
     """Use the fitted engine for normal scans; read/replay history only on explicit refresh or cold start."""
     import pickle, gzip, os, json
@@ -1029,9 +1059,16 @@ def _load_engine(
                 logs=logs,
             )
             added = bring_engine_up_to_date(engine, history, train_divs, logs)
-            _refresh_engine_market_validation(
-                engine, history, train_divs, matrix_n, logs, update_loader,
-            )
+            if run_market_validation:
+                _refresh_engine_market_validation(
+                    engine, history, train_divs, matrix_n, logs, update_loader,
+                )
+            elif added:
+                _defer_market_validation(engine, logs)
+                update_loader(
+                    "⏭ История обновлена; рыночный benchmark отложен, Value-гейты закрыты",
+                    0.24, logs,
+                )
             with stable_guard:
                 shared_stable.setdefault("engines", {})[stable_key] = engine
             try:
@@ -1206,6 +1243,7 @@ def _load_engine(
             footballapi_xg_rows=footballapi_xg_rows,
             custom_historical_rows=custom_historical_rows,
             seasonal_snapshot=seasonal_snapshot,
+            run_market_validation=run_market_validation,
         )
         update_loader("💾 Сохраняю обученную модель...", 0.99, logs)
         try:

@@ -1446,8 +1446,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "Резервные расписания не поставляют котировки."
         )
         st.caption(
-            "Обычный скан использует уже обученную модель и не перечитывает 5 сезонов. "
-            "Исторические архивы и walk-forward benchmark обновляются отдельно."
+            "После первичного обучения обычный скан использует кэшированную модель. "
+            "Полный SStats/xG архив и тяжёлый walk-forward benchmark запускаются только "
+            "по отдельной кнопке обновления; до их завершения Value-гейты закрыты."
         )
         if st.button(
             "🔄 Обновить исторические архивы и модель",
@@ -3368,20 +3369,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             extra_divisions=scan_divisions,
         )
         refresh_history = bool(explicit_history_refresh or not model_cache_ready)
-        if refresh_history:
-            if explicit_history_refresh:
-                logs.append(
-                    "🔄 Запрошено отдельное обновление исторических архивов: "
-                    "загружаю свежие результаты и xG, затем выполню инкрементальное обучение."
-                )
-            else:
-                logs.append(
-                    "🧠 Обученная модель не найдена: выполняю первичную загрузку истории и обучение."
-                )
+        if explicit_history_refresh:
+            logs.append(
+                "🔄 Запрошено отдельное обновление исторических архивов: "
+                "загружаю свежие результаты и xG, затем выполню инкрементальное обучение "
+                "и walk-forward benchmark."
+            )
             update_loader("📈 Обновляю исторические xG-данные...", 0.16, logs)
             footballapi_xg_rows = footballapi_xg_history(
-                footballapi_key, logs,
-                force_refresh=explicit_history_refresh,
+                footballapi_key, logs, force_refresh=True,
             )
 
             update_loader("📚 Обновляю архивы завершённых матчей SStats...", 0.18, logs)
@@ -3397,7 +3393,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     sstats_history_rows = sstats_historical_matches_for_fixtures(
                         rows, sstats_key, years_back=5,
                         max_leagues=history_league_limit, logs=logs,
-                        force_refresh=explicit_history_refresh,
+                        force_refresh=True,
                     )
                 except Exception as exc:
                     logs.append(
@@ -3406,6 +3402,17 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     )
             if sstats_history_rows:
                 custom_historical_rows = list(custom_historical_rows or []) + sstats_history_rows
+        elif refresh_history:
+            # Cold start still needs the core seasonal match archive to train the
+            # base model, but the optional 5-year SStats crawl and market benchmark
+            # can wait for an explicit operator action.
+            footballapi_xg_rows = None
+            logs.append(
+                "🧠 Первичный запуск: обучаю базовую модель на сезонных CSV и "
+                "сохранённом пользовательском архиве. Массовый SStats/xG сбор и "
+                "walk-forward benchmark отложены; Value-гейты останутся закрытыми. "
+                "Для полного обновления нажмите кнопку в блоке исторических архивов."
+            )
         else:
             footballapi_xg_rows = None
             logs.append(
@@ -3423,6 +3430,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             refresh_history=refresh_history,
             force_source_refresh=explicit_history_refresh,
             extra_divisions=scan_divisions,
+            run_market_validation=explicit_history_refresh,
         )
         from model.holdout import load_fixed_holdout_gate_status
         fixed_holdout_gate = load_fixed_holdout_gate_status()
