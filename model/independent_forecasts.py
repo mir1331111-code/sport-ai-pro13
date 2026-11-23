@@ -722,6 +722,7 @@ def record_scan_forecasts(
                                 card.get("best_odds_source") or card.get("odds_source") or ""
                             ) or None,
                             "unit_stake": 1.0,
+                            "scan_run_id": scan_run_id,
                         })
                         existing_market.add(key)
                 except (ValueError, TypeError, IndexError):

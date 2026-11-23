@@ -163,10 +163,14 @@ class ScanLedger:
                 (card.get("main_forecast_key"), "main_1x2"),
                 (card.get("ai_forecast_key"), "independent_ai_1x2"),
             ]
+            market_keys = dict(card.get("market_forecast_keys") or {})
             keys.extend(
                 (key, "market_" + str(family))
-                for family, key in (card.get("market_forecast_keys") or {}).items()
+                for family, key in market_keys.items()
             )
+            legacy_market_key = card.get("market_forecast_key")
+            if legacy_market_key and legacy_market_key not in market_keys.values():
+                keys.append((legacy_market_key, "market_legacy"))
             for key, kind in keys:
                 if key:
                     forecast_rows.append((run_id, fixture_id, str(key), kind))
