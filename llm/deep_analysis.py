@@ -1028,7 +1028,7 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         return {}
 
     provider = normalize_llm_provider(
-        ctx.get("provider") or "Groq GPT-OSS 20B"
+        ctx.get("provider") or "Grok (x.ai)"
     )
     cfg = LLM_PROVIDERS[provider]
     model = resolve_provider_model(provider, ctx.get("model"))
