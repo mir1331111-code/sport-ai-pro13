@@ -358,14 +358,21 @@ class DashboardHelperTests(unittest.TestCase):
             "deep_analysis": {
                 "independent_pick": "X",
                 "probabilities": {"П1": 40, "X": 35, "П2": 25},
+                "lineup_assessment": "PREDICTED XI · источник: https://club.example/lineup",
+                "injury_assessment": "Травмирован один игрок · источник: https://club.example/injuries",
+                "referee_assessment": "Судья не подтверждён.",
                 "match_assessment": "Независимая оценка матча.",
-                "risks": "Составы не подтверждены.",
+                "risks": "Официальные составы пока не опубликованы.",
                 "data_quality": "medium",
             },
         }], {"llm_provider": "Groq GPT-OSS 120B"})
         self.assertIn("40.0%", panel)
         self.assertIn("Groq GPT-OSS 120B", panel)
         self.assertIn("AI · Groq GPT-OSS 120B", panel)
+        self.assertIn("PREDICTED XI", panel)
+        self.assertIn("https://club.example/lineup", panel)
+        self.assertIn("Травмирован один игрок", panel)
+        self.assertIn("Судья не подтверждён", panel)
         self.assertIn("расходится с основной моделью", panel)
         self.assertIn("Независимая оценка матча.", panel)
 
