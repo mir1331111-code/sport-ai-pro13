@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from model.analytics_quality import card_quality, portfolio_risk, source_state
+from model.analytics_quality import card_quality, merge_bet_records, portfolio_risk, source_state
 
 
 class AnalyticsQualityTests(unittest.TestCase):
@@ -64,6 +64,44 @@ class AnalyticsQualityTests(unittest.TestCase):
         self.assertEqual(report["league_top"][0], ("L1", 15))
         self.assertEqual(report["exposure_pct"], 0.23)
         self.assertTrue(report["warning"])
+
+    def test_sqlite_bets_override_stale_legacy_status_without_dropping_legacy_only_rows(self):
+        legacy = [
+            {
+                "match": "Home vs Away", "market": "1X2", "pick": "П1",
+                "date_iso": "2026-11-23", "odds": 2.0, "stake": 10,
+                "status": "pending", "fixture_id": "fixture-1",
+            },
+            {
+                "match": "Other vs Team", "market": "1X2", "pick": "X",
+                "date_iso": "2026-11-24", "odds": 3.0, "stake": 5,
+                "status": "pending",
+            },
+        ]
+        sqlite = [
+            {
+                "id": 7, "match": "Home vs Away", "market": "1X2", "pick": "П1",
+                "date_iso": "2026-11-23", "odds": 2.0, "stake": 10,
+                "status": "won", "score": "2:1",
+            },
+            {
+                "id": 8, "match": "Home vs Away", "market": "1X2", "pick": "П1",
+                "date_iso": "2026-11-23", "odds": 2.0, "stake": 10,
+                "status": "pending",
+            },
+        ]
+        merged = merge_bet_records(sqlite, legacy)
+        self.assertEqual(len(merged), 3)
+        primary = [item for item in merged if item["match"] == "Home vs Away"]
+        self.assertEqual(len(primary), 2)
+        self.assertEqual(primary[0]["status"], "won")
+        self.assertEqual(primary[0]["score"], "2:1")
+        self.assertEqual(primary[0]["fixture_id"], "fixture-1")
+        self.assertEqual(primary[1]["status"], "pending")
+        self.assertEqual(
+            next(item for item in merged if item["match"] == "Other vs Team")["status"],
+            "pending",
+        )
 
     def test_drawdown_uses_settled_positions(self):
         bets = [

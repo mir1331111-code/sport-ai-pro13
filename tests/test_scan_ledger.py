@@ -68,6 +68,14 @@ class ScanLedgerTests(unittest.TestCase):
         self.assertEqual({item["market_family"] for item in decisions},
                          {"winner", "goals", "btts", "corners", "cards"})
         self.assertTrue(all(isinstance(item["gates"], list) for item in decisions))
+        quality = ledger.quality_rows(run_id)
+        self.assertEqual(len(quality), 1)
+        self.assertEqual(quality[0]["quality"]["match"], "Home FC — Away FC")
+        api_check = next(
+            item for item in quality[0]["quality"]["checks"]
+            if item["name"] == "API-Football"
+        )
+        self.assertEqual(api_check["state"], "not_configured")
 
 
 if __name__ == "__main__":

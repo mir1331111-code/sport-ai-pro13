@@ -10,11 +10,12 @@ from pathlib import Path
 import streamlit as st
 
 from config import APP_VERSION, DB_FILE
-from model.analytics_quality import card_quality, portfolio_risk
+from model.analytics_quality import card_quality, merge_bet_records, portfolio_risk
 from model.forecast_ledger import ForecastLedger, MarketForecastLedger
 from model.scan_ledger import ScanLedger
 from model.error_learner import OnlineErrorLearner
 from model.learning_service import ForecastLearningService
+from storage import sqlite_store as db
 
 
 STATE = {
@@ -28,43 +29,88 @@ STATE = {
 
 
 def render_data_quality():
-    cards = [c for c in (st.session_state.get("data") or {}).get("cards", []) if isinstance(c, dict)]
-    if not cards:
-        st.info("Сначала выполни сканирование: здесь появится аудит источников по каждому матчу.")
-        return
-    api_football_configured = bool(
-        st.session_state.get("api_football_key_input")
-        or os.environ.get("API_FOOTBALL_KEY")
-    )
-    if not api_football_configured:
-        try:
-            api_football_configured = bool(st.secrets.get("API_FOOTBALL_KEY", ""))
-        except Exception:
-            api_football_configured = False
-    reports = [
-        (c, card_quality(c, api_football_configured=api_football_configured))
-        for c in cards
-    ]
-    good = sum(sum(x["state"] == "confirmed" for x in q["checks"]) for _, q in reports)
-    total = sum(len(q["checks"]) for _, q in reports)
+    """Show the last durable quality snapshot; fall back to current cards for legacy scans."""
+    data = st.session_state.get("data") or {}
+    run_id = None
+    persisted_reports = []
+    try:
+        ledger = ScanLedger(DB_FILE)
+        latest = ledger.latest_run()
+        run_id = latest.get("scan_run_id") if latest else None
+        for item in ledger.quality_rows(run_id, limit=5000):
+            quality = item.get("quality")
+            if not isinstance(quality, dict) or not quality.get("checks"):
+                continue
+            quality = dict(quality)
+            quality.setdefault(
+                "match",
+                f"{item.get('home_team') or ''} — {item.get('away_team') or ''}".strip(" —")
+                or "Матч без названия",
+            )
+            quality.setdefault("league", item.get("league") or "Неизвестно")
+            persisted_reports.append((item, quality))
+    except Exception as exc:
+        st.caption(f"Сохранённый Data Quality snapshot пока недоступен: {type(exc).__name__}")
+
+    if persisted_reports:
+        reports = persisted_reports
+        st.caption(
+            f"Источник: сохранённый снимок SQLite · scan_run_id={run_id}. "
+            "Статусы отражают состояние данных на момент сканирования."
+        )
+    else:
+        cards = [c for c in (data.get("cards") or []) if isinstance(c, dict)]
+        if not cards:
+            st.info("Сначала выполни сканирование: здесь появится аудит источников по каждому матчу.")
+            return
+        api_football_configured = bool(
+            st.session_state.get("api_football_key_input")
+            or os.environ.get("API_FOOTBALL_KEY")
+        )
+        if not api_football_configured:
+            try:
+                api_football_configured = bool(st.secrets.get("API_FOOTBALL_KEY", ""))
+            except Exception:
+                api_football_configured = False
+        reports = [
+            (card, card_quality(card, api_football_configured=api_football_configured))
+            for card in cards
+        ]
+        st.caption("Источник: текущая сессия (совместимость со старыми сканированиями без SQLite snapshots).")
+
+    good = sum(sum(x["state"] == "confirmed" for x in report["checks"]) for _, report in reports)
+    total = sum(len(report["checks"]) for _, report in reports)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Матчей", len(reports))
     c2.metric("Подтверждённые поля", f"{good}/{total}")
-    scores = [q["completeness"] for _, q in reports if q["completeness"] is not None]
+    scores = [report["completeness"] for _, report in reports if report.get("completeness") is not None]
     c3.metric("Средняя полнота", f"{sum(scores)/len(scores):.0f}/100" if scores else "—")
-    c4.metric("Матчей с Low-контекстом", sum(q["context_level"] == "Low" for _, q in reports))
+    c4.metric("Матчей с Low-контекстом", sum(report.get("context_level") == "Low" for _, report in reports))
     st.warning("Жёлтый статус означает, что подтверждённых данных нет. Он не доказывает отсутствие события; неизвестные поля не считаются подтверждёнными.")
     search = st.text_input("Фильтр по матчу или турниру", key="dq_filter")
     for card, report in reports:
-        if search and search.casefold() not in (report["match"] + " " + report["league"]).casefold():
+        if search and search.casefold() not in (
+            str(report.get("match") or "") + " " + str(report.get("league") or "")
+        ).casefold():
             continue
-        with st.expander(f"{report['match']} · {report['league']} · полнота {report['completeness'] if report['completeness'] is not None else '—'}/100", expanded=False):
+        completeness = report.get("completeness")
+        with st.expander(
+            f"{report.get('match', 'Матч')} · {report.get('league', 'Неизвестно')} · "
+            f"полнота {completeness if completeness is not None else '—'}/100",
+            expanded=False,
+        ):
             left, right = st.columns(2)
-            for i, item in enumerate(report["checks"]):
-                label, icon = STATE.get(item["state"], ("Неизвестно", "⚪"))
-                col = left if i % 2 == 0 else right
-                col.markdown(f"**{icon} {item['name']}**  \n{label} · {item['detail']}")
-            st.caption(f"Контекст: {report['context_level']} · {report['context_reason']}")
+            for index, item in enumerate(report.get("checks") or []):
+                label, icon = STATE.get(item.get("state"), ("Неизвестно", "⚪"))
+                col = left if index % 2 == 0 else right
+                col.markdown(
+                    f"**{icon} {item.get('name', 'Поле')}**  \n"
+                    f"{label} · {item.get('detail', 'Нет пояснения')}"
+                )
+            st.caption(
+                f"Контекст: {report.get('context_level', 'Unknown')} · "
+                f"{report.get('context_reason', 'Нет оценки контекста')}"
+            )
 
 
 def render_learning_center():
@@ -662,24 +708,62 @@ def render_model_lab():
 
 def render_portfolio_risk():
     data = st.session_state.get("data") or {}
-    report = portfolio_risk(data.get("bets") or [], data.get("bank") or 0)
+    legacy_bets = data.get("bets") or []
+    try:
+        persisted_bets = db.fetch_bets(limit=100000)
+    except Exception as exc:
+        persisted_bets = []
+        st.warning(f"SQLite ставки недоступны: {type(exc).__name__}")
+    bets = merge_bet_records(persisted_bets, legacy_bets)
+
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    initial_bank = None
+    try:
+        stored_initial = db.get_meta("initial_bank")
+        if stored_initial not in (None, ""):
+            initial_bank = float(stored_initial)
+    except Exception:
+        initial_bank = None
+    if initial_bank is None or not (initial_bank > 0):
+        try:
+            initial_bank = float(meta.get("initial_bank") or 0)
+        except (TypeError, ValueError):
+            initial_bank = 0.0
+        if initial_bank <= 0:
+            try:
+                initial_bank = float(data.get("bank") or 0)
+            except (TypeError, ValueError):
+                initial_bank = 0.0
+        if initial_bank > 0:
+            try:
+                db.set_meta("initial_bank", str(initial_bank))
+            except Exception:
+                pass
+
+    report = portfolio_risk(bets, initial_bank)
     a,b,c,d = st.columns(4)
     a.metric("Открытых позиций", report["open_count"])
     b.metric("Открытая экспозиция", f"{report['exposure']:.2f}")
-    c.metric("Экспозиция / банк", f"{report['exposure_pct']:.1%}" if report["exposure_pct"] is not None else "—")
+    c.metric("Экспозиция / стартовый банк", f"{report['exposure_pct']:.1%}" if report["exposure_pct"] is not None else "—")
     d.metric("Макс. просадка", f"{report['max_drawdown']:.1%}")
+    source_note = (
+        f"SQLite: {len(persisted_bets)} · legacy JSON-only: "
+        f"{max(0, len(bets) - len(persisted_bets))} · всего позиций: {len(bets)}"
+    )
+    st.caption(source_note + ". При совпадении позиции SQLite имеет приоритет по статусу и расчёту.")
     if report["warning"]:
-        st.error("Экспозиция достигла 20% банка. Рассмотри сокращение новых позиций.")
+        st.error("Экспозиция достигла 20% стартового банка. Рассмотри сокращение новых позиций.")
     st.subheader("Концентрация на одном матче")
-    st.dataframe([{"Матч / ID": k, "Открытый риск": round(v,2)} for k,v in report["fixture_top"]],
+    st.dataframe([{"Матч / ID": key, "Открытый риск": round(value,2)} for key,value in report["fixture_top"]],
                  width="stretch", hide_index=True) if report["fixture_top"] else st.info("Открытых позиций пока нет.")
     st.subheader("Риск по лигам")
-    st.dataframe([{"Лига": k, "Открытый риск": round(v,2)} for k,v in report["league_top"]],
+    st.dataframe([{"Лига": key, "Открытый риск": round(value,2)} for key,value in report["league_top"]],
                  width="stretch", hide_index=True) if report["league_top"] else st.info("Нет открытых позиций.")
     st.subheader("Риск по дням")
-    st.dataframe([{"Дата": k, "Открытый риск": round(v,2)} for k,v in report["day_top"]],
+    st.dataframe([{"Дата": key, "Открытый риск": round(value,2)} for key,value in report["day_top"]],
                  width="stretch", hide_index=True) if report["day_top"] else st.info("Нет открытых позиций.")
     st.caption("Корреляция исходов одного матча пока не оценивается численно: без исторической совместной матрицы она не должна изображаться точной.")
+
 
 def render_api_center():
     """Show configured integrations and persisted daily counters without exposing credentials."""

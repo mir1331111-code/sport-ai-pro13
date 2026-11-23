@@ -4723,6 +4723,10 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "source_counts": {
                 str(name): int(count) for name, count in source_counts.items()
             },
+            # Persist only credential presence, never the API key itself.
+            "api_football_configured": bool(
+                _runtime_secret("api_football_key_input", "API_FOOTBALL_KEY")
+            ),
         }
         D2["bets"] = list(D.get("bets") or []) + new_bets
         D2["bank"] = max(0.0, float(D.get("bank") or 0.0) - total_stake)

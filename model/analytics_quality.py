@@ -85,6 +85,60 @@ def card_quality(card: dict, *, api_football_configured: bool = False) -> dict:
             "match": card.get("match_ru") or card.get("match") or "Матч без названия"}
 
 
+def merge_bet_records(sqlite_bets, legacy_bets):
+    """Merge durable SQLite rows with unmatched legacy JSON positions.
+
+    SQLite wins for persisted fields (notably status/settlement), while legacy-only
+    fields are retained so old portfolios are not silently truncated during migration.
+    Bet identity includes market, selection, date, odds and stake to avoid collapsing
+    distinct positions on the same fixture.
+    """
+    import math
+
+    def numeric_token(value):
+        try:
+            number = float(value)
+            return format(number, ".12g") if math.isfinite(number) else str(value)
+        except (TypeError, ValueError):
+            return str(value or "")
+
+    def identity(bet):
+        match = str(bet.get("match") or bet.get("fixture_id") or "").strip().casefold()
+        return (
+            match,
+            str(bet.get("market") or "").strip().casefold(),
+            str(bet.get("pick") or "").strip().casefold(),
+            str(bet.get("date_iso") or bet.get("date") or "").strip()[:10],
+            numeric_token(bet.get("odds")),
+            numeric_token(bet.get("stake")),
+        )
+
+    from collections import defaultdict, deque
+
+    sqlite_by_identity = defaultdict(deque)
+    for row in sqlite_bets or []:
+        if isinstance(row, dict):
+            sqlite_by_identity[identity(row)].append(dict(row))
+
+    merged = []
+    for row in legacy_bets or []:
+        if not isinstance(row, dict):
+            continue
+        legacy = dict(row)
+        candidates = sqlite_by_identity.get(identity(legacy))
+        if candidates:
+            persisted = candidates.popleft()
+            legacy.update({
+                name: value for name, value in persisted.items() if value is not None
+            })
+        merged.append(legacy)
+
+    # Keep additional same-identity SQLite rows: they may be distinct stakes.
+    for candidates in sqlite_by_identity.values():
+        merged.extend(candidates)
+    return merged
+
+
 def portfolio_risk(bets, bank):
     """Concentration and drawdown diagnostics from recorded paper/live positions."""
     valid = [b for b in (bets or []) if isinstance(b, dict)]
