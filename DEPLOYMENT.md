@@ -95,3 +95,22 @@ streamlit run App.py
 5. Run the walk-forward Base vs Context ablation. Context is promoted only when at least 500 paired out-of-time matches show improvement in both Brier score and Log Loss.
 
 A successful deployment does not mean the new context model has already demonstrated a higher hit rate or positive return. Until real historical context data passes the stated tests, Context probabilities remain equal to Base; corners, cards and Asian handicaps remain informational and are not automatically staked.
+
+
+## Security and access-control requirements
+
+**This application is single-tenant and does not implement user authentication or
+per-user data isolation.** The SQLite database and local portfolio JSON are shared
+by the running deployment. Streamlit session state is not a substitute for
+authorization around those shared files.
+
+Do not expose a deployment containing real API credentials, portfolio history,
+or bank data as a public app. Restrict it to a private audience, or place it behind
+an identity-aware access proxy that authenticates every request before it reaches
+Streamlit. Do not rely on a password-type input as access control.
+
+API-key inputs are intentionally blank on page load. Existing keys are resolved
+inside the server process from Streamlit Secrets, environment variables, or the
+local owner-only secret file. Leave the input empty to keep using that server-side
+key; type a new value only to replace it. A password field masks typed text visually,
+but its initial value must never be populated with a server-side secret.

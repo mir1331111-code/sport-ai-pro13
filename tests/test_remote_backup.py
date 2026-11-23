@@ -154,6 +154,50 @@ class RemoteSqliteBackupTests(unittest.TestCase):
             {"forecasts": 15, "market_forecasts": 8, "bank_history": 4},
         )
 
+
+    def test_remote_restore_rejects_authenticated_gzip_bomb_with_bounded_output(self):
+        from cryptography.fernet import Fernet
+
+        key = Fernet.generate_key().decode("ascii")
+        compressed = gzip.compress(b"x" * 4096)
+        encrypted = Fernet(key.encode("ascii")).encrypt(compressed)
+        manifest = {
+            "format": "neuro-sqlite-fernet-chunks-v1",
+            "parts": 1,
+            # Deliberately falsified to fit the configured test limit.
+            "raw_bytes": 64,
+            "encrypted_bytes": len(encrypted),
+            "encrypted_sha256": __import__("hashlib").sha256(encrypted).hexdigest(),
+        }
+        gist = {
+            "files": {
+                remote_backup.MANIFEST_NAME: {"content": __import__("json").dumps(manifest)},
+                f"{remote_backup.PART_PREFIX}000.txt": {"content": encrypted.decode("ascii")},
+            }
+        }
+        with patch.object(remote_backup, "MAX_SQLITE_BYTES", 64):
+            with self.assertRaisesRegex(ValueError, "safety limit"):
+                remote_backup._decode_remote_snapshot(gist, "test-token", key)
+
+    def test_remote_restore_rejects_oversized_encrypted_gist_part(self):
+        key = remote_backup.generate_backup_key()
+        encrypted = b"x" * (remote_backup.PART_BYTES + 1)
+        manifest = {
+            "format": "neuro-sqlite-fernet-chunks-v1",
+            "parts": 1,
+            "raw_bytes": 1,
+            "encrypted_bytes": len(encrypted),
+            "encrypted_sha256": __import__("hashlib").sha256(encrypted).hexdigest(),
+        }
+        gist = {
+            "files": {
+                remote_backup.MANIFEST_NAME: {"content": __import__("json").dumps(manifest)},
+                f"{remote_backup.PART_PREFIX}000.txt": {"content": encrypted.decode("ascii")},
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "part exceeds"):
+            remote_backup._decode_remote_snapshot(gist, "test-token", key)
+
     def test_secret_gist_visibility_is_required(self):
         with patch("storage.remote_backup.requests.get") as get:
             response = get.return_value
