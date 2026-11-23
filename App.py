@@ -1184,6 +1184,19 @@ with st.sidebar:
         )
         for _storage_key, _label in _api_key_labels.items():
             st.caption(f"{_label}: {_api_key_status.get(_storage_key, 'не настроен')}")
+        _github_backup_token = bool(
+            os.environ.get("GITHUB_TOKEN", "").strip()
+            or _configured_secret("GITHUB_TOKEN")
+        )
+        st.caption(
+            "Зашифрованная резервная копия SQLite · GITHUB_TOKEN: "
+            + ("настроен" if _github_backup_token else "не настроен")
+        )
+        if not _github_backup_token:
+            st.warning(
+                "Без GITHUB_TOKEN резервная копия истории в Secret Gist не работает. "
+                "На Streamlit Cloud локальная SQLite может быть потеряна после замены контейнера."
+            )
         _local_only_keys = [
             _api_key_labels[key] for key, state in _api_key_status.items()
             if state == "локальный файл приложения"
@@ -1242,7 +1255,7 @@ with st.sidebar:
         min_edge = st.slider("Мин. Edge %", 0, 15, 3, 1) / 100
         kelly_frac = 0.25
         st.caption("Риск-профиль зафиксирован: ¼ Kelly · максимум 1% банка на рынок · 2% на матч · 5% суммарно за день.")
-        st.caption(f"Версия приложения: {APP_VERSION} · build 2026-11-15")
+        st.caption(f"Версия приложения: {APP_VERSION} · сборка {APP_BUILD_ID}")
         matrix_n = st.slider("Матрица", 6, 15, 12, 1)
 
         st.markdown("<hr style='border-color:rgba(255,255,255,.08);margin:16px 0;'>",

@@ -16,7 +16,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the Streamlit Community Cloud setup, `App
 
 ### Context pipeline and additional markets
 
-See [`CONTEXT_AND_MARKETS.md`](CONTEXT_AND_MARKETS.md) for SStats context enrichment, context confidence and Value gates, historical CSV schemas for women/national teams, referee/card handling, halftime corner splits, and Asian handicap settlement calculations.
+Context enrichment and confidence gates are implemented in [`data/context_history.py`](data/context_history.py), [`model/context_model.py`](model/context_model.py), and the [walk-forward market validation guide](docs/WALK_FORWARD_MARKET_VALIDATION.md). Historical CSV upload validation is in [`data/history_import.py`](data/history_import.py).
 
 # Model evaluation and xG ablation
 
@@ -109,7 +109,9 @@ The temporal half-life is configurable in walk_forward_compare(half_life_days=..
 
 Real/manual prices must pass the minimum probability, market-specific historical validation, minimum Edge, minimum EV, and positive Kelly. The production staking policy is fixed at **¼ Kelly**, with a hard maximum of **1% of bankroll per market**, **2% combined exposure per fixture** across correlated markets, and **5% cumulative stake turnover per calendar day**. The minimum executable decimal price is **1.70**; a lower price may remain visible as a forecast but cannot be staked. Limits are checked centrally for manual and scan-based virtual-portfolio additions, against all current open and same-day settled stakes. This is paper/virtual portfolio accounting only; the app does not place bookmaker bets. A single entered price's implied probability still contains bookmaker margin; the current 40% blend is a provisional setting, not an optimized coefficient. It must be tuned on a chronological out-of-fold dataset before making claims of model advantage.
 
-API credentials are read from password-widget session state, environment variables, or Streamlit secrets and are no longer persisted into local app state. .gitignore excludes local databases, credentials, and generated caches. ## Highlightly odds source
+API credentials entered through the sidebar are stored separately in the git-ignored `.neuro_secrets.json` file on the app host (owner-only permissions); they are not placed in portfolio JSON, Gist portfolio sync, or downloadable backups. This local file is not durable on Streamlit Community Cloud. For cloud deployments, configure credentials in **Manage app → Settings → Secrets**. API password inputs intentionally remain blank after a page reload; the app resolves configured values server-side and the API Center shows which source is active. See [DEPLOYMENT.md](DEPLOYMENT.md). .gitignore excludes local databases, credentials, and generated caches.
+
+## Highlightly odds source
 
 Highlightly is an optional odds provider. When configured and permitted by the account plan, the scanner resolves the exact fixture through Highlightly's `/football/matches` endpoint and maps `/football/odds` records by `matchId`. SStats.net is also supported as a separate odds source; a total-goals quote from one named bookmaker is displayed with an explicit uncorroborated label, while two or more independent named bookmakers are required before that SStats quote can pass the bookmaker-confirmation gate for automated staking. Anonymous compact-feed totals are not presented as bookmaker prices. Fixture feeds such as TheSportsDB, ESPN, and football-data.org are not treated as bookmaker odds. The app does not infer bookmaker prices from model fair odds.
 

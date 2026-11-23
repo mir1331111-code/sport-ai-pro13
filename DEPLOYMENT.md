@@ -10,11 +10,27 @@ When the SStats key is configured and `Games/list` returns fixtures, SStats is t
 SStats also supplies optional match context through its own Games/injuries, Ls/GameInfo and Ls/GameLineups endpoints. Ls/List only resolves the SStats/Flashscore event ID for a fixture already selected by Games/list; it never adds or replaces scanner fixtures.
 
 1. Open [share.streamlit.io](https://share.streamlit.io/) and switch to the GitHub workspace for mir1331111-code.
-2. Select **Create app** (or manage the existing app connected to this repository).
-3. Choose repository mir1331111-code/sport-ai-pro13, branch main, and main file path App.py.
-4. Open the app. In the left sidebar, expand **🔑 API ключи** and paste your SStats.net API key. Use **🔎 Проверить подключение SStats.net** to verify the key, fixture list and odds. The same key is used for the SStats match, odds and supported context endpoints; a separate API-Football key is not required.
+2. Manage the app connected to `mir1331111-code/sport-ai-pro13`, branch `main`, entry point `App.py`.
+3. Before adding credentials or portfolio data, open **Manage app → Settings → Sharing** and select **Only specific people can view this app**. The GitHub repository is public, so a Streamlit app deployed from it is public by default unless its Sharing setting is explicitly changed. This project is single-tenant and has no app-level login or per-user data isolation.
+4. Open **Manage app → Settings → Secrets** and add the persistent secrets you actually use. Example:
 
-   UI-entered credentials are saved in the private, git-ignored .neuro_secrets.json file with owner-only permissions and are kept outside portfolio data and downloadable backups. This is local app-host storage, not durable cloud secret storage: Streamlit Community Cloud does not guarantee local-file persistence across reboot/redeploy. If that host clears its filesystem, re-enter the SStats key in the same sidebar field. A durable guarantee requires an external persistent secret store; the app does not copy API keys to GitHub, Gist, or backups.
+   ```toml
+   GITHUB_TOKEN = "your_fine_grained_github_token"
+   SSTATS_API_KEY = "your_sstats_key"
+   LLM_API_KEY = "your_groq_key"
+   APP_TIMEZONE = "Asia/Yekaterinburg"
+   # Optional:
+   FDORG_TOKEN = "..."
+   FOOTBALLAPI_KEY = "..."
+   XAI_API_KEY = "..."
+   HIGHLIGHTLY_API_KEY = "..."
+   ```
+
+   Replace `APP_TIMEZONE` with your own IANA timezone (for example `Europe/Helsinki` or `Asia/Yekaterinburg`). `GITHUB_TOKEN` is a fine-grained GitHub token with **Gists: Read and write** only; it is used for the encrypted SQLite Secret Gist backup. Do not paste secrets into repository files or send them in chat.
+5. Save Secrets, then open the app and confirm the API Center reports `Streamlit Secrets` for configured keys and `GITHUB_TOKEN` as configured. Password fields intentionally remain blank after page reload; blank does not mean the server-side key is missing.
+6. Use **🔎 Проверить подключение SStats.net** and **🔎 Проверить AI-подключение** to verify the configured providers. The same SStats key is used for fixture, odds and supported context endpoints; a separate API-Football key is optional.
+
+   Sidebar-entered credentials are saved separately in the git-ignored `.neuro_secrets.json` file with owner-only permissions. This is a convenience for local/private persistent hosts, not durable cloud storage: Community Cloud may clear local files on reboot or redeploy. Prefer Streamlit Secrets for every cloud deployment.
 
 ### Durable forecast and learning history
 
@@ -58,7 +74,7 @@ at least 1%. It does not rewrite Poisson/Elo weights, Value gates or staking rul
 
 5. Run the scanner. It uses the SStats numeric game ID for Games/injuries and resolves the Flashscore string event ID for Ls/GameInfo and Ls/GameLineups. The Ls/List request uses Upcoming/Limit filters, matches by ordered teams and exact source/app-local/UTC date candidates, and never sends numeric SStats IDs to the Flashscore detail endpoints.
 
-Streamlit Community Cloud reads requirements.txt and installs the Python dependencies. Once deployed, pushes to the connected GitHub branch are reflected in the app; dependency changes trigger a full redeploy. On hosts with ephemeral filesystems, a provider or host restart may clear the local key file; in that case paste the SStats key into the same sidebar field again.
+Streamlit Community Cloud reads `requirements.txt` and installs the Python dependencies. Once deployed, pushes to the connected GitHub branch are reflected in the app; dependency changes trigger a full redeploy. If the app still shows an older build ID, use **Manage app → Reboot app** and inspect the Cloud logs. The active build ID is displayed in the sidebar and Dashboard.
 
 ## SStats context request limits
 
@@ -91,7 +107,7 @@ streamlit run App.py
 1. Confirm the app opens and the scanner can load fixtures.
 2. Paste the SStats key into the left sidebar and run **🔎 Проверить подключение SStats.net**.
 3. Run a scan. The log reports SStats event-ID matches, injury checks, confirmed XIs and confirmed referees. Markets without verified historical coverage remain forecast-only.
-4. In the scanner, optionally upload the historical match CSV for women's competitions/national teams and the separate pre-kickoff context CSV. Their required columns and leakage rules are documented in [CONTEXT_AND_MARKETS.md](CONTEXT_AND_MARKETS.md).
+4. In the scanner, optionally upload the historical match CSV for women's competitions/national teams and the separate pre-kickoff context CSV. Their accepted schemas and leakage checks are enforced by [`data/history_import.py`](data/history_import.py) and [`data/context_history.py`](data/context_history.py).
 5. Run the walk-forward Base vs Context ablation. Context is promoted only when at least 500 paired out-of-time matches show improvement in both Brier score and Log Loss.
 
 A successful deployment does not mean the new context model has already demonstrated a higher hit rate or positive return. Until real historical context data passes the stated tests, Context probabilities remain equal to Base; corners, cards and Asian handicaps remain informational and are not automatically staked.
