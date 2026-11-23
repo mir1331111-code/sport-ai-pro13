@@ -95,7 +95,7 @@ class HistoricalRefreshLifecycleTests(unittest.TestCase):
 
         with patch.object(scanner_engine, "_shared_engine_cache", return_value=cache):
             ready = scanner_engine.has_cached_engine(
-                12, extra_divisions=["E0", "SP1"]
+                12, extra_divisions=["ZZ1", "ZZ2"]
             )
 
         self.assertTrue(ready)
