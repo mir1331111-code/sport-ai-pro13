@@ -4240,7 +4240,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         sstats_key,
                         date_from=today_date.isoformat(),
                         date_to=(today_date + timedelta(days=days - 1)).isoformat(),
-                        now=scan_now,
+                        # Stamp the priority re-fetch at its actual request time,
+                        # not at scan start; ContextStore deduplicates fixture + observed_at.
+                        now=datetime.now(scan_now.tzinfo) if scan_now.tzinfo else datetime.now(),
                         max_injury_checks=MAX_TOP_MATCHES,
                         max_lineup_checks=MAX_TOP_MATCHES,
                         timezone_offset=(
