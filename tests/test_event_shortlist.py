@@ -111,7 +111,7 @@ class UnifiedMarketEventShortlistTests(unittest.TestCase):
         self.assertTrue(all(item["odds"] >= 1.70 for item in events))
         self.assertTrue(all(item["probability"] >= 0.65 for item in events))
         self.assertTrue(all(not item["value_verified"] for item in events))
-        self.assertTrue(all("не VALUE" in item["status_label"] for item in events))
+        self.assertTrue(all("НЕ VALUE" in item["status_label"] for item in events))
 
     def test_high_probability_shortlist_excludes_low_odds_missing_bookmaker_or_unverified_source(self):
         card = _base_card()
