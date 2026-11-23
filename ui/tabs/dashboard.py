@@ -1210,6 +1210,109 @@ _DASHBOARD_FAMILY_LABELS = {
 }
 
 
+def _dashboard_real_1x2_quotes(card):
+    """Return only provider-backed 1X2 prices; never derive a bookmaker price."""
+    if not isinstance(card, dict):
+        return []
+    prices = card.get("market_odds")
+    prices = prices if isinstance(prices, dict) else {}
+    sources = card.get("market_odds_source_by_pick")
+    sources = sources if isinstance(sources, dict) else {}
+    bookmakers = card.get("bookmaker_by_pick")
+    bookmakers = bookmakers if isinstance(bookmakers, dict) else {}
+    fallback_source = str(card.get("odds_source") or "").strip()
+    result = []
+    for pick in ("П1", "X", "П2"):
+        price = num(prices.get(pick))
+        source = str(sources.get(pick) or fallback_source).strip()
+        if (
+            price is None or not 1.0 < price <= 100.0
+            or source.casefold() in {"", "model_only", "no_market", "unknown"}
+        ):
+            continue
+        result.append({
+            "pick": pick,
+            "odds": price,
+            "bookmaker": str(bookmakers.get(pick) or "").strip(),
+            "source": source,
+        })
+    return result
+
+
+def _dashboard_ai_details(card):
+    """Compact per-fixture AI/context evidence, available on demand."""
+    analysis = card.get("deep_analysis")
+    analysis = analysis if isinstance(analysis, dict) else {}
+    provider = str(card.get("deep_analysis_provider") or "").strip()
+    model = str(card.get("deep_analysis_model") or "").strip()
+    if not analysis:
+        return (
+            "<span class='neo-ai-status'>AI: анализ для этого матча не сохранён</span>"
+            if not provider else
+            f"<span class='neo-ai-status'>AI: {esc(provider)} · нет сохранённого разбора</span>"
+        )
+
+    parts = []
+    probabilities = analysis.get("probabilities")
+    if isinstance(probabilities, dict):
+        normalized = []
+        for label in ("П1", "X", "П2"):
+            value = num(probabilities.get(label))
+            if value is not None and 0 <= value <= 100:
+                normalized.append(f"{label} {value:.0f}%")
+        if normalized:
+            parts.append("Вероятности AI: " + " · ".join(normalized))
+    independent_pick = str(analysis.get("independent_pick") or "").strip()
+    if independent_pick:
+        parts.append(f"Выбор AI: {independent_pick}")
+    for field, label in (
+        ("lineup_assessment", "Составы"),
+        ("injury_assessment", "Травмы / дисквалификации"),
+        ("referee_assessment", "Судья"),
+        ("form_assessment", "Форма"),
+        ("match_assessment", "Анализ матча"),
+        ("risks", "Риски"),
+        ("data_quality", "Качество данных"),
+    ):
+        value = str(analysis.get(field) or "").strip()
+        if value:
+            parts.append(f"<b>{esc(label)}:</b> {esc(value)}")
+    if not parts:
+        parts.append("AI вернул пустой или неполный разбор.")
+    heading = " · ".join(part for part in (provider, model) if part) or "Независимый AI"
+    return (
+        "<details class='neo-ai-details'><summary>"
+        f"AI / составы / риски · {esc(heading)}</summary>"
+        "<div>" + "<br>".join(parts) + "</div></details>"
+    )
+
+
+def _dashboard_fixture_html(card):
+    """Render team crests and competition marker in the compact match cell."""
+    home = str(card.get("home_team") or "Хозяева")
+    away = str(card.get("away_team") or "Гости")
+    league = str(card.get("league") or card.get("div") or "Футбол")
+    code = str(card.get("div") or "").strip()
+    league_logo = _https_image_url(card.get("league_badge"))
+    if league_logo:
+        league_marker = (
+            f"<img class='neo-dashboard-league-logo' src='{esc(league_logo)}' "
+            "alt='' loading='lazy' referrerpolicy='no-referrer' "
+            "onerror=\"this.style.display='none'\"/>"
+        )
+    else:
+        league_marker = f"<span class='neo-dashboard-league-flag'>{esc(_LEAGUE_FLAGS.get(code, '⚽'))}</span>"
+    return (
+        "<div class='neo-dashboard-fixture'>"
+        f"<small>{league_marker}{esc(league)}</small>"
+        "<div class='neo-fixture-line'>"
+        f"<span class='neo-team'>{_team_badge_html(home, card.get('home_badge'), 22)}<b>{esc(home)}</b></span>"
+        "<span class='neo-vs'>—</span>"
+        f"<span class='neo-team'>{_team_badge_html(away, card.get('away_badge'), 22)}<b>{esc(away)}</b></span>"
+        "</div></div>"
+    )
+
+
 def dashboard_recommendation_groups(
     cards, *, now=None, period_end=None, selected_league=None,
 ):
@@ -1317,6 +1420,12 @@ def dashboard_recommendation_groups(
                 "home_sample": int(summary.get("home_team_sample") or 0),
                 "away_sample": int(summary.get("away_team_sample") or 0),
                 "odds": odds,
+                "one_x_two_quotes": _dashboard_real_1x2_quotes(card),
+                "probabilities_1x2": {
+                    "П1": num(card.get("p1")),
+                    "X": num(card.get("px")),
+                    "П2": num(card.get("p2")),
+                },
                 "ev": num(verdict.get("ev")) if status == "approved" else None,
                 "edge": num(verdict.get("edge")) if status == "approved" else None,
                 "stake": num(verdict.get("stake")) if status == "approved" else None,
@@ -1349,7 +1458,7 @@ def dashboard_recommendation_groups(
 
 
 def recommendation_group_html(status, items):
-    """Render a compact table for one of the three requested recommendation states."""
+    """Render one compact recommendation table with full prices and AI evidence."""
     if status not in _DASHBOARD_STATUS_LABELS:
         return ""
     items = [item for item in (items or []) if isinstance(item, dict)]
@@ -1366,48 +1475,90 @@ def recommendation_group_html(status, items):
         rows = []
         for item in items:
             kickoff = item.get("kickoff")
-            time_text = kickoff.strftime("%d.%m %H:%M") if isinstance(kickoff, datetime) else "—"
+            time_text = (
+                kickoff.strftime("%d.%m %H:%M")
+                if isinstance(kickoff, datetime) else "—"
+            )
             card = item.get("card") if isinstance(item.get("card"), dict) else {}
             odds = num(item.get("odds"))
-            price_text = f"{odds:.2f}" if odds is not None else "нет подтверждённой цены"
-            quote_source = str(item.get("bookmaker") or item.get("odds_source") or "").strip()
-            if item.get("bookmaker") and item.get("odds_source"):
-                quote_source = f"{item['bookmaker']} · {item['odds_source']}"
+            selected_price = (
+                f"{esc(str(item.get('pick') or ''))} @ {odds:.2f}"
+                if odds is not None else "нет подтверждённой цены"
+            )
+            selected_book = str(item.get("bookmaker") or "").strip()
+            selected_source = str(item.get("odds_source") or "").strip()
+            selected_quote_source = " · ".join(
+                value for value in (selected_book, selected_source) if value
+            )
             if status == "approved":
                 ev = num(item.get("ev"))
                 edge = num(item.get("edge"))
                 stake = num(item.get("stake"))
-                detail_parts = []
+                details = []
                 if ev is not None:
-                    detail_parts.append(f"EV {ev:+.1%}")
+                    details.append(f"EV {ev:+.1%}")
                 if edge is not None:
-                    detail_parts.append(f"Edge {edge:+.1%}")
+                    details.append(f"Edge {edge:+.1%}")
                 if stake is not None:
-                    detail_parts.append(f"Ставка {stake:.2f}")
-                detail = " · ".join(detail_parts) or "Все проверки допуска пройдены"
+                    details.append(f"Kelly {stake:.2f}")
+                gate_text = " · ".join(details) or "Все Value-гейты пройдены"
             else:
-                detail = str(item.get("reason") or "")
-            history_text = f"{int(item.get('home_sample') or 0)}/{int(item.get('away_sample') or 0)}"
+                gate_text = str(item.get("reason") or "")
+
+            probabilities = item.get("probabilities_1x2")
+            probabilities = probabilities if isinstance(probabilities, dict) else {}
+            prob_text = " · ".join(
+                f"{pick} {value:.0%}"
+                for pick in ("П1", "X", "П2")
+                if (value := num(probabilities.get(pick))) is not None
+                and 0 <= value <= 1
+            ) or "—"
+
+            quote_rows = []
+            for quote in item.get("one_x_two_quotes") or []:
+                if not isinstance(quote, dict):
+                    continue
+                price = num(quote.get("odds"))
+                if price is None:
+                    continue
+                pick = str(quote.get("pick") or "")
+                book = str(quote.get("bookmaker") or "").strip()
+                source = str(quote.get("source") or "").strip()
+                quote_rows.append(
+                    f"{esc(pick)} <b>{price:.2f}</b>"
+                    + (f" <small>{esc(book)}</small>" if book else "")
+                    + (f" <small>{esc(source)}</small>" if source else "")
+                )
+            one_x_two_text = (
+                "<div class='neo-dashboard-odds-list'>"
+                + "<br>".join(quote_rows)
+                + "</div>"
+                if quote_rows else
+                "<span class='neo-ai-status'>Нет реальных котировок 1X2</span>"
+            )
+            history_text = (
+                f"{int(item.get('home_sample') or 0)}/"
+                f"{int(item.get('away_sample') or 0)}"
+            )
+            ai_html = _dashboard_ai_details(card)
             rows.append(
                 "<tr>"
-                f"<td>{esc(time_text)}</td>"
-                f"<td>{esc(card.get('league') or card.get('div') or '—')}</td>"
-                f"<td><b>{esc(match_name(card))}</b></td>"
-                f"<td>{esc(item.get('family_label') or '—')}</td>"
-                f"<td><b>{esc(item.get('pick') or '—')}</b></td>"
-                f"<td><b>{float(item.get('probability') or 0):.1%}</b></td>"
-                f"<td><b>{esc(price_text)}</b><small>{esc(quote_source or item.get('odds_source') or '')}</small></td>"
+                f"<td class='neo-time'>{esc(time_text)}</td>"
+                f"<td>{_dashboard_fixture_html(card)}</td>"
+                f"<td>{esc(item.get('family_label') or '—')}<br><b>{esc(item.get('pick') or '—')}</b></td>"
+                f"<td>{esc(prob_text)}</td>"
+                f"<td>{one_x_two_text}</td>"
+                f"<td><b>{selected_price}</b><small>{esc(selected_quote_source)}</small></td>"
                 f"<td>{esc(history_text)}</td>"
-                f"<td>{esc(detail)}</td>"
+                f"<td>{esc(gate_text)}<br>{ai_html}</td>"
                 "</tr>"
             )
         body = (
-            "<div class='neo-table-scroll'><table class='neo-match-table'>"
-            "<thead><tr><th>Время</th><th>Лига</th><th>Матч</th><th>Рынок</th>"
-            "<th>Исход</th><th>Вероятность</th><th>Реальный кэф. / букмекер</th>"
-            "<th>История Д/Г</th><th>Проверка</th></tr></thead><tbody>"
-            + "".join(rows)
-            + "</tbody></table></div>"
+            "<div class='neo-table-scroll'><table class='neo-match-table neo-recommendation-table'>"
+            "<thead><tr><th>Время</th><th>Матч / турнир</th><th>Рынок / выбор</th>"
+            "<th>Вероятности 1X2</th><th>Реальные коэффициенты 1X2</th>"
+            "<th>Цена выбранного рынка</th><th>История Д/Г</th><th>Допуск / AI</th></tr></thead>"
+            "<tbody>" + "".join(rows) + "</tbody></table></div>"
         )
     return (
         "<section class='neo-panel neo-matches-panel'>"
