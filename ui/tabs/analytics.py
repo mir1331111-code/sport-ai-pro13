@@ -434,6 +434,17 @@ def _render_fixed_holdout_runner():
     m3.metric("Log Loss", f"{candidate.get('log_loss'):.4f}" if candidate.get("log_loss") is not None else "—")
     m4.metric("Accuracy", f"{candidate.get('accuracy'):.1%}" if candidate.get("accuracy") is not None else "—")
 
+    candidate_ci = candidate.get("confidence_intervals_95") or {}
+    st.subheader("95% matchday-clustered CI · качество модели")
+    st.dataframe([{
+        "Метрика": label,
+        "Оценка": candidate.get(metric),
+        "Нижняя 95% граница": (candidate_ci.get(metric) or {}).get("low"),
+        "Верхняя 95% граница": (candidate_ci.get(metric) or {}).get("high"),
+    } for metric, label in (
+        ("brier", "Brier"), ("log_loss", "Log Loss"), ("accuracy", "Accuracy")
+    )], width="stretch", hide_index=True)
+
     market_candidate = market.get("candidate_on_same_fixtures") or {}
     st.subheader("Одна и та же выборка: модель против рынка")
     st.dataframe([{

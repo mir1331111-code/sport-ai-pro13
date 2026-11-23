@@ -724,6 +724,14 @@ def render_markdown_report(report: Mapping[str, Any]) -> str:
     manifest = report.get("manifest") or {}
     data = report.get("data_quality") or {}
     xg = report.get("xg_usage") or {}
+    candidate_ci = candidate.get("confidence_intervals_95") or {}
+
+    def _ci_text(metric):
+        item = candidate_ci.get(metric) or {}
+        if item.get("low") is None or item.get("high") is None:
+            return "—"
+        return f"[{_number(item.get('low'))}, {_number(item.get('high'))}]"
+
     lines = [
         "# SPORT AI · MODEL LAB v1",
         "",
@@ -733,13 +741,13 @@ def render_markdown_report(report: Mapping[str, Any]) -> str:
         "",
         "## 1X2 quality",
         "",
-        "| Metric | Model |",
-        "|---|---:|",
-        f"| Multiclass Brier (sum over H/D/A) | {_number(candidate.get('brier'))} |",
-        f"| Log Loss | {_number(candidate.get('log_loss'))} |",
-        f"| Accuracy | {_number(candidate.get('accuracy'))} |",
-        f"| Matches | {candidate.get('n', 0)} |",
-        f"| Matchday clusters | {candidate.get('cluster_count', 0)} |",
+        "| Metric | Model | Matchday-clustered 95% CI |",
+        "|---|---:|---:|",
+        f"| Multiclass Brier (sum over H/D/A) | {_number(candidate.get('brier'))} | {_ci_text('brier')} |",
+        f"| Log Loss | {_number(candidate.get('log_loss'))} | {_ci_text('log_loss')} |",
+        f"| Accuracy | {_number(candidate.get('accuracy'))} | {_ci_text('accuracy')} |",
+        f"| Matches | {candidate.get('n', 0)} | — |",
+        f"| Matchday clusters | {candidate.get('cluster_count', 0)} | — |",
         "",
         "## Fixed-bookmaker comparison",
         "",
@@ -765,6 +773,29 @@ def render_markdown_report(report: Mapping[str, Any]) -> str:
         "| League | Matches | Brier | Log Loss | Accuracy |",
         "|---|---:|---:|---:|---:|",
     ]
+    reliability = candidate.get("reliability") or {}
+    reliability_classes = reliability.get("classes") or {}
+    lines += [
+        "",
+        "## Reliability · fixed-width bins",
+        "",
+        "| Outcome | Probability bin | N | Mean predicted | Observed frequency | Absolute gap |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for outcome, label in (("H", "P1"), ("D", "X"), ("A", "P2")):
+        class_report = reliability_classes.get(outcome) or {}
+        for bucket in class_report.get("bins") or []:
+            if not bucket.get("count"):
+                continue
+            lines.append(
+                f"| {label} | {_number(bucket.get('lower'), 2)}–{_number(bucket.get('upper'), 2)} | "
+                f"{bucket.get('count', 0)} | {_number(bucket.get('mean_predicted'))} | "
+                f"{_number(bucket.get('observed_frequency'))} | {_number(bucket.get('absolute_gap'))} |"
+            )
+    lines += ["", f"Reliability ECE: " + "; ".join(
+        f"{label}={_number((reliability_classes.get(code) or {}).get('ece'))}"
+        for code, label in (("H", "P1"), ("D", "X"), ("A", "P2"))
+    ) + ".", ""]
     league_names = manifest.get("leagues") or {}
     by_league = (report.get("stratified") or {}).get("by_league") or {}
     for code, label in league_names.items():

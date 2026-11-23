@@ -180,6 +180,8 @@ class FixedHoldoutModelLabTests(unittest.TestCase):
         markdown = render_markdown_report(report)
         svg = render_reliability_svg(report)
         self.assertIn("SPORT AI", markdown)
+        self.assertIn("Matchday-clustered 95% CI", markdown)
+        self.assertIn("Reliability", markdown)
         self.assertIn("<svg", svg)
         with tempfile.TemporaryDirectory() as directory:
             paths = write_model_lab_artifacts(report, directory)
