@@ -387,10 +387,11 @@ def _probability_health_note(cards):
 
 
 def _grok_panel(cards, meta):
-    """Show only analyses explicitly recorded as Grok/xAI; never relabel another LLM."""
+    """Render independent AI analyses only when they match the currently selected provider."""
     meta = meta if isinstance(meta, dict) else {}
-    selected_provider = str(meta.get("llm_provider") or "Grok (x.ai)")
+    selected_provider = str(meta.get("llm_provider") or "Groq GPT-OSS 120B")
     selected_is_grok = _provider_is_grok(selected_provider)
+    selected_label = ai_provider_label({"meta": {"llm_provider": selected_provider}})
     rows = []
     for card in cards or []:
         if not isinstance(card, dict):
@@ -398,13 +399,14 @@ def _grok_panel(cards, meta):
         analysis = card.get("deep_analysis")
         analysis = analysis if isinstance(analysis, dict) else {}
         analysis_provider = str(card.get("deep_analysis_provider") or "")
+        matching_analysis = bool(analysis and analysis_provider == selected_provider)
         grok_comment = str(card.get("grok_comment") or "").strip()
-        explicit_grok_analysis = _provider_is_grok(analysis_provider)
-        if not explicit_grok_analysis and not grok_comment:
+        legacy_grok_comment = bool(selected_is_grok and grok_comment)
+        if not matching_analysis and not legacy_grok_comment:
             continue
         title = match_name(card)
         body = []
-        if explicit_grok_analysis:
+        if matching_analysis:
             probabilities = analysis.get("probabilities")
             probabilities = probabilities if isinstance(probabilities, dict) else {}
             values = {key: num(probabilities.get(key)) for key in ("П1", "X", "П2")}
@@ -429,8 +431,9 @@ def _grok_panel(cards, meta):
                     else f"расходится с основной моделью ({model_pick or 'нет прогноза'})"
                 )
                 body.append(
-                    f"<div class='neo-grok-meta'>Grok: <b>{esc(independent_pick)}</b> · "
-                    f"{esc(comparison)} · модель {esc(card.get('deep_analysis_model') or 'xAI')}</div>"
+                    f"<div class='neo-grok-meta'>AI · {esc(analysis_provider)}: "
+                    f"<b>{esc(independent_pick)}</b> · {esc(comparison)} · "
+                    f"модель {esc(card.get('deep_analysis_model') or 'не указана')}</div>"
                 )
             assessment = str(
                 analysis.get("match_assessment") or analysis.get("opinion") or ""
@@ -443,7 +446,7 @@ def _grok_panel(cards, meta):
             quality = str(analysis.get("data_quality") or "").strip()
             if quality:
                 body.append(f"<small class='neo-grok-meta'>Качество данных: {esc(quality)}</small>")
-        if grok_comment:
+        if legacy_grok_comment:
             bookmaker = str(card.get("grok_bookmaker") or "источник не указан")
             body.append(
                 f"<p class='neo-grok-copy'>{esc(grok_comment)}</p>"
@@ -459,17 +462,17 @@ def _grok_panel(cards, meta):
     if not rows:
         if selected_is_grok:
             message = (
-                "Grok выбран как AI-провайдер, но сохранённого разбора пока нет. "
-                "Запустите TOP MATCHES / обновление AI-досье в сканере."
+                "Выбран Grok (x.ai), но сохранённого разбора пока нет. "
+                "Укажите действующий XAI_API_KEY, проверьте подключение и обновите TOP MATCHES."
             )
         else:
-            active = ai_provider_label({"meta": meta})
             message = (
-                f"Сейчас выбран {active}, а не Grok. Для независимого разбора Grok выберите "
-                "«Grok (x.ai)» в API Center, задайте XAI_API_KEY и обновите TOP MATCHES."
+                f"Выбран {selected_label} · модель "
+                f"{LLM_PROVIDERS.get(selected_provider, {}).get('model') or 'не указана'}. "
+                "После успешной проверки API запустите обновление SStats-досье и TOP MATCHES."
             )
         content = (
-            "<div class='neo-grok-empty'><b>Grok пока не предоставил разбор</b>"
+            "<div class='neo-grok-empty'><b>Независимый AI-разбор пока не сохранён</b>"
             f"<span>{esc(message)}</span></div>"
         )
     else:
@@ -477,8 +480,8 @@ def _grok_panel(cards, meta):
     return (
         "<section class='neo-panel neo-grok-panel'>"
         "<div class='neo-panel-heading'><div>"
-        "<span class='neo-panel-kicker'>INDEPENDENT AI · xAI</span>"
-        "<h3>Grok · независимый анализ</h3></div>"
+        f"<span class='neo-panel-kicker'>INDEPENDENT AI · {esc(selected_label)}</span>"
+        "<h3>Независимый AI-анализ</h3></div>"
         f"<span class='neo-count-pill'>{len(rows)} разборов</span></div>"
         + content + "</section>"
     )
