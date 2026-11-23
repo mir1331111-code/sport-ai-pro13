@@ -2543,6 +2543,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                                 analysis, model_pick_code=model_pick
                             )
                             refresh_card["deep_analysis_fixture_id"] = fixture_id
+                            refresh_card["ai_crosscheck"] = build_ai_crosscheck(
+                                refresh_card, analysis
+                            )
 
                         updated_data = dict(D)
                         updated_data["cards"] = all_cards
