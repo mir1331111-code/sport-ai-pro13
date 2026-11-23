@@ -2,6 +2,7 @@ import unittest
 
 from betting.event_shortlist import (
     build_best_market_events,
+    build_high_probability_market_events,
     build_market_coverage,
 )
 
@@ -73,6 +74,61 @@ def _base_card():
 
 
 class UnifiedMarketEventShortlistTests(unittest.TestCase):
+    def test_high_probability_shortlist_includes_all_supported_markets_at_minimum_odds(self):
+        card = _base_card()
+        card["over"] = 0.78
+        card["btts"] = 0.76
+        card["p1"] = 0.70
+        card["lam_h"] = 2.0
+        card["lam_a"] = 1.2
+        card["historical_stats"]["corners"].update({
+            "total": 13.0, "total_variance": 8.0,
+            "history_matches": 140, "home_team_games": 12, "away_team_games": 11,
+        })
+        card["historical_stats"]["cards"].update({
+            "total": 7.0, "total_variance": 5.0,
+            "history_matches": 130, "home_team_games": 12, "away_team_games": 11,
+        })
+        card["independent_features"] = {
+            "home_home_sample": 12, "away_away_sample": 11,
+        }
+        card.update({
+            "odds_source": "SStats",
+            "total_odds_source": "SStats",
+            "btts_odds_source": "SStats",
+            "extra_market_source": "SStats",
+        })
+        card["bookmaker_by_pick"] = {
+            "П1": "Book A",
+            "ТБ 2.5": "Book B",
+            "BTTS Да": "Book C",
+            "Угл ТБ 8.5": "Book D",
+            "Карты ТБ 3.5": "Book D",
+        }
+        events = build_high_probability_market_events([card], limit=30)
+        families = {item["family"] for item in events}
+        self.assertEqual(families, {"winner", "goals", "btts", "corners", "cards"})
+        self.assertTrue(all(item["odds"] >= 1.70 for item in events))
+        self.assertTrue(all(item["probability"] >= 0.65 for item in events))
+        self.assertTrue(all(not item["value_verified"] for item in events))
+        self.assertTrue(all("не VALUE" in item["status_label"] for item in events))
+
+    def test_high_probability_shortlist_excludes_low_odds_missing_bookmaker_or_unverified_source(self):
+        card = _base_card()
+        card["independent_features"] = {
+            "home_home_sample": 12, "away_away_sample": 12,
+        }
+        card["odds_source"] = "SStats"
+        card["bookmaker_by_pick"] = {"П1": "Book A"}
+        card["market_odds"]["П1"] = 1.69
+        events = build_high_probability_market_events([card])
+        self.assertNotIn("winner", {item["family"] for item in events})
+
+        card["market_odds"]["П1"] = 1.80
+        card["odds_source"] = "model_only"
+        events = build_high_probability_market_events([card])
+        self.assertNotIn("winner", {item["family"] for item in events})
+
     def test_shortlist_includes_each_market_family_and_asian_handicap(self):
         card = _base_card()
         events = build_best_market_events([card], limit=30)
