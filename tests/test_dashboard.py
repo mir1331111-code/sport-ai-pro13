@@ -278,6 +278,7 @@ class DashboardHelperTests(unittest.TestCase):
             "home_team": "Future FC",
             "away_team": "Away FC",
             "p1": .70, "px": .18, "p2": .12,
+            "model_support_status": "team_supported",
             "independent_features": {
                 "home_home_sample": 12, "away_away_sample": 12,
             },
