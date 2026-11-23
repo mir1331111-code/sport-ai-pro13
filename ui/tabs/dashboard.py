@@ -206,7 +206,7 @@ def all_market_candidates_html(events):
         + "".join(rows)
         + "</tbody></table></div>"
         f"<div class='neo-table-footer'>Показано {len(rows)} проверенных сигналов. "
-        f"Value-статус имеют все {verified} строк: независимый benchmark, "
+        f"Проверенных Value-сигналов: {verified}. Независимый benchmark, "
         "полная линия одного букмекера, EV/Edge и проверка Kelly пройдены.</div>"
     )
 
@@ -1302,7 +1302,7 @@ def render():
     st.markdown(
         "<section class='neo-panel neo-matches-panel'>"
         "<div class='neo-panel-heading'><div>"
-        "<span class='neo-panel-kicker'>ALL MARKETS · ODDS ≥ 1.70</span>"
+        "<span class='neo-panel-kicker'>ALL MARKETS · VERIFIED VALUE</span>"
         "<h3>Проверенные Value-сигналы на всех рынках</h3>"
         "<div class='neo-ranking-disclaimer'>"
         f"Показываем только исходы с вероятностью от {STRONG_FORECAST_MIN_PROB:.0%}, "
