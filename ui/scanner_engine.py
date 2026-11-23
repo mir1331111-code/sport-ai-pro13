@@ -912,32 +912,17 @@ def _load_engine(
 
     from model.incremental import (
         IncrementalHistoryChanged, bring_engine_up_to_date,
-        stable_engine_fingerprint,
     )
-    history_years, catalogue_divisions = _history_catalog()
-    xg_enabled = bool(str(footballapi_key or "").strip())
-
-    # The stable key describes the engine schema/configuration, not the
-    # optional rows appended during the last explicit history refresh. Their
-    # full content is verified by the immutable incremental training manifest.
-    custom_divisions = [
-        str(row.get("Div") or "").strip()
-        for row in (custom_historical_rows or [])
-        if isinstance(row, dict) and str(row.get("Div") or "").strip()
-    ]
-    stable_divisions = tuple(dict.fromkeys(
-        list(catalogue_divisions)
-        + custom_divisions
-        + [
-            str(value).strip() for value in (extra_divisions or [])
-            if str(value).strip()
-        ]
-    ))
-    stable_key = stable_engine_fingerprint(
-        matrix_n=matrix_n,
-        xg_enabled=xg_enabled,
-        divisions=stable_divisions,
-        history_years=history_years,
+    stable_key, history_years, stable_divisions = _stable_training_engine_key(
+        matrix_n,
+        footballapi_key=footballapi_key,
+        custom_historical_rows=custom_historical_rows,
+    )
+    legacy_key = _legacy_live_slate_engine_key(
+        matrix_n,
+        footballapi_key=footballapi_key,
+        custom_historical_rows=custom_historical_rows,
+        extra_divisions=extra_divisions,
     )
     stable_session_key = f"_trained_engine_{stable_key}"
     shared_stable = _shared_engine_cache()
@@ -951,25 +936,35 @@ def _load_engine(
         except Exception:
             stable_candidate = None
     stable_path = os.path.join(DISK_CACHE_DIR, f"{stable_key}.pkl.gz")
-    if stable_candidate is None and os.path.exists(stable_path):
-        try:
-            if os.path.getsize(stable_path) > 350 * 1024 * 1024:
-                raise ValueError("cache file exceeds 350 MB safety limit")
-            with open(stable_path, "rb") as file_obj:
-                stable_data = pickle.loads(gzip.decompress(file_obj.read()))
-            disk_engine = stable_data.get("engine") if isinstance(stable_data, dict) else None
-            if (
-                isinstance(stable_data, dict)
-                and stable_data.get("fp") == APP_VERSION
-                and stable_data.get("cache_key") == stable_key
-                and hasattr(disk_engine, "match_stats")
-                and getattr(disk_engine, "trained_n", 0) > 0
-                and getattr(disk_engine, "_incremental_manifest", None)
-            ):
-                stable_candidate = disk_engine
-                logs.append("💾 Найден стабильный дисковый кэш обученной модели.")
-        except Exception as exc:
-            logs.append(f"ℹ️ Стабильный дисковый кэш не использован ({type(exc).__name__}).")
+    lookup_keys = [stable_key]
+    if legacy_key != stable_key:
+        lookup_keys.append(legacy_key)
+    if stable_candidate is None:
+        for lookup_key in lookup_keys:
+            lookup_path = os.path.join(DISK_CACHE_DIR, f"{lookup_key}.pkl.gz")
+            if not os.path.exists(lookup_path):
+                continue
+            try:
+                if os.path.getsize(lookup_path) > 350 * 1024 * 1024:
+                    raise ValueError("cache file exceeds 350 MB safety limit")
+                with open(lookup_path, "rb") as file_obj:
+                    cached_data = pickle.loads(gzip.decompress(file_obj.read()))
+                disk_engine = cached_data.get("engine") if isinstance(cached_data, dict) else None
+                if (
+                    isinstance(cached_data, dict)
+                    and cached_data.get("fp") == APP_VERSION
+                    and cached_data.get("cache_key") == lookup_key
+                    and _valid_fitted_engine(disk_engine)
+                ):
+                    stable_candidate = disk_engine
+                    logs.append(
+                        "💾 Найден стабильный дисковый кэш обученной модели."
+                        if lookup_key == stable_key else
+                        "♻️ Найден прежний кэш модели; переношу на ключ обучения без текущих лиг."
+                    )
+                    break
+            except Exception as exc:
+                logs.append(f"ℹ️ Дисковый кэш {lookup_key[:18]} не использован ({type(exc).__name__}).")
 
     # Fast path: the normal live scanner only reads the fitted model. It does
     # not download/reparse the 5-season archive, rebuild validation samples,
@@ -981,6 +976,8 @@ def _load_engine(
         and getattr(stable_candidate, "_incremental_manifest", None)
         and not refresh_history
     ):
+        if legacy_key != stable_key:
+            _promote_stable_engine_cache(stable_candidate, stable_key, logs)
         with stable_guard:
             shared_stable.setdefault("engines", {})[stable_key] = stable_candidate
         try:
