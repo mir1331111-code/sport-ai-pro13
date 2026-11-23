@@ -118,10 +118,10 @@ def _recheck_value_after_priority_context(
     try:
         kickoff_at = str(merged.get("kickoff_at") or card.get("kickoff_utc") or "")
         observed_at = str(merged.get("timestamp") or "")
-        stable_id = "|".join((
+        stable_id = "|".join(fixture_row_key(
+            str(card.get("home_team") or ""),
+            str(card.get("away_team") or ""),
             str(card.get("date_iso") or "")[:10],
-            str(card.get("home_team") or "").strip().casefold(),
-            str(card.get("away_team") or "").strip().casefold(),
         ))
         if context_store is not None and stable_id:
             context_store.record_snapshot(
