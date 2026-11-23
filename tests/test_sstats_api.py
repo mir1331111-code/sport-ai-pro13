@@ -23,6 +23,15 @@ class SStatsTests(unittest.TestCase):
         self.assertEqual(getattr(now.tzinfo, "key", None), "Asia/Yekaterinburg")
         self.assertEqual(offset, 5)
 
+    def test_sstats_timezone_uses_streamlit_secret_when_environment_is_empty(self):
+        with (
+            patch.dict(os.environ, {"APP_TIMEZONE": ""}),
+            patch("streamlit.secrets", {"APP_TIMEZONE": "Asia/Yekaterinburg"}),
+        ):
+            now, offset = sstats._sstats_timezone()
+        self.assertEqual(getattr(now.tzinfo, "key", None), "Asia/Yekaterinburg")
+        self.assertEqual(offset, 5)
+
     def test_division_mapping_handles_second_bundesliga_before_first_division(self):
         self.assertEqual(sstats._sstats_div_code("2. Bundesliga"), "D2")
         self.assertEqual(sstats._sstats_div_code("2 Bundesliga"), "D2")
