@@ -9,7 +9,11 @@ import re
 import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
-from betting.event_shortlist import build_high_probability_market_events
+from betting.event_shortlist import (
+    build_high_probability_market_events,
+    _market_quote as _event_market_quote,
+    _source as _event_market_source,
+)
 from betting.gate_report import (
     classify_card, near_misses, render_gate_details_html,
     render_near_misses_html, render_status_legend,
@@ -1242,12 +1246,41 @@ def dashboard_recommendation_groups(
             best = best if isinstance(best, (tuple, list)) else None
             verdict = recommendation.get("verdict")
             verdict = verdict if isinstance(verdict, dict) else {}
+
+            # For approved picks use the exact price that passed Value/Kelly.
+            # For forecast-only statuses show the real current quote for the
+            # model-selected outcome, even though Value gates did not pass.
             pick = str(summary.get("pick") or "—")
-            odds = None
-            if verdict.get("real_odds") and best and len(best) >= 3:
-                price = num(best[2])
-                if price is not None and price > 1:
-                    odds = price
+            probability_for_display = probability
+            odds = _event_market_quote(card, family, pick)
+            odds_source = str(_event_market_source(card, family) or "").strip()
+            if odds_source.casefold() in {"", "model_only", "no_market", "unknown"}:
+                odds = None
+                odds_source = ""
+            if (
+                status == "approved"
+                and verdict.get("real_odds")
+                and verdict.get("value_passed")
+                and verdict.get("is_bet")
+                and best
+                and len(best) >= 6
+            ):
+                verified_pick = str(best[1] or "").strip()
+                verified_price = num(best[2])
+                verified_probability = num(verdict.get("prob"))
+                if verified_pick:
+                    pick = verified_pick
+                if verified_price is not None and verified_price > 1:
+                    odds = verified_price
+                if verified_probability is not None and 0 < verified_probability < 1:
+                    probability_for_display = verified_probability
+                odds_source = odds_source or "Подтверждённая линия"
+
+            bookmaker = str(
+                (card.get("bookmaker_by_pick") or {}).get(pick) or ""
+            ).strip()
+            if status == "approved" and not odds_source and odds is not None:
+                odds_source = "Подтверждённая линия"
 
             failed = [gate.name for gate in gates if not gate.passed]
             if status == "forecast":
@@ -1280,16 +1313,15 @@ def dashboard_recommendation_groups(
                 "family": family,
                 "family_label": _DASHBOARD_FAMILY_LABELS.get(family, family),
                 "pick": pick,
-                "probability": probability,
+                "probability": probability_for_display,
                 "home_sample": int(summary.get("home_team_sample") or 0),
                 "away_sample": int(summary.get("away_team_sample") or 0),
                 "odds": odds,
                 "ev": num(verdict.get("ev")) if status == "approved" else None,
                 "edge": num(verdict.get("edge")) if status == "approved" else None,
                 "stake": num(verdict.get("stake")) if status == "approved" else None,
-                "bookmaker": str(
-                    (card.get("bookmaker_by_pick") or {}).get(pick) or ""
-                ),
+                "bookmaker": bookmaker,
+                "odds_source": odds_source,
                 "reason": reason,
             }
             # One fixture appears once: approved beats strong forecast, which
@@ -1337,16 +1369,22 @@ def recommendation_group_html(status, items):
             time_text = kickoff.strftime("%d.%m %H:%M") if isinstance(kickoff, datetime) else "—"
             card = item.get("card") if isinstance(item.get("card"), dict) else {}
             odds = num(item.get("odds"))
-            price_text = f"{odds:.2f}" if odds is not None else "—"
+            price_text = f"{odds:.2f}" if odds is not None else "нет подтверждённой цены"
+            quote_source = str(item.get("bookmaker") or item.get("odds_source") or "").strip()
+            if item.get("bookmaker") and item.get("odds_source"):
+                quote_source = f"{item['bookmaker']} · {item['odds_source']}"
             if status == "approved":
                 ev = num(item.get("ev"))
                 edge = num(item.get("edge"))
                 stake = num(item.get("stake"))
-                detail = (
-                    f"EV {ev:+.1%} · Edge {edge:+.1%} · Kelly {stake:.2f}"
-                    if ev is not None and edge is not None and stake is not None
-                    else "Все проверки допуска пройдены"
-                )
+                detail_parts = []
+                if ev is not None:
+                    detail_parts.append(f"EV {ev:+.1%}")
+                if edge is not None:
+                    detail_parts.append(f"Edge {edge:+.1%}")
+                if stake is not None:
+                    detail_parts.append(f"Ставка {stake:.2f}")
+                detail = " · ".join(detail_parts) or "Все проверки допуска пройдены"
             else:
                 detail = str(item.get("reason") or "")
             history_text = f"{int(item.get('home_sample') or 0)}/{int(item.get('away_sample') or 0)}"
@@ -1358,7 +1396,7 @@ def recommendation_group_html(status, items):
                 f"<td>{esc(item.get('family_label') or '—')}</td>"
                 f"<td><b>{esc(item.get('pick') or '—')}</b></td>"
                 f"<td><b>{float(item.get('probability') or 0):.1%}</b></td>"
-                f"<td>{esc(price_text)}</td>"
+                f"<td><b>{esc(price_text)}</b><small>{esc(quote_source or item.get('odds_source') or '')}</small></td>"
                 f"<td>{esc(history_text)}</td>"
                 f"<td>{esc(detail)}</td>"
                 "</tr>"
@@ -1366,7 +1404,7 @@ def recommendation_group_html(status, items):
         body = (
             "<div class='neo-table-scroll'><table class='neo-match-table'>"
             "<thead><tr><th>Время</th><th>Лига</th><th>Матч</th><th>Рынок</th>"
-            "<th>Исход</th><th>Вероятность</th><th>Коэф.</th>"
+            "<th>Исход</th><th>Вероятность</th><th>Реальный кэф. / букмекер</th>"
             "<th>История Д/Г</th><th>Проверка</th></tr></thead><tbody>"
             + "".join(rows)
             + "</tbody></table></div>"
