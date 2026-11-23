@@ -50,6 +50,7 @@ from data.sources import (
     sstats_account_check, sstats_match_statistics, sstats_find_match_id,
     footballapi_xg_connection_check,
 )  # noqa: E402
+from data.score_status import is_verified_final_score  # noqa: E402
 from betting.settlement import (  # noqa: E402
     determine_outcome, determine_stat_outcome,
 )
@@ -239,10 +240,6 @@ def _configured_key_value(env_names, secret_names):
             return value
     return _configured_secret(*secret_names)
 
-FINISHED_STATUSES = {"finished", "ft", "final", "closed", "ended",
-                     "full-time", "full_time", "completed"}
-
-
 # ==================== ХЕЛПЕРЫ ====================
 def _naive(dt):
     if dt is None:
@@ -267,14 +264,8 @@ def _bet_date(b):
 
 
 def _is_finished(res) -> bool:
-    if not isinstance(res, dict):
-        return False
-    try:
-        int(res["home"]), int(res["away"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    status = str(res.get("status", "")).strip().lower()
-    return (not status) or status in FINISHED_STATUSES
+    """Fail closed unless a provider explicitly confirms a final score."""
+    return is_verified_final_score(res)
 
 
 def _recompute_stats(bets, old=None):
