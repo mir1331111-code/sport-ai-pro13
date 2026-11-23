@@ -292,6 +292,9 @@ class PrognozistOddsParserTests(unittest.TestCase):
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": ""}):
             with (
                 patch.object(sources, "prognozist_permission_enabled", return_value=True),
+                # This unit test is about the explicit permission gate, not the
+                # live robots.txt policy or network availability.
+                patch.object(sources, "_prognozist_allowed", return_value=True),
                 patch.object(sources, "cache_get", return_value=None),
                 patch.object(sources, "_prognozist_line_index", return_value=[
                     {"text": "Arsenal Chelsea П1 2.10 X 3.20 П2 3.50", "odds": odds}
@@ -330,6 +333,9 @@ class PrognozistOddsParserTests(unittest.TestCase):
         odds = {"П1": 2.1, "X": 3.2, "П2": 3.5}
         with patch.dict(os.environ, {"PROGNOZIST_PERMISSION": "1"}):
             with (
+                # Network policy is covered by separate robots-gate tests.
+                # Keep this exact-line lookup test deterministic and offline.
+                patch.object(sources, "_prognozist_allowed", return_value=True),
                 patch.object(sources, "cache_get", return_value=None),
                 patch.object(sources, "_prognozist_line_index", return_value=[
                     {"text": "Arsenal Chelsea П1 2.10 X 3.20 П2 3.50", "odds": odds}
