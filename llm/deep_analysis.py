@@ -932,7 +932,7 @@ def _groq_browser_research(api_key: str, base: str, model: str, dossiers: list[d
         }
     if response.status_code != 200:
         detail = str(getattr(response, "text", "") or "").strip()
-        detail = re.sub(r"(?i)(bearer\\s+)[A-Za-z0-9._-]+", r"\\1[скрыт]", detail)
+        detail = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._-]+", r"\1[скрыт]", detail)
         return "", {
             "state": "http_error",
             "http_status": int(response.status_code),
