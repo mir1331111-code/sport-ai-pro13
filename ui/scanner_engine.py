@@ -791,7 +791,7 @@ def _defer_market_validation(engine, logs):
 def _train_engine(
     matrix_n, logs, update_loader, footballapi_key="",
     footballapi_xg_rows=None, custom_historical_rows=None,
-    seasonal_snapshot=None, run_market_validation=True,
+    seasonal_snapshot=None, run_market_validation=False,
 ):
     if seasonal_snapshot is None:
         seasonal_snapshot = _load_seasonal_history(logs, update_loader)
@@ -934,7 +934,7 @@ def _load_engine(
     matrix_n, logs, update_loader, footballapi_key="",
     footballapi_xg_rows=None, custom_historical_rows=None,
     *, refresh_history=False, force_source_refresh=False,
-    extra_divisions=None, run_market_validation=True,
+    extra_divisions=None, run_market_validation=False,
 ):
     """Use the fitted engine for normal scans; read/replay history only on explicit refresh or cold start."""
     import pickle, gzip, os, json

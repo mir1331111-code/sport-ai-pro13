@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import streamlit as st
 
 from config import (
-    APP_VERSION, DEFAULT_SCAN_HORIZON_DAYS,
+    APP_VERSION, APP_BUILD_ID, DEFAULT_SCAN_HORIZON_DAYS,
     DIV_NAMES, DIV_TO_ODDS, DIV_TO_TSDB, DB_FILE,
     STRONG_FORECAST_MIN_PROB, MIN_RECOMMENDED_MATCHES,
     MAX_RECOMMENDED_MATCHES, MIN_FAVORITE_HISTORY, llm_provider_key_config,
@@ -3128,7 +3128,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         scan_now = datetime.now(scan_timezone)
         scan_run_id = uuid.uuid4().hex
         today_date = scan_now.date()
-        logs = []
+        logs = [
+            f"📦 Сборка {APP_BUILD_ID} · " + (
+                "ручной запуск полного market benchmark."
+                if explicit_history_refresh else
+                "обычный скан: полный market benchmark пропущен."
+            )
+        ]
 
         token = _runtime_secret("fdorg_token_input", "FDORG_TOKEN", "fdorg_token")
         sstats_key = _runtime_secret("sstats_api_key_input", "SSTATS_API_KEY", "sstats_api_key")

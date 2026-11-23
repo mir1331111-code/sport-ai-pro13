@@ -66,7 +66,7 @@ class ScannerEnginePriorityTests(unittest.TestCase):
         ):
             engine = scanner_engine._train_engine(
                 12, logs, lambda *_args: None,
-                seasonal_snapshot={}, run_market_validation=False,
+                seasonal_snapshot={},
             )
 
         validation_mock.assert_not_called()
