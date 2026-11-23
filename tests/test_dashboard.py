@@ -292,7 +292,7 @@ class DashboardHelperTests(unittest.TestCase):
         )
         self.assertEqual(len(groups["provisional"]), 1)
         self.assertIn("4/10", groups["provisional"][0]["reason"])
-        self.assertIn("ставка заблокирована", groups["provisional"][0]["reason"])
+        self.assertIn("Ставка заблокирована", groups["provisional"][0]["reason"])
 
     def test_model_only_prices_are_not_rendered_as_real_1x2_quotes(self):
         card = {
