@@ -313,14 +313,10 @@ def _family_candidates(card: dict, family: str) -> list[dict]:
         pick = str(summary.get("pick") or "")
         if not _STAT_RE.fullmatch(pick):
             return []
-        probability = (
-            _finite(summary.get("over_probability"))
-            if "ТБ" in pick else
-            1.0 - _finite(summary.get("over_probability"))
-            if _finite(summary.get("over_probability")) is not None else None
-        )
-        if probability is None:
+        over_probability = _finite(summary.get("over_probability"))
+        if over_probability is None:
             return []
+        probability = over_probability if "ТБ" in pick else 1.0 - over_probability
         return [_base_row(
             card, family, pick=pick, label=str(summary.get("label") or pick),
             probability=probability, odds=_market_quote(card, family, pick),
