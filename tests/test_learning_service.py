@@ -195,6 +195,13 @@ class ForecastLearningServiceTests(unittest.TestCase):
             "settle-me", "H", home_score=1, away_score=0,
             settled_at=at, source="trusted-feed",
         ))
+        row = next(item for item in self.ledger.rows() if item["forecast_key"] == "settle-me")
+        self.assertEqual(row["result_source"], "trusted-feed")
+        with self.assertRaises(ValueError):
+            self.service.settle_verified(
+                "settle-me", "H", home_score=1, away_score=0,
+                settled_at=at, source="different-feed",
+            )
 
 
 if __name__ == "__main__":

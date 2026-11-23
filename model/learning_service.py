@@ -331,6 +331,7 @@ class ForecastLearningService:
         return self.ledger.settle(
             forecast_key, result, home_score=home_score, away_score=away_score,
             settled_at=settled_at,
+            result_source=source.strip(),
         )
 
     def decisions(self) -> list[dict[str, Any]]:

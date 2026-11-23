@@ -1069,7 +1069,8 @@ def settle_due_forecasts(
                         ledger.settle(
                             str(row["forecast_key"]), result,
                             home_score=home_score, away_score=away_score,
-                            settled_at=now_utc, closing_odds_source=str(score.get("source") or ""),
+                            settled_at=now_utc,
+                            result_source=str(score.get("source") or "verified_ft_score"),
                         )
                         settled += 1
             except (KeyError, TypeError, ValueError):

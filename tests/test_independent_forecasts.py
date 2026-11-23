@@ -546,7 +546,11 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(result["forecasts_settled"], 2)
         self.assertEqual(result["eligible_fixtures"], 1)
         self.assertEqual(result["eligible_fixtures_remaining"], 0)
-        self.assertEqual(len(ledger.rows(settled_only=True)), 2)
+        settled_rows = ledger.rows(settled_only=True)
+        self.assertEqual(len(settled_rows), 2)
+        self.assertEqual({row["result_source"] for row in settled_rows}, {"test"})
+        # Score provenance must not be mislabeled as a closing bookmaker quote.
+        self.assertTrue(all(row["closing_odds_source"] is None for row in settled_rows))
 
 
     def test_forecast_result_lookup_waits_for_full_time_grace(self):
