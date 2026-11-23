@@ -2792,6 +2792,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 event_filter = st.selectbox(
                     "Показывать",
                     [
+                        "Сильные прогнозы ≥65% и кэф ≥1.70",
                         "Все рынки и события",
                         "Только подтверждённый Value",
                         "Сильные прогнозы ≥65%",
@@ -2800,7 +2801,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     key="scanner_all_market_event_filter",
                 )
                 shown_events = list(events)
-                if event_filter == "Только подтверждённый Value":
+                if event_filter == "Сильные прогнозы ≥65% и кэф ≥1.70":
+                    shown_events = [
+                        item for item in shown_events
+                        if item.get("strong_forecast")
+                        and item.get("odds") is not None
+                        and float(item.get("odds") or 0.0) >= MIN_BET_ODDS
+                        and "sstats" in str(item.get("source") or "").casefold()
+                        and bool(str(item.get("bookmaker") or "").strip())
+                    ]
+                elif event_filter == "Только подтверждённый Value":
                     shown_events = [item for item in shown_events if item["value_verified"]]
                 elif event_filter == "Сильные прогнозы ≥65%":
                     shown_events = [item for item in shown_events if item["strong_forecast"]]
