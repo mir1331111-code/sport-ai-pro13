@@ -81,7 +81,9 @@ from model.independent_forecasts import (
 )
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label, render_fixture_header)
-from ui.scanner_engine import _train_engine, _shared_engine_cache, _load_engine
+from ui.scanner_engine import (
+    _train_engine, _shared_engine_cache, _load_engine, has_cached_engine,
+)
 
 MAX_STAKE_PCT = MAX_DAILY_EXPOSURE_PCT  # Legacy name; enforced in betting.risk.
 AUTO_PORTFOLIO_MIN_PROB = STRONG_FORECAST_MIN_PROB  # Shared 65% gate; separate from Value proof.
