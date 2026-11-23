@@ -497,6 +497,64 @@ def _render_fixed_holdout_runner():
         f"experiment ID: {report.get('experiment_id')}."
     )
 
+    st.subheader("Reliability · калибровка вероятностей")
+    reliability = candidate.get("reliability") or {}
+    reliability_classes = reliability.get("classes") or {}
+    reliability_rows = []
+    for outcome, label in (("H", "П1"), ("D", "X"), ("A", "П2")):
+        class_report = reliability_classes.get(outcome) or {}
+        for bucket in class_report.get("bins") or []:
+            if not bucket.get("count"):
+                continue
+            reliability_rows.append({
+                "Исход": label,
+                "Диапазон P": f"{bucket.get('lower', 0):.0%}–{bucket.get('upper', 0):.0%}",
+                "N": bucket.get("count"),
+                "Средняя P": bucket.get("mean_predicted"),
+                "Факт": bucket.get("observed_frequency"),
+                "Абсолютный разрыв": bucket.get("absolute_gap"),
+                "ECE класса": class_report.get("ece"),
+            })
+    if reliability_rows:
+        st.dataframe(reliability_rows, width="stretch", hide_index=True)
+    else:
+        st.info("В holdout нет достаточных данных для reliability-bin таблицы.")
+
+    st.subheader("Ablation · вклад отдельных компонентов")
+    ablation = (report.get("feature_ablation") or {}).get("full_minus_ablation") or {}
+    ablation_rows = []
+    for key, label in (
+        ("full_minus_without_h2h", "Без H2H"),
+        ("full_minus_without_rest_days", "Без rest-days"),
+        ("full_minus_without_xg", "Без xG"),
+    ):
+        item = ablation.get(key) or {}
+        values = item.get("differences") or {}
+        ci = item.get("confidence_intervals_95") or {}
+        ablation_rows.append({
+            "Ветка": label,
+            "Δ Brier (full − ablation)": values.get("brier"),
+            "95% CI Brier": (
+                f"[{(ci.get('brier') or {}).get('low')}, {(ci.get('brier') or {}).get('high')}]"
+                if ci.get("brier") else "—"
+            ),
+            "Δ Log Loss (full − ablation)": values.get("log_loss"),
+            "95% CI Log Loss": (
+                f"[{(ci.get('log_loss') or {}).get('low')}, {(ci.get('log_loss') or {}).get('high')}]"
+                if ci.get("log_loss") else "—"
+            ),
+        })
+    st.dataframe(ablation_rows, width="stretch", hide_index=True)
+    xg_usage = report.get("xg_usage") or {}
+    st.caption(
+        "xG coverage: "
+        + (
+            f"{xg_usage.get('share'):.1%}"
+            if xg_usage.get("share") is not None else "не рассчитано"
+        )
+        + " · источники и фактическое использование разделены в JSON отчёте."
+    )
+
     download_map = (
         ("JSON", "json", "application/json"),
         ("Markdown", "markdown", "text/markdown"),

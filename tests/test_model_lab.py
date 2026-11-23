@@ -62,14 +62,16 @@ class FixedHoldoutModelLabTests(unittest.TestCase):
         self.assertEqual(rows[0]["HomeTeam"], "Home FC")
 
     def test_uploaded_csv_parser_rejects_missing_columns_empty_and_oversized_files(self):
-        from model.holdout import MAX_HOLDOUT_CSV_BYTES, read_historical_csv_bytes
+        from model.holdout import read_historical_csv_bytes
+        from unittest.mock import patch
 
         with self.assertRaisesRegex(ValueError, "не хватает"):
             read_historical_csv_bytes(b"Date,Div,HomeTeam\r\n2024-01-01,E0,Home\r\n")
         with self.assertRaisesRegex(ValueError, "пуст"):
             read_historical_csv_bytes(b"")
-        with self.assertRaisesRegex(ValueError, "превышает лимит"):
-            read_historical_csv_bytes(b"x" * (MAX_HOLDOUT_CSV_BYTES + 1))
+        with patch("model.holdout.MAX_HOLDOUT_CSV_BYTES", 4):
+            with self.assertRaisesRegex(ValueError, "превышает лимит"):
+                read_historical_csv_bytes(b"12345")
 
     def _run(self, rows, **kwargs):
         params = {
