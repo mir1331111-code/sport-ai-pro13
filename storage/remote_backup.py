@@ -520,6 +520,23 @@ def _sqlite_app_state_snapshot(raw: bytes) -> tuple[int, str | None]:
             pass
 
 
+
+def _assert_app_state_present(raw: bytes) -> None:
+    """Refuse remote backups that omit the portfolio and dashboard snapshot."""
+    stamp, payload = _sqlite_app_state_snapshot(raw)
+    if stamp <= 0 or not isinstance(payload, str) or not payload:
+        raise ValueError(
+            "SQLite backup refused: durable portfolio/dashboard state is missing. "
+            "Save app state before uploading the remote backup."
+        )
+    try:
+        decoded = json.loads(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SQLite backup refused: durable app state is invalid JSON") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("SQLite backup refused: durable app state is not an object")
+
+
 def _assert_app_state_does_not_regress(previous_raw: bytes, current_raw: bytes) -> None:
     """Refuse to replace a newer portfolio/dashboard snapshot with an older DB."""
     previous_stamp, previous_payload = _sqlite_app_state_snapshot(previous_raw)
@@ -559,6 +576,7 @@ def backup_database_to_gist(
         gist_id = _resolve_gist_id(gist_id, token, create=True)
         raw = _snapshot_sqlite(db_path)
         counts = _validate_sqlite_bytes(raw)
+        _assert_app_state_present(raw)
         raw_sha = hashlib.sha256(raw).hexdigest()
         gist = _get_gist(gist_id, token)
         old_manifest = _manifest_from_gist(gist, token)
