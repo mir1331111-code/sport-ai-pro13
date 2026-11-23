@@ -34,7 +34,7 @@ DASHBOARD_PERIOD_OPTIONS = (
     "Ближайшие 24 часа",
     "Весь горизонт сканирования",
 )
-DASHBOARD_DEFAULT_PERIOD = "Весь горизонт скана · лучшие события"
+DASHBOARD_DEFAULT_PERIOD = "Весь горизонт сканирования"
 DASHBOARD_FORECAST_VISIBLE_LIMIT = 50
 STRONG_EVENT_MIN_EDGE = 0.05
 STRONG_EVENT_MIN_EV = 0.05
