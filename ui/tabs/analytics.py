@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import csv
+import hashlib
+import json
 import os
+from pathlib import Path
 import streamlit as st
 
 from config import APP_VERSION, DB_FILE
@@ -184,7 +188,412 @@ def render_learning_center():
     )
 
 
+def _render_fixed_holdout_runner():
+    """Run and publish the frozen 1X2 Model Lab v1 on an operator-supplied CSV."""
+    from model.holdout import (
+        MARKET_SOURCES,
+        evaluate_fixed_holdout,
+        load_fixed_holdout_gate_status,
+        read_historical_csv_bytes,
+        validate_historical_rows,
+        write_model_lab_artifacts,
+    )
+    from storage import user_datasets
+
+    st.subheader("Fixed Holdout Model Lab v1 · независимая проверка 1X2")
+    st.caption(
+        "Загрузи архив завершённых матчей, задай один фиксированный holdout-период "
+        "и выбери ровно одного букмекера. Модель обучается только на матчах до даты "
+        "начала holdout; каждый игровой день прогнозируется до добавления результатов "
+        "этого дня. Результаты holdout нельзя использовать для подгонки параметров."
+    )
+
+    try:
+        gate_status = load_fixed_holdout_gate_status()
+    except Exception as exc:
+        gate_status = {"passed": False, "status": "NOT_READY", "gate_file": "неизвестен"}
+        st.warning(f"Не удалось прочитать текущий gate: {type(exc).__name__}")
+    if gate_status.get("passed"):
+        st.success(
+            "Текущий promotion gate: PASS · "
+            f"{gate_status.get('holdout_start')} — {gate_status.get('holdout_end')}"
+        )
+    else:
+        st.warning(
+            "Текущий promotion gate: NOT_READY. O/U 2.5 и другие вторичные рынки "
+            "не получают автоматический допуск только от этой панели."
+        )
+
+    data_source = st.radio(
+        "Источник исторических матчей",
+        ("Новый CSV", "Сохранённый архив из SQLite"),
+        horizontal=True,
+        key="model_lab_v1_data_source",
+    )
+    parsed_rows = None
+    field_names = []
+    raw = b""
+    dataset_source = "uploaded_csv"
+    if data_source == "Новый CSV":
+        uploaded = st.file_uploader(
+            "Исторический CSV (football-data.co.uk или совместимая таблица)",
+            type=["csv"],
+            key="model_lab_v1_csv_upload",
+            help=(
+                "Нужны дата, лига, хозяева, гости и счёт FT. Для подтверждённого "
+                "pre-kickoff сравнения с рынком дополнительно нужны две timezone-aware "
+                "колонки: время снятия коэффициента и время начала матча."
+            ),
+        )
+        if uploaded is not None:
+            raw = uploaded.getvalue()
+            try:
+                parsed_rows, field_names = read_historical_csv_bytes(raw)
+                st.caption(
+                    f"Файл: {uploaded.name} · строк матчей: {len(parsed_rows):,} · "
+                    f"размер: {len(raw) / (1024 * 1024):.2f} МБ."
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+    else:
+        saved_rows = st.session_state.get("_model_lab_v1_saved_rows")
+        refresh_saved = st.button(
+            "Перечитать сохранённый архив из SQLite",
+            key="model_lab_v1_reload_saved_archive",
+        )
+        if saved_rows is None or refresh_saved:
+            try:
+                saved_rows = user_datasets.load_user_dataset("custom_historical_match_rows")
+                st.session_state["_model_lab_v1_saved_rows"] = saved_rows
+            except Exception as exc:
+                saved_rows = []
+                st.error(f"Не удалось прочитать архив из SQLite: {type(exc).__name__}: {exc}")
+        if saved_rows:
+            try:
+                parsed_rows, field_names = validate_historical_rows(saved_rows)
+                raw = json.dumps(
+                    parsed_rows, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"), default=str,
+                ).encode("utf-8")
+                dataset_source = "sqlite:user_datasets.custom_historical_match_rows"
+                divisions = sorted({
+                    str(row.get("Div") or row.get("div") or row.get("league") or "").strip()
+                    for row in parsed_rows
+                } - {""})
+                st.caption(
+                    f"SQLite архив: {len(parsed_rows):,} матчей · "
+                    f"лиги/Div: {', '.join(divisions[:20]) or 'не указаны'} · "
+                    f"SHA-256: {hashlib.sha256(raw).hexdigest()[:16]}…"
+                )
+                st.info(
+                    "Model Lab v1 считает только E0, D1, I1, SP1 и F1. "
+                    "Другие сохранённые дивизионы будут прозрачно исключены из отчёта."
+                )
+            except ValueError as exc:
+                st.error(str(exc))
+        else:
+            st.warning(
+                "В SQLite пока нет custom_historical_match_rows. Сначала импортируй "
+                "архив в Сканере → Данные контекста и исторические архивы или переключись на CSV."
+            )
+
+    c1, c2, c3 = st.columns([1, 1, 1.2])
+    with c1:
+        holdout_start = st.text_input(
+            "Начало holdout (включительно)", key="model_lab_v1_start",
+            placeholder="YYYY-MM-DD",
+        ).strip()
+    with c2:
+        holdout_end = st.text_input(
+            "Конец holdout (включительно)", key="model_lab_v1_end",
+            placeholder="YYYY-MM-DD",
+        ).strip()
+    market_options = list(MARKET_SOURCES)
+    with c3:
+        market_source = st.selectbox(
+            "Единый букмекерский benchmark",
+            options=market_options,
+            format_func=lambda key: MARKET_SOURCES[key]["label"],
+            key="model_lab_v1_market_source",
+        )
+
+    ts1, ts2 = st.columns(2)
+    timestamp_options = ["— не указано —"] + field_names
+    default_odds_ts = (
+        field_names.index("OddsCapturedAt") + 1
+        if "OddsCapturedAt" in field_names else 0
+    )
+    default_kickoff_ts = (
+        field_names.index("KickoffAt") + 1
+        if "KickoffAt" in field_names else 0
+    )
+    with ts1:
+        odds_timestamp = st.selectbox(
+            "Колонка времени снятия коэффициента",
+            options=timestamp_options,
+            index=min(default_odds_ts, len(timestamp_options) - 1),
+            key="model_lab_v1_odds_timestamp",
+        )
+    with ts2:
+        kickoff_timestamp = st.selectbox(
+            "Колонка времени начала матча",
+            options=timestamp_options,
+            index=min(default_kickoff_ts, len(timestamp_options) - 1),
+            key="model_lab_v1_kickoff_timestamp",
+        )
+
+    if odds_timestamp == "— не указано —" and kickoff_timestamp == "— не указано —":
+        st.info(
+            "Без обеих временных колонок отчёт всё равно рассчитает качество 1X2 "
+            "и диагностическое сравнение с выбранным букмекером, но market snapshot "
+            "не будет считаться доказанно снятым до kickoff, поэтому строгий PASS невозможен."
+        )
+    elif odds_timestamp == "— не указано —" or kickoff_timestamp == "— не указано —":
+        st.warning("Для проверки pre-kickoff snapshot нужно выбрать обе временные колонки.")
+
+    can_run = bool(
+        parsed_rows
+        and holdout_start
+        and holdout_end
+        and (
+            (odds_timestamp == "— не указано —" and kickoff_timestamp == "— не указано —")
+            or (odds_timestamp != "— не указано —" and kickoff_timestamp != "— не указано —")
+        )
+    )
+    run = st.button(
+        "Запустить фиксированный holdout",
+        type="primary",
+        width="stretch",
+        disabled=not can_run,
+        key="model_lab_v1_run",
+    )
+    if run:
+        try:
+            with st.spinner(
+                "Считаю четыре хронологических ветки на одних и тех же матчах, "
+                "строю paired benchmark и доверительные интервалы…"
+            ):
+                report = evaluate_fixed_holdout(
+                    parsed_rows,
+                    holdout_start=holdout_start,
+                    holdout_end=holdout_end,
+                    market_source=market_source,
+                    dataset_sha256=hashlib.sha256(raw).hexdigest(),
+                    dataset_source=dataset_source,
+                    odds_timestamp_field=(
+                        odds_timestamp if odds_timestamp != "— не указано —" else None
+                    ),
+                    kickoff_timestamp_field=(
+                        kickoff_timestamp if kickoff_timestamp != "— не указано —" else None
+                    ),
+                )
+                configured_gate = os.environ.get("MODEL_LAB_GATE_PATH", "").strip()
+                output_dir = (
+                    Path(configured_gate).expanduser().parent
+                    if configured_gate else Path("reports/model_lab")
+                )
+                artifacts = write_model_lab_artifacts(report, output_dir)
+                if configured_gate:
+                    target_gate = Path(configured_gate).expanduser()
+                    generated_gate = Path(artifacts["promotion_gate"])
+                    if target_gate.resolve() != generated_gate.resolve():
+                        target_gate.parent.mkdir(parents=True, exist_ok=True)
+                        target_gate.write_bytes(generated_gate.read_bytes())
+                    artifacts["promotion_gate"] = str(target_gate)
+                st.session_state["_model_lab_v1_report"] = report
+                st.session_state["_model_lab_v1_artifacts"] = artifacts
+        except Exception as exc:
+            st.error(f"Fixed Holdout Model Lab не завершился: {type(exc).__name__}: {exc}")
+
+    report = st.session_state.get("_model_lab_v1_report")
+    artifacts = st.session_state.get("_model_lab_v1_artifacts") or {}
+    if not isinstance(report, dict):
+        return
+    candidate = report.get("candidate") or {}
+    market = report.get("market") or {}
+    paired = market.get("candidate_minus_market") or {}
+    difference = paired.get("differences") or {}
+    intervals = paired.get("confidence_intervals_95") or {}
+    log_ci = intervals.get("log_loss") or {}
+    readiness = report.get("readiness") or {}
+    data_quality = report.get("data_quality") or {}
+
+    st.divider()
+    status = readiness.get("status") or "NOT_READY"
+    if status == "PASS":
+        st.success("Fixed Holdout Model Lab v1: PASS · строгий gate пройден.")
+    else:
+        st.warning(
+            "Fixed Holdout Model Lab v1: NOT_READY · "
+            + str(readiness.get("explanation") or "Один или несколько обязательных критериев не выполнены.")
+        )
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Матчей holdout", f"{candidate.get('n', 0):,}")
+    m2.metric("Brier · H/D/A", f"{candidate.get('brier'):.4f}" if candidate.get("brier") is not None else "—")
+    m3.metric("Log Loss", f"{candidate.get('log_loss'):.4f}" if candidate.get("log_loss") is not None else "—")
+    m4.metric("Accuracy", f"{candidate.get('accuracy'):.1%}" if candidate.get("accuracy") is not None else "—")
+
+    candidate_ci = candidate.get("confidence_intervals_95") or {}
+    st.subheader("95% matchday-clustered CI · качество модели")
+    st.dataframe([{
+        "Метрика": label,
+        "Оценка": candidate.get(metric),
+        "Нижняя 95% граница": (candidate_ci.get(metric) or {}).get("low"),
+        "Верхняя 95% граница": (candidate_ci.get(metric) or {}).get("high"),
+    } for metric, label in (
+        ("brier", "Brier"), ("log_loss", "Log Loss"), ("accuracy", "Accuracy")
+    )], width="stretch", hide_index=True)
+
+    market_candidate = market.get("candidate_on_same_fixtures") or {}
+    st.subheader("Одна и та же выборка: модель против рынка")
+    st.dataframe([{
+        "Показатель": "Brier",
+        "Рынок": (market.get("metrics") or {}).get("brier"),
+        "Модель на тех же матчах": market_candidate.get("brier"),
+        "Модель − рынок": difference.get("brier"),
+    }, {
+        "Показатель": "Log Loss",
+        "Рынок": (market.get("metrics") or {}).get("log_loss"),
+        "Модель на тех же матчах": market_candidate.get("log_loss"),
+        "Модель − рынок": difference.get("log_loss"),
+    }, {
+        "Показатель": "Количество пар",
+        "Рынок": market.get("n", 0),
+        "Модель на тех же матчах": market.get("n", 0),
+        "Модель − рынок": None,
+    }], width="stretch", hide_index=True)
+    st.caption(
+        f"Букмекер: {market.get('source_label') or market.get('source') or market_source} · "
+        f"95% CI для Δ Log Loss: [{log_ci.get('low', '—')}, {log_ci.get('high', '—')}] · "
+        f"Pre-kickoff snapshot: "
+        f"{'подтверждён' if readiness.get('market_snapshot_verified') else 'не подтверждён'}."
+    )
+    timestamp_audit = market.get("timestamp_audit") or {}
+    st.info(str(timestamp_audit.get("note") or "Временные метки рынка отсутствуют."))
+
+    league_rows = []
+    for code, label in ((report.get("manifest") or {}).get("leagues") or {}).items():
+        metric = (((report.get("stratified") or {}).get("by_league") or {}).get(code) or {}).get("arms", {}).get("full") or {}
+        league_rows.append({
+            "Лига": label,
+            "N": metric.get("n", 0),
+            "Brier": metric.get("brier"),
+            "Log Loss": metric.get("log_loss"),
+            "Accuracy": metric.get("accuracy"),
+        })
+    st.subheader("Пять фиксированных лиг")
+    st.dataframe(league_rows, width="stretch", hide_index=True)
+
+    st.subheader("Строгие критерии promotion gate")
+    gate_rows = [
+        {"Критерий": "Объём holdout / покрытие 5 лиг / число игровых дней",
+         "Статус": "PASS" if readiness.get("sample_size_met") else "NOT MET"},
+        {"Критерий": "Brier ≤ 0.57 и Log Loss ≤ 0.99",
+         "Статус": "PASS" if readiness.get("absolute_targets_met") else "NOT MET"},
+        {"Критерий": "≥ 3,000 пар с единым букмекером",
+         "Статус": "PASS" if readiness.get("market_paired_sample_met") else "NOT MET"},
+        {"Критерий": "Время снятия коэффициента строго до kickoff",
+         "Статус": "PASS" if readiness.get("market_snapshot_verified") else "NOT VERIFIED"},
+        {"Критерий": "Верхняя граница 95% CI Δ Log Loss ≤ +0.02",
+         "Статус": "PASS" if readiness.get("not_worse_than_market") else "NOT MET"},
+        {"Критерий": "Итоговый строгий gate",
+         "Статус": "PASS" if readiness.get("strict_holdout_gate_passed") else "NOT READY"},
+    ]
+    st.dataframe(gate_rows, width="stretch", hide_index=True)
+    st.caption(
+        f"Training rows before holdout: {data_quality.get('training_rows_before_holdout', 0):,} · "
+        f"invalid rows: {data_quality.get('invalid_rows', 0):,} · "
+        f"duplicates skipped: {data_quality.get('duplicate_rows_skipped', 0):,} · "
+        f"experiment ID: {report.get('experiment_id')}."
+    )
+
+    st.subheader("Reliability · калибровка вероятностей")
+    reliability = candidate.get("reliability") or {}
+    reliability_classes = reliability.get("classes") or {}
+    reliability_rows = []
+    for outcome, label in (("H", "П1"), ("D", "X"), ("A", "П2")):
+        class_report = reliability_classes.get(outcome) or {}
+        for bucket in class_report.get("bins") or []:
+            if not bucket.get("count"):
+                continue
+            reliability_rows.append({
+                "Исход": label,
+                "Диапазон P": f"{bucket.get('lower', 0):.0%}–{bucket.get('upper', 0):.0%}",
+                "N": bucket.get("count"),
+                "Средняя P": bucket.get("mean_predicted"),
+                "Факт": bucket.get("observed_frequency"),
+                "Абсолютный разрыв": bucket.get("absolute_gap"),
+                "ECE класса": class_report.get("ece"),
+            })
+    if reliability_rows:
+        st.dataframe(reliability_rows, width="stretch", hide_index=True)
+    else:
+        st.info("В holdout нет достаточных данных для reliability-bin таблицы.")
+
+    st.subheader("Ablation · вклад отдельных компонентов")
+    ablation = (report.get("feature_ablation") or {}).get("full_minus_ablation") or {}
+    ablation_rows = []
+    for key, label in (
+        ("full_minus_without_h2h", "Без H2H"),
+        ("full_minus_without_rest_days", "Без rest-days"),
+        ("full_minus_without_xg", "Без xG"),
+    ):
+        item = ablation.get(key) or {}
+        values = item.get("differences") or {}
+        ci = item.get("confidence_intervals_95") or {}
+        ablation_rows.append({
+            "Ветка": label,
+            "Δ Brier (full − ablation)": values.get("brier"),
+            "95% CI Brier": (
+                f"[{(ci.get('brier') or {}).get('low')}, {(ci.get('brier') or {}).get('high')}]"
+                if ci.get("brier") else "—"
+            ),
+            "Δ Log Loss (full − ablation)": values.get("log_loss"),
+            "95% CI Log Loss": (
+                f"[{(ci.get('log_loss') or {}).get('low')}, {(ci.get('log_loss') or {}).get('high')}]"
+                if ci.get("log_loss") else "—"
+            ),
+        })
+    st.dataframe(ablation_rows, width="stretch", hide_index=True)
+    xg_usage = report.get("xg_usage") or {}
+    st.caption(
+        "xG coverage: "
+        + (
+            f"{xg_usage.get('share'):.1%}"
+            if xg_usage.get("share") is not None else "не рассчитано"
+        )
+        + " · источники и фактическое использование разделены в JSON отчёте."
+    )
+
+    download_map = (
+        ("JSON", "json", "application/json"),
+        ("Markdown", "markdown", "text/markdown"),
+        ("Reliability SVG", "reliability_svg", "image/svg+xml"),
+        ("Promotion gate JSON", "promotion_gate", "application/json"),
+    )
+    download_columns = st.columns(4)
+    for column, (label, key, mime) in zip(download_columns, download_map):
+        path = artifacts.get(key)
+        if not path:
+            continue
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            continue
+        file_path = Path(path)
+        column.download_button(
+            f"Скачать {label}",
+            data=data,
+            file_name=file_path.name,
+            mime=mime,
+            key=f"model_lab_v1_download_{key}",
+            width="stretch",
+        )
+
+
 def render_model_lab():
+    _render_fixed_holdout_runner()
     try:
         ledger = ForecastLedger(DB_FILE)
         active_version = f"main-model-v{APP_VERSION}"

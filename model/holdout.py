@@ -34,6 +34,71 @@ from model.walk_forward import (
     _without_xg,
 )
 
+MAX_HOLDOUT_CSV_BYTES = 100 * 1024 * 1024
+_REQUIRED_CSV_ALIASES = (
+    ("Date", "date", "match_date", "kickoff_date"),
+    ("Div", "league", "competition"),
+    ("HomeTeam", "home_team", "home"),
+    ("AwayTeam", "away_team", "away"),
+    ("FTHG", "home_goals", "hg"),
+    ("FTAG", "away_goals", "ag"),
+)
+
+
+def validate_historical_rows(rows: object) -> tuple[list[dict], list[str]]:
+    """Validate rows loaded from the durable app dataset store."""
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("В сохранённом архиве нет строк матчей.")
+    if any(not isinstance(row, Mapping) for row in rows):
+        raise ValueError("Сохранённый архив содержит некорректную строку.")
+    clean = [dict(row) for row in rows]
+    fields = sorted({str(key).strip() for row in clean for key in row})
+    missing = [
+        "/".join(aliases)
+        for aliases in _REQUIRED_CSV_ALIASES
+        if not any(alias in fields for alias in aliases)
+    ]
+    if missing:
+        raise ValueError("В архиве не хватает обязательных колонок: " + ", ".join(missing))
+    return clean, fields
+
+
+def read_historical_csv_bytes(raw: bytes) -> tuple[list[dict[str, str]], list[str]]:
+    """Parse and validate an uploaded historical football CSV without guessing columns."""
+    if not isinstance(raw, (bytes, bytearray)):
+        raise ValueError("Загруженный CSV должен быть двоичным файлом.")
+    if not raw:
+        raise ValueError("CSV-файл пуст.")
+    if len(raw) > MAX_HOLDOUT_CSV_BYTES:
+        raise ValueError(
+            f"Размер CSV превышает лимит {MAX_HOLDOUT_CSV_BYTES // (1024 * 1024)} МБ."
+        )
+    try:
+        decoded = bytes(raw).decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("CSV должен быть сохранён в UTF-8 или UTF-8 с BOM.") from exc
+    reader = csv.DictReader(io.StringIO(decoded, newline=""))
+    fields = [str(field or "").strip() for field in (reader.fieldnames or [])]
+    reader.fieldnames = fields
+    if not fields:
+        raise ValueError("В CSV отсутствует строка заголовков.")
+    missing = [
+        "/".join(aliases)
+        for aliases in _REQUIRED_CSV_ALIASES
+        if not any(alias in fields for alias in aliases)
+    ]
+    if missing:
+        raise ValueError("В CSV не хватает обязательных колонок: " + ", ".join(missing))
+    rows = [
+        dict(row) for row in reader
+        if row and any(value not in (None, "") for value in row.values())
+    ]
+    if not rows:
+        raise ValueError("В CSV нет строк матчей.")
+    validated, _validated_fields = validate_historical_rows(rows)
+    return validated, fields
+
+
 TOP_FIVE_LEAGUES = {
     "E0": "English Premier League",
     "D1": "German Bundesliga",
@@ -198,6 +263,7 @@ def evaluate_fixed_holdout(
     holdout_end: str,
     market_source: str = "B365",
     dataset_sha256: str | None = None,
+    dataset_source: str = "provided_rows",
     model_version: str | None = None,
     matrix_n: int = 12,
     half_life_days: float = 180.0,
@@ -222,6 +288,8 @@ def evaluate_fixed_holdout(
         raise ValueError("holdout_start must be on or before holdout_end")
     if market_source not in MARKET_SOURCES:
         raise ValueError(f"market_source must be one of {', '.join(MARKET_SOURCES)}")
+    if not isinstance(dataset_source, str) or not dataset_source.strip():
+        raise ValueError("dataset_source must be a non-empty label")
     if bool(odds_timestamp_field) != bool(kickoff_timestamp_field):
         raise ValueError("provide both odds_timestamp_field and kickoff_timestamp_field, or neither")
     if not isinstance(bootstrap_samples, int) or bootstrap_samples < 0:
@@ -529,6 +597,7 @@ def evaluate_fixed_holdout(
         "half_life_days": float(half_life_days),
         "model_version": model_version or _git_revision(),
         "dataset_sha256": dataset_sha256,
+        "dataset_source": dataset_source.strip(),
         "leagues": {code: leagues[code] for code in league_codes},
         "thresholds": thresholds,
         "bootstrap_samples": int(bootstrap_samples),
@@ -655,6 +724,14 @@ def render_markdown_report(report: Mapping[str, Any]) -> str:
     manifest = report.get("manifest") or {}
     data = report.get("data_quality") or {}
     xg = report.get("xg_usage") or {}
+    candidate_ci = candidate.get("confidence_intervals_95") or {}
+
+    def _ci_text(metric):
+        item = candidate_ci.get(metric) or {}
+        if item.get("low") is None or item.get("high") is None:
+            return "—"
+        return f"[{_number(item.get('low'))}, {_number(item.get('high'))}]"
+
     lines = [
         "# SPORT AI · MODEL LAB v1",
         "",
@@ -664,13 +741,13 @@ def render_markdown_report(report: Mapping[str, Any]) -> str:
         "",
         "## 1X2 quality",
         "",
-        "| Metric | Model |",
-        "|---|---:|",
-        f"| Multiclass Brier (sum over H/D/A) | {_number(candidate.get('brier'))} |",
-        f"| Log Loss | {_number(candidate.get('log_loss'))} |",
-        f"| Accuracy | {_number(candidate.get('accuracy'))} |",
-        f"| Matches | {candidate.get('n', 0)} |",
-        f"| Matchday clusters | {candidate.get('cluster_count', 0)} |",
+        "| Metric | Model | Matchday-clustered 95% CI |",
+        "|---|---:|---:|",
+        f"| Multiclass Brier (sum over H/D/A) | {_number(candidate.get('brier'))} | {_ci_text('brier')} |",
+        f"| Log Loss | {_number(candidate.get('log_loss'))} | {_ci_text('log_loss')} |",
+        f"| Accuracy | {_number(candidate.get('accuracy'))} | {_ci_text('accuracy')} |",
+        f"| Matches | {candidate.get('n', 0)} | — |",
+        f"| Matchday clusters | {candidate.get('cluster_count', 0)} | — |",
         "",
         "## Fixed-bookmaker comparison",
         "",
@@ -696,6 +773,29 @@ def render_markdown_report(report: Mapping[str, Any]) -> str:
         "| League | Matches | Brier | Log Loss | Accuracy |",
         "|---|---:|---:|---:|---:|",
     ]
+    reliability = candidate.get("reliability") or {}
+    reliability_classes = reliability.get("classes") or {}
+    lines += [
+        "",
+        "## Reliability · fixed-width bins",
+        "",
+        "| Outcome | Probability bin | N | Mean predicted | Observed frequency | Absolute gap |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for outcome, label in (("H", "P1"), ("D", "X"), ("A", "P2")):
+        class_report = reliability_classes.get(outcome) or {}
+        for bucket in class_report.get("bins") or []:
+            if not bucket.get("count"):
+                continue
+            lines.append(
+                f"| {label} | {_number(bucket.get('lower'), 2)}–{_number(bucket.get('upper'), 2)} | "
+                f"{bucket.get('count', 0)} | {_number(bucket.get('mean_predicted'))} | "
+                f"{_number(bucket.get('observed_frequency'))} | {_number(bucket.get('absolute_gap'))} |"
+            )
+    lines += ["", f"Reliability ECE: " + "; ".join(
+        f"{label}={_number((reliability_classes.get(code) or {}).get('ece'))}"
+        for code, label in (("H", "P1"), ("D", "X"), ("A", "P2"))
+    ) + ".", ""]
     league_names = manifest.get("leagues") or {}
     by_league = (report.get("stratified") or {}).get("by_league") or {}
     for code, label in league_names.items():

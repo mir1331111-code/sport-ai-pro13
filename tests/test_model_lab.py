@@ -37,6 +37,42 @@ def make_rows(days=32, matches_per_league=2, market="B365"):
 
 
 class FixedHoldoutModelLabTests(unittest.TestCase):
+
+    def test_saved_dataset_rows_are_validated_for_fixed_holdout_aliases(self):
+        from model.holdout import validate_historical_rows
+
+        rows, fields = validate_historical_rows([{
+            "Date": "2024-01-01", "Div": "E0",
+            "HomeTeam": "Home FC", "AwayTeam": "Away FC",
+            "FTHG": 2, "FTAG": 1,
+        }])
+        self.assertEqual(rows[0]["HomeTeam"], "Home FC")
+        self.assertNotIn("B365H", fields)
+
+    def test_uploaded_csv_parser_accepts_supported_football_columns(self):
+        from model.holdout import read_historical_csv_bytes
+
+        raw = (
+            b"Date,Div,HomeTeam,AwayTeam,FTHG,FTAG,B365H,B365D,B365A\r\n"
+            b"2024-01-01,E0,Home FC,Away FC,2,1,2.1,3.4,3.7\r\n"
+        )
+        rows, fields = read_historical_csv_bytes(raw)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("B365H", fields)
+        self.assertEqual(rows[0]["HomeTeam"], "Home FC")
+
+    def test_uploaded_csv_parser_rejects_missing_columns_empty_and_oversized_files(self):
+        from model.holdout import read_historical_csv_bytes
+        from unittest.mock import patch
+
+        with self.assertRaisesRegex(ValueError, "не хватает"):
+            read_historical_csv_bytes(b"Date,Div,HomeTeam\r\n2024-01-01,E0,Home\r\n")
+        with self.assertRaisesRegex(ValueError, "пуст"):
+            read_historical_csv_bytes(b"")
+        with patch("model.holdout.MAX_HOLDOUT_CSV_BYTES", 4):
+            with self.assertRaisesRegex(ValueError, "превышает лимит"):
+                read_historical_csv_bytes(b"12345")
+
     def _run(self, rows, **kwargs):
         params = {
             "holdout_start": "2024-01-17",
@@ -58,6 +94,18 @@ class FixedHoldoutModelLabTests(unittest.TestCase):
         self.assertEqual(report["manifest"]["holdout_start"], "2024-01-17")
         self.assertEqual(report["manifest"]["holdout_end"], "2024-02-01")
         self.assertEqual(set(report["stratified"]["by_league"]), {"E0", "D1", "I1", "SP1", "F1"})
+
+
+    def test_dataset_source_is_traceable_in_the_experiment_manifest(self):
+        report = self._run(
+            make_rows(),
+            dataset_sha256="a" * 64,
+            dataset_source="sqlite:user_datasets.custom_historical_match_rows",
+        )
+        self.assertEqual(
+            report["manifest"]["dataset_source"],
+            "sqlite:user_datasets.custom_historical_match_rows",
+        )
 
     def test_market_comparison_uses_only_the_selected_bookmaker(self):
         rows = make_rows(market="Pinnacle")
@@ -132,6 +180,8 @@ class FixedHoldoutModelLabTests(unittest.TestCase):
         markdown = render_markdown_report(report)
         svg = render_reliability_svg(report)
         self.assertIn("SPORT AI", markdown)
+        self.assertIn("Matchday-clustered 95% CI", markdown)
+        self.assertIn("Reliability", markdown)
         self.assertIn("<svg", svg)
         with tempfile.TemporaryDirectory() as directory:
             paths = write_model_lab_artifacts(report, directory)

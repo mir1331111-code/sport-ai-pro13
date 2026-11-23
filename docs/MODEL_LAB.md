@@ -97,3 +97,23 @@ Passing forecast-quality gates is not evidence of betting profitability. It is n
 to increase stakes or enable other market families. Keep O/U, BTTS, corners, cards, handicap and
 LLM outputs forecast-only until they have separate market-specific validation. The Model Lab
 never changes Dixon-Coles, Elo, Kelly, value gates or the live scanner.
+
+
+## In-app Fixed Holdout runner
+
+Open **Analytics → Model Lab** and use the Fixed Holdout Model Lab v1 section. Upload a historical CSV with
+Date, Div, HomeTeam, AwayTeam, FTHG and FTAG (or the documented aliases). Enter the untouched holdout
+start/end dates explicitly; the app does not choose dates for you. Select exactly one bookmaker source.
+
+For a strict promotion decision, also select both a timezone-aware odds-capture timestamp column and a
+timezone-aware kickoff timestamp column. The evaluator rejects quotes that are missing a timestamp,
+naive, or captured at/after kickoff. If the CSV has no timestamp columns, it still publishes the model
+metrics and a diagnostic-only market comparison, but the strict gate remains NOT_READY.
+
+The UI runner uses the fixed evaluator configuration and writes the JSON, Markdown, reliability SVG and
+promotion-gate JSON under `reports/model_lab` (or the directory containing `MODEL_LAB_GATE_PATH`).
+If the gate file path is overridden, the generated marker is also copied to that exact configured path.
+A PASS marker is consumed by the live scanner; absence or malformed content fails closed.
+
+
+The runner also offers the existing durable `custom_historical_match_rows` archive from SQLite. This is the same raw imported match-history dataset protected by the app's encrypted SQLite backup. Its canonical JSON content is SHA-256 hashed in the report manifest. Only E0, D1, I1, SP1 and F1 are scored; other saved divisions remain visible in data-quality exclusions, not silently relabelled.
