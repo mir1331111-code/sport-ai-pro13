@@ -1145,17 +1145,26 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
     model = resolve_provider_model(provider, ctx.get("model"))
     base = str(cfg["base"]).rstrip("/")
     is_xai = "api.x.ai" in base.casefold()
+    is_groq = "groq" in base.casefold()
+    is_gpt_oss = is_groq and model.casefold().startswith("openai/gpt-oss")
+    use_groq_browser_search = is_groq and model.casefold() == "openai/gpt-oss-120b"
+    is_gemini = "generativelanguage.googleapis.com" in base.casefold()
 
     cache_context = {
         "provider": provider,
         "model": model,
+        "browser_search": bool(use_groq_browser_search),
         "dossiers": dossiers,
     }
     digest = hashlib.sha256(
         json.dumps(cache_context, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
-    cache_key = f"independent_multimarket_batch_v3_{digest}"
-    cached = cache_get(cache_key, DEEP_ANALYSIS_CACHE_TTL)
+    cache_key = f"independent_multimarket_batch_v4_{digest}"
+    cache_ttl = (
+        GROQ_WEB_RESEARCH_CACHE_TTL
+        if use_groq_browser_search else DEEP_ANALYSIS_CACHE_TTL
+    )
+    cached = cache_get(cache_key, cache_ttl)
     if isinstance(cached, dict):
         result = {
             key: value for key, value in cached.items()
@@ -1164,27 +1173,72 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         _set_top_matches_status(
             state="cache_hit", provider=provider, model=model,
             candidate_count=len(dossiers), analysis_count=len(result),
-            message=f"Получено из кэша: {len(result)}/{len(dossiers)} разборов.",
+            browser_search_status="cached" if use_groq_browser_search else "not_enabled",
+            message=f"Получено из свежего кэша: {len(result)}/{len(dossiers)} разборов.",
         )
         return result
 
-    if usage.llm_remaining() <= 0:
+    required_calls = 2 if use_groq_browser_search else 1
+    if usage.llm_remaining() < required_calls:
         _set_top_matches_status(
             state="daily_limit", provider=provider, model=model,
             candidate_count=len(dossiers), analysis_count=0,
-            message="Дневной лимит AI-запросов исчерпан.",
+            browser_search_status="not_started" if use_groq_browser_search else "not_enabled",
+            message=(
+                "Для GPT-OSS 120B нужны два запроса: Browser Search и строгий JSON-анализ. "
+                "Дневного лимита осталось меньше двух запросов."
+                if use_groq_browser_search else "Дневной лимит AI-запросов исчерпан."
+            ),
         )
         return {}
+
+    browser_research = ""
+    browser_research_status = "not_enabled"
+    if use_groq_browser_search:
+        _set_top_matches_status(
+            state="web_searching", provider=provider, model=model,
+            candidate_count=len(dossiers), analysis_count=0,
+            browser_search_status="requesting",
+            message=f"GPT-OSS 120B ищет актуальные составы, травмы и судей по {len(dossiers)} матчам.",
+        )
+        browser_research, browser_diagnostics = _groq_browser_research(
+            api_key, base, model, dossiers,
+        )
+        browser_research_status = str(browser_diagnostics.get("state") or "unknown")
+        if browser_research_status == "rate_limited":
+            _set_top_matches_status(
+                state="rate_limited", provider=provider, model=model,
+                candidate_count=len(dossiers), analysis_count=0,
+                browser_search_status=browser_research_status,
+                message=str(browser_diagnostics.get("message") or "Groq Browser Search rate limit."),
+            )
+            return {}
+        if not browser_research:
+            _log(
+                "TOP MATCHES WEB SEARCH: "
+                + str(browser_diagnostics.get("message") or browser_research_status)
+            )
 
     user_message = (
         "Проанализируй каждый матч отдельно. Верни ровно один объект на каждый fixture_id. "
         "Не пропускай матч из-за отсутствующих сведений: явно обозначь пробелы.\n"
-        "ДОСЬЕ (JSON):\n"
+        "ДОСЬЕ SStats И ИСТОРИЯ (JSON):\n"
         + json.dumps({"matches": dossiers}, ensure_ascii=False, separators=(",", ":"))
     )
-    is_groq = "groq" in base.casefold()
-    is_gpt_oss = is_groq and model.casefold().startswith("openai/gpt-oss")
-    is_gemini = "generativelanguage.googleapis.com" in base.casefold()
+    if use_groq_browser_search:
+        if browser_research:
+            user_message += (
+                "\n\nАКТУАЛЬНЫЙ WEB RESEARCH, ПОЛУЧЕННЫЙ ПЕРЕД ЭТИМ АНАЛИЗОМ:\n"
+                + browser_research
+                + "\nИспользуй найденные сведения только для соответствующего fixture_id. "
+                "Сохраняй URL/названия источников в lineup_assessment, injury_assessment "
+                "и referee_assessment. Не смешивай OFFICIAL XI и PREDICTED XI."
+            )
+        else:
+            user_message += (
+                "\n\nWEB RESEARCH НЕ ВЕРНУЛ ДОСТОВЕРНЫЙ ОТВЕТ. Не выдумывай составы, "
+                "травмы или судью; укажи UNKNOWN и анализируй только факты исходного досье."
+            )
     messages = (
         [{"role": "user", "content": f"{_DEEP_ANALYSIS_SYSTEM_PROMPT}\n\n{user_message}"}]
         if is_gpt_oss else [
@@ -1246,7 +1300,15 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         state="requesting", provider=provider, model=model,
         candidate_count=len(dossiers), analysis_count=0,
         endpoint=endpoint_label,
-        message=f"Отправляю {len(dossiers)} досье в {provider} · {model}.",
+        browser_search_status=browser_research_status,
+        message=(
+            f"Отправляю {len(dossiers)} досье в {provider} · {model}; "
+            + (
+                "веб-источники найдены."
+                if browser_research else
+                "использую переданное досье без неподтверждённых веб-данных."
+            )
+        ),
     )
     try:
         response = _sess.post(
@@ -1335,7 +1397,16 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
             provider=provider, model=model,
             candidate_count=len(dossiers), analysis_count=len(normalized),
             endpoint=endpoint_label,
-            message=f"Получено и проверено {len(normalized)}/{len(dossiers)} независимых разборов.",
+            browser_search_status=browser_research_status,
+            message=(
+                f"Получено и проверено {len(normalized)}/{len(dossiers)} независимых разборов. "
+                + (
+                    "Актуальный веб-поиск выполнен."
+                    if browser_research else
+                    "Актуальный веб-поиск не дал результата; использованы только переданные источники."
+                    if use_groq_browser_search else ""
+                )
+            ),
         )
         return normalized
     except LLMRateLimitError as exc:
