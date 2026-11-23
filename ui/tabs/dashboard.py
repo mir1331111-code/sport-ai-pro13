@@ -1189,16 +1189,22 @@ _DASHBOARD_STATUS_PRIORITY = {
     "approved": 3,
     "forecast": 2,
     "near_strong": 1,
+    "provisional": 0,
+    "background": -1,
 }
 _DASHBOARD_STATUS_LABELS = {
     "approved": "Одобрено к ставке",
     "forecast": "Сильный прогноз — не ставка",
     "near_strong": "Почти сильный прогноз",
+    "provisional": "Предварительный прогноз — недостаточно истории",
+    "background": "Фоновый прогноз — ниже порога",
 }
 _DASHBOARD_STATUS_HINTS = {
     "approved": "Все проверки прогноза, контекста, рынка, линии и EV/Edge/Kelly пройдены.",
     "forecast": "Истории и вероятности достаточно, но один или несколько Value-гейтов не пройдены.",
     "near_strong": "Истории достаточно, но вероятность немного ниже сильного порога.",
+    "provisional": "Прогноз сохранён, но выборка команд или поддержка модели пока недостаточны. Это не рекомендация.",
+    "background": "Вероятность ниже даже порога почти сильного прогноза. Это информационная оценка, не рекомендация.",
 }
 _DASHBOARD_FAMILIES = ("winner", "goals", "btts", "corners", "cards")
 _DASHBOARD_FAMILY_LABELS = {
@@ -1316,7 +1322,7 @@ def _dashboard_fixture_html(card):
 def dashboard_recommendation_groups(
     cards, *, now=None, period_end=None, selected_league=None,
 ):
-    """Return one highest-status recommendation per fixture; omit all other matches."""
+    """Return one highest-status forecast per fixture, including non-actionable states."""
     now = now or datetime.now(app_timezone())
     candidates = {}
     for card in cards if isinstance(cards, list) else []:
@@ -1395,6 +1401,20 @@ def dashboard_recommendation_groups(
                 reason = (
                     f"До порога {STRONG_FORECAST_MIN_PROB:.0%} не хватает "
                     f"{gap:.1%}."
+                )
+            elif status == "provisional":
+                support = str(card.get("model_support_status") or "не указан")
+                reason = (
+                    f"Недостаточно истории: дома {int(summary.get('home_team_sample') or 0)}/"
+                    f"{MIN_FAVORITE_HISTORY}, в гостях "
+                    f"{int(summary.get('away_team_sample') or 0)}/{MIN_FAVORITE_HISTORY}; "
+                    f"поддержка модели: {support}. Ставка заблокирована."
+                )
+            elif status == "background":
+                threshold = float(STRONG_FORECAST_MIN_PROB) * 0.9
+                reason = (
+                    f"Вероятность {probability:.1%} ниже порога почти сильного прогноза "
+                    f"{threshold:.1%}. Оставлено только для ознакомления."
                 )
             else:
                 reason = "Все обязательные проверки пройдены."
@@ -1595,7 +1615,7 @@ def render():
         "<div class='neo-dashboard-header'>"
         "<div><div class='neo-dashboard-eyebrow'>SPORT-AI-PRO13</div>"
         "<h1>Рекомендации по матчам</h1>"
-        "<p>Только три статуса: одобрено к ставке, сильный прогноз и почти сильный прогноз.</p></div>"
+        "<p>Проверенные сигналы отдельно; предварительные прогнозы доступны ниже и не считаются рекомендациями.</p></div>"
         "<div class='neo-header-meta'><span class='neo-live-pill'><i></i> ПАНЕЛЬ АКТИВНА</span>"
         f"<span>v{esc(APP_VERSION)}</span><span>{esc(now.strftime('%d.%m.%Y %H:%M'))}</span></div>"
         "</div>",
