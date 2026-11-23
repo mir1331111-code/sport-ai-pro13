@@ -4259,7 +4259,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     previous_best = card.get("best")
                     previous_best_exists = bool(previous_best)
                     context_recheck = _recheck_value_after_priority_context(
-                        card, refreshed_context,
+                        card, refreshed_context, context_store=context_store,
                     )
                     if context_recheck.get("rechecked"):
                         new_best = card.get("best")
@@ -4285,34 +4285,52 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             f"новый контекст сохранён, но допуск не изменён: "
                             f"{context_recheck.get('reason') or 'не хватает подтверждений/истории'}."
                         )
-                    if context_recheck.get("updated"):
+                if context_recheck.get("updated") if isinstance(refreshed_context, dict) else False:
+                    card["context_forecasts"] = context_probabilities(
+                        {
+                            "H": float(card.get("p1") or 0.0),
+                            "D": float(card.get("px") or 0.0),
+                            "A": float(card.get("p2") or 0.0),
+                        },
+                        card.get("api_context") or {},
+                        model=st.session_state.get("_context_blender"),
+                    )
+                    if hasattr(engine, "match_stats"):
                         try:
-                            context_store_for_priority = ContextStore()
-                            context_store_for_priority.record_snapshot(
-                                fixture_id="|".join(context_key),
-                                kickoff_at=str(
-                                    card["api_context"].get("kickoff_at")
-                                    or card.get("kickoff_utc") or ""
-                                ),
-                                observed_at=str(
-                                    card["api_context"].get("timestamp") or ""
-                                ),
-                                context=card["api_context"],
-                                data_source="sstats-priority",
+                            referee_name = str(
+                                ((card.get("api_context") or {}).get("referee") or {}).get("name") or ""
+                            ).strip()
+                            refreshed_stats = engine.match_stats.predict(
+                                home_name, away_name, str(card.get("div") or "G"),
+                                referee_id=referee_name or None,
                             )
-                        except Exception:
-                            pass
+                            card["historical_stats"] = refreshed_stats
+                            features = card.get("independent_features")
+                            if isinstance(features, dict):
+                                features["markets"] = refreshed_stats
+                        except Exception as exc:
+                            logs.append(
+                                f"ℹ️ TOP SStats referee-history refresh {home_name} — {away_name}: "
+                                f"{type(exc).__name__}."
+                            )
                 card["deep_analysis_context"] = merge_context_snapshots(
                     card.get("api_context") or {},
                     refreshed_context if isinstance(refreshed_context, dict) else {},
                 )
                 dossier = build_match_dossier(card)
+                # Recheck inputs are one-scan working data, not forecast history.
+                card.pop("_value_recheck", None)
                 dossier["shortlist_rank"] = rank
                 top_dossiers.append(dossier)
                 top_card_by_id[dossier["fixture_id"]] = {
                     "card": card,
                     "favorite": item,
                 }
+
+            # Never persist temporary Value recheck inputs on non-shortlisted cards.
+            for _card in cards:
+                if isinstance(_card, dict):
+                    _card.pop("_value_recheck", None)
 
             if not llm_key:
                 reason = (
