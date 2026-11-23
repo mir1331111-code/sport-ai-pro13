@@ -56,6 +56,45 @@ class HistoricalRefreshLifecycleTests(unittest.TestCase):
         self.assertTrue(ready)
         load_history.assert_not_called()
 
+    def test_stable_training_key_does_not_change_with_live_fixture_leagues(self):
+        stable, _, _ = scanner_engine._stable_training_engine_key(12)
+        old_e0 = scanner_engine._legacy_live_slate_engine_key(
+            12, extra_divisions=["E0"]
+        )
+        old_d1 = scanner_engine._legacy_live_slate_engine_key(
+            12, extra_divisions=["D1"]
+        )
+        self.assertEqual(stable, scanner_engine._stable_training_engine_key(12)[0])
+        self.assertNotEqual(old_e0, old_d1)
+        self.assertNotEqual(stable, old_e0)
+
+    def test_legacy_live_slate_cache_is_promoted_to_canonical_key(self):
+        engine = FakeFittedEngine()
+        canonical, _, _ = scanner_engine._stable_training_engine_key(12)
+        legacy = scanner_engine._legacy_live_slate_engine_key(
+            12, extra_divisions=["E0", "SP1"]
+        )
+        cache = {
+            "engines": {legacy: engine},
+            "locks": {},
+            "lock": threading.RLock(),
+        }
+
+        with patch.object(scanner_engine, "_shared_engine_cache", return_value=cache):
+            ready = scanner_engine.has_cached_engine(
+                12, extra_divisions=["E0", "SP1"]
+            )
+
+        self.assertTrue(ready)
+        self.assertIs(cache["engines"][canonical], engine)
+        self.assertIs(
+            scanner_engine._load_engine(
+                12, [], lambda *args, **kwargs: None,
+                refresh_history=False, extra_divisions=["D1"],
+            ),
+            engine,
+        )
+
     def test_seasonal_csv_cache_is_bypassed_only_on_explicit_refresh(self):
         from data import sources
 
