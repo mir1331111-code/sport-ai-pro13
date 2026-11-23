@@ -389,8 +389,9 @@ def _auto_settle(D, force: bool = False):
     bets = list(D2.get("bets", []))
     closed = tried = 0
     now = datetime.now()
-    token = _api_key_default(
-        "fdorg_token", "FDORG_TOKEN", "fdorg_token"
+    token = str(
+        st.session_state.get("fdorg_token_input", "")
+        or _api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token")
     ).strip()
     sstats_key = _api_key_default(
         "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
@@ -703,11 +704,13 @@ def _sync_forecast_results(force: bool = False):
     # The API token is kept in a password widget/local secret store, not in
     # portfolio metadata. Pass it explicitly to the forecast-ledger score lookup;
     # data.meta.fdorg_token is intentionally stripped from persisted portfolio data.
-    score_token = _api_key_default(
-        "fdorg_token", "FDORG_TOKEN", "fdorg_token"
+    score_token = str(
+        st.session_state.get("fdorg_token_input", "")
+        or _api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token")
     ).strip()
-    sstats_score_key = _api_key_default(
-        "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"
+    sstats_score_key = str(
+        st.session_state.get("sstats_api_key_input", "")
+        or _api_key_default("sstats_api_key", "SSTATS_API_KEY", "sstats_api_key")
     ).strip()
     try:
         with st.spinner("Автоматически сверяю прогнозы с завершёнными матчами…"):
