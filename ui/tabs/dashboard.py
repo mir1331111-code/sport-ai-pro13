@@ -1295,7 +1295,11 @@ def render():
     if probability_warning:
         st.warning(probability_warning)
 
-    all_market_candidates = dashboard_all_market_candidates(cards)
+    market_cards_in_view = [
+        item.get("card") for item in ranked_events
+        if isinstance(item.get("card"), dict)
+    ]
+    all_market_candidates = dashboard_all_market_candidates(market_cards_in_view)
     st.markdown(
         "<section class='neo-panel neo-matches-panel'>"
         "<div class='neo-panel-heading'><div>"
