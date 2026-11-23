@@ -29,6 +29,25 @@ class RemoteSqliteBackupTests(unittest.TestCase):
                 value = conn.execute("SELECT value FROM sample").fetchone()[0]
             self.assertEqual(value, "model-history")
 
+    def test_manual_restore_rejects_gzip_bomb_before_unbounded_expansion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target.sqlite"
+            payload = gzip.compress(b"x" * 4096)
+            with patch.object(remote_backup, "MAX_SQLITE_BYTES", 64):
+                with self.assertRaisesRegex(ValueError, "safety limit"):
+                    remote_backup.restore_sqlite_backup_bytes(payload, target)
+            self.assertFalse(target.exists())
+
+    def test_manual_restore_rejects_truncated_or_trailing_gzip_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "target.sqlite"
+            valid = gzip.compress(b"not a sqlite database")
+            for payload in (valid[:-4], valid + b"trailing"):
+                with self.subTest(payload_length=len(payload)):
+                    with self.assertRaises(ValueError):
+                        remote_backup.restore_sqlite_backup_bytes(payload, target)
+            self.assertFalse(target.exists())
+
     def test_manual_restore_refuses_to_overwrite_nonempty_database(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "source.sqlite"
