@@ -727,6 +727,32 @@ section[data-testid="stSidebar"] div[data-testid="stExpander"] summary {
 }
 .neo-match-table tbody tr:hover td {background:rgba(39,102,78,.12);}
 .neo-match-table tr:last-child td {border-bottom:0;}
+.neo-recommendation-table {min-width:1180px;}
+.neo-dashboard-fixture {min-width:205px;white-space:normal;line-height:1.3;}
+.neo-dashboard-fixture > small {
+  display:flex;align-items:center;gap:5px;margin-bottom:6px;
+  color:#8eaaa2;font-size:.55rem;font-weight:800;
+}
+.neo-dashboard-league-logo {width:15px;height:15px;object-fit:contain;}
+.neo-dashboard-league-flag {font-size:.75rem;}
+.neo-dashboard-fixture .neo-fixture-line {
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+}
+.neo-dashboard-fixture .neo-team {display:inline-flex;align-items:center;gap:4px;}
+.neo-dashboard-fixture .neo-team b {font-size:.62rem;color:#eef8f3;}
+.neo-dashboard-odds-list {font:650 .60rem 'IBM Plex Mono',monospace;line-height:1.65;min-width:145px;}
+.neo-dashboard-odds-list small {color:#82a69a;font:500 .52rem 'DM Sans',sans-serif;}
+.neo-ai-status {display:block;color:#8aa39e;font-size:.55rem;white-space:normal;min-width:130px;}
+.neo-ai-details {margin-top:5px;max-width:310px;white-space:normal;}
+.neo-ai-details summary {
+  cursor:pointer;color:#9bdec2;font-size:.56rem;font-weight:800;
+  line-height:1.4;white-space:normal;
+}
+.neo-ai-details > div {
+  margin-top:5px;padding:7px 8px;border:1px solid #294b43;
+  border-radius:6px;background:#0c1b20;color:#c5d9d0;
+  font-size:.57rem;line-height:1.5;white-space:normal;
+}
 .neo-time {color:#8da7a5 !important;font:650 .61rem 'IBM Plex Mono',monospace;}
 .neo-league {
   display:inline-flex;padding:5px 7px;border:1px solid #2a4b45;border-radius:6px;
