@@ -678,6 +678,21 @@ def _void_stale(D):
                         )
                 except Exception as e:
                     log.warning("SQLite stale-void persist error: %s", e)
+            audit_key = b2.get("market_forecast_key")
+            if audit_key:
+                try:
+                    MarketForecastLedger(DB_FILE).settle(
+                        str(audit_key),
+                        "void",
+                        result_score=str(b2.get("score") or "void (manual, no result)"),
+                        settlement_source="manual_stale_void",
+                        settled_at=b2.get("settled_at"),
+                    )
+                except (KeyError, TypeError, ValueError) as audit_exc:
+                    log.warning(
+                        "Market forecast stale-void audit error: %s",
+                        type(audit_exc).__name__,
+                    )
             n += 1
     D2["bets"] = bets
     D2["stats"] = _recompute_stats(bets, D2.get("stats"))
