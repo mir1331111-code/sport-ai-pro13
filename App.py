@@ -1095,11 +1095,10 @@ with st.sidebar:
             D["meta"]["llm_model"] = str(LLM_PROVIDERS["Grok (x.ai)"]["model"])
             usage.set_local_data(D)
             st.rerun()
+        # The selection was initialized above in Session State. Do not also
+        # pass index/default to Streamlit: it emits a duplicate-default warning.
         llm_prov = st.selectbox(
             "Провайдер", prov_keys,
-            index=prov_keys.index(normalize_llm_provider(
-                st.session_state.get(provider_widget_key)
-            )),
             key=provider_widget_key,
         )
         llm_key_config = LLM_PROVIDERS.get(llm_prov, {})
