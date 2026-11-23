@@ -77,3 +77,32 @@ def validation_cache_key(rows, *, matrix_n=12, model_version="unspecified"):
     return f"neuro_market_validation_v7_xg_league_season_matchday_{version}_{int(matrix_n)}_{digest}"
 
 
+
+
+
+def validation_schedule_key(
+    *,
+    matrix_n: int = 12,
+    model_version: str = "unspecified",
+    divisions=(),
+    max_rows_per_league: int = 250,
+    min_history: int = 30,
+    min_market_n: int = 500,
+) -> str:
+    """Stable cadence key so routine scans do not rerun historical walk-forward."""
+    payload = {
+        "schema": "neuro-market-validation-schedule-v1",
+        "matrix_n": int(matrix_n),
+        "model_version": str(model_version or "unspecified"),
+        "divisions": sorted(str(value) for value in (divisions or ())),
+        "max_rows_per_league": int(max_rows_per_league),
+        "min_history": int(min_history),
+        "min_market_n": int(min_market_n),
+        "bootstrap_samples": 1000,
+        "bootstrap_unit": "calendar_matchday",
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()[:24]
+    return f"neuro-market-validation-schedule-v1-{digest}"

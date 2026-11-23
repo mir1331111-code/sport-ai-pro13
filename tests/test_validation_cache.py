@@ -1,6 +1,8 @@
 import unittest
 
-from model.validation_cache import select_validation_rows, validation_cache_key
+from model.validation_cache import (
+    select_validation_rows, validation_cache_key, validation_schedule_key,
+)
 
 
 class ValidationCacheTests(unittest.TestCase):
@@ -49,6 +51,20 @@ class ValidationCacheTests(unittest.TestCase):
         rows = select_validation_rows({"E0": [[fractional, valid]]}, ("E0",))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["FTHG"], 1)
+
+
+    def test_validation_schedule_key_is_stable_until_validation_configuration_changes(self):
+        base = validation_schedule_key(
+            matrix_n=12, model_version="14.4.1", divisions=("E0", "D1"),
+        )
+        same = validation_schedule_key(
+            matrix_n=12, model_version="14.4.1", divisions=("D1", "E0"),
+        )
+        changed = validation_schedule_key(
+            matrix_n=10, model_version="14.4.1", divisions=("E0", "D1"),
+        )
+        self.assertEqual(base, same)
+        self.assertNotEqual(base, changed)
 
     def test_fingerprint_is_stable_and_invalidated_by_xg_changes(self):
         rows = select_validation_rows({"E0": [[self._row(1, xg=1.1)]]}, ("E0",))

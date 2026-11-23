@@ -1,6 +1,6 @@
 import unittest
 
-from model.engine_cache import engine_cache_fingerprint
+from model.engine_cache import engine_cache_fingerprint, incremental_engine_checkpoint_key
 
 
 def fingerprint(*, history=None, xg_rows=None, custom_rows=None, data_version=18):
@@ -55,6 +55,22 @@ class EngineCacheFingerprintTests(unittest.TestCase):
 
     def test_data_version_invalidates_cache(self):
         self.assertNotEqual(fingerprint(data_version=18), fingerprint(data_version=19))
+
+    def test_incremental_key_is_stable_across_appended_history_but_changes_with_config(self):
+        base = incremental_engine_checkpoint_key(
+            app_version="14.4.1", data_version=18, matrix_n=12,
+            xg_enabled=True, shot_xg_version="shot-xg-v3",
+        )
+        same = incremental_engine_checkpoint_key(
+            app_version="14.4.1", data_version=18, matrix_n=12,
+            xg_enabled=True, shot_xg_version="shot-xg-v3",
+        )
+        changed = incremental_engine_checkpoint_key(
+            app_version="14.4.1", data_version=18, matrix_n=10,
+            xg_enabled=True, shot_xg_version="shot-xg-v3",
+        )
+        self.assertEqual(base, same)
+        self.assertNotEqual(base, changed)
 
 
 if __name__ == "__main__":
