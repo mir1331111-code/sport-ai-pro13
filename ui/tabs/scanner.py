@@ -121,16 +121,11 @@ def _runtime_secret(session_key: str, *names: str) -> str:
 
 
 def _provider_api_key(provider: str) -> str:
-    """Resolve the selected provider's own key; keep legacy Grok-key fallback."""
+    """Resolve only the credential assigned to the selected provider."""
     key_config = llm_provider_key_config(provider)
-    key = _runtime_secret(
+    return _runtime_secret(
         key_config["session"], key_config["env"], key_config["storage"],
     )
-    if key:
-        return key
-    if key_config["env"] == "XAI_API_KEY":
-        return _runtime_secret("llm_api_key_input", "LLM_API_KEY", "llm_api_key")
-    return ""
 
 
 def _provider_display_name(provider: str) -> str:
