@@ -1571,6 +1571,18 @@ def recommendation_group_html(status, items):
     )
 
 
+def _dashboard_latest_ai_status(report):
+    """Return the latest explicit TOP MATCHES status from the last scanner run."""
+    if not isinstance(report, list):
+        return ""
+    for line in reversed(report):
+        value = str(line or "").strip()
+        token = "TOP MATCHES · AI STATUS:"
+        if token in value:
+            return value.split(token, 1)[1].strip()
+    return ""
+
+
 def render():
     data = st.session_state.get("data") or {}
     cards = [
@@ -1680,6 +1692,15 @@ def render():
         f"с сохранённым AI-разбором: {ai_count} · "
         f"в трёх категориях: {sum(len(value) for value in groups.values())}."
     )
+    if ai_count == 0:
+        ai_status = _dashboard_latest_ai_status(data.get("report") or [])
+        if ai_status:
+            st.caption(f"AI TOP MATCHES: {ai_status}")
+        elif cards:
+            st.caption(
+                "AI TOP MATCHES: в журнале последнего скана нет явного статуса вызова. "
+                "Открой отчёт Сканера для диагностики."
+            )
     for _label, _count, status in counts:
         st.markdown(
             recommendation_group_html(status, groups[status]),
