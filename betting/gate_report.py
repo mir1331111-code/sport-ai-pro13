@@ -264,23 +264,25 @@ def value_gates(card: dict, family: str):
 def classify_card(card: dict, family: str):
     forecast, summary = forecast_gates(card, family)
     values = value_gates(card, family)
-    support = str(card.get("model_support_status") or "").casefold()
-    team_supported = support not in {"prior_only", "league_only", "unknown"}
+    support = str(card.get("model_support_status") or "").strip().casefold()
+    # Fail closed: only an explicit team-supported model state may enter one
+    # of the three recommendation categories. Missing/unknown states are not
+    # silently treated as evidence-backed forecasts.
+    team_supported = support == "team_supported"
     history_ok = bool(summary and summary.get("history_sufficient"))
     probability = _number(summary.get("probability")) if summary else None
 
-    if (
-        summary and summary.get("strong_forecast")
-        and team_supported and history_ok
+    if not summary or not team_supported or not history_ok:
+        status = "provisional"
+    elif (
+        summary.get("strong_forecast")
         and all(item.passed for item in values)
     ):
         status = "approved"
-    elif summary and summary.get("strong_forecast") and team_supported and history_ok:
+    elif summary.get("strong_forecast"):
         status = "forecast"
-    elif support in {"prior_only", "league_only", "unknown"} or (summary and not history_ok):
-        status = "provisional"
     elif (
-        summary and history_ok and probability is not None
+        probability is not None
         and probability >= float(STRONG_FORECAST_MIN_PROB) * 0.9
     ):
         status = "near_strong"

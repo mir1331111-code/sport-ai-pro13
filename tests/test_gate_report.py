@@ -61,6 +61,20 @@ class GateReportTests(unittest.TestCase):
         self.assertFalse(gates[2].passed)
         self.assertFalse(gates[3].passed)
 
+    def test_missing_or_unknown_model_support_cannot_become_near_strong(self):
+        for support in ("", "unknown", "pending", "league_only", "prior_only"):
+            with self.subTest(support=support):
+                card = make_card(
+                    model_support_status=support,
+                    p1=0.61, px=0.23, p2=0.16,
+                    independent_features={
+                        "home_home_sample": 12,
+                        "away_away_sample": 11,
+                    },
+                )
+                status, _gates = classify_card(card, "winner")
+                self.assertEqual(status, "provisional")
+
     def test_near_misses_ranks_candidates_by_missing_gate_count(self):
         cards = [
             make_card(p1=0.69, px=0.18, p2=0.13),
