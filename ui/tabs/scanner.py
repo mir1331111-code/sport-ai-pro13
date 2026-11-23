@@ -4537,28 +4537,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 f"после старта пропущено {tracked['skipped_started']}, "
                 f"ошибок {tracked['invalid']}"
             )
-            try:
-                from storage.remote_backup import backup_database_to_gist
-                backup_status = backup_database_to_gist(DB_FILE)
-                if backup_status.get("ok") and backup_status.get("state") == "uploaded":
-                    logs.append("🛡️ SQLite: зашифрованная копия журнала сохранена и проверена в Secret Gist.")
-                elif backup_status.get("state") == "not_configured":
-                    logs.append(
-                        "⚠️ SQLite: удалённая копия не настроена. Журнал хранится только "
-                        "на локальном диске Streamlit Cloud и может исчезнуть при redeploy. "
-                        "Добавь GIST_ID, GITHUB_TOKEN и NEURO_BACKUP_KEY в Streamlit Secrets."
-                    )
-                elif backup_status.get("state") != "current":
-                    logs.append(
-                        "⚠️ SQLite remote backup: "
-                        + str(backup_status.get("message") or backup_status.get("state"))
-                    )
-                st.session_state["_sqlite_backup_status"] = {
-                    **backup_status,
-                    "checked_at": datetime.now().astimezone().isoformat(),
-                }
-            except Exception as backup_exc:
-                logs.append(f"⚠️ SQLite remote backup: {type(backup_exc).__name__}")
+            # SQLite backup is performed only after the complete scan, bets,
+            # portfolio state and bank history have all been committed.
         except Exception as exc:
             logs.append(f"⚠️ Журнал прогнозов ИИ недоступен: {type(exc).__name__}: {str(exc)[:120]}")
 
@@ -4777,6 +4757,28 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             db.insert_bets_batch(new_bets)
             db.log_bank(D2["bank"], event="scan")
             db.invalidate_caches()
+
+        # Back up only after all scan forecasts, bets, balance changes and the
+        # durable app-state row are committed to SQLite.
+        try:
+            from storage.remote_backup import backup_database_to_gist
+            backup_status = backup_database_to_gist(DB_FILE)
+            st.session_state["_sqlite_backup_status"] = {
+                **backup_status,
+                "checked_at": datetime.now().astimezone().isoformat(),
+            }
+            if not backup_status.get("ok"):
+                _print_log(
+                    "⚠️ SQLite remote backup: "
+                    + str(backup_status.get("message") or backup_status.get("state"))
+                )
+        except Exception as backup_exc:
+            st.session_state["_sqlite_backup_status"] = {
+                "ok": False, "state": "backup_error",
+                "message": f"SQLite backup failed: {type(backup_exc).__name__}",
+                "checked_at": datetime.now().astimezone().isoformat(),
+            }
+            _print_log(f"⚠️ SQLite remote backup: {type(backup_exc).__name__}")
 
         # Surface source diagnostics in deployment logs, not only the in-app report.
         for source_line in logs:
