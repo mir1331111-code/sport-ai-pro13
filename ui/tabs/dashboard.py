@@ -319,7 +319,7 @@ def favorite(card):
 
 
 def ai_provider_label(data):
-    provider = str((data.get("meta") or {}).get("llm_provider") or "Grok (x.ai)")
+    provider = str((data.get("meta") or {}).get("llm_provider") or "Groq GPT-OSS 120B")
     base = str(LLM_PROVIDERS.get(provider, {}).get("base") or "").casefold()
     if "api.x.ai" in base:
         return "Grok"
