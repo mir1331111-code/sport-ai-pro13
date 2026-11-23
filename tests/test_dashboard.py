@@ -10,6 +10,7 @@ from ui.tabs.dashboard import (
     _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
     dashboard_strong_events, strong_events_html,
+    all_market_candidates_html, dashboard_all_market_candidates,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
 )
 from config import MIN_FAVORITE_HISTORY, DEFAULT_SCAN_HORIZON_DAYS
@@ -22,6 +23,34 @@ class DashboardHelperTests(unittest.TestCase):
 
     def test_scan_defaults_to_three_days(self):
         self.assertEqual(DEFAULT_SCAN_HORIZON_DAYS, 3)
+
+    def test_all_market_dashboard_shortlist_keeps_price_and_validation_status_visible(self):
+        events = [{
+            "date": "23.11", "time": "18:00", "league": "Premier League",
+            "match": "Home — Away", "family_label": "Угловые",
+            "pick": "Угл ТБ 8.5", "probability": 0.81, "odds": 1.90,
+            "bookmaker": "Book A", "history_matches": 120,
+            "team_samples": 12, "value_verified": False,
+            "status_label": "ПРОГНОЗ + КОЭФФИЦИЕНТ · НЕ VALUE",
+        }, {
+            "date": "23.11", "time": "19:00", "league": "Serie A",
+            "match": "Home 2 — Away 2", "family_label": "Победа / 1X2",
+            "pick": "П1", "probability": 0.72, "odds": 1.85,
+            "bookmaker": "Book B", "history_matches": 0,
+            "team_samples": 14, "value_verified": True,
+            "status_label": "ПРОВЕРЕННЫЙ VALUE",
+        }]
+        rendered = all_market_candidates_html(events)
+        self.assertIn("Угловые", rendered)
+        self.assertIn("1.90", rendered)
+        self.assertIn("ПРОВЕРЕННЫЙ VALUE", rendered)
+        self.assertIn("КАНДИДАТ · РЫНОК НЕ ПРОВЕРЕН", rendered)
+        self.assertIn("Подтверждённый Value: 1", rendered)
+
+    def test_all_market_dashboard_shortlist_has_explicit_empty_state(self):
+        rendered = all_market_candidates_html([])
+        self.assertIn("коэффициентом от 1.70", rendered)
+        self.assertIn("достаточной историей", rendered)
 
     def test_dashboard_history_floor_matches_strong_forecast_policy(self):
         self.assertEqual(MIN_FAVORITE_HISTORY, 10)
