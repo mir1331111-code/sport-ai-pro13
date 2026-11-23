@@ -48,13 +48,15 @@ class SecretWidgetDefaultsTests(unittest.TestCase):
 
     def test_background_score_lookups_resolve_keys_server_side(self):
         self.assertIn(
-            '_api_key_default(\n        "fdorg_token", "FDORG_TOKEN", "fdorg_token"\n    ).strip()',
+            '_api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token")',
             self.source,
         )
         self.assertIn(
-            '_api_key_default(\n        "sstats_api_key", "SSTATS_API_KEY", "sstats_api_key"\n    ).strip()',
+            '_api_key_default("sstats_api_key", "SSTATS_API_KEY", "sstats_api_key")',
             self.source,
         )
+        self.assertIn('st.session_state.get("fdorg_token_input", "")', self.source)
+        self.assertIn('st.session_state.get("sstats_api_key_input", "")', self.source)
 
 
 if __name__ == "__main__":
