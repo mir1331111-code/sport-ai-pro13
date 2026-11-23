@@ -9,6 +9,7 @@ import re
 import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
+from betting.event_shortlist import build_high_probability_market_events
 from betting.gate_report import (
     classify_card, near_misses, render_gate_details_html,
     render_near_misses_html, render_status_legend,
@@ -140,6 +141,75 @@ def dashboard_strong_events(
             item["probability"], item["ev"], item["edge"], -item["odds"]
         ),
         reverse=True,
+    )
+
+
+def dashboard_all_market_candidates(
+    cards, *, min_probability=STRONG_FORECAST_MIN_PROB,
+    min_odds=MIN_BET_ODDS, limit=30,
+):
+    """Return supported cross-market forecasts with real quotes at the user's floor."""
+    return build_high_probability_market_events(
+        cards,
+        min_probability=min_probability,
+        min_odds=min_odds,
+        limit=limit,
+    )
+
+
+def all_market_candidates_html(events):
+    """Render cross-market strong forecasts while separating unvalidated candidates."""
+    if not events:
+        return (
+            "<div class='neo-empty-cell'>"
+            "Пока нет прогнозов одновременно с вероятностью не ниже "
+            f"{STRONG_FORECAST_MIN_PROB:.0%}, коэффициентом от {MIN_BET_ODDS:.2f}, "
+            "подтверждённым букмекером и достаточной историей."
+            "</div>"
+        )
+    rows = []
+    verified = sum(bool(item.get("value_verified")) for item in events)
+    for item in events:
+        card = item
+        probability = num(item.get("probability"))
+        odds = num(item.get("odds"))
+        if probability is None or odds is None:
+            continue
+        status = (
+            "<span class='neo-bet-status approved'>ПРОВЕРЕННЫЙ VALUE</span>"
+            if item.get("value_verified") else
+            "<span class='neo-bet-status blocked'>КАНДИДАТ · РЫНОК НЕ ПРОВЕРЕН</span>"
+        )
+        sample = (
+            f"{int(item.get('history_matches') or 0)} матчей лиги"
+            if int(item.get("history_matches") or 0) > 0
+            else f"история команд {int(item.get('team_samples') or 0)}"
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{esc(item.get('date') or '—')} {esc(item.get('time') or '')}</td>"
+            f"<td>{esc(item.get('league') or '—')}</td>"
+            f"<td><b>{esc(item.get('match') or '—')}</b></td>"
+            f"<td>{esc(item.get('family_label') or '—')}</td>"
+            f"<td><b>{esc(item.get('pick') or '—')}</b></td>"
+            f"<td><b>{probability:.1%}</b></td>"
+            f"<td><b>{odds:.2f}</b></td>"
+            f"<td>{esc(item.get('bookmaker') or '—')}</td>"
+            f"<td>{status}</td>"
+            f"<td>{esc(sample)}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='neo-table-scroll'><table class='neo-match-table'>"
+        "<thead><tr><th>Время</th><th>Лига</th><th>Матч</th><th>Рынок</th>"
+        "<th>Исход</th><th>Вероятность</th><th>Коэф.</th><th>Букмекер</th>"
+        "<th>Статус</th><th>История</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
+        f"<div class='neo-table-footer'>Показано {len(rows)} кандидатов. "
+        f"Подтверждённый Value: {verified}. Остальные имеют модельную вероятность и цену, "
+        "но ещё не прошли отдельный benchmark именно этого рынка. "
+        "Не считать их подтверждёнными ставками.</div>"
     )
 
 
@@ -1226,6 +1296,24 @@ def render():
     if probability_warning:
         st.warning(probability_warning)
 
+    all_market_candidates = dashboard_all_market_candidates(cards)
+    st.markdown(
+        "<section class='neo-panel neo-matches-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>ALL MARKETS · ODDS ≥ 1.70</span>"
+        "<h3>Сильные прогнозы на любых рынках</h3>"
+        "<div class='neo-ranking-disclaimer'>"
+        f"Показываем исходы с вероятностью от {STRONG_FORECAST_MIN_PROB:.0%}, "
+        f"реальным коэффициентом от {MIN_BET_ODDS:.2f} и достаточной историей. "
+        "Рынок и ставка не ограничены победой: голы, обе забьют, угловые и карточки. "
+        "Проверенный Value отделён от кандидатов, которые ещё не прошли benchmark рынка."
+        "</div></div>"
+        f"<span class='neo-count-pill'>{len(all_market_candidates)} кандидатов</span></div>"
+        + all_market_candidates_html(all_market_candidates)
+        + "</section>",
+        unsafe_allow_html=True,
+    )
+
     # Keep the independent Grok analysis visible near the top of Dashboard,
     # rather than hiding it after dozens of forecast-feed rows.
     st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
@@ -1268,10 +1356,11 @@ def render():
             item.get("card") for item in ranked_events
             if isinstance(item.get("card"), dict)
         ]
-        nearest = (
-            near_misses(diagnostic_cards, "winner", limit=3)
-            + near_misses(diagnostic_cards, "goals", limit=3)
-        )
+        nearest = [
+            item
+            for family in ("winner", "goals", "btts", "corners", "cards")
+            for item in near_misses(diagnostic_cards, family, limit=3)
+        ]
         nearest.sort(key=lambda item: (
             len(item.get("failed_gates") or []),
             -float(item.get("probability") or 0.0),
@@ -1345,9 +1434,10 @@ def render():
             f"<h3>{esc(table_title)}</h3></div>"
             f"<span class='neo-count-pill'>{len(selected_event_cards)} ставок</span></div>"
             "<div class='neo-ranking-disclaimer'>"
-            "<b>Основной список содержит только допущенные ставки.</b> "
-            "Прогнозы без истории, без полной линии 1X2 или без прохождения Value/EV/Edge/Kelly "
-            "здесь не показываются."
+            "<b>Ниже — отдельный список допущенных ставок 1X2.</b> "
+            "Сильные прогнозы на голы, обе забьют, угловые и карточки вынесены в общую таблицу "
+            "всех рынков выше. В неё не попадают исходы с коэффициентом ниже 1.70; "
+            "непроверенные рынки не помечаются как готовые ставки."
             "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
