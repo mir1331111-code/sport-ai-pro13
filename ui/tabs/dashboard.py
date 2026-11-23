@@ -22,6 +22,7 @@ from config import (
 from betting.risk import MIN_BET_ODDS
 from ui.cards import _LEAGUE_FLAGS
 from model.forecast_ledger import ForecastLedger
+from model.independent_forecasts import compare_forecast_rows
 
 
 OUTCOMES = ("H", "D", "A")
@@ -435,6 +436,26 @@ def _grok_panel(cards, meta):
                     f"<b>{esc(independent_pick)}</b> · {esc(comparison)} · "
                     f"модель {esc(card.get('deep_analysis_model') or 'не указана')}</div>"
                 )
+            crosscheck = card.get("ai_crosscheck")
+            if isinstance(crosscheck, dict):
+                value_pick = str(crosscheck.get("validated_value_pick") or "")
+                value_odds = num(crosscheck.get("validated_value_odds"))
+                value_text = (
+                    f"Проверенный Value-селектор: {esc(value_pick)} @ {value_odds:.2f}. "
+                    if value_pick in {"П1", "X", "П2"} and value_odds is not None
+                    else "Проверенный 1X2 Value-сигнал отсутствует. "
+                )
+                ai_value_state = (
+                    "AI совпадает с Value-выбором."
+                    if crosscheck.get("ai_agrees_with_value_pick") is True
+                    else "AI расходится с Value-выбором."
+                    if crosscheck.get("ai_agrees_with_value_pick") is False
+                    else "AI не сравнивался с 1X2 Value-выбором."
+                )
+                body.append(
+                    f"<div class='neo-grok-meta'>{value_text}{esc(ai_value_state)} "
+                    "Диагностика не меняет вероятность, EV, Edge или размер ставки.</div>"
+                )
             for field, label in (
                 ("lineup_assessment", "Составы"),
                 ("injury_assessment", "Травмы / дисквалификации"),
@@ -595,6 +616,78 @@ def _forecast_metrics(rows):
         "accuracy_series": _rolling_series(accuracy_values),
     }
 
+def _ai_comparison_html(report):
+    """Show paired settled results for the main model and each independent AI version."""
+    report = report if isinstance(report, dict) else {}
+    models = [
+        item for item in (report.get("models") or [])
+        if isinstance(item, dict) and int(item.get("n") or 0) > 0
+    ]
+    if not report.get("ai_forecasts"):
+        detail = "Независимые AI-прогнозы ещё не попали в журнал. Выполни скан с успешным TOP MATCHES."
+    elif not models:
+        detail = (
+            "AI-прогнозы уже записываются отдельно, но пока нет матчей с подтверждённым FT, "
+            "которые присутствуют одновременно в журнале основной модели и AI."
+        )
+    else:
+        detail = (
+            "Сравнение только на одинаковых матчах с подтверждённым результатом FT. "
+            "Brier и Log Loss: меньше — лучше. Это диагностическая оценка, не автоматическое "
+            "смешивание вероятностей и не разрешение на ставку."
+        )
+    rows = []
+    for item in sorted(
+        models,
+        key=lambda value: (
+            int(value.get("n") or 0),
+            str(value.get("model_version") or ""),
+        ),
+        reverse=True,
+    )[:5]:
+        main = item.get("main") or {}
+        ai = item.get("ai") or {}
+        metric_values = (
+            num(main.get("brier")),
+            num(ai.get("brier")),
+            num(item.get("brier_delta")),
+            num(item.get("log_loss_delta")),
+            num(item.get("accuracy_delta")),
+        )
+        formats = (".4f", ".4f", "+.4f", "+.4f", "+.1%")
+        cells = "".join(
+            f"<td>{format(value, spec) if value is not None else '—'}</td>"
+            for value, spec in zip(metric_values, formats)
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{esc(item.get('model_version') or 'AI')}</td>"
+            f"<td>{int(item.get('n') or 0)}</td>"
+            + cells
+            + "</tr>"
+        )
+    table = (
+        "<div class='neo-table-scroll'><table class='neo-match-table'>"
+        "<thead><tr><th>AI-версия</th><th>Парных FT</th><th>Brier · модель</th>"
+        "<th>Brier · AI</th><th>Δ Brier</th><th>Δ Log Loss</th><th>Δ Accuracy</th></tr></thead>"
+        "<tbody>" + "".join(rows) + "</tbody></table></div>"
+        if rows else
+        "<div class='neo-chart-empty'><strong>Пока нет парных результатов</strong>"
+        f"<span>{esc(detail)}</span></div>"
+    )
+    return (
+        "<section class='neo-panel neo-ai-comparison-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>MODEL ↔ AI · VERIFIED FT COMPARISON</span>"
+        "<h3>Сверка основной модели и независимого AI</h3>"
+        "</div>"
+        f"<span class='neo-count-pill'>{int(report.get('paired_n') or 0)} парных матчей</span></div>"
+        f"<div class='neo-ranking-disclaimer'>{esc(detail)}</div>"
+        + table
+        + "</section>"
+    )
+
+
 def _ledger_snapshot():
     try:
         ledger = ForecastLedger(DB_FILE)
@@ -613,10 +706,13 @@ def _ledger_snapshot():
         reliability = ledger.reliability_bins(
             bins=10, model_version=active_version
         )
+        ai_comparison = compare_forecast_rows(all_rows)
         return {
             "ok": True,
             "rows": active_rows,
             "all_rows": main_history,
+            "comparison_rows": all_rows,
+            "ai_comparison": ai_comparison,
             "active_version": active_version,
             "settled": settled,
             "pending": max(0, len(active_rows) - len(settled)),
@@ -1334,6 +1430,10 @@ def render():
     # Keep the independent Grok analysis visible near the top of Dashboard,
     # rather than hiding it after dozens of forecast-feed rows.
     st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
+    st.markdown(
+        _ai_comparison_html(snapshot.get("ai_comparison") or {}),
+        unsafe_allow_html=True,
+    )
 
     best_match_items = [
         item for item in ranked_events

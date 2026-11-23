@@ -365,6 +365,88 @@ def parse_llm_probabilities(opinion: str) -> dict[str, float] | None:
     return _valid_probabilities(values)
 
 
+def structured_ai_probabilities(card: dict) -> dict[str, float] | None:
+    """Prefer the validated structured LLM result; keep text parsing for old records."""
+    analysis = card.get("deep_analysis") if isinstance(card, dict) else None
+    raw = analysis.get("probabilities") if isinstance(analysis, dict) else None
+    if isinstance(raw, dict):
+        try:
+            values = {key: float(raw[label]) for key, label in (
+                ("H", "П1"), ("D", "X"), ("A", "П2"),
+            )}
+        except (TypeError, ValueError, KeyError):
+            return None
+        if any(not math.isfinite(value) or value < 0 or value > 100 for value in values.values()):
+            return None
+        if max(values.values(), default=0.0) > 1.0:
+            values = {key: value / 100.0 for key, value in values.items()}
+        return _valid_probabilities(values)
+    return parse_llm_probabilities(str(card.get("llm_opinion") or ""))
+
+
+def build_ai_crosscheck(card: dict, analysis: dict | None = None) -> dict[str, Any]:
+    """Compare the independent AI opinion with model/Value picks without changing stakes."""
+    if not isinstance(card, dict):
+        return {"status": "invalid_card"}
+    analysis = analysis if isinstance(analysis, dict) else (
+        card.get("deep_analysis") if isinstance(card.get("deep_analysis"), dict) else {}
+    )
+    ai_probs = structured_ai_probabilities({**card, "deep_analysis": analysis})
+    main_probs = _main_probabilities(card)
+    if ai_probs is None:
+        return {
+            "status": "missing_ai_probability",
+            "message": "Независимый AI не вернул проверенное распределение 1X2.",
+        }
+    if main_probs is None:
+        return {
+            "status": "missing_main_probability",
+            "message": "Основная модель не имеет поддержанного распределения 1X2 для сверки.",
+        }
+    labels = {"H": "П1", "D": "X", "A": "П2"}
+    main_pick = max(("H", "D", "A"), key=lambda key: main_probs[key])
+    ai_pick = max(("H", "D", "A"), key=lambda key: ai_probs[key])
+    winner = (card.get("best_by_market") or {}).get("winner")
+    winner_best = winner.get("best") if isinstance(winner, dict) else None
+    winner_verdict = winner.get("verdict") if isinstance(winner, dict) else {}
+    value_pick = (
+        str(winner_best[1]).strip()
+        if isinstance(winner_best, (tuple, list)) and len(winner_best) >= 3
+        else ""
+    )
+    value_odds = None
+    if value_pick in {"П1", "X", "П2"}:
+        try:
+            value_odds = float(winner_best[2])
+        except (TypeError, ValueError):
+            value_odds = None
+    return {
+        "status": "agreement" if main_pick == ai_pick else "disagreement",
+        "provider": str(card.get("deep_analysis_provider") or ""),
+        "model": str(card.get("deep_analysis_model") or ""),
+        "data_quality": str(analysis.get("data_quality") or "low"),
+        "main_pick": labels[main_pick],
+        "ai_pick": labels[ai_pick],
+        "agreement": main_pick == ai_pick,
+        "main_probabilities": {labels[key]: round(value * 100.0, 1) for key, value in main_probs.items()},
+        "ai_probabilities": {labels[key]: round(value * 100.0, 1) for key, value in ai_probs.items()},
+        "probability_delta_pp": {
+            labels[key]: round((ai_probs[key] - main_probs[key]) * 100.0, 1)
+            for key in ("H", "D", "A")
+        },
+        "validated_value_pick": value_pick if value_pick in {"П1", "X", "П2"} else None,
+        "validated_value_odds": value_odds,
+        "ai_agrees_with_value_pick": (
+            labels[ai_pick] == value_pick
+            if value_pick in {"П1", "X", "П2"} else None
+        ),
+        "value_passed": bool(
+            isinstance(winner_verdict, dict) and winner_verdict.get("value_passed")
+        ),
+        "decision_role": "diagnostic_only_not_used_to_change_probability_ev_edge_or_stake",
+    }
+
+
 def _team_key(value: str) -> str:
     text = unicodedata.normalize("NFKD", str(value or "").casefold())
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
@@ -527,7 +609,7 @@ def record_scan_forecasts(
                 })
                 existing.add(key)
 
-        ai_probs = parse_llm_probabilities(card.get("llm_opinion") or "")
+        ai_probs = structured_ai_probabilities(card)
         if ai_probs is not None:
             key = f"{fixture_id}|{ai_version}"
             if key not in existing:
