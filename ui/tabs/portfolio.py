@@ -100,16 +100,24 @@ def _apply_settle(D, idx, outcome, score=None):
 
 
 def _cancel_bet(D, idx):
+    """Refund a pending position but retain a durable void audit record."""
     D2 = dict(D)
     bets = list(D2["bets"])
     if idx < 0 or idx >= len(bets):
         return D
-    b = bets[idx]
+    b = dict(bets[idx])
     if b.get("status") != "pending":
         return D
+    b["status"] = "void"
+    b["score"] = "cancelled by user"
+    b["settled_at"] = datetime.now().astimezone().isoformat()
+    b["settlement_source"] = "manual_cancel"
     D2["bank"] = _safe_float(D2.get("bank")) + _safe_float(b.get("stake"))
-    bets.pop(idx)
+    bets[idx] = b
     D2["bets"] = bets
+    stats = dict(D2.get("stats") or {})
+    stats["void"] = int(stats.get("void", 0) or 0) + 1
+    D2["stats"] = stats
     return D2
 
 
