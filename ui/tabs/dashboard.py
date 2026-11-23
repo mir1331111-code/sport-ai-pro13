@@ -21,7 +21,7 @@ from betting.gate_report import (
 from betting.market_ranking import rank_market_forecasts
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from config import (
-    APP_VERSION, DB_FILE, LLM_PROVIDERS, MIN_FAVORITE_HISTORY,
+    APP_VERSION, APP_BUILD_ID, DB_FILE, LLM_PROVIDERS, MIN_FAVORITE_HISTORY,
     STRONG_FORECAST_MIN_PROB,
 )
 from betting.risk import MIN_BET_ODDS
@@ -1671,7 +1671,8 @@ def render():
         "<h1>Рекомендации по матчам</h1>"
         "<p>Проверенные сигналы отдельно; предварительные прогнозы доступны ниже и не считаются рекомендациями.</p></div>"
         "<div class='neo-header-meta'><span class='neo-live-pill'><i></i> ПАНЕЛЬ АКТИВНА</span>"
-        f"<span>v{esc(APP_VERSION)}</span><span>{esc(now.strftime('%d.%m.%Y %H:%M'))}</span></div>"
+        f"<span>v{esc(APP_VERSION)} · build {esc(APP_BUILD_ID)}</span>"
+        f"<span>{esc(now.strftime('%d.%m.%Y %H:%M'))}</span></div>"
         "</div>",
         unsafe_allow_html=True,
     )
