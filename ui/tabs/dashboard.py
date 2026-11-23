@@ -637,30 +637,35 @@ def _ai_comparison_html(report):
             "смешивание вероятностей и не разрешение на ставку."
         )
     rows = []
-    for item in sorted(models, key=lambda value: (int(value.get("n") or 0), str(value.get("model_version") or "")), reverse=True)[:5]:
+    for item in sorted(
+        models,
+        key=lambda value: (
+            int(value.get("n") or 0),
+            str(value.get("model_version") or ""),
+        ),
+        reverse=True,
+    )[:5]:
         main = item.get("main") or {}
         ai = item.get("ai") or {}
-        n = int(item.get("n") or 0)
+        metric_values = (
+            num(main.get("brier")),
+            num(ai.get("brier")),
+            num(item.get("brier_delta")),
+            num(item.get("log_loss_delta")),
+            num(item.get("accuracy_delta")),
+        )
+        formats = (".4f", ".4f", "+.4f", "+.4f", "+.1%")
+        cells = "".join(
+            f"<td>{format(value, spec) if value is not None else '—'}</td>"
+            for value, spec in zip(metric_values, formats)
+        )
         rows.append(
             "<tr>"
             f"<td>{esc(item.get('model_version') or 'AI')}</td>"
-            f"<td>{n}</td>"
-            f"<td>{num(main.get('brier')):.4f}" if num(main.get("brier")) is not None else "<td>—"
+            f"<td>{int(item.get('n') or 0)}</td>"
+            + cells
+            + "</tr>"
         )
-        # Finish the row using explicit values so missing metrics never render as zero.
-        rows[-1] += (
-            f"</td><td>{num(ai.get('brier')):.4f}" if num(ai.get("brier")) is not None else "</td><td>—"
-        )
-        rows[-1] += (
-            f"</td><td>{num(item.get('brier_delta')):+.4f}" if num(item.get("brier_delta")) is not None else "</td><td>—"
-        )
-        rows[-1] += (
-            f"</td><td>{num(item.get('log_loss_delta')):+.4f}" if num(item.get("log_loss_delta")) is not None else "</td><td>—"
-        )
-        rows[-1] += (
-            f"</td><td>{num(item.get('accuracy_delta')):+.1%}" if num(item.get("accuracy_delta")) is not None else "</td><td>—"
-        )
-        rows[-1] += "</td></tr>"
     table = (
         "<div class='neo-table-scroll'><table class='neo-match-table'>"
         "<thead><tr><th>AI-версия</th><th>Парных FT</th><th>Brier · модель</th>"
