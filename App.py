@@ -1038,9 +1038,31 @@ with st.sidebar:
             "margin-bottom:6px;'>🤖 LLM-аналитик</div>",
             unsafe_allow_html=True)
         prov_keys = list(LLM_PROVIDERS.keys())
-        cur = normalize_llm_provider(D["meta"].get("llm_provider", prov_keys[0]))
-        llm_prov = st.selectbox("Провайдер", prov_keys,
-                                index=prov_keys.index(cur) if cur in prov_keys else 0)
+        # Keep a stable widget key so the one-click Grok switch survives the
+        # Streamlit rerun and is then persisted in the user's normal app state.
+        provider_widget_key = "llm_provider_select_v2"
+        if provider_widget_key not in st.session_state:
+            st.session_state[provider_widget_key] = normalize_llm_provider(
+                D["meta"].get("llm_provider") or "Grok (x.ai)"
+            )
+        if st.button(
+            "⚡ Переключить на Grok (x.ai)",
+            key="select_xai_grok_provider",
+            width="stretch",
+            help="Выбирает отдельный API xAI и модель grok-4.7. Groq GPT-OSS при этом не используется.",
+        ):
+            st.session_state[provider_widget_key] = "Grok (x.ai)"
+            D["meta"]["llm_provider"] = "Grok (x.ai)"
+            D["meta"]["llm_model"] = str(LLM_PROVIDERS["Grok (x.ai)"]["model"])
+            usage.set_local_data(D)
+            st.rerun()
+        llm_prov = st.selectbox(
+            "Провайдер", prov_keys,
+            index=prov_keys.index(normalize_llm_provider(
+                st.session_state.get(provider_widget_key)
+            )),
+            key=provider_widget_key,
+        )
         llm_key_config = LLM_PROVIDERS.get(llm_prov, {})
         llm_key_env = str(llm_key_config.get("key_env") or "LLM_API_KEY")
         llm_key_storage = str(llm_key_config.get("key_storage") or "llm_api_key")
@@ -1056,6 +1078,12 @@ with st.sidebar:
             llm_key_label,
             value=llm_key_default,
             type="password", key=llm_key_session)
+        if llm_key_env == "XAI_API_KEY" and not llm_key_default:
+            st.caption(
+                "Для Grok нужен отдельный API-ключ xAI. Создай ключ в консоли xAI, "
+                "вставь его в поле XAI_API_KEY и нажми проверку подключения."
+            )
+            st.markdown("[Открыть консоль xAI и создать API key](https://console.x.ai)")
         if st.button(
             f"🔎 Проверить AI-подключение · {llm_prov}",
             key="check_llm_provider_connection",
