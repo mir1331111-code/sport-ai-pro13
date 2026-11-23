@@ -3880,6 +3880,28 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             # they must not enter the Value/EV selector yet.
 
             candidate_rows = list(rows_ or []) + extra_rows
+            # Preserve the exact inputs to today's Value/Kelly decision so a
+            # later priority SStats XI/referee refresh can re-run the SAME gates.
+            # Browser Search / LLM text is never part of this payload.
+            initial_context_qualified = bool(
+                context_quality["strong_value_eligible"] and model_bet_history_ready
+            )
+            value_recheck_inputs = None
+            if not initial_context_qualified:
+                value_recheck_inputs = {
+                    "base_verdict": copy.deepcopy(verdict),
+                    "candidate_rows": copy.deepcopy(candidate_rows),
+                    "selection_odds": dict(selection_odds),
+                    "bank": float(D["bank"]),
+                    "kelly_frac": float(kelly_frac),
+                    "min_prob": float(min_prob),
+                    "min_edge": max(float(min_edge), 0.05),
+                    "min_ev": 0.05,
+                    "bookmaker_by_pick": dict(bookmaker_by_pick),
+                    "market_validation_by_pick": dict(market_validation_by_pick),
+                    "market_source_by_pick": dict(market_source_by_pick),
+                    "model_bet_history_ready": bool(model_bet_history_ready),
+                }
             # Evaluate each family independently before computing the one-best
             # cross-market pick. A strong 1X2 result must not suppress a goals,
             # BTTS, corners or cards signal on this fixture.
@@ -3973,6 +3995,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         (f" {kickoff_time_text}" if kickoff_time_text else ""),
                 "verdict": verdict, "best": best,
                 "best_by_market": best_by_market,
+                "model_bet_history_ready": bool(model_bet_history_ready),
+                "_value_recheck": value_recheck_inputs,
                 "games": P["games"], "fh": fh, "fa": fa,
                 "model_support_status": model_support_status,
                 "league_history_matches": int(P.get("league_history_matches") or 0),
@@ -4225,6 +4249,53 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 date_key = str(card.get("date_iso") or "")[:10]
                 context_key = fixture_row_key(home_name, away_name, date_key)
                 refreshed_context = priority_contexts.get(context_key)
+                if isinstance(refreshed_context, dict) and refreshed_context:
+                    previous_best = card.get("best")
+                    previous_best_exists = bool(previous_best)
+                    context_recheck = _recheck_value_after_priority_context(
+                        card, refreshed_context,
+                    )
+                    if context_recheck.get("rechecked"):
+                        new_best = card.get("best")
+                        if not previous_best_exists and new_best:
+                            matches_with_best += 1
+                            funnel_counts["bet"] += 1
+                            funnel_counts["real"] += 1
+                            funnel_counts["model_only"] = max(
+                                0, int(funnel_counts.get("model_only") or 0) - 1
+                            )
+                        logs.append(
+                            f"🏆 TOP SStats → VALUE: {card.get('match_ru') or match_name(card)} | "
+                            f"XI={'подтверждён' if context_recheck.get('new_eligible') else 'нет'} · "
+                            f"Value повторно проверен · "
+                            + (
+                                f"допущено {new_best[1]} @ {float(new_best[2]):.2f}"
+                                if new_best else "ставка не прошла остальные Value/EV/Edge/Kelly-гейты"
+                            )
+                        )
+                    else:
+                        logs.append(
+                            f"ℹ️ TOP SStats → VALUE: {card.get('match_ru') or match_name(card)} | "
+                            f"новый контекст сохранён, но допуск не изменён: "
+                            f"{context_recheck.get('reason') or 'не хватает подтверждений/истории'}."
+                        )
+                    if context_recheck.get("updated"):
+                        try:
+                            context_store_for_priority = ContextStore()
+                            context_store_for_priority.record_snapshot(
+                                fixture_id="|".join(context_key),
+                                kickoff_at=str(
+                                    card["api_context"].get("kickoff_at")
+                                    or card.get("kickoff_utc") or ""
+                                ),
+                                observed_at=str(
+                                    card["api_context"].get("timestamp") or ""
+                                ),
+                                context=card["api_context"],
+                                data_source="sstats-priority",
+                            )
+                        except Exception:
+                            pass
                 card["deep_analysis_context"] = merge_context_snapshots(
                     card.get("api_context") or {},
                     refreshed_context if isinstance(refreshed_context, dict) else {},
