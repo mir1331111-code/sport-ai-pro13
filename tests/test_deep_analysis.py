@@ -375,7 +375,7 @@ class BatchGroqAnalysisTests(unittest.TestCase):
 
         dossier = build_match_dossier(make_card(date="2026-11-24"))
         browser_text = (
-            f"fixture_id: {dossier['fixture_id']}\\n"
+            f"fixture_id: {dossier['fixture_id']}\n"
             "OFFICIAL XI: NOT PUBLISHED as of 2026-11-23 12:00 UTC. "
             "Predicted XI is not confirmed. Source: https://club.example/match-preview"
         )
