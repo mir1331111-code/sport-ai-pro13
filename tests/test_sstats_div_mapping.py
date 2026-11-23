@@ -29,6 +29,32 @@ class SStatsDivisionMappingTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(_sstats_div_code(name), expected)
 
+    def test_domestic_youth_club_competitions_use_separate_age_namespaces(self):
+        youth = _sstats_div_code("England U21 Premier League")
+        self.assertTrue(youth.startswith("S_Y_U21_"))
+        self.assertFalse(youth.startswith("NT_"))
+
+        women_youth = _sstats_div_code("Women's U21 Premier League")
+        self.assertTrue(women_youth.startswith("S_WY_U21_"))
+        self.assertFalse(women_youth.startswith("W_NT_"))
+
+    def test_uefa_youth_league_stays_in_club_youth_namespace(self):
+        youth = _sstats_div_code("UEFA U19 Youth League")
+        self.assertTrue(youth.startswith("S_Y_U19_"))
+        self.assertFalse(youth.startswith("NT_"))
+
+        women_youth = _sstats_div_code("UEFA Women's U19 Youth League")
+        self.assertTrue(women_youth.startswith("S_WY_U19_"))
+        self.assertFalse(women_youth.startswith("W_NT_"))
+
+    def test_youth_national_competitions_still_use_international_namespace(self):
+        self.assertTrue(_sstats_div_code("UEFA U21 Championship").startswith("NT_U21_"))
+        self.assertTrue(_sstats_div_code("AFC U20 Asian Cup").startswith("NT_U20_"))
+        self.assertEqual(
+            _sstats_div_code("Men's U21 International Friendly"),
+            "NT_U21_FR",
+        )
+
     def test_domestic_national_league_is_not_classified_as_international(self):
         code = _sstats_div_code("National League")
         self.assertTrue(code.startswith("S_"))
