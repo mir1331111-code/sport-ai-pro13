@@ -96,11 +96,11 @@ LLM_PROVIDER_ALIASES = {
 }
 
 
-DEFAULT_LLM_PROVIDER = "Grok (x.ai)"
+DEFAULT_LLM_PROVIDER = "Groq GPT-OSS 120B"
 
 
 def normalize_llm_provider(provider: object) -> str:
-    """Migrate saved provider names and default new sessions to xAI Grok."""
+    """Migrate saved provider names and default new sessions to Groq GPT-OSS 120B."""
     selected = str(provider or "").strip()
     selected = LLM_PROVIDER_ALIASES.get(selected, selected)
     return selected if selected in LLM_PROVIDERS else DEFAULT_LLM_PROVIDER
