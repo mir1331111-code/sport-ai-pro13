@@ -832,7 +832,7 @@ def resolve_provider_model(provider: str, requested_model: str | None = None) ->
     """Use the selected provider's configured model; discard stale cross-provider IDs."""
     cfg = LLM_PROVIDERS.get(str(provider or ""))
     if not cfg:
-        cfg = LLM_PROVIDERS["Groq GPT-OSS 20B"]
+        cfg = LLM_PROVIDERS["Grok (x.ai)"]
     configured = str(cfg.get("model") or "").strip()
     requested = str(requested_model or "").strip()
     if requested and requested != configured:
