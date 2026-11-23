@@ -435,6 +435,17 @@ def _grok_panel(cards, meta):
                     f"<b>{esc(independent_pick)}</b> · {esc(comparison)} · "
                     f"модель {esc(card.get('deep_analysis_model') or 'не указана')}</div>"
                 )
+            for field, label in (
+                ("lineup_assessment", "Составы"),
+                ("injury_assessment", "Травмы / дисквалификации"),
+                ("referee_assessment", "Судья"),
+                ("form_assessment", "Форма"),
+            ):
+                detail = str(analysis.get(field) or "").strip()
+                if detail:
+                    body.append(
+                        f"<p class='neo-grok-copy'><b>{esc(label)}:</b> {esc(detail)}</p>"
+                    )
             assessment = str(
                 analysis.get("match_assessment") or analysis.get("opinion") or ""
             ).strip()
