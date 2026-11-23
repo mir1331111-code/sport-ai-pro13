@@ -58,14 +58,9 @@ def _stable_training_engine_key(
     from model.incremental import stable_engine_fingerprint
 
     history_years, catalogue_divisions = _history_catalog()
-    custom_divisions = [
-        str(row.get("Div") or "").strip()
-        for row in (custom_historical_rows or [])
-        if isinstance(row, dict) and str(row.get("Div") or "").strip()
-    ]
-    training_divisions = tuple(dict.fromkeys(
-        list(catalogue_divisions) + custom_divisions
-    ))
+    # Custom archive contents are checked by the immutable training manifest
+    # during an explicit refresh; they must not fragment the fitted-model cache.
+    training_divisions = tuple(catalogue_divisions)
     key = stable_engine_fingerprint(
         matrix_n=matrix_n,
         xg_enabled=bool(str(footballapi_key or "").strip()),
@@ -87,15 +82,21 @@ def _legacy_live_slate_engine_key(
         footballapi_key=footballapi_key,
         custom_historical_rows=custom_historical_rows,
     )
-    if not extra_divisions:
-        return base_key
+    custom_divisions = [
+        str(row.get("Div") or "").strip()
+        for row in (custom_historical_rows or [])
+        if isinstance(row, dict) and str(row.get("Div") or "").strip()
+    ]
     legacy_divisions = tuple(dict.fromkeys(
         list(training_divisions)
+        + custom_divisions
         + [
             str(value).strip() for value in (extra_divisions or [])
             if str(value).strip()
         ]
     ))
+    if legacy_divisions == training_divisions:
+        return base_key
     return stable_engine_fingerprint(
         matrix_n=matrix_n,
         xg_enabled=bool(str(footballapi_key or "").strip()),
