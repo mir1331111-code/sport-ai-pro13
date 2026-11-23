@@ -39,6 +39,46 @@ class ScannerEnginePriorityTests(unittest.TestCase):
         self.assertIs(first["history"], second["history"])
         self.assertTrue(any("памяти процесса" in line for line in second_logs))
 
+    def test_cold_start_training_can_defer_heavy_market_benchmark_fail_closed(self):
+        logs = []
+        with (
+            patch.object(
+                scanner_engine, "_prepare_training_history",
+                return_value=({}, ["E0"]),
+            ),
+            patch.object(
+                scanner_engine, "prepare_completed_training_rows",
+                return_value=([{}], {
+                    "missing_date": 0, "missing_teams": 0,
+                    "missing_or_invalid_score": 0, "invalid_row": 0,
+                }),
+            ),
+            patch.object(
+                scanner_engine, "train_engine_chronologically",
+                return_value={"trained": 1, "days": 1},
+            ),
+            patch(
+                "model.incremental.record_training_manifest"
+            ) as manifest_mock,
+            patch.object(
+                scanner_engine, "_refresh_engine_market_validation"
+            ) as validation_mock,
+        ):
+            engine = scanner_engine._train_engine(
+                12, logs, lambda *_args: None,
+                seasonal_snapshot={}, run_market_validation=False,
+            )
+
+        validation_mock.assert_not_called()
+        manifest_mock.assert_called_once()
+        self.assertEqual(engine.trained_n, 1)
+        self.assertFalse(engine.winner_market_validation)
+        self.assertFalse(engine.total_market_validation)
+        self.assertFalse(engine.btts_market_validation)
+        self.assertEqual(engine.stat_market_validation, {})
+        self.assertEqual(engine.winner_market_validation_report["state"], "deferred")
+        self.assertTrue(any("Value и автодопуск закрыты" in line for line in logs))
+
     def test_priority_validation_list_is_stable_and_unique(self):
         self.assertEqual(len(_PRIORITY_DIVS), 15)
         self.assertEqual(len(set(_PRIORITY_DIVS)), len(_PRIORITY_DIVS))
