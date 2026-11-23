@@ -1164,7 +1164,10 @@ with st.sidebar:
         for _storage_key, (_widget_key, _env_names, _secret_names) in _widget_key_map.items():
             if any(os.environ.get(name, "").strip() for name in _env_names):
                 _api_key_status[_storage_key] = "серверная переменная окружения"
-            elif _configured_secret(*_secret_names, "api_key", "key" if _storage_key == "sstats_api_key" else ""):
+            elif _configured_secret(
+                *_secret_names,
+                *(("api_key", "key") if _storage_key == "sstats_api_key" else ()),
+            ):
                 _api_key_status[_storage_key] = "Streamlit Secrets"
             elif _storage_key in _keys_to_save and _keys_saved:
                 _api_key_status[_storage_key] = "локальный файл приложения"
