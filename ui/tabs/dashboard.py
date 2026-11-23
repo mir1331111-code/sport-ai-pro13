@@ -14,7 +14,8 @@ from betting.gate_report import (
     classify_card, near_misses, render_gate_details_html,
     render_near_misses_html, render_status_legend,
 )
-from data.fixture_time import app_timezone
+from betting.market_ranking import rank_market_forecasts
+from data.fixture_time import app_timezone, fixture_kickoff_local
 from config import (
     APP_VERSION, DB_FILE, LLM_PROVIDERS, MIN_FAVORITE_HISTORY,
     STRONG_FORECAST_MIN_PROB,
@@ -29,11 +30,11 @@ OUTCOMES = ("H", "D", "A")
 OUTCOME_LABELS = {"H": "П1", "D": "X", "A": "П2"}
 
 DASHBOARD_PERIOD_OPTIONS = (
-    "Сегодня · лучшие события",
-    "Ближайшие 24 часа · лучшие события",
-    "Весь горизонт скана · лучшие события",
+    "Сегодня",
+    "Ближайшие 24 часа",
+    "Весь горизонт сканирования",
 )
-DASHBOARD_DEFAULT_PERIOD = "Весь горизонт скана · лучшие события"
+DASHBOARD_DEFAULT_PERIOD = "Весь горизонт сканирования"
 DASHBOARD_FORECAST_VISIBLE_LIMIT = 50
 STRONG_EVENT_MIN_EDGE = 0.05
 STRONG_EVENT_MIN_EV = 0.05
@@ -1180,487 +1181,312 @@ def _history_panel(snapshot, roi, profit, turnover):
     )
 
 
+_DASHBOARD_STATUS_PRIORITY = {
+    "approved": 3,
+    "forecast": 2,
+    "near_strong": 1,
+}
+_DASHBOARD_STATUS_LABELS = {
+    "approved": "Одобрено к ставке",
+    "forecast": "Сильный прогноз — не ставка",
+    "near_strong": "Почти сильный прогноз",
+}
+_DASHBOARD_STATUS_HINTS = {
+    "approved": "Все проверки прогноза, контекста, рынка, линии и EV/Edge/Kelly пройдены.",
+    "forecast": "Истории и вероятности достаточно, но один или несколько Value-гейтов не пройдены.",
+    "near_strong": "Истории достаточно, но вероятность немного ниже сильного порога.",
+}
+_DASHBOARD_FAMILIES = ("winner", "goals", "btts", "corners", "cards")
+_DASHBOARD_FAMILY_LABELS = {
+    "winner": "Исход 1X2",
+    "goals": "Тотал голов",
+    "btts": "Обе забьют",
+    "corners": "Угловые",
+    "cards": "Карточки",
+}
+
+
+def dashboard_recommendation_groups(
+    cards, *, now=None, period_end=None, selected_league=None,
+):
+    """Return one highest-status recommendation per fixture; omit all other matches."""
+    now = now or datetime.now(app_timezone())
+    candidates = {}
+    for card in cards if isinstance(cards, list) else []:
+        if not isinstance(card, dict):
+            continue
+        league = str(card.get("league") or card.get("div") or "").strip()
+        if selected_league and selected_league != "Все турниры" and league != selected_league:
+            continue
+        kickoff = fixture_kickoff_local(card)
+        if kickoff is None or kickoff < now:
+            continue
+        if period_end is not None and kickoff > period_end:
+            continue
+
+        for family in _DASHBOARD_FAMILIES:
+            ranked = rank_market_forecasts([card], family, limit=1)
+            if not ranked:
+                continue
+            status, gates = classify_card(card, family)
+            if status not in _DASHBOARD_STATUS_PRIORITY:
+                continue
+
+            summary = ranked[0]
+            probability = num(summary.get("probability"))
+            if probability is None:
+                continue
+            recommendation = (card.get("best_by_market") or {}).get(family)
+            recommendation = recommendation if isinstance(recommendation, dict) else {}
+            best = recommendation.get("best")
+            best = best if isinstance(best, (tuple, list)) else None
+            verdict = recommendation.get("verdict")
+            verdict = verdict if isinstance(verdict, dict) else {}
+            pick = str(summary.get("pick") or "—")
+            odds = None
+            if verdict.get("real_odds") and best and len(best) >= 3:
+                price = num(best[2])
+                if price is not None and price > 1:
+                    odds = price
+
+            failed = [gate.name for gate in gates if not gate.passed]
+            if status == "forecast":
+                reason = "Не пройдены: " + ", ".join(failed[:3]) if failed else (
+                    "Не все Value-гейты подтверждены."
+                )
+            elif status == "near_strong":
+                gap = max(0.0, float(STRONG_FORECAST_MIN_PROB) - probability)
+                reason = (
+                    f"До порога {STRONG_FORECAST_MIN_PROB:.0%} не хватает "
+                    f"{gap:.1%}."
+                )
+            else:
+                reason = "Все обязательные проверки пройдены."
+
+            fixture_key = str(card.get("fixture_id") or "").strip()
+            if not fixture_key:
+                fixture_key = "|".join((
+                    str(card.get("date_iso") or card.get("date") or "")[:10],
+                    str(card.get("home_team") or card.get("home") or "").casefold(),
+                    str(card.get("away_team") or card.get("away") or "").casefold(),
+                ))
+            if not fixture_key.strip("|"):
+                fixture_key = match_name(card).casefold()
+
+            item = {
+                "card": card,
+                "kickoff": kickoff,
+                "status": status,
+                "family": family,
+                "family_label": _DASHBOARD_FAMILY_LABELS.get(family, family),
+                "pick": pick,
+                "probability": probability,
+                "home_sample": int(summary.get("home_team_sample") or 0),
+                "away_sample": int(summary.get("away_team_sample") or 0),
+                "odds": odds,
+                "ev": num(verdict.get("ev")) if status == "approved" else None,
+                "edge": num(verdict.get("edge")) if status == "approved" else None,
+                "stake": num(verdict.get("stake")) if status == "approved" else None,
+                "bookmaker": str(
+                    (card.get("bookmaker_by_pick") or {}).get(pick) or ""
+                ),
+                "reason": reason,
+            }
+            # One fixture appears once: approved beats strong forecast, which
+            # beats near-strong. Within the same status choose the clearest pick.
+            rank = (
+                _DASHBOARD_STATUS_PRIORITY[status],
+                probability,
+                float(item.get("ev") or 0.0),
+                item["home_sample"] + item["away_sample"],
+            )
+            previous = candidates.get(fixture_key)
+            if previous is None or rank > previous["_rank"]:
+                item["_rank"] = rank
+                candidates[fixture_key] = item
+
+    groups = {status: [] for status in _DASHBOARD_STATUS_PRIORITY}
+    for item in candidates.values():
+        item.pop("_rank", None)
+        groups[item["status"]].append(item)
+    for status in groups:
+        groups[status].sort(key=lambda item: (
+            item["kickoff"], -item["probability"], item["family_label"],
+        ))
+    return groups
+
+
+def recommendation_group_html(status, items):
+    """Render a compact table for one of the three requested recommendation states."""
+    if status not in _DASHBOARD_STATUS_LABELS:
+        return ""
+    items = [item for item in (items or []) if isinstance(item, dict)]
+    label = _DASHBOARD_STATUS_LABELS[status]
+    hint = _DASHBOARD_STATUS_HINTS[status]
+    if not items:
+        empty = {
+            "approved": "Сейчас нет матчей, прошедших все проверки.",
+            "forecast": "Сейчас нет сильных прогнозов, заблокированных Value-гейтами.",
+            "near_strong": "Сейчас нет прогнозов рядом с сильным порогом.",
+        }[status]
+        body = f"<div class='neo-empty-cell'>{esc(empty)}</div>"
+    else:
+        rows = []
+        for item in items:
+            kickoff = item.get("kickoff")
+            time_text = kickoff.strftime("%d.%m %H:%M") if isinstance(kickoff, datetime) else "—"
+            card = item.get("card") if isinstance(item.get("card"), dict) else {}
+            odds = num(item.get("odds"))
+            price_text = f"{odds:.2f}" if odds is not None else "—"
+            if status == "approved":
+                ev = num(item.get("ev"))
+                edge = num(item.get("edge"))
+                stake = num(item.get("stake"))
+                detail = (
+                    f"EV {ev:+.1%} · Edge {edge:+.1%} · Kelly {stake:.2f}"
+                    if ev is not None and edge is not None and stake is not None
+                    else "Все проверки допуска пройдены"
+                )
+            else:
+                detail = str(item.get("reason") or "")
+            history_text = f"{int(item.get('home_sample') or 0)}/{int(item.get('away_sample') or 0)}"
+            rows.append(
+                "<tr>"
+                f"<td>{esc(time_text)}</td>"
+                f"<td>{esc(card.get('league') or card.get('div') or '—')}</td>"
+                f"<td><b>{esc(match_name(card))}</b></td>"
+                f"<td>{esc(item.get('family_label') or '—')}</td>"
+                f"<td><b>{esc(item.get('pick') or '—')}</b></td>"
+                f"<td><b>{float(item.get('probability') or 0):.1%}</b></td>"
+                f"<td>{esc(price_text)}</td>"
+                f"<td>{esc(history_text)}</td>"
+                f"<td>{esc(detail)}</td>"
+                "</tr>"
+            )
+        body = (
+            "<div class='neo-table-scroll'><table class='neo-match-table'>"
+            "<thead><tr><th>Время</th><th>Лига</th><th>Матч</th><th>Рынок</th>"
+            "<th>Исход</th><th>Вероятность</th><th>Коэф.</th>"
+            "<th>История Д/Г</th><th>Проверка</th></tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table></div>"
+        )
+    return (
+        "<section class='neo-panel neo-matches-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        f"<h3>{esc(label)}</h3><div class='neo-ranking-disclaimer'>{esc(hint)}</div>"
+        "</div>"
+        f"<span class='neo-count-pill'>{len(items)} матчей</span></div>"
+        + body
+        + "</section>"
+    )
+
+
 def render():
     data = st.session_state.get("data") or {}
-    cards = [card for card in (data.get("cards") or []) if isinstance(card, dict)]
-    cards.sort(key=lambda card: (str(card.get("date_iso") or "9999"), str(card.get("time") or "23:59")))
-    ai_name = ai_provider_label(data)
-    priced = sum(has_prices(card) for card in cards)
-
-    snapshot = _ledger_snapshot()
-    metrics = snapshot["metrics"]
-    bets = [bet for bet in (data.get("bets") or []) if isinstance(bet, dict)]
-    closed_bets = [bet for bet in bets if bet.get("status") in {"won", "lost"}]
-    closed_bets.sort(key=lambda bet: str(
-        bet.get("settled_at") or bet.get("updated_at") or bet.get("date_iso") or ""
-    ))
-    turnover = sum(num(bet.get("stake")) or 0.0 for bet in closed_bets)
-    profit = sum(
-        (num(bet.get("stake")) or 0.0) * ((num(bet.get("odds")) or 1.0) - 1.0)
-        * (1.0 if bet.get("status") == "won" else -1.0)
-        for bet in closed_bets
-    )
-    roi = profit / turnover * 100 if turnover else None
-    roi_series = []
-    running_turnover = 0.0
-    running_profit = 0.0
-    for bet in closed_bets:
-        stake = num(bet.get("stake")) or 0.0
-        odds = num(bet.get("odds")) or 1.0
-        running_turnover += stake
-        running_profit += stake * ((odds - 1.0) if bet.get("status") == "won" else -1.0)
-        if running_turnover > 0:
-            roi_series.append(running_profit / running_turnover * 100)
-
+    cards = [
+        card for card in (data.get("cards") or [])
+        if isinstance(card, dict)
+    ]
     now = datetime.now(app_timezone())
+
     st.markdown(
         "<div class='neo-dashboard-header'>"
-        "<div><div class='neo-dashboard-eyebrow'>SPORT-AI-PRO13 · FOOTBALL INTELLIGENCE</div>"
-        "<h1>Футбол. Прогнозы на матчи</h1>"
-        "<p>Основная модель · реальные котировки · проверенное качество прогнозов</p></div>"
+        "<div><div class='neo-dashboard-eyebrow'>SPORT-AI-PRO13</div>"
+        "<h1>Рекомендации по матчам</h1>"
+        "<p>Только три статуса: одобрено к ставке, сильный прогноз и почти сильный прогноз.</p></div>"
         "<div class='neo-header-meta'><span class='neo-live-pill'><i></i> ПАНЕЛЬ АКТИВНА</span>"
-        f"<span>v{esc(APP_VERSION)}</span><span>Обновлено {esc(now.strftime('%d.%m.%Y %H:%M'))}</span></div>"
+        f"<span>v{esc(APP_VERSION)}</span><span>{esc(now.strftime('%d.%m.%Y %H:%M'))}</span></div>"
         "</div>",
         unsafe_allow_html=True,
     )
 
     leagues = sorted({
         str(card.get("league") or card.get("div") or "").strip()
-        for card in cards if str(card.get("league") or card.get("div") or "").strip()
+        for card in cards
+        if str(card.get("league") or card.get("div") or "").strip()
     })
-    filter_sport, filter_league, filter_period, filter_refresh = st.columns(
-        [0.82, 1.25, 1.12, 0.28], gap="small"
+    filter_league, filter_period, filter_refresh = st.columns(
+        [1.3, 1.2, 0.25], gap="small"
     )
-    with filter_sport:
-        st.selectbox(
-            "Вид спорта", ["⚽ Футбол"], index=0,
-            label_visibility="collapsed", disabled=True,
-            key="dashboard_sport_filter",
-        )
     with filter_league:
-        league_options = ["Все турниры"] + leagues
         selected_league = st.selectbox(
-            "Турнир", league_options, index=0,
-            label_visibility="collapsed", key="dashboard_league_filter",
+            "Турнир",
+            ["Все турниры"] + leagues,
+            index=0,
+            label_visibility="collapsed",
+            key="dashboard_recommendation_league_v1",
         )
     with filter_period:
         selected_period = st.selectbox(
             "Период",
             DASHBOARD_PERIOD_OPTIONS,
-            index=DASHBOARD_PERIOD_OPTIONS.index(DASHBOARD_DEFAULT_PERIOD),
+            index=DASHBOARD_PERIOD_OPTIONS.index(DASHBOARD_DEFAULT_PERIOD)
+            if DASHBOARD_DEFAULT_PERIOD in DASHBOARD_PERIOD_OPTIONS else 2,
             label_visibility="collapsed",
-            # Version the key so an old saved "today only" choice cannot
-            # silently override the new full-scan default.
-            key="dashboard_period_filter_v3",
+            key="dashboard_recommendation_period_v1",
         )
     with filter_refresh:
-        refresh_dashboard = st.button(
-            "↻", key="dashboard_refresh_button", use_container_width=True,
-            help="Обновить панель и перечитать текущие данные",
-        )
-        if refresh_dashboard:
+        if st.button(
+            "↻",
+            key="dashboard_recommendation_refresh_v1",
+            use_container_width=True,
+            help="Обновить рекомендации",
+        ):
             st.rerun()
 
-    filtered_cards = cards
-    if selected_league != "Все турниры":
-        filtered_cards = [
-            card for card in filtered_cards
-            if str(card.get("league") or card.get("div") or "").strip() == selected_league
-        ]
-
-    # The default view evaluates the full remaining local calendar day. It no
-    # longer takes the first five fixtures merely because they kick off first.
-    if selected_period == "Сегодня · лучшие события":
+    if selected_period == "Сегодня":
         period_end = datetime.combine(
             now.date() + timedelta(days=1),
             datetime.min.time(),
             tzinfo=now.tzinfo,
         )
-        table_title = "Допущенные ставки сегодня · 1X2"
-    elif selected_period == "Ближайшие 24 часа · лучшие события":
+    elif selected_period == "Ближайшие 24 часа":
         period_end = now + timedelta(hours=24)
-        table_title = "Допущенные ставки ближайших 24 часов · 1X2"
     else:
         period_end = None
-        table_title = "Допущенные ставки всего горизонта · 1X2"
 
-    selection_diagnostics = {}
-    ranked_events = rank_best_fixtures(
-        filtered_cards,
+    groups = dashboard_recommendation_groups(
+        cards,
         now=now,
         period_end=period_end,
-        limit=None,
-        min_sample_games=MIN_FAVORITE_HISTORY,
-        min_probability=0.52,
-        # Keep provisional candidates in diagnostics only. They are never
-        # admitted to the visible bet table unless every approval gate passes.
-        include_limited_history=True,
-        diagnostics=selection_diagnostics,
+        selected_league=selected_league,
     )
-    approved_event_cards = []
-    forecast_candidates = []
-    for item in ranked_events:
-        card = dict(item["card"])
-        card["_daily_strict_eligible"] = bool(item.get("strict_eligible"))
-        card["_daily_selection_note"] = str(item.get("selection_note") or "")
-        card["_daily_home_sample"] = int(item.get("home_sample") or 0)
-        card["_daily_away_sample"] = int(item.get("away_sample") or 0)
-        card["_daily_quality_score"] = float(item.get("quality_score") or 0.0)
-        if dashboard_bet_approved(card):
-            approved_event_cards.append(card)
-        else:
-            forecast_candidates.append((item.get("kickoff"), card))
-    # The forecast feed is a chronological view, not a second betting ranking.
-    forecast_candidates.sort(
-        key=lambda pair: pair[0] if pair[0] is not None else datetime.max.replace(tzinfo=now.tzinfo)
-    )
-    forecast_event_cards = [
-        card for _kickoff, card in
-        forecast_candidates[:DASHBOARD_FORECAST_VISIBLE_LIMIT]
-    ]
-    remaining_forecast_cards = [
-        card for _kickoff, card in
-        forecast_candidates[DASHBOARD_FORECAST_VISIBLE_LIMIT:]
-    ]
-    selected_event_cards = approved_event_cards[:5]
-    strict_count = int(selection_diagnostics.get("strict_unique", 0) or 0)
-    provisional_count = int(selection_diagnostics.get("provisional_unique", 0) or 0)
-    available_event_count = int(selection_diagnostics.get("unique_candidates", 0) or 0)
-    history_blocked_count = sum(not bool(item.get("history_ready")) for item in ranked_events)
-    probability_blocked_count = sum(not bool(item.get("probability_ready")) for item in ranked_events)
-    context_blocked_count = sum(
-        not bool(
-            (item.get("card", {}).get("context_quality") or {}).get("strong_value_eligible")
-        )
-        for item in ranked_events
-    )
-    value_blocked_count = max(0, strict_count - len(approved_event_cards))
-    scan_diagnostics_text = (
-        f"Не распознано время: {selection_diagnostics.get('invalid_kickoff', 0)} · "
-        f"уже начались: {selection_diagnostics.get('already_started', 0)} · "
-        f"вне периода: {selection_diagnostics.get('outside_window', 0)} · "
-        f"некорректный 1X2: {selection_diagnostics.get('invalid_forecast', 0)}"
-    )
-
-    brier = f"{metrics['brier']:.3f}" if metrics.get("brier") is not None else "—"
-    log_loss = f"{metrics['log_loss']:.3f}" if metrics.get("log_loss") is not None else "—"
-    accuracy = f"{metrics['accuracy']:.1%}" if metrics.get("accuracy") is not None else "—"
-    roi_text = f"{roi:+.1f}%" if roi is not None else "—"
-    market_delta = metrics.get("market_delta_brier")
-    market_delta_text = f"{market_delta:+.4f}" if market_delta is not None else "—"
-    market_note = (
-        f"парных матчей: {metrics.get('market_n', 0)} · отрицательное значение лучше"
-        if market_delta is not None else "нет полной парной линии и результата"
-    )
-    sample_note = f"{metrics.get('n', 0):,} завершённых прогнозов"
-    roi_note = (
-        f"виртуальный портфель · {len(closed_bets)} закрытых ставок"
-        if turnover > 0 else "нет закрытых ставок с оборотом"
-    )
-    kpis = [
-        _kpi("Brier Score", brier, f"{sample_note} · ниже — лучше",
-             series=metrics.get("brier_series"), color="#39d49b"),
-        _kpi("Log Loss", log_loss, f"{sample_note} · ниже — лучше",
-             series=metrics.get("log_loss_series"), color="#4ec8d7"),
-        _kpi("Accuracy (1X2)", accuracy, f"{sample_note} · доля верных исходов",
-             series=metrics.get("accuracy_series"), color="#39d49b"),
-        _kpi("ROI (ставки)", roi_text, roi_note,
-             series=roi_series, color="#39d49b" if (roi or 0) >= 0 else "#f17b83"),
+    counts = [
+        (
+            "Одобрено к ставке",
+            len(groups["approved"]),
+            "approved",
+        ),
+        (
+            "Сильный прогноз — не ставка",
+            len(groups["forecast"]),
+            "forecast",
+        ),
+        (
+            "Почти сильный прогноз",
+            len(groups["near_strong"]),
+            "near_strong",
+        ),
     ]
     st.markdown(
-        "<div class='neo-kpi-grid'>" + "".join(kpis) + "</div>"
-        + "<div class='neo-market-delta'>"
-        "<span>СРАВНЕНИЕ С РЫНКОМ · Δ BRIER</span>"
-        f"<b>{esc(market_delta_text)}</b>"
-        f"<small>{esc(market_note)}</small>"
-        f"<small class='neo-meta-spacer'>В скане: {len(cards):,} · полных линий 1X2: {priced:,} · эмблемы с URL у обеих команд: {sum(bool(card.get('home_badge')) and bool(card.get('away_badge')) for card in cards):,} · FT: {metrics.get('n', 0):,}</small>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    scan_meta = data.get("scan_meta") if isinstance(data.get("scan_meta"), dict) else {}
-    if scan_meta:
-        support_counts = scan_meta.get("model_support_counts") if isinstance(scan_meta.get("model_support_counts"), dict) else {}
-        unsupported_count = (
-            int(support_counts.get("prior_only") or 0)
-            + int(support_counts.get("league_only") or 0)
+        "<div class='neo-recommendation-summary'>"
+        + "".join(
+            "<span class='neo-count-pill'>"
+            f"{esc(label)} · {count}</span>"
+            for label, count, _status in counts
         )
-        if unsupported_count:
-            st.caption(
-                f"Матчей без истории одной или обеих команд: {unsupported_count}. "
-                "Общий prior не считается прогнозом: вероятности П1/X/П2 скрыты, фаворит не выбирается."
-            )
-        scan_days = max(1, int(scan_meta.get("horizon_days") or 1))
-        scan_from = str(scan_meta.get("date_from") or "—")
-        scan_to = str(scan_meta.get("date_to_inclusive") or scan_from)
-        analysed = int(scan_meta.get("analysed_matches") or 0)
-        st.caption(
-            f"Последний скан: {scan_days} календарн. дн. ({scan_from} — {scan_to}) · "
-            f"матчей в окне {analysed}. Это число относится к последнему запуску, "
-            "а не к текущему значению ползунка сканера."
-        )
-
-    probability_warning = _probability_health_note(cards)
-    if probability_warning:
-        st.warning(probability_warning)
-
-    market_cards_in_view = [
-        item.get("card") for item in ranked_events
-        if isinstance(item.get("card"), dict)
-    ]
-    all_market_candidates = dashboard_all_market_candidates(market_cards_in_view)
-    st.markdown(
-        "<section class='neo-panel neo-matches-panel'>"
-        "<div class='neo-panel-heading'><div>"
-        "<span class='neo-panel-kicker'>ALL MARKETS · VERIFIED VALUE</span>"
-        "<h3>Проверенные Value-сигналы на всех рынках</h3>"
-        "<div class='neo-ranking-disclaimer'>"
-        f"Показываем только исходы с вероятностью от {STRONG_FORECAST_MIN_PROB:.0%}, "
-        f"коэффициентом от {MIN_BET_ODDS:.2f} и пройденным независимым benchmark конкретного рынка. "
-        "Требуются полная линия одного букмекера, положительные EV и Edge и положительный Kelly. "
-        "Непроверенные модельные кандидаты, включая угловые и карточки без собственного benchmark, "
-        "не попадают в список рекомендаций."
-        "</div></div>"
-        f"<span class='neo-count-pill'>{len(all_market_candidates)} проверенных сигналов</span></div>"
-        + all_market_candidates_html(all_market_candidates)
-        + "</section>",
+        + "</div>",
         unsafe_allow_html=True,
     )
-
-    # Keep the independent Grok analysis visible near the top of Dashboard,
-    # rather than hiding it after dozens of forecast-feed rows.
-    st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
-    st.markdown(
-        _ai_comparison_html(snapshot.get("ai_comparison") or {}),
-        unsafe_allow_html=True,
-    )
-
-    best_match_items = [
-        item for item in ranked_events
-        if item.get("strict_eligible")
-        and item.get("history_ready")
-        and item.get("probability_ready")
-    ][:10]
-    st.markdown(
-        "<section class='neo-panel neo-matches-panel'>"
-        "<div class='neo-panel-heading'><div>"
-        "<span class='neo-panel-kicker'>BEST MATCHES · MODEL RANKING</span>"
-        "<h3>Лучшие матчи · рейтинг качества прогноза</h3>"
-        "<div class='neo-ranking-disclaimer'>"
-        f"Показаны до 10 лучших матчей выбранного периода: история хозяев дома и гостей "
-        f"в гостях ≥{MIN_FAVORITE_HISTORY}, модельный фаворит ≥52%, "
-        "сортировка по качеству данных, вероятности и отрыву от второго исхода. "
-        "Это рейтинг прогнозов, а не список ставок. Калибровка указана отдельно."
-        "</div></div>"
-        f"<span class='neo-count-pill'>{len(best_match_items)} матчей</span></div>"
-        + best_matches_html(best_match_items)
-        + "</section>",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        "<section class='neo-panel neo-status-legend'>"
-        "<div class='neo-panel-heading'><div>"
-        "<span class='neo-panel-kicker'>FORECAST STATUS · GATE LEGEND</span>"
-        "<h3>Что означает статус прогноза</h3>"
-        "</div></div></section>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(render_status_legend())
-    strong_events = dashboard_strong_events(cards)
-    if not strong_events:
-        diagnostic_cards = [
-            item.get("card") for item in ranked_events
-            if isinstance(item.get("card"), dict)
-        ]
-        nearest = [
-            item
-            for family in ("winner", "goals", "btts", "corners", "cards")
-            for item in near_misses(diagnostic_cards, family, limit=3)
-        ]
-        nearest.sort(key=lambda item: (
-            len(item.get("failed_gates") or []),
-            -float(item.get("probability") or 0.0),
-        ))
-        unique_nearest = []
-        seen = set()
-        for item in nearest:
-            card = item.get("card") or {}
-            identity = (
-                str(card.get("fixture_id") or card.get("date_iso") or ""),
-                str(card.get("home_team") or ""),
-                str(card.get("away_team") or ""),
-                str(item.get("family") or ""),
-            )
-            if identity in seen:
-                continue
-            seen.add(identity)
-            unique_nearest.append(item)
-            if len(unique_nearest) >= 3:
-                break
+    for _label, _count, status in counts:
         st.markdown(
-            "<section class='neo-panel neo-near-miss-panel'>"
-            "<div class='neo-panel-heading'><div>"
-            "<span class='neo-panel-kicker'>NEAR MISSES · GATE DIAGNOSTICS</span>"
-            "<h3>Ближайшие кандидаты и недостающие проверки</h3>"
-            "<div class='neo-ranking-disclaimer'>Фильтры не ослаблены: панель показывает, какого именно гейта не хватает до допуска.</div>"
-            "</div></div>"
-            + render_near_misses_html(unique_nearest)
-            + "</section>",
-            unsafe_allow_html=True,
-        )
-    st.markdown(
-        "<section class='neo-panel neo-matches-panel'>"
-        "<div class='neo-panel-heading'><div>"
-        "<span class='neo-panel-kicker'>STRONG EVENTS · VERIFIED VALUE</span>"
-        "<h3>Сильные события · все проверенные рынки</h3>"
-        "<div class='neo-ranking-disclaimer'>"
-        f"Только реальные цены от {MIN_BET_ODDS:.2f}, вероятность от "
-        f"{STRONG_FORECAST_MIN_PROB:.0%}, EV и Edge от 5%, "
-        f"домашняя/выездная история обеих команд не менее {MIN_FAVORITE_HISTORY}. "
-        "Каждый сигнал должен пройти независимую историческую проверку рынка и контекстный допуск."
-        "</div></div>"
-        f"<span class='neo-count-pill'>{len(strong_events)} событий</span></div>"
-        + strong_events_html(strong_events)
-        + "</section>",
-        unsafe_allow_html=True,
-    )
-
-    left, right = st.columns([1.68, 1.0], gap="medium")
-    with left:
-        table_rows = "".join(_match_table_row(card) for card in selected_event_cards)
-        if not table_rows:
-            empty_summary = (
-                f"Нет допущенных ставок. При этом в расписании есть {available_event_count} матчей — "
-                "их прогнозы показаны в отдельной ленте ниже. "
-                f"Без домашней/выездной истории ≥{MIN_FAVORITE_HISTORY} — {history_blocked_count}; "
-                f"без фаворита ≥52% — {probability_blocked_count}; "
-                f"без подтверждённого Strong/Value-контекста — {context_blocked_count}; "
-                f"строгих кандидатов по истории и вероятности — {strict_count}; "
-                f"отклонено Value/EV/Edge/Kelly — {value_blocked_count}. "
-                "Причины могут пересекаться. Остальные прогнозы остаются вне списка ставок."
-            )
-            table_rows = (
-                "<tr><td colspan='10' class='neo-empty-cell'>"
-                + esc(empty_summary)
-                + "</td></tr>"
-            )
-        st.markdown(
-            "<section class='neo-panel neo-matches-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>BET APPROVAL · ТОЛЬКО ДОПУЩЕННЫЕ</span>"
-            f"<h3>{esc(table_title)}</h3></div>"
-            f"<span class='neo-count-pill'>{len(selected_event_cards)} ставок</span></div>"
-            "<div class='neo-ranking-disclaimer'>"
-            "<b>Ниже — отдельный список допущенных ставок 1X2.</b> "
-            "Сильные прогнозы на голы, обе забьют, угловые и карточки вынесены в общую таблицу "
-            "всех рынков выше. В неё не попадают исходы с коэффициентом ниже 1.70; "
-            "непроверенные рынки не помечаются как готовые ставки."
-            "</div>"
-            "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
-            "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
-            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Прогноз и статус ставки</th>"
-            "</tr></thead><tbody>"
-            + table_rows
-            + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показано {len(selected_event_cards)} из {len(approved_event_cards)} допущенных ставок · всего матчей в периоде: {available_event_count} · строгих кандидатов (история ≥{MIN_FAVORITE_HISTORY} + фаворит): {strict_count} · без истории/вероятности: {provisional_count} · не подтверждён Strong/Value-контекст: {context_blocked_count} · отклонено Value/EV/Edge/Kelly: {value_blocked_count}. Причины пересекаются. Отображаем максимум 5 лучших допущенных матчей.<br>{esc(scan_diagnostics_text)}</div>"
-            "</section>",
-            unsafe_allow_html=True,
-        )
-        forecast_rows = "".join(
-            _match_table_row(card, preview_only=True)
-            for card in forecast_event_cards
-        )
-        st.markdown(
-            "<section class='neo-panel neo-forecast-panel'>"
-            "<div class='neo-panel-heading'><div>"
-            "<span class='neo-panel-kicker'>FORECAST FEED · НЕ СПИСОК СТАВОК</span>"
-            "<h3>Ближайшие матчи · прогнозы модели</h3></div>"
-            f"<span class='neo-count-pill'>{len(forecast_event_cards)} из {len(forecast_candidates)} матчей</span></div>"
-            "<div class='neo-ranking-disclaimer'>"
-            "<b>Здесь видны предстоящие матчи, даже если они не прошли допуск.</b> "
-            "Вероятности П1 / X / П2 — прогноз модели, не рекомендация поставить. "
-            "Каждая строка содержит причину отказа; эти матчи не попадают в автоматический портфель."
-            "</div>"
-            "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
-            "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
-            "<th>Коэф. 1</th><th>Коэф. X</th><th>Коэф. 2</th><th>Прогноз и причина недопуска</th>"
-            "</tr></thead><tbody>"
-            + (
-                forecast_rows
-                if forecast_rows else
-                "<tr><td colspan='10' class='neo-empty-cell'>"
-                "Нет дополнительных матчей для прогноза в выбранном периоде."
-                "</td></tr>"
-            )
-            + "</tbody></table></div>"
-            f"<div class='neo-table-footer'>Показаны ближайшие по времени {len(forecast_event_cards)} непринятых прогнозов из {len(forecast_candidates)}. "
-            "Статус «НЕ ДОПУЩЕН» означает, что ставку делать нельзя. "
-            f"Первые {DASHBOARD_FORECAST_VISIBLE_LIMIT} показаны сразу; "
-            f"остальные {len(remaining_forecast_cards)} доступны ниже.</div>"
-            "</section>",
-            unsafe_allow_html=True,
-        )
-        if remaining_forecast_cards:
-            with st.expander(
-                f"Показать остальные {len(remaining_forecast_cards)} прогнозов всего горизонта"
-            ):
-                remaining_rows = "".join(
-                    _match_table_row(card, preview_only=True)
-                    for card in remaining_forecast_cards
-                )
-                st.markdown(
-                    "<div class='neo-table-scroll'><table class='neo-match-table'>"
-                    "<thead><tr><th>Время</th><th>Лига</th><th>Матч</th>"
-                    "<th>П1</th><th>X</th><th>П2</th><th>Коэф. 1</th>"
-                    "<th>Коэф. X</th><th>Коэф. 2</th>"
-                    "<th>Прогноз и причина недопуска</th></tr></thead><tbody>"
-                    + remaining_rows
-                    + "</tbody></table></div>",
-                    unsafe_allow_html=True,
-                )
-
-    with right:
-        reliability = snapshot.get("reliability") or {"rows": [], "n": 0}
-        reliability_n = int(reliability.get("n", 0) or 0)
-        chart = (
-            _reliability_svg(reliability)
-            if reliability_n >= 30 else
-            "<div class='neo-chart-empty'><strong>Недостаточно истории для графика</strong>"
-            f"<span>Закрытых прогнозов основной модели: {reliability_n}. "
-            "Калибровка появится после накопления более широкой выборки.</span></div>"
-        )
-        st.markdown(
-            "<section class='neo-panel neo-reliability-panel'>"
-            "<div class='neo-panel-heading'><div><span class='neo-panel-kicker'>MODEL QUALITY</span>"
-            "<h3>Reliability · калибровка</h3></div>"
-            f"<span class='neo-count-pill'>{reliability_n:,} FT</span></div>"
-            + chart
-            + "<div class='neo-panel-footnote'>Вероятность модели и наблюдаемая частота объединены по классам П1 / X / П2; пунктир — идеальная калибровка.</div>"
-            "</section>",
+            recommendation_group_html(status, groups[status]),
             unsafe_allow_html=True,
         )
 
-    bottom_left, bottom_mid, bottom_right = st.columns(3, gap="medium")
-    with bottom_left:
-        st.markdown(_quality_panel(cards), unsafe_allow_html=True)
-    with bottom_mid:
-        st.markdown(_backup_panel(), unsafe_allow_html=True)
-    with bottom_right:
-        st.markdown(
-            _history_panel(snapshot, roi or 0.0, profit, turnover),
-            unsafe_allow_html=True,
-        )
-
-    if not snapshot.get("ok"):
-        st.caption(
-            "Журнал прогнозов временно недоступен: "
-            + esc(snapshot.get("error") or "ошибка SQLite")
-        )
-    st.markdown(
-        "<div class='neo-dashboard-footer'>"
-        f"<span>SPORT-AI-PRO13</span> · {esc(ai_name)} анализатор · "
-        "Показатели качества рассчитаны только по подтверждённым FT основной модели. "
-        "ROI относится только к виртуальному портфелю и не является метрикой точности прогнозов."
-        "</div>",
-        unsafe_allow_html=True,
+    st.caption(
+        f"Показано {sum(len(value) for value in groups.values())} матчей. "
+        "Каждый матч отображается один раз — в самой высокой пройденной категории. "
+        "Остальные матчи остаются в Сканере и не засоряют Dashboard."
     )

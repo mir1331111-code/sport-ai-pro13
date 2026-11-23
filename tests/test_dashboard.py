@@ -9,6 +9,7 @@ from ui.tabs.dashboard import (
     _forecast_rejection_reason, _grok_panel, _https_image_url,
     _ai_comparison_html, _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
+    dashboard_recommendation_groups, recommendation_group_html,
     dashboard_strong_events, strong_events_html,
     all_market_candidates_html, dashboard_all_market_candidates,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
@@ -20,6 +21,113 @@ class DashboardHelperTests(unittest.TestCase):
     def test_dashboard_defaults_to_the_full_scan_horizon(self):
         self.assertEqual(DASHBOARD_DEFAULT_PERIOD, DASHBOARD_PERIOD_OPTIONS[-1])
         self.assertEqual(DASHBOARD_FORECAST_VISIBLE_LIMIT, 50)
+
+    def test_dashboard_shows_only_the_three_requested_statuses(self):
+        from data.fixture_time import app_timezone
+
+        now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
+
+        def card(name, probability, *, approved=False, goals=False):
+            value = {
+                "fixture_id": f"fixture:{name}",
+                "date_iso": "2026-11-24",
+                "time": "18:00",
+                "league": "Premier League",
+                "home_team": name,
+                "away_team": "Away FC",
+                "p1": probability,
+                "px": (1.0 - probability) * 0.55,
+                "p2": (1.0 - probability) * 0.45,
+                "model_support_status": "team_supported",
+                "context_quality": {"strong_value_eligible": True},
+                "independent_features": {
+                    "home_home_sample": 14,
+                    "away_away_sample": 12,
+                },
+                "winner_market_validation": bool(approved),
+                "winner_market_validation_report": {"n": 520 if approved else 0},
+                "odds_source": "sstats",
+                "market_odds": {"П1": 1.85, "X": 3.5, "П2": 4.5},
+                "market_odds_source_by_pick": {
+                    "П1": "sstats", "X": "sstats", "П2": "sstats",
+                },
+                "bookmaker_by_pick": {
+                    "П1": "Book A", "X": "Book A", "П2": "Book A",
+                },
+            }
+            if approved:
+                value["best_by_market"] = {
+                    "winner": {
+                        "best": ("1X2", "П1", 1.85, 0.12, probability, 10.0),
+                        "verdict": {
+                            "real_odds": True, "value_passed": True, "is_bet": True,
+                            "prob": probability, "ev": 0.12, "edge": 0.08,
+                            "stake": 10.0,
+                        },
+                    },
+                }
+            if goals:
+                value.update({"lam_h": 1.0, "lam_a": 1.0})
+            return value
+
+        approved = card("Approved FC", .68, approved=True, goals=True)
+        strong = card("Strong FC", .70)
+        near = card("Near FC", .61)
+        background = card("Background FC", .50)
+        groups = dashboard_recommendation_groups(
+            [approved, strong, near, background],
+            now=now,
+            period_end=now + timedelta(days=3),
+        )
+
+        self.assertEqual([item["card"]["home_team"] for item in groups["approved"]],
+                         ["Approved FC"])
+        self.assertEqual([item["card"]["home_team"] for item in groups["forecast"]],
+                         ["Strong FC"])
+        self.assertEqual([item["card"]["home_team"] for item in groups["near_strong"]],
+                         ["Near FC"])
+        all_visible = [
+            item["card"]["home_team"]
+            for group in groups.values() for item in group
+        ]
+        self.assertNotIn("Background FC", all_visible)
+        self.assertEqual(len(all_visible), len(set(all_visible)))
+
+    def test_dashboard_recommendation_filter_omits_started_and_out_of_period_matches(self):
+        from data.fixture_time import app_timezone
+
+        now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
+        future = {
+            "fixture_id": "future",
+            "date_iso": "2026-11-23",
+            "time": "18:00",
+            "league": "Premier League",
+            "home_team": "Future FC",
+            "away_team": "Away FC",
+            "p1": .70, "px": .18, "p2": .12,
+            "independent_features": {
+                "home_home_sample": 12, "away_away_sample": 12,
+            },
+        }
+        started = {**future, "fixture_id": "started", "time": "09:00"}
+        later = {**future, "fixture_id": "later", "date_iso": "2026-11-27"}
+        groups = dashboard_recommendation_groups(
+            [future, started, later],
+            now=now,
+            period_end=now + timedelta(days=1),
+        )
+        visible = [
+            item["card"]["fixture_id"]
+            for group in groups.values() for item in group
+        ]
+        self.assertEqual(visible, ["future"])
+
+    def test_recommendation_group_html_displays_only_requested_status_heading(self):
+        rendered = recommendation_group_html("approved", [])
+        self.assertIn("Одобрено к ставке", rendered)
+        self.assertIn("Сейчас нет матчей", rendered)
+        self.assertNotIn("Фоновый прогноз", rendered)
+        self.assertEqual(recommendation_group_html("background", []), "")
 
     def test_scan_defaults_to_three_days(self):
         self.assertEqual(DEFAULT_SCAN_HORIZON_DAYS, 3)
