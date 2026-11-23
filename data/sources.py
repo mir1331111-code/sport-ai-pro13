@@ -484,9 +484,10 @@ def footballapi_xg_history(api_key: str, logs=None, *, max_detail_calls: int = 8
 
 
 # ============ FOOTBALL-DATA.CO.UK ============
-def load_seasonal(div: str, season: str) -> list:
+def load_seasonal(div: str, season: str, *, force_refresh: bool = False) -> list:
+    """Load one historical CSV; normal callers reuse the durable source cache."""
     ck = f"fd_{div}_{season}"
-    cached = cache_get(ck, CACHE_TTL["seasonal"])
+    cached = None if force_refresh else cache_get(ck, CACHE_TTL["seasonal"])
     if cached is not None:
         return cached if isinstance(cached, list) else []
     url = f"https://www.football-data.co.uk/mmz4281/{season}/{div}.csv"
