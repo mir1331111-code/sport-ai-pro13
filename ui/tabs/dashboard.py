@@ -1489,6 +1489,8 @@ def recommendation_group_html(status, items):
             "approved": "Сейчас нет матчей, прошедших все проверки.",
             "forecast": "Сейчас нет сильных прогнозов, заблокированных Value-гейтами.",
             "near_strong": "Сейчас нет прогнозов рядом с сильным порогом.",
+            "provisional": "Нет предварительных прогнозов с неполной историей.",
+            "background": "Нет фоновых прогнозов ниже почти сильного порога.",
         }[status]
         body = f"<div class='neo-empty-cell'>{esc(empty)}</div>"
     else:
@@ -1603,6 +1605,58 @@ def _dashboard_latest_ai_status(report):
     return ""
 
 
+def dashboard_schedule_diagnostics(
+    cards, *, now=None, period_end=None, selected_league=None,
+):
+    """Explain which saved fixtures are visible to the selected dashboard window."""
+    now = now or datetime.now(app_timezone())
+    result = {
+        "total": 0,
+        "in_period": 0,
+        "missing_kickoff": 0,
+        "already_started": 0,
+        "outside_period": 0,
+        "valid_1x2": 0,
+    }
+    seen = set()
+    for card in cards if isinstance(cards, list) else []:
+        if not isinstance(card, dict):
+            continue
+        league = str(card.get("league") or card.get("div") or "").strip()
+        if selected_league and selected_league != "Все турниры" and league != selected_league:
+            continue
+        identity = str(card.get("fixture_id") or "").strip()
+        if not identity:
+            identity = "|".join((
+                str(card.get("date_iso") or card.get("date") or "")[:10],
+                str(card.get("home_team") or card.get("home") or "").casefold(),
+                str(card.get("away_team") or card.get("away") or "").casefold(),
+            ))
+        identity = identity or match_name(card).casefold()
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result["total"] += 1
+
+        probabilities = [num(card.get(key)) for key in ("p1", "px", "p2")]
+        if (
+            all(value is not None and 0 <= value <= 1 for value in probabilities)
+            and 0.90 <= sum(probabilities) <= 1.10
+        ):
+            result["valid_1x2"] += 1
+
+        kickoff = fixture_kickoff_local(card)
+        if kickoff is None:
+            result["missing_kickoff"] += 1
+        elif kickoff < now:
+            result["already_started"] += 1
+        elif period_end is not None and kickoff > period_end:
+            result["outside_period"] += 1
+        else:
+            result["in_period"] += 1
+    return result
+
+
 def render():
     data = st.session_state.get("data") or {}
     cards = [
@@ -1706,11 +1760,27 @@ def render():
         and bool(card.get("deep_analysis"))
         for card in cards
     )
+    one_x_two_count = sum(
+        dashboard_schedule_diagnostics([card])["valid_1x2"] > 0
+        for card in cards
+    )
+    fallback_count = len(groups["provisional"]) + len(groups["background"])
+    visible_count = sum(len(value) for value in groups.values())
     st.caption(
-        f"Последний набор: {len(cards)} матчей · "
+        f"Последний набор: {len(cards)} матчей · корректные прогнозы 1X2: {one_x_two_count} · "
         f"с реальными коэффициентами 1X2: {priced_count} · "
         f"с сохранённым AI-разбором: {ai_count} · "
-        f"в трёх категориях: {sum(len(value) for value in groups.values())}."
+        f"верхние категории: {sum(len(groups[key]) for key in ('approved', 'forecast', 'near_strong'))} · "
+        f"предварительные/фоновые: {fallback_count}."
+    )
+    schedule = dashboard_schedule_diagnostics(
+        cards, now=now, period_end=period_end, selected_league=selected_league,
+    )
+    st.caption(
+        f"Окно расписания: {schedule['in_period']} из {schedule['total']} матчей · "
+        f"без времени начала {schedule['missing_kickoff']} · "
+        f"уже начались {schedule['already_started']} · "
+        f"за выбранным периодом {schedule['outside_period']}."
     )
     if ai_count == 0:
         ai_status = _dashboard_latest_ai_status(data.get("report") or [])
@@ -1727,8 +1797,27 @@ def render():
             unsafe_allow_html=True,
         )
 
+    if fallback_count:
+        with st.expander(
+            f"📋 Предварительные и фоновые прогнозы · {fallback_count} · не рекомендации",
+            expanded=not bool(sum(len(groups[key]) for key in ("approved", "forecast", "near_strong"))),
+        ):
+            for status in ("provisional", "background"):
+                items = groups[status]
+                shown = items[:DASHBOARD_FORECAST_VISIBLE_LIMIT]
+                st.markdown(
+                    recommendation_group_html(status, shown),
+                    unsafe_allow_html=True,
+                )
+                hidden = max(0, len(items) - len(shown))
+                if hidden:
+                    st.caption(
+                        f"В разделе «{_DASHBOARD_STATUS_LABELS[status]}» "
+                        f"ещё {hidden} матчей остаются в Сканере."
+                    )
+
     st.caption(
-        f"Показано {sum(len(value) for value in groups.values())} матчей. "
+        f"Показано на Dashboard: {visible_count} матчей из {schedule['total']} сохранённых. "
         "Каждый матч отображается один раз — в самой высокой пройденной категории. "
-        "Остальные матчи остаются в Сканере и не засоряют Dashboard."
+        "Предварительные и фоновые прогнозы не являются рекомендациями к ставке."
     )
