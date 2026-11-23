@@ -46,7 +46,7 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertNotIn("1.91", rendered)
         self.assertIn("ПРОВЕРЕННЫЙ VALUE", rendered)
         self.assertIn("1.85", rendered)
-        self.assertIn("Проверенных сигналов: 1", rendered)
+        self.assertIn("Проверенных Value-сигналов: 1", rendered)
 
     def test_all_market_dashboard_shortlist_has_explicit_empty_state(self):
         rendered = all_market_candidates_html([])
