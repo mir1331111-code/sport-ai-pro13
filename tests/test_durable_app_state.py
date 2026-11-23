@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from storage import remote_backup, sqlite_store, usage
+from storage import remote_backup, sqlite_store, usage, user_datasets
 
 
 class DurableAppStateTests(unittest.TestCase):
@@ -18,10 +18,13 @@ class DurableAppStateTests(unittest.TestCase):
         self.old_wal_path = sqlite_store._WAL_INITIALIZED_PATH
         self.db_patch = patch.object(sqlite_store, "DB_FILE", self.db_path)
         self.local_patch = patch.object(usage, "LOCAL_FILE", str(self.local_path))
+        self.dataset_patch = patch.object(user_datasets, "DB_FILE", self.db_path)
         self.db_patch.start()
         self.local_patch.start()
+        self.dataset_patch.start()
         self.addCleanup(self.db_patch.stop)
         self.addCleanup(self.local_patch.stop)
+        self.addCleanup(self.dataset_patch.stop)
         self.addCleanup(self._restore_sqlite_globals)
         self.assertTrue(sqlite_store.db_init(), sqlite_store.SQLITE_BOOT_ERROR)
         sqlite_store.invalidate_caches()
@@ -85,14 +88,25 @@ class DurableAppStateTests(unittest.TestCase):
             "meta": {"initial_bank": 10000.0},
         }
         usage.set_local_data(expected)
+        history_rows = [{
+            "Date": "2026-11-21", "Div": "S_ABC123",
+            "HomeTeam": "Home FC", "AwayTeam": "Away FC",
+            "FTHG": 2, "FTAG": 1,
+        }]
+        user_datasets.save_user_dataset("custom_historical_match_rows", history_rows)
         payload = remote_backup.create_sqlite_backup_bytes(self.db_path)
 
         restored_path = str(Path(self.temp.name) / "restored.sqlite")
         remote_backup.restore_sqlite_backup_bytes(payload, restored_path)
-        with patch.object(sqlite_store, "DB_FILE", restored_path):
+        with (
+            patch.object(sqlite_store, "DB_FILE", restored_path),
+            patch.object(user_datasets, "DB_FILE", restored_path),
+        ):
             self.local_path.unlink()
             recovered = usage.get_local_data()
+            restored_history = user_datasets.load_user_dataset("custom_historical_match_rows")
         self.assertEqual(recovered, expected)
+        self.assertEqual(restored_history, history_rows)
 
     def test_legacy_sqlite_bets_are_recovered_when_app_state_was_not_in_old_backup(self):
         sqlite_store.insert_bets_batch([{
