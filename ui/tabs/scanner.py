@@ -3649,6 +3649,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                           "model_only": 0, "estimated": 0, "real": 0,
                           "prior_only": 0, "league_only": 0,
                           "partial_history": 0, "team_supported": 0}
+        support_by_division = {}
+        support_examples = []
         logs.append(
             "🎯 Источник букмекерских коэффициентов: только SStats Games/list и Odds/{gameId}; "
             "коэффициенты других провайдеров и импортированные файлы в скане не используются."
@@ -3743,6 +3745,28 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 and int(P.get("home_venue_history_matches") or 0) >= MIN_FAVORITE_HISTORY
                 and int(P.get("away_venue_history_matches") or 0) >= MIN_FAVORITE_HISTORY
             )
+            division_support = support_by_division.setdefault(
+                str(lg), {"league": str(r.get("League") or lg), "fixtures": 0,
+                          "prior_only": 0, "league_only": 0,
+                          "partial_history": 0, "team_supported": 0},
+            )
+            division_support["fixtures"] += 1
+            division_support[model_support_status if model_support_status in {
+                "prior_only", "league_only", "partial_history", "team_supported"
+            } else "partial_history"] += 1
+            if not model_bet_history_ready and len(support_examples) < 20:
+                support_examples.append({
+                    "division": str(lg),
+                    "league": str(r.get("League") or lg),
+                    "home": h_en,
+                    "away": a_en,
+                    "status": model_support_status,
+                    "league_matches": int(P.get("league_history_matches") or 0),
+                    "home_matches": int(P.get("home_team_history_matches") or 0),
+                    "away_matches": int(P.get("away_team_history_matches") or 0),
+                    "home_venue": int(P.get("home_venue_history_matches") or 0),
+                    "away_venue": int(P.get("away_venue_history_matches") or 0),
+                })
             learning_preview = None
             if scan_learning_service is not None and model_support_status == "team_supported":
                 try:
@@ -4319,6 +4343,29 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "context": {},
             })
 
+        if support_by_division:
+            division_text = " · ".join(
+                f"{item['league']} [{code}]: "
+                f"team={item['team_supported']}/{item['fixtures']}, "
+                f"league-only={item['league_only']}, prior={item['prior_only']}"
+                for code, item in sorted(support_by_division.items())
+            )
+            logs.append("📚 Покрытие историей по соревнованиям: " + division_text)
+        if support_examples:
+            logs.append(
+                "🔎 Матчи без допуска модели к Value (нужны реальные результаты команд, "
+                "а не общий prior):"
+            )
+            for item in support_examples[:12]:
+                logs.append(
+                    f"  {item['league']} [{item['division']}] · "
+                    f"{item['home']} ({item['home_matches']} матчей, "
+                    f"{item['home_venue']} дома) — "
+                    f"{item['away']} ({item['away_matches']} матчей, "
+                    f"{item['away_venue']} в гостях) · "
+                    f"лига={item['league_matches']} · {item['status']}"
+                )
+
         badge_pair_count = sum(
             1 for card in cards
             if card.get("home_badge") and card.get("away_badge")
@@ -4872,6 +4919,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "partial_history": int(funnel_counts.get("partial_history", 0)),
                 "team_supported": int(funnel_counts.get("team_supported", 0)),
             },
+            "model_support_by_division": support_by_division,
+            "model_support_examples": support_examples,
             "date_filter_counts": dict(date_filter_counts),
             "source_counts": {
                 str(name): int(count) for name, count in source_counts.items()
