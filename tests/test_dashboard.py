@@ -8,7 +8,7 @@ from ui.tabs.dashboard import (
     DASHBOARD_FORECAST_VISIBLE_LIMIT,
     _forecast_rejection_reason, _grok_panel, _https_image_url,
     _ai_comparison_html, _match_table_row, _probability_health_note,
-    _dashboard_real_1x2_quotes,
+    _dashboard_real_1x2_quotes, _dashboard_latest_ai_status,
     _quality_panel, _reliability_svg, _sparkline_svg,
     dashboard_recommendation_groups, recommendation_group_html,
     dashboard_strong_events, strong_events_html,
@@ -197,6 +197,19 @@ class DashboardHelperTests(unittest.TestCase):
             "Назначение пока не опубликовано",
         ):
             self.assertIn(value, rendered)
+
+    def test_dashboard_latest_ai_status_extracts_most_recent_provider_reason(self):
+        report = [
+            "🏆 TOP MATCHES · AI STATUS: completed · Groq · 3/7 analyses",
+            "intermediate log",
+            "🏆 TOP MATCHES · AI STATUS: rate_limited · Groq · HTTP 429",
+        ]
+        self.assertEqual(
+            _dashboard_latest_ai_status(report),
+            "rate_limited · Groq · HTTP 429",
+        )
+        self.assertEqual(_dashboard_latest_ai_status([]), "")
+        self.assertEqual(_dashboard_latest_ai_status(None), "")
 
     def test_dashboard_does_not_show_unknown_model_support_as_near_strong(self):
         from data.fixture_time import app_timezone
