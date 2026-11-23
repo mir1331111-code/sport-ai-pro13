@@ -323,6 +323,55 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("42%", note)
         self.assertEqual(_probability_health_note(cards[:4]), "")
 
+    def test_ai_comparison_panel_has_explicit_empty_state(self):
+        rendered = _ai_comparison_html({
+            "ai_forecasts": 12, "main_forecasts": 20, "paired_n": 0, "models": [],
+        })
+        self.assertIn("Пока нет парных результатов", rendered)
+        self.assertIn("подтверждённым FT", rendered)
+
+    def test_ai_comparison_panel_reports_paired_metrics_without_promoting_ai(self):
+        rendered = _ai_comparison_html({
+            "ai_forecasts": 12,
+            "main_forecasts": 20,
+            "paired_n": 4,
+            "models": [{
+                "model_version": "independent-llm-groq-gpt-oss-120b",
+                "n": 4,
+                "main": {"brier": 0.42},
+                "ai": {"brier": 0.39},
+                "brier_delta": -0.03,
+                "log_loss_delta": -0.08,
+                "accuracy_delta": 0.25,
+            }],
+        })
+        self.assertIn("independent-llm-groq-gpt-oss-120b", rendered)
+        self.assertIn("4 парных матчей", rendered)
+        self.assertIn("-0.0300", rendered)
+        self.assertIn("не автоматическое смешивание вероятностей", rendered)
+
+    def test_provider_panel_shows_ai_to_validated_value_crosscheck(self):
+        panel = _grok_panel([{
+            "home_team": "Home FC",
+            "away_team": "Away FC",
+            "p1": 0.55, "px": 0.25, "p2": 0.20,
+            "deep_analysis_provider": "Groq GPT-OSS 120B",
+            "deep_analysis_model": "openai/gpt-oss-120b",
+            "deep_analysis": {
+                "independent_pick": "X",
+                "probabilities": {"П1": 30, "X": 45, "П2": 25},
+                "match_assessment": "Независимый анализ.",
+            },
+            "ai_crosscheck": {
+                "validated_value_pick": "X",
+                "validated_value_odds": 3.4,
+                "ai_agrees_with_value_pick": True,
+            },
+        }], {"llm_provider": "Groq GPT-OSS 120B"})
+        self.assertIn("Проверенный Value-селектор: X @ 3.40", panel)
+        self.assertIn("AI совпадает с Value-выбором", panel)
+        self.assertIn("не меняет вероятность, EV, Edge или размер ставки", panel)
+
     def test_provider_panel_identifies_groq_120b_without_calling_it_grok(self):
         panel = _grok_panel([], {"llm_provider": "Groq GPT-OSS 120B"})
         self.assertIn("Независимый AI-анализ", panel)
