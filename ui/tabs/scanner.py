@@ -3171,10 +3171,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "🔒 SStats не настроен: контекст недоступен; Strong/Value остаются заблокированы."
             )
 
+        scan_divisions = list(dict.fromkeys(
+            str(item.get("Div") or "").strip()
+            for item in rows
+            if isinstance(item, dict) and str(item.get("Div") or "").strip()
+        ))
         model_cache_ready = has_cached_engine(
             matrix_n,
             footballapi_key=footballapi_key,
             custom_historical_rows=custom_historical_rows,
+            extra_divisions=scan_divisions,
         )
         refresh_history = bool(explicit_history_refresh or not model_cache_ready)
         if refresh_history:
@@ -3231,6 +3237,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             custom_historical_rows=custom_historical_rows,
             refresh_history=refresh_history,
             force_source_refresh=explicit_history_refresh,
+            extra_divisions=scan_divisions,
         )
 
         update_loader("🧠 Анализ матчей...", 0.80, logs)
