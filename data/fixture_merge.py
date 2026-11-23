@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from data.team_names import normalize_team
 
 
@@ -33,6 +33,59 @@ def _fixture_team_pair(row: dict) -> tuple[str, str]:
         _team_key(row.get("HomeTeam") or row.get("home_team")),
         _team_key(row.get("AwayTeam") or row.get("away_team")),
     )
+
+
+def _fixture_start(row: dict) -> datetime | None:
+    """Return a comparable kickoff only when the provider supplies a time."""
+    for field in ("kickoff_utc", "KickoffUTC", "kickoff_at", "timestamp"):
+        raw = str(row.get(field) or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+            return parsed.astimezone(timezone.utc)
+        return parsed
+
+    raw_date = str(row.get("Date") or row.get("date") or "").strip()
+    raw_time = str(
+        row.get("Time") or row.get("time") or row.get("match_time") or ""
+    ).strip()
+    try:
+        parsed_date = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+        if parsed_date.hour or parsed_date.minute or parsed_date.second:
+            return parsed_date
+        if parsed_date.tzinfo is not None:
+            parsed_date = parsed_date.replace(tzinfo=None)
+    except ValueError:
+        try:
+            parsed_date = datetime.combine(date.fromisoformat(raw_date[:10]), datetime.min.time())
+        except ValueError:
+            return None
+    if not raw_time:
+        return None
+    try:
+        clock = datetime.strptime(raw_time[:5], "%H:%M").time()
+    except ValueError:
+        return None
+    return datetime.combine(parsed_date.date(), clock)
+
+
+def _same_cross_date_kickoff(left: dict, right: dict) -> bool:
+    """Only collapse a one-day calendar drift when actual kickoff times agree."""
+    left_start, right_start = _fixture_start(left), _fixture_start(right)
+    if left_start is None or right_start is None:
+        return False
+    left_aware = left_start.tzinfo is not None and left_start.utcoffset() is not None
+    right_aware = right_start.tzinfo is not None and right_start.utcoffset() is not None
+    if left_aware != right_aware:
+        return False
+    if left_aware:
+        left_start = left_start.astimezone(timezone.utc)
+        right_start = right_start.astimezone(timezone.utc)
+    return abs((left_start - right_start).total_seconds()) <= 6 * 60 * 60
 
 
 _FIXTURE_VISUAL_FIELDS = (
@@ -186,7 +239,8 @@ def merge_fixture_sources(*sources) -> list:
                     if (
                         _fixture_team_pair(existing_row) == _fixture_team_pair(row)
                         and existing_day is not None
-                        and abs((existing_day - incoming_day).days) <= 1
+                        and 0 < abs((existing_day - incoming_day).days) <= 1
+                        and _same_cross_date_kickoff(existing_row, row)
                     ):
                         nearby.append(existing_key)
                 if len(nearby) == 1:

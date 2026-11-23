@@ -34,7 +34,7 @@ class FixtureMergeTests(unittest.TestCase):
             "market_odds": {"П1": 1.8}, "odds_source": "sstats",
         }]
         fallback = [{
-            "Date": "2026-11-23",
+            "Date": "2026-11-23", "Time": "23:30",
             "HomeTeam": "Paris Saint-Germain", "AwayTeam": "Marseille",
             "Div": "F1", "fixture_id": "espn:77", "source": "espn",
             "home_badge": "https://example.test/psg.png",
@@ -245,6 +245,14 @@ class FixtureMergeTests(unittest.TestCase):
         rows = merge_fixture_sources(specific, generic)
         self.assertEqual(rows[0]["Div"], "I1")
         self.assertEqual(rows[0]["League"], "Serie A")
+
+
+    def test_does_not_merge_consecutive_same_team_fixtures_without_matching_kickoff(self):
+        rows = merge_fixture_sources(
+            [{"Date": "2026-10-20", "Time": "18:00", "HomeTeam": "A", "AwayTeam": "B"}],
+            [{"Date": "2026-10-21", "Time": "18:00", "HomeTeam": "A", "AwayTeam": "B"}],
+        )
+        self.assertEqual(len(rows), 2)
 
     def test_keeps_distinct_matches_and_tolerates_failed_sources(self):
         rows = merge_fixture_sources(

@@ -268,10 +268,13 @@ def _render_bet(b, D, index, context="def"):
 
 
 def _latest_value_signals(D: dict) -> list[dict]:
-    """Unadded scanner-approved picks from each independently validated market family."""
-    # Reuse the exact production eligibility function used by auto-portfolio.
-    # This keeps the portfolio preview from showing forecast-only BTTS/stat picks
-    # or a goals pick that has not passed its own fixed-holdout promotion gate.
+    """Unadded Value signals from strict current cards and legacy saved cards.
+
+    Current cards use the strict portfolio eligibility function. Older persisted
+    cards may lack best_by_market/context metadata; they remain display-only and
+    must never become automatic portfolio candidates through this compatibility
+    path.
+    """
     from ui.tabs.scanner import _portfolio_auto_recommendation
 
     existing_match_picks = set()
@@ -289,19 +292,35 @@ def _latest_value_signals(D: dict) -> list[dict]:
     for card in D.get("cards") or []:
         if not isinstance(card, dict):
             continue
-        for family in ("winner", "goals"):
-            choice = _portfolio_auto_recommendation(card, market_family=family)
-            if not isinstance(choice, dict):
-                continue
-            best = choice.get("best")
-            verdict = choice.get("verdict") or {}
+        recommendations = card.get("best_by_market")
+        options = []
+        if isinstance(recommendations, dict) and recommendations:
+            # Current scans: only the exact same market-family guards that
+            # drive auto-portfolio can generate a preview candidate.
+            for family in ("winner", "goals"):
+                choice = _portfolio_auto_recommendation(card, market_family=family)
+                if isinstance(choice, dict):
+                    options.append((family, choice.get("best"), choice.get("verdict") or {}, True))
+        else:
+            # Legacy cards are a read-only preview, not an authorization to bet.
+            best = card.get("best")
+            verdict = card.get("verdict") or {}
+            if (
+                isinstance(best, (tuple, list)) and len(best) >= 6
+                and isinstance(verdict, dict)
+                and verdict.get("real_odds") and verdict.get("value_passed")
+            ):
+                options.append(("winner · legacy display only", best, verdict, False))
+
+        for family, best, verdict, strict_eligible in options:
             if not isinstance(best, (tuple, list)) or len(best) < 6:
                 continue
             if not (
                 verdict.get("real_odds")
                 and verdict.get("value_passed")
-                and verdict.get("is_bet")
             ):
+                continue
+            if strict_eligible and not verdict.get("is_bet"):
                 continue
             match = str(card.get("match_ru") or card.get("match") or "Матч")
             pick = str(best[1])
@@ -337,6 +356,7 @@ def _latest_value_signals(D: dict) -> list[dict]:
                     or card.get("best_odds_source") or card.get("odds_source") or "—"
                 ),
                 "scan_run_id": str(card.get("scan_run_id") or ""),
+                "display_only_legacy": not strict_eligible,
                 "_sort_probability": probability,
                 "_match_key": identity,
             })
@@ -345,15 +365,15 @@ def _latest_value_signals(D: dict) -> list[dict]:
     ))
     return rows
 
-
 def _render_latest_signals(D: dict) -> int:
     rows = _latest_value_signals(D)
     if not rows:
         return 0
     st.subheader("🎯 Сигналы последнего сканирования — ещё не ставки")
     st.caption(
-        "Это исходы, прошедшие проверку реальной цены и Value. Они пока не являются "
-        "позициями портфеля: банк и экспозиция не меняются, пока сигнал отдельно не добавлен."
+        "Это сигналы последнего скана, а не открытые позиции. Строки из старых карточек "
+        "показаны только для истории; автоматический допуск выполняется только по строгим "
+        "текущим market-family гейтам. Банк и экспозиция от этого списка не меняются."
     )
     display_rows = [{
         "Дата": row["Дата"], "Матч": row["Матч"], "Лига": row["Лига"],
