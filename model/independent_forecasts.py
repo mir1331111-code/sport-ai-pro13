@@ -533,7 +533,7 @@ def _main_probabilities(card: dict) -> dict[str, float] | None:
 def record_scan_forecasts(
     cards: list[dict], *, provider: str = "", model: str = "",
     db_path: str | Path = DB_FILE, timezone_name: str | None = None,
-    now: datetime | None = None,
+    now: datetime | None = None, scan_run_id: str | None = None,
 ) -> dict[str, int]:
     """Save one immutable pre-kickoff forecast per fixture/model; repeated scans are safe."""
     stats = {
@@ -542,6 +542,24 @@ def record_scan_forecasts(
         "prior_only_skipped": 0, "unsupported_history_skipped": 0,
         "skipped_no_time": 0, "skipped_started": 0, "invalid": 0,
     }
+    # Canonicalize card identity before touching SQLite. If persistence is
+    # temporarily unavailable, the in-memory bet still carries the same fixture
+    # ID the forecast ledger would have assigned.
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        identity = _fixture_identity(card)
+        if identity is None:
+            continue
+        fixture_id, _home, _away, _date_iso = identity
+        provider_fixture_id = str(card.get("fixture_id") or "").strip()
+        if provider_fixture_id and provider_fixture_id != fixture_id:
+            card.setdefault("provider_fixture_id", provider_fixture_id)
+        card["fixture_id"] = fixture_id
+        card["forecast_fixture_id"] = fixture_id
+        if scan_run_id:
+            card["scan_run_id"] = str(scan_run_id)
+
     ledger = ForecastLedger(db_path)
     market_ledger = MarketForecastLedger(db_path)
     # Read only idempotency keys. Decoding every historical JSON forecast row
@@ -596,9 +614,11 @@ def record_scan_forecasts(
             fixture_id=fixture_id, home_team=home, away_team=away,
             forecast_at=now, kickoff_at=kickoff, league=league,
             entry_odds=prices, odds_source=str(card.get("odds_source") or "") or None,
+            scan_run_id=scan_run_id,
         )
         if main_probs is not None:
             key = f"{fixture_id}|{main_version}"
+            card["main_forecast_key"] = key
             if key not in existing:
                 pending_main.append({
                     "forecast_key": key,
@@ -612,6 +632,7 @@ def record_scan_forecasts(
         ai_probs = structured_ai_probabilities(card)
         if ai_probs is not None:
             key = f"{fixture_id}|{ai_version}"
+            card["ai_forecast_key"] = key
             if key not in existing:
                 pending_ai.append({
                     "forecast_key": key,
@@ -661,6 +682,7 @@ def record_scan_forecasts(
                                 or card.get("best_odds_source") or card.get("odds_source") or ""
                             ) or None,
                             "unit_stake": 1.0,
+                            "scan_run_id": scan_run_id,
                         })
                         existing_market.add(key)
                     # Preserve the legacy scalar key only for the global best pick.
@@ -700,6 +722,7 @@ def record_scan_forecasts(
                                 card.get("best_odds_source") or card.get("odds_source") or ""
                             ) or None,
                             "unit_stake": 1.0,
+                            "scan_run_id": scan_run_id,
                         })
                         existing_market.add(key)
                 except (ValueError, TypeError, IndexError):
@@ -744,7 +767,7 @@ def record_scan_forecasts(
     if pending_main:
         try:
             learner = OnlineErrorLearner(
-                ledger, model_version_prefix="main-model-",
+                ledger, model_version_prefix=main_version,
             )
             learning = ForecastLearningService(
                 ledger, learner, enabled=False, min_history=100,

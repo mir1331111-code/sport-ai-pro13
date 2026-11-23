@@ -24,6 +24,61 @@ class FixtureMergeTests(unittest.TestCase):
         self.assertEqual(rows[0]["odds"], {"П1": 2.1})
         self.assertEqual(rows[0]["home_badge"], "badge.png")
 
+
+    def test_merges_unique_same_fixture_when_provider_dates_shift_by_one_day(self):
+        primary = [{
+            "Date": "2026-11-24 00:30:00",
+            "HomeTeam": "Paris Saint-Germain", "AwayTeam": "Marseille",
+            "Div": "F1", "fixture_id": "sstats:77",
+            "sstats_game_id": 77, "source": "sstats",
+            "market_odds": {"П1": 1.8}, "odds_source": "sstats",
+        }]
+        fallback = [{
+            "Date": "2026-11-23", "Time": "23:30",
+            "HomeTeam": "Paris Saint-Germain", "AwayTeam": "Marseille",
+            "Div": "F1", "fixture_id": "espn:77", "source": "espn",
+            "home_badge": "https://example.test/psg.png",
+        }]
+        rows = merge_fixture_sources(primary, fallback)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["fixture_id"], "sstats:77")
+        self.assertEqual(rows[0]["market_odds"], {"П1": 1.8})
+        self.assertEqual(rows[0]["home_badge"], "https://example.test/psg.png")
+
+
+    def test_sstats_schedule_is_supplemented_by_fallback_without_admitting_its_prices(self):
+        primary = [{
+            "Date": "2026-11-23 18:00:00",
+            "HomeTeam": "Arsenal", "AwayTeam": "Chelsea", "Div": "E0",
+            "fixture_id": "sstats:1", "sstats_game_id": 1, "source": "sstats",
+            "market_odds": {"П1": 2.1, "X": 3.4, "П2": 3.8},
+            "odds_source": "sstats",
+        }]
+        fallback = [
+            {
+                "Date": "2026-11-23", "HomeTeam": "Arsenal FC", "AwayTeam": "Chelsea",
+                "Div": "E0", "fixture_id": "espn:1", "source": "espn",
+                "market_odds": {"П1": 1.9, "X": 3.2, "П2": 4.1},
+                "odds_source": "espn",
+                "home_badge": "https://example.test/arsenal.png",
+            },
+            {
+                "Date": "2026-11-23", "HomeTeam": "Lyon", "AwayTeam": "Lille",
+                "Div": "F1", "fixture_id": "espn:2", "source": "espn",
+                "market_odds": {"П1": 2.0, "X": 3.1, "П2": 4.0},
+                "odds_source": "espn",
+            },
+        ]
+        rows = enforce_sstats_odds_only(merge_fixture_sources(primary, fallback))
+        self.assertEqual(len(rows), 2)
+        arsenal = next(row for row in rows if "Arsenal" in row["HomeTeam"])
+        lyon = next(row for row in rows if row["HomeTeam"] == "Lyon")
+        self.assertEqual(arsenal["fixture_id"], "sstats:1")
+        self.assertEqual(arsenal["market_odds"], {"П1": 2.1, "X": 3.4, "П2": 3.8})
+        self.assertEqual(arsenal["home_badge"], "https://example.test/arsenal.png")
+        self.assertEqual(lyon["market_odds"], {})
+        self.assertEqual(lyon["odds_source"], "no_market")
+
     def test_sstats_primary_fixtures_receive_visual_metadata_without_replacing_odds(self):
         sstats_rows = [{
             "Date": "2026-11-16 19:00:00",
@@ -190,6 +245,14 @@ class FixtureMergeTests(unittest.TestCase):
         rows = merge_fixture_sources(specific, generic)
         self.assertEqual(rows[0]["Div"], "I1")
         self.assertEqual(rows[0]["League"], "Serie A")
+
+
+    def test_does_not_merge_consecutive_same_team_fixtures_without_matching_kickoff(self):
+        rows = merge_fixture_sources(
+            [{"Date": "2026-10-20", "Time": "18:00", "HomeTeam": "A", "AwayTeam": "B"}],
+            [{"Date": "2026-10-21", "Time": "18:00", "HomeTeam": "A", "AwayTeam": "B"}],
+        )
+        self.assertEqual(len(rows), 2)
 
     def test_keeps_distinct_matches_and_tolerates_failed_sources(self):
         rows = merge_fixture_sources(

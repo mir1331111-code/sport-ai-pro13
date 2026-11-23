@@ -11,6 +11,7 @@ import time
 import hashlib
 import copy
 import threading
+import uuid
 import requests
 from datetime import datetime, timedelta
 
@@ -25,6 +26,7 @@ from config import (
 from storage import usage
 from storage import sqlite_store as db
 from storage import user_datasets
+from model.scan_ledger import ScanLedger
 from data.sources import (load_seasonal, season_str, fdorg_matches, fdorg_match_result,
                           parse_date, tsdb_matches, espn_matches,
                           sstats_upcoming_matches, sstats_historical_matches_for_fixtures,
@@ -1285,6 +1287,8 @@ def _render_manual_odds_block(
                     "match_time": c.get("time", ""),
                     "date_time": datetime.now(app_timezone()).strftime("%Y-%m-%d %H:%M"),
                     "fixture_id": c.get("fixture_id"),
+                    "scan_run_id": c.get("scan_run_id") or scan_run_id,
+                    "forecast_key": c.get("main_forecast_key"),
                     "fixture_source": c.get("source") or c.get("fixture_source") or "",
                     "sstats_game_id": c.get("sstats_game_id"),
                     "market_forecast_key": (
@@ -3121,6 +3125,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         scan_timezone = app_timezone()
         scan_now = datetime.now(scan_timezone)
+        scan_run_id = uuid.uuid4().hex
         today_date = scan_now.date()
         logs = []
 
@@ -3206,12 +3211,19 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"ℹ️ Visual metadata merge unavailable: {type(exc).__name__}; "
                     "SStats fixtures continue unchanged."
                 )
+            # SStats remains the only source of live bookmaker prices. Other
+            # schedule providers supplement fixtures that SStats did not return;
+            # enforce_sstats_odds_only() strips their price fields below.
             fixture_sources.extend(enriched_sstats_rows)
+            fixture_sources.extend(fdorg_rows)
+            fixture_sources.extend(tsdb_rows)
+            fixture_sources.extend(espn_rows)
             logs.append(
-                f"✅ SStats — единственный источник расписания и коэффициентов: "
-                f"{len(sstats_rows)} матчей. TSDB, ESPN и football-data.org "
-                "используются только для визуальных метаданных и не добавляют "
-                "матчи или букмекерские котировки."
+                f"✅ SStats — основной источник котировок и расписания: "
+                f"{len(sstats_rows)} матчей. Дополнение расписания: "
+                f"football-data.org={len(fdorg_rows)}, TheSportsDB={len(tsdb_rows)}, "
+                f"ESPN={len(espn_rows)}. Резервные источники добавляют недостающие "
+                "матчи; их котировки удаляются."
             )
         else:
             if sstats_key:
@@ -4498,7 +4510,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             tracked = record_scan_forecasts(
                 cards, provider=llm_prov, model=llm_model, db_path=DB_FILE,
                 timezone_name=getattr(scan_timezone, "key", "UTC"),
-                now=scan_now,
+                now=scan_now, scan_run_id=scan_run_id,
             )
             logs.append(
                 "📚 Журнал прогнозов: "
@@ -4615,6 +4627,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "kickoff_utc": card.get("kickoff_utc") or None,
                         "date_time": datetime.now(app_timezone()).strftime("%Y-%m-%d %H:%M"),
                         "fixture_id": card.get("fixture_id"),
+                        "scan_run_id": card.get("scan_run_id") or scan_run_id,
+                        "forecast_key": card.get("main_forecast_key"),
                         "sstats_game_id": card.get("sstats_game_id"),
                         "market_forecast_key": (
                             (card.get("market_forecast_keys") or {}).get(market_family)
@@ -4689,6 +4703,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         D2["cards"] = cards
         D2["report"] = logs
         D2["scan_meta"] = {
+            "scan_run_id": scan_run_id,
             "scan_started_at": scan_now.isoformat(),
             "scan_completed_at": datetime.now(scan_timezone).isoformat(),
             "horizon_days": int(days),
@@ -4716,6 +4731,28 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "src": len(rows), "found": matches_with_best,
             "added": len(new_bets), "frozen": total_stake, "llm": llm_done,
         }
+        try:
+            links = ScanLedger(DB_FILE).record_run(
+                scan_run_id,
+                metadata={
+                    **D2["scan_meta"],
+                    "timezone_name": getattr(scan_timezone, "key", "UTC"),
+                    "funnel": D2["funnel"],
+                },
+                cards=cards,
+                report=logs,
+            )
+            logs.append(
+                "🔗 Единый реестр сканирования: "
+                f"{links['fixtures']} матчей, {links['forecasts']} связей с прогнозами, "
+                f"{links['decisions']} решений по рынкам."
+            )
+            D2["report"] = logs
+        except Exception as scan_ledger_exc:
+            logs.append(
+                f"⚠️ Реестр сканирования не записан: {type(scan_ledger_exc).__name__}."
+            )
+            D2["report"] = logs
         st.session_state.data = D2
         usage.set_local_data(D2)
         if db.SQLITE_BOOT_OK:

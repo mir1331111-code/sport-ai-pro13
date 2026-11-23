@@ -268,59 +268,102 @@ def _render_bet(b, D, index, context="def"):
 
 
 def _latest_value_signals(D: dict) -> list[dict]:
-    """Unadded, fully validated Value signals from the latest scan (not portfolio bets)."""
-    existing = {
-        (str(b.get("match") or ""), str(b.get("pick") or ""))
-        for b in (D.get("bets") or [])
-        if isinstance(b, dict)
-    }
+    """Unadded Value signals from strict current cards and legacy saved cards.
+
+    Current cards use the strict portfolio eligibility function. Older persisted
+    cards may lack best_by_market/context metadata; they remain display-only and
+    must never become automatic portfolio candidates through this compatibility
+    path.
+    """
+    from ui.tabs.scanner import _portfolio_auto_recommendation
+
+    existing_match_picks = set()
+    existing_fixture_picks = set()
+    for bet in (D.get("bets") or []):
+        if not isinstance(bet, dict):
+            continue
+        pick = str(bet.get("pick") or "")
+        existing_match_picks.add((str(bet.get("match") or ""), pick))
+        fixture = str(bet.get("fixture_id") or "")
+        if fixture:
+            existing_fixture_picks.add((fixture, pick))
+
     rows = []
     for card in D.get("cards") or []:
         if not isinstance(card, dict):
             continue
-        best = card.get("best")
-        verdict = card.get("verdict") or {}
-        if not isinstance(best, (tuple, list)) or len(best) < 6:
-            continue
-        if not verdict.get("real_odds") or not verdict.get("value_passed"):
-            continue
-        match = str(card.get("match_ru") or card.get("match") or "Матч")
-        pick = str(best[1])
-        identity = (str(card.get("match") or ""), pick)
-        if identity in existing:
-            continue
-        try:
-            odd, ev, probability = float(best[2]), float(best[3]), float(best[4])
-        except (TypeError, ValueError):
-            continue
-        if not (1.01 < odd <= 100 and 0 < probability < 1):
-            continue
-        try:
-            edge = float(verdict.get("edge"))
-        except (TypeError, ValueError):
-            edge = None
-        rows.append({
-            "Дата": str(card.get("date") or card.get("date_iso") or "—"),
-            "Матч": match,
-            "Лига": str(card.get("league") or "—"),
-            "Рынок": str(best[0]),
-            "Исход": pick,
-            "Кэф": odd,
-            "Вероятность": probability,
-            "Edge": edge,
-            "EV": ev,
-            "Источник": str(
-                (card.get("market_odds_source_by_pick") or {}).get(pick)
-                or card.get("best_odds_source") or card.get("odds_source") or "—"
-            ),
-            "_sort_probability": probability,
-            "_match_key": identity,
-        })
+        recommendations = card.get("best_by_market")
+        options = []
+        if isinstance(recommendations, dict) and recommendations:
+            # Current scans: only the exact same market-family guards that
+            # drive auto-portfolio can generate a preview candidate.
+            for family in ("winner", "goals"):
+                choice = _portfolio_auto_recommendation(card, market_family=family)
+                if isinstance(choice, dict):
+                    options.append((family, choice.get("best"), choice.get("verdict") or {}, True))
+        else:
+            # Legacy cards are a read-only preview, not an authorization to bet.
+            best = card.get("best")
+            verdict = card.get("verdict") or {}
+            if (
+                isinstance(best, (tuple, list)) and len(best) >= 6
+                and isinstance(verdict, dict)
+                and verdict.get("real_odds") and verdict.get("value_passed")
+            ):
+                options.append(("winner · legacy display only", best, verdict, False))
+
+        for family, best, verdict, strict_eligible in options:
+            if not isinstance(best, (tuple, list)) or len(best) < 6:
+                continue
+            if not (
+                verdict.get("real_odds")
+                and verdict.get("value_passed")
+            ):
+                continue
+            if strict_eligible and not verdict.get("is_bet"):
+                continue
+            match = str(card.get("match_ru") or card.get("match") or "Матч")
+            pick = str(best[1])
+            fixture_id = str(card.get("fixture_id") or "")
+            identity = (str(card.get("match") or ""), pick)
+            if identity in existing_match_picks or (
+                fixture_id and (fixture_id, pick) in existing_fixture_picks
+            ):
+                continue
+            try:
+                odd, ev, probability = float(best[2]), float(best[3]), float(best[4])
+            except (TypeError, ValueError):
+                continue
+            if not (1.01 < odd <= 100 and 0 < probability < 1):
+                continue
+            try:
+                edge = float(verdict.get("edge"))
+            except (TypeError, ValueError):
+                edge = None
+            rows.append({
+                "Дата": str(card.get("date") or card.get("date_iso") or "—"),
+                "Матч": match,
+                "Лига": str(card.get("league") or "—"),
+                "Рынок": str(best[0]),
+                "Семейство": family,
+                "Исход": pick,
+                "Кэф": odd,
+                "Вероятность": probability,
+                "Edge": edge,
+                "EV": ev,
+                "Источник": str(
+                    (card.get("market_odds_source_by_pick") or {}).get(pick)
+                    or card.get("best_odds_source") or card.get("odds_source") or "—"
+                ),
+                "scan_run_id": str(card.get("scan_run_id") or ""),
+                "display_only_legacy": not strict_eligible,
+                "_sort_probability": probability,
+                "_match_key": identity,
+            })
     rows.sort(key=lambda row: (
         -row["_sort_probability"], -float(row["EV"]), row["Дата"], row["Матч"]
     ))
     return rows
-
 
 def _render_latest_signals(D: dict) -> int:
     rows = _latest_value_signals(D)
@@ -328,12 +371,14 @@ def _render_latest_signals(D: dict) -> int:
         return 0
     st.subheader("🎯 Сигналы последнего сканирования — ещё не ставки")
     st.caption(
-        "Это исходы, прошедшие проверку реальной цены и Value. Они пока не являются "
-        "позициями портфеля: банк и экспозиция не меняются, пока сигнал отдельно не добавлен."
+        "Это сигналы последнего скана, а не открытые позиции. Строки из старых карточек "
+        "показаны только для истории; автоматический допуск выполняется только по строгим "
+        "текущим market-family гейтам. Банк и экспозиция от этого списка не меняются."
     )
     display_rows = [{
         "Дата": row["Дата"], "Матч": row["Матч"], "Лига": row["Лига"],
-        "Рынок": row["Рынок"], "Исход": row["Исход"], "Кэф": round(row["Кэф"], 2),
+        "Рынок": row["Рынок"], "Семейство": row["Семейство"],
+        "Исход": row["Исход"], "Кэф": round(row["Кэф"], 2),
         "Вероятность": f"{row['Вероятность']:.1%}",
         "Edge": "—" if row["Edge"] is None else f"{row['Edge']:+.1%}",
         "EV": f"{row['EV']:+.1%}", "Источник": row["Источник"],
@@ -342,10 +387,76 @@ def _render_latest_signals(D: dict) -> int:
     return len(rows)
 
 
+def _render_latest_scan_gate_diagnostics(D: dict) -> None:
+    """Explain why last-scan fixtures did not become portfolio positions."""
+    cards = [
+        card for card in (D.get("cards") or [])
+        if isinstance(card, dict)
+    ]
+    if not cards:
+        return
+
+    from betting.gate_report import classify_card
+    from betting.market_ranking import market_forecast_summary
+
+    rows = []
+    for family, label in (
+        ("winner", "1X2"), ("goals", "Тоталы"), ("btts", "Обе забьют"),
+        ("corners", "Угловые"), ("cards", "Карточки"),
+    ):
+        forecasts = 0
+        approved = 0
+        failures = {}
+        examples = {}
+        for card in cards:
+            if market_forecast_summary(card, family) is not None:
+                forecasts += 1
+            try:
+                status, gates = classify_card(card, family)
+            except Exception:
+                continue
+            if status == "approved":
+                approved += 1
+            for gate in gates:
+                if gate.passed:
+                    continue
+                reason = f"{gate.name}: {gate.detail}"
+                failures[reason] = failures.get(reason, 0) + 1
+                examples.setdefault(reason, str(
+                    card.get("match_ru") or card.get("match") or "Матч"
+                ))
+        top = sorted(failures.items(), key=lambda item: (-item[1], item[0]))
+        reason_text = " · ".join(
+            f"{count}× {reason}" for reason, count in top[:2]
+        ) or ("Все гейты пройдены" if approved else "Нет отдельной причины")
+        rows.append({
+            "Рынок": label,
+            "Матчей с прогнозом": forecasts,
+            "Допущено": approved,
+            "Основные причины отказа": reason_text,
+        })
+
+    st.subheader("Почему матчи не стали ставками")
+    st.caption(
+        "Счётчики относятся к последнему сканированию. «Прогноз» не равен Value-сигналу; "
+        "автопортфель учитывает только 1X2 и тотал 2.5 после собственной проверки рынка."
+    )
+    st.dataframe(rows, width="stretch", hide_index=True)
+    if not any(row["Допущено"] for row in rows):
+        top_reasons = []
+        for row in rows:
+            if row["Основные причины отказа"] and row["Основные причины отказа"] != "Нет отдельной причины":
+                top_reasons.append(f"{row['Рынок']}: {row['Основные причины отказа']}")
+        with st.expander("Подробные причины отказов по рынкам", expanded=False):
+            for item in top_reasons:
+                st.write("• " + item)
+
+
 def render():
     D = st.session_state.data
     st.header("💼 Портфель")
     signal_count = _render_latest_signals(D)
+    _render_latest_scan_gate_diagnostics(D)
     bets = [b for b in (D.get("bets") or []) if isinstance(b, dict)]
     if not bets:
         if signal_count:
