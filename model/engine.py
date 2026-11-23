@@ -610,6 +610,11 @@ class Engine:
         с остальной системой.
         """
 
+        # add() stores every competition under its canonical uppercase key.
+        # Normalize the prediction key too, otherwise a caller passing e.g.
+        # "e0" would find the team's state but miss that league's averages,
+        # xG history, rho prior/cache and calibration namespace.
+        lg = _division_key(lg)
         P0 = self.lp[lg]
         home_key = _team_state_key(lg, h)
         away_key = _team_state_key(lg, a)

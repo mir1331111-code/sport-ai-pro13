@@ -33,6 +33,24 @@ class CompetitionIsolationTests(unittest.TestCase):
         self.assertEqual(model.form_str("Same Team", "W_E0"), "ВВВВВ")
         self.assertEqual(model.form_str("Same Team", "E0"), "—")
 
+    def test_predict_normalizes_competition_key_like_add(self):
+        model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        for index in range(25):
+            model.add(
+                "Home", "Away", 3 if index % 2 == 0 else 2,
+                0 if index % 3 else 1,
+                row={"Div": "E0"},
+                match_date=(datetime(2024, 1, 1) + timedelta(days=3 * index)).isoformat(),
+            )
+        upper = model.predict("Home", "Away", "E0", match_date="2025-01-01")
+        lower = model.predict("Home", "Away", "e0", match_date="2025-01-01")
+        self.assertEqual(upper["lams"], lower["lams"])
+        self.assertAlmostEqual(upper["p1"], lower["p1"])
+        self.assertAlmostEqual(upper["x"], lower["x"])
+        self.assertAlmostEqual(upper["p2"], lower["p2"])
+        self.assertEqual(upper["games"], lower["games"])
+        self.assertEqual(upper["h2h_n"], lower["h2h_n"])
+
     def test_sparse_competition_does_not_borrow_global_goal_average(self):
         model = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
         for _ in range(25):
