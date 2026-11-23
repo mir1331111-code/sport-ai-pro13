@@ -1043,7 +1043,7 @@ with st.sidebar:
         provider_widget_key = "llm_provider_select_v2"
         if provider_widget_key not in st.session_state:
             st.session_state[provider_widget_key] = normalize_llm_provider(
-                D["meta"].get("llm_provider") or "Grok (x.ai)"
+                D["meta"].get("llm_provider") or "Groq GPT-OSS 120B"
             )
         else:
             normalized_provider = normalize_llm_provider(
@@ -1052,10 +1052,21 @@ with st.sidebar:
             if st.session_state.get(provider_widget_key) != normalized_provider:
                 st.session_state[provider_widget_key] = normalized_provider
         if st.button(
-            "⚡ Переключить на Grok (x.ai)",
+            "⚡ Переключить на Groq GPT-OSS 120B",
+            key="select_groq_120b_provider",
+            width="stretch",
+            help="Рабочая модель 120B через Groq API: openai/gpt-oss-120b. Использует ключ Groq, не ключ xAI.",
+        ):
+            st.session_state[provider_widget_key] = "Groq GPT-OSS 120B"
+            D["meta"]["llm_provider"] = "Groq GPT-OSS 120B"
+            D["meta"]["llm_model"] = str(LLM_PROVIDERS["Groq GPT-OSS 120B"]["model"])
+            usage.set_local_data(D)
+            st.rerun()
+        if st.button(
+            "Переключить на Grok (x.ai)",
             key="select_xai_grok_provider",
             width="stretch",
-            help="Выбирает отдельный API xAI и модель grok-4.7. Groq GPT-OSS при этом не используется.",
+            help="Отдельный API xAI и модель grok-4.7; требует отдельный ключ XAI_API_KEY.",
         ):
             st.session_state[provider_widget_key] = "Grok (x.ai)"
             D["meta"]["llm_provider"] = "Grok (x.ai)"
