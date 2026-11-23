@@ -4255,6 +4255,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 date_key = str(card.get("date_iso") or "")[:10]
                 context_key = fixture_row_key(home_name, away_name, date_key)
                 refreshed_context = priority_contexts.get(context_key)
+                context_recheck = {}
                 if isinstance(refreshed_context, dict) and refreshed_context:
                     previous_best = card.get("best")
                     previous_best_exists = bool(previous_best)
@@ -4285,7 +4286,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                             f"новый контекст сохранён, но допуск не изменён: "
                             f"{context_recheck.get('reason') or 'не хватает подтверждений/истории'}."
                         )
-                if context_recheck.get("updated") if isinstance(refreshed_context, dict) else False:
+                if context_recheck.get("updated"):
                     card["context_forecasts"] = context_probabilities(
                         {
                             "H": float(card.get("p1") or 0.0),
