@@ -4453,6 +4453,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 f"🏆 TOP MATCHES · AI STATUS: no_candidates · {llm_provider_name} · {reason}"
             )
 
+        # Temporary Value recheck inputs are never persisted to cards or the ledger,
+        # including scans where the AI shortlist is empty or the API key is missing.
+        for _card in cards:
+            if isinstance(_card, dict):
+                _card.pop("_value_recheck", None)
+
         # Persist both forecasters before the fixture starts. The ledger keeps the
         # first prediction immutable, making repeated scans idempotent and auditable.
         try:
