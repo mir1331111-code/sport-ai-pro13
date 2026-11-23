@@ -484,6 +484,67 @@ def restore_database_if_empty(db_path: str | os.PathLike = DB_FILE) -> dict[str,
     return {"restored": False, "state": "restore_error", "message": message}
 
 
+
+def _sqlite_app_state_snapshot(raw: bytes) -> tuple[int, str | None]:
+    """Read the monotonic portfolio/dashboard state version from a SQLite image."""
+    handle = tempfile.NamedTemporaryFile(
+        prefix="neuro-state-version-", suffix=".sqlite", delete=False,
+    )
+    path = Path(handle.name)
+    try:
+        handle.write(raw)
+        handle.flush()
+        handle.close()
+        with sqlite3.connect(str(path), timeout=15) as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'"
+            ).fetchone()
+            if not exists:
+                return 0, None
+            rows = dict(connection.execute(
+                "SELECT key,value FROM meta WHERE key IN "
+                "('app_state_updated_at_ns','app_state_json')"
+            ).fetchall())
+        try:
+            stamp = int(rows.get("app_state_updated_at_ns") or 0)
+        except (TypeError, ValueError):
+            raise ValueError("SQLite app-state timestamp is invalid")
+        payload = rows.get("app_state_json")
+        if stamp < 0 or (payload is not None and not isinstance(payload, str)):
+            raise ValueError("SQLite app-state metadata is invalid")
+        return stamp, payload
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _assert_app_state_does_not_regress(previous_raw: bytes, current_raw: bytes) -> None:
+    """Refuse to replace a newer portfolio/dashboard snapshot with an older DB."""
+    previous_stamp, previous_payload = _sqlite_app_state_snapshot(previous_raw)
+    current_stamp, current_payload = _sqlite_app_state_snapshot(current_raw)
+    if previous_stamp and not current_stamp:
+        raise ValueError(
+            "Local SQLite has no durable app state while the remote backup does; "
+            "remote portfolio state was preserved."
+        )
+    if current_stamp < previous_stamp:
+        raise ValueError(
+            "Local portfolio/dashboard state is older than the verified remote backup; "
+            "remote state was preserved."
+        )
+    if (
+        previous_stamp == current_stamp
+        and previous_payload is not None
+        and current_payload != previous_payload
+    ):
+        raise ValueError(
+            "Local portfolio/dashboard state differs at the same version timestamp; "
+            "remote state was preserved."
+        )
+
+
 def backup_database_to_gist(
     db_path: str | os.PathLike = DB_FILE,
 ) -> dict[str, Any]:
@@ -514,6 +575,7 @@ def backup_database_to_gist(
                     "tables": counts,
                 }
             _assert_backup_does_not_regress(previous_counts, counts)
+            _assert_app_state_does_not_regress(previous_raw, raw)
 
         encrypted = _fernet(key).encrypt(gzip.compress(raw, compresslevel=6))
         if len(encrypted) > MAX_ENCRYPTED_BYTES:
