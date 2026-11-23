@@ -447,6 +447,7 @@ def rank_best_fixtures(
     min_sample_games: int = 5,
     min_probability: float = 0.52,
     include_limited_history: bool = False,
+    require_calibration: bool = False,
     diagnostics: dict | None = None,
 ) -> list[dict]:
     """Rank upcoming fixtures, optionally keeping provisional forecasts visible.
@@ -466,6 +467,8 @@ def rank_best_fixtures(
         "already_started": 0,
         "outside_window": 0,
         "invalid_forecast": 0,
+        "unsupported_model": 0,
+        "uncalibrated_candidates": 0,
         "missing_venue_history": 0,
         "insufficient_home_history": 0,
         "insufficient_away_history": 0,
@@ -513,6 +516,10 @@ def rank_best_fixtures(
     for index, card in enumerate(cards):
         if not isinstance(card, dict):
             continue
+        support_status = str(card.get("model_support_status") or "").strip().casefold()
+        if support_status and support_status != "team_supported":
+            counters["unsupported_model"] += 1
+            continue
         kickoff = fixture_kickoff_local(card, timezone_name=timezone_name)
         if kickoff is None:
             counters["invalid_kickoff"] += 1
@@ -556,8 +563,12 @@ def rank_best_fixtures(
         probability_ready = prediction["probability"] >= probability_floor
         if not probability_ready:
             counters["below_probability"] += 1
+        calibration_ready = bool(prediction.get("calibration_ready"))
+        if history_ready and probability_ready and not calibration_ready:
+            counters["uncalibrated_candidates"] += 1
+        calibration_passed = calibration_ready or not require_calibration
 
-        strict_eligible = history_ready and probability_ready
+        strict_eligible = history_ready and probability_ready and calibration_passed
         if strict_eligible:
             counters["strict_candidates"] += 1
         else:
@@ -585,8 +596,15 @@ def rank_best_fixtures(
                 f"нет выраженного фаворита ({prediction['probability']:.0%} < "
                 f"{probability_floor:.0%})"
             )
+        if require_calibration and not calibration_ready:
+            note_parts.append(
+                f"нет калибровки вероятности (выборка калибратора: "
+                f"{prediction.get('calibration_matches', 0)})"
+            )
         selection_note = (
-            "Подтверждённая история и фаворит"
+            "Подтверждённая история, фаворит и калибровка"
+            if strict_eligible and require_calibration
+            else "Подтверждённая история и фаворит"
             if strict_eligible
             else "Ознакомительный прогноз · " + "; ".join(note_parts)
         )
@@ -774,6 +792,10 @@ def rank_model_favorites(
 
     unique = {}
     for index, card in enumerate(cards):
+        # A zero-history fallback vector is a generic prior, not a fixture
+        # forecast. Keep it out of probability-ranked model favorites.
+        if isinstance(card, dict) and card.get("model_support_status") in {"prior_only", "league_only"}:
+            continue
         favorite = model_favorite(card)
         if favorite is None or favorite["sample_games"] < minimum_history:
             continue

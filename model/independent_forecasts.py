@@ -40,12 +40,13 @@ def _matching_team_state(engine: Any, team: str, division: str) -> dict[str, Any
     index once reduces repeated lookup work from O(fixtures × teams) to
     O(teams + fixtures).
     """
+    from data.team_names import normalize_team
     from model.engine import _norm, _team_state_key
 
     teams = getattr(engine, "st", {})
     if not hasattr(teams, "items"):
         return {}
-    wanted = _norm(team)
+    wanted = normalize_team(team) or _norm(team)
     if not wanted:
         return {}
     direct_key = _team_state_key(division, team)
@@ -80,7 +81,7 @@ def _matching_team_state(engine: Any, team: str, division: str) -> dict[str, Any
             state_division, state_team = "G", key
         if str(state_division or "G").strip().upper() != division:
             continue
-        normalized = _norm(state_team)
+        normalized = normalize_team(state_team) or _norm(state_team)
         if not normalized:
             continue
         history_count = sum(len(state.get(field) or []) for field in history_fields)
@@ -435,6 +436,8 @@ def _odds_from_card(card: dict) -> dict[str, float] | None:
 
 
 def _main_probabilities(card: dict) -> dict[str, float] | None:
+    if card.get("model_support_status") in {"prior_only", "league_only"}:
+        return None
     raw_model = card.get("raw_model_probabilities")
     if isinstance(raw_model, dict):
         return _valid_probabilities(raw_model)
@@ -454,6 +457,7 @@ def record_scan_forecasts(
     stats = {
         "main_recorded": 0, "ai_recorded": 0, "market_recorded": 0,
         "learning_recorded": 0, "learning_promoted": 0, "learning_errors": 0,
+        "prior_only_skipped": 0, "unsupported_history_skipped": 0,
         "skipped_no_time": 0, "skipped_started": 0, "invalid": 0,
     }
     ledger = ForecastLedger(db_path)
@@ -501,6 +505,10 @@ def record_scan_forecasts(
             continue
         prices = _odds_from_card(card)
         league = str(card.get("league") or card.get("div") or "")
+        if card.get("model_support_status") == "prior_only":
+            stats["prior_only_skipped"] += 1
+        if card.get("model_support_status") in {"prior_only", "league_only"}:
+            stats["unsupported_history_skipped"] += 1
         main_probs = _main_probabilities(card)
         common = dict(
             fixture_id=fixture_id, home_team=home, away_team=away,

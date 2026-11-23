@@ -1,6 +1,7 @@
 import unittest
 from datetime import date, timedelta
 
+from model.engine import Engine
 from model.walk_forward import (
     _ClusteredRecords, _metrics, _paired_differences,
     _binary_metrics, _binary_paired_differences,
@@ -9,6 +10,15 @@ from model.walk_forward import (
 
 
 class WalkForwardTests(unittest.TestCase):
+    def test_legacy_engine_without_form_weight_attribute_still_predicts(self):
+        # Existing on-disk Engine pickles predate the research-only attribute.
+        engine = Engine()
+        del engine.form_adjustment_weight
+        prediction = engine.predict("Home", "Away", "E0")
+        self.assertAlmostEqual(
+            prediction["p1"] + prediction["x"] + prediction["p2"], 1.0, places=8
+        )
+
     def test_compares_baseline_and_candidate_chronologically(self):
         rows = []
         for index in range(24):
@@ -26,6 +36,10 @@ class WalkForwardTests(unittest.TestCase):
         self.assertEqual(result["skipped"], 0)
         self.assertEqual(result["baseline"]["n"], 24)
         self.assertEqual(result["candidate"]["n"], 24)
+        form_report = result["recent_form_ablation"]
+        self.assertEqual(form_report["candidate"]["n"], 24)
+        self.assertEqual(form_report["paired_vs_base_model"]["n"], 24)
+        self.assertEqual(form_report["production_weight"], 0.0)
         self.assertIsNotNone(result["delta_candidate_minus_baseline"]["brier"])
         self.assertIn("untouched chronological holdout", result["interpretation"])
         self.assertEqual(set(result["goals_totals_by_line"]), {"0.5", "1.5", "2.5", "3.5", "4.5", "5.5"})
@@ -33,6 +47,52 @@ class WalkForwardTests(unittest.TestCase):
             self.assertEqual(line_report["n"], 24)
             self.assertIsNotNone(line_report["metrics"]["brier"])
             self.assertIsNotNone(line_report["metrics"]["log_loss"])
+
+    def test_walk_forward_replays_warmup_but_scores_only_league_holdout(self):
+        rows = []
+        for index in range(24):
+            stamp = (date(2024, 1, 1) + timedelta(days=index)).isoformat()
+            rows.append({
+                "Date": stamp,
+                "Div": "E0",
+                "HomeTeam": f"Home{index % 4}",
+                "AwayTeam": f"Away{index % 5}",
+                "FTHG": index % 3,
+                "FTAG": (index + 1) % 3,
+            })
+        result = walk_forward_compare(
+            rows,
+            bootstrap_samples=0,
+            evaluation_start_by_league={"E0": "2024-01-20"},
+        )
+        # The first 19 dates warm every model; only the five later dates are scored.
+        self.assertEqual(result["n"], 24)
+        self.assertEqual(result["evaluation_n"], 5)
+        self.assertEqual(result["candidate"]["n"], 5)
+        self.assertEqual(result["baseline"]["n"], 5)
+
+    def test_warmup_only_leagues_do_not_enter_evaluation_metrics(self):
+        rows = [{
+            "Date": (date(2024, 1, 1) + timedelta(days=i)).isoformat(),
+            "Div": "E0", "HomeTeam": f"H{i % 3}", "AwayTeam": f"A{i % 4}",
+            "FTHG": i % 2, "FTAG": (i + 1) % 2,
+        } for i in range(8)]
+        result = walk_forward_compare(
+            rows, bootstrap_samples=0, evaluation_start_by_league={"D1": "2024-01-01"},
+        )
+        self.assertEqual(result["candidate"]["n"], 0)
+        self.assertEqual(result["market"]["n"], 0)
+
+    def test_clustered_records_can_suppress_warmup_observations(self):
+        records = _ClusteredRecords()
+        records.set_cluster("2024-01-01")
+        records.set_enabled(False)
+        records.append(({"H": 0.8, "D": 0.1, "A": 0.1}, "H"))
+        records.set_enabled(True)
+        records.set_cluster("2024-01-02")
+        records.append(({"H": 0.1, "D": 0.8, "A": 0.1}, "D"))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][2], "2024-01-02")
 
     def test_metrics_resample_calendar_day_clusters_not_individual_fixtures(self):
         records = _ClusteredRecords()
@@ -188,6 +248,14 @@ class WalkForwardTests(unittest.TestCase):
         self.assertIsNotNone(paired["confidence_intervals_95"]["log_loss"]["high"])
         self.assertEqual(result["candidate"]["confidence_intervals_95"]["brier"]["low"], None)
         self.assertEqual(result["market_bootstrap_samples"], 30)
+        for weight in ("0.25", "0.50", "0.75"):
+            arm = result["market_blends"]["weights_model_market"][weight]
+            self.assertEqual(arm["metrics"]["n"], 40)
+            self.assertEqual(arm["vs_model"]["n"], 40)
+            self.assertEqual(arm["vs_market"]["n"], 40)
+            league_arm = result["market_blends"]["by_league"]["E0"][weight]
+            self.assertEqual(league_arm["metrics"]["n"], 40)
+            self.assertEqual(league_arm["vs_market"]["n"], 40)
 
 
 

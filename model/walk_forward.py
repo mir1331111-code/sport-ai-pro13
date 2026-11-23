@@ -127,11 +127,17 @@ class _ClusteredRecords(list):
     def __init__(self):
         super().__init__()
         self.cluster = None
+        self.enabled = True
 
     def set_cluster(self, cluster):
         self.cluster = str(cluster) if cluster is not None else None
 
+    def set_enabled(self, enabled):
+        self.enabled = bool(enabled)
+
     def append(self, record):
+        if not self.enabled:
+            return
         if isinstance(record, tuple) and len(record) == 2:
             record = (record[0], record[1], self.cluster)
         super().append(record)
@@ -613,11 +619,15 @@ def walk_forward_compare(
     rows, *, matrix_n: int = 12, half_life_days: float = 180.0,
     bootstrap_samples: int = 1000, totals_bootstrap_samples: int | None = None,
     market_bootstrap_samples: int | None = None, progress_callback=None,
+    evaluation_start_by_league: dict | None = None,
 ) -> dict:
     """Compare goals-only and xG engines on identical chronological fixtures.
 
     All fixtures on the same calendar date are predicted before any result from
-    that date is added. The xG ablation pair uses identical temporal weighting
+    that date is added. When evaluation_start_by_league is supplied, earlier
+    fixtures are still replayed into every model as historical warm-up, but are
+    excluded from all reported forecast metrics. A missing league cutoff means
+    that league is warm-up-only. The xG ablation pair uses identical temporal weighting
     and rho settings; only historical xG ingestion differs. The overall
     baseline-vs-candidate comparison remains available for backwards compatibility.
     """
@@ -640,6 +650,11 @@ def walk_forward_compare(
 
     baseline = Engine(matrix_n=matrix_n, temporal_weighting=False, league_rho_fitting=False)
     candidate = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
+    # Recent-form residual is an isolated research arm; production weight remains 0.
+    candidate_form = Engine(
+        matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True,
+        form_adjustment_weight=0.10,
+    )
     temporal_goals = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     provider_xg_only = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     proxy_xg_only = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
@@ -649,17 +664,18 @@ def walk_forward_compare(
     candidate_no_h2h = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     candidate_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
     candidate_no_h2h_no_rest = Engine(matrix_n=matrix_n, temporal_weighting=True, league_rho_fitting=True)
-    for model in (candidate, temporal_goals, provider_xg_only, proxy_xg_only,
+    for model in (candidate, candidate_form, temporal_goals, provider_xg_only, proxy_xg_only,
                   candidate_no_h2h, candidate_no_rest, candidate_no_h2h_no_rest):
         model.half_life_days = float(half_life_days)
     candidate_no_rest.rest_days_adjustment = False
     candidate_no_h2h_no_rest.rest_days_adjustment = False
 
     record_names = (
-        "baseline", "candidate", "temporal_goals_only",
+        "baseline", "candidate", "candidate_with_form", "temporal_goals_only",
         "candidate_without_h2h", "candidate_without_rest_days",
         "candidate_without_h2h_or_rest_days",
         "market", "candidate_on_market",
+        "blend_25", "blend_50", "blend_75",
         "market_power", "candidate_on_market_power",
         "market_shin", "candidate_on_market_shin",
         "goals_over25", "goals_over25_market",
@@ -691,7 +707,9 @@ def walk_forward_compare(
     goals_history = {}
     market_sources = {}
     total_market_sources = {}
+    market_blend_by_league = {}
     xg_forecasts = xg_eligible_rows = 0
+    scored_rows = 0
     index = 0
     cursor = 0
     last_progress_report = 0
@@ -718,6 +736,20 @@ def walk_forward_compare(
 
         pending = []
         for _, league, home, away, hg, ag, row in group:
+            score_this_fixture = True
+            if evaluation_start_by_league is not None:
+                raw_cutoff = evaluation_start_by_league.get(league)
+                cutoff = _parse_date(raw_cutoff) if raw_cutoff is not None else None
+                score_this_fixture = cutoff is not None and stamp >= cutoff
+            if score_this_fixture:
+                scored_rows += 1
+            for record_list in (
+                *records.values(), *xg_arm_records.values(),
+                *goals_line_records.values(), *goals_line_baseline_records.values(),
+                *goals_line_candidate_on_baseline_records.values(),
+                btts_records, btts_baseline_records,
+            ):
+                record_list.set_enabled(score_this_fixture)
             row_copy = dict(row) if isinstance(row, dict) else {}
             row_copy["Div"] = league
             season, season_basis = _season_label(row_copy, stamp)
@@ -726,15 +758,16 @@ def walk_forward_compare(
             provider_xg_row = _without_proxy_xg(row_copy)
             proxy_xg_row = _without_provider_xg(row_copy)
             xg_origin = _xg_origin(row_copy)
-            if xg_origin == "provider":
+            if score_this_fixture and xg_origin == "provider":
                 xg_eligible_rows += 1
                 xg_provider_rows += 1
-            elif xg_origin == "proxy":
+            elif score_this_fixture and xg_origin == "proxy":
                 xg_eligible_rows += 1
                 xg_proxy_rows += 1
 
             pred_base = baseline.predict(home, away, league, match_date=stamp.isoformat())
             pred_candidate = candidate.predict(home, away, league, match_date=stamp.isoformat())
+            pred_form = candidate_form.predict(home, away, league, match_date=stamp.isoformat())
             pred_temporal_goals = temporal_goals.predict(home, away, league, match_date=stamp.isoformat())
             pred_provider_xg = provider_xg_only.predict(home, away, league, match_date=stamp.isoformat())
             pred_proxy_xg = proxy_xg_only.predict(home, away, league, match_date=stamp.isoformat())
@@ -747,7 +780,7 @@ def walk_forward_compare(
             pred_without_h2h_rest = candidate_no_h2h_no_rest.predict(
                 home, away, league, match_date=stamp.isoformat(), apply_h2h=False,
             )
-            if pred_candidate.get("xg_used"):
+            if score_this_fixture and pred_candidate.get("xg_used"):
                 xg_forecasts += 1
             total_outcome = "over" if hg + ag >= 3 else "under"
             over_prob = max(1e-6, min(1.0 - 1e-6, float(pred_candidate.get("over", 0.5))))
@@ -790,7 +823,8 @@ def walk_forward_compare(
             if total_market_p:
                 records["goals_over25_market"].append((total_market_p, total_outcome))
                 records["goals_over25_candidate_on_market"].append(({"over": over_prob, "under": 1.0 - over_prob}, total_outcome))
-                total_market_sources[total_market_source] = total_market_sources.get(total_market_source, 0) + 1
+                if score_this_fixture:
+                    total_market_sources[total_market_source] = total_market_sources.get(total_market_source, 0) + 1
             outcome = "H" if hg > ag else "A" if hg < ag else "D"
             arm_predictions = {
                 "goals_only": pred_temporal_goals,
@@ -801,7 +835,7 @@ def walk_forward_compare(
             for arm_name, arm_prediction in arm_predictions.items():
                 xg_record = (_probs(arm_prediction), outcome)
                 xg_arm_records[arm_name].append(xg_record)
-                if arm_prediction.get("xg_used"):
+                if score_this_fixture and arm_prediction.get("xg_used"):
                     xg_arm_usage[arm_name] += 1
                     if arm_prediction.get("xg_modelled_used"):
                         xg_arm_proxy_usage[arm_name] += 1
@@ -817,6 +851,7 @@ def walk_forward_compare(
                         {name: _ClusteredRecords() for name in xg_arm_names},
                     )
                     bucket[arm_name].set_cluster(cluster_id)
+                    bucket[arm_name].set_enabled(score_this_fixture)
                     bucket[arm_name].append(xg_record)
 
                 league_seasons = xg_strata_records["by_league_season"].setdefault(
@@ -826,19 +861,47 @@ def walk_forward_compare(
                     season, {name: _ClusteredRecords() for name in xg_arm_names}
                 )
                 bucket[arm_name].set_cluster(cluster_id)
+                bucket[arm_name].set_enabled(score_this_fixture)
                 bucket[arm_name].append(xg_record)
 
             records["baseline"].append((_probs(pred_base), outcome))
             records["candidate"].append((_probs(pred_candidate), outcome))
+            records["candidate_with_form"].append((_probs(pred_form), outcome))
             records["temporal_goals_only"].append((_probs(pred_temporal_goals), outcome))
             records["candidate_without_h2h"].append((_probs(pred_without_h2h), outcome))
             records["candidate_without_rest_days"].append((_probs(pred_without_rest), outcome))
             records["candidate_without_h2h_or_rest_days"].append((_probs(pred_without_h2h_rest), outcome))
             market_p, market_source = _market_probs(row_copy, "proportional")
             if market_p:
+                model_probs = _probs(pred_candidate)
                 records["market"].append((market_p, outcome))
-                records["candidate_on_market"].append((_probs(pred_candidate), outcome))
-                market_sources[market_source] = market_sources.get(market_source, 0) + 1
+                records["candidate_on_market"].append((model_probs, outcome))
+                # Research-only fixed-weight blends. These arms are scored on
+                # exactly the same fixtures as the model and market; none is
+                # automatically promoted into production.
+                league_arms = market_blend_by_league.setdefault(
+                    league,
+                    {
+                        name: _ClusteredRecords()
+                        for name in ("model", "market", "blend_25", "blend_50", "blend_75")
+                    },
+                )
+                for league_record in league_arms.values():
+                    league_record.set_cluster(cluster_id)
+                    league_record.set_enabled(score_this_fixture)
+                league_arms["model"].append((model_probs, outcome))
+                league_arms["market"].append((market_p, outcome))
+                for weight, arm_name in (
+                    (0.25, "blend_25"), (0.50, "blend_50"), (0.75, "blend_75"),
+                ):
+                    blended = {
+                        key: weight * model_probs[key] + (1.0 - weight) * market_p[key]
+                        for key in ("H", "D", "A")
+                    }
+                    records[arm_name].append((blended, outcome))
+                    league_arms[arm_name].append((blended, outcome))
+                if score_this_fixture:
+                    market_sources[market_source] = market_sources.get(market_source, 0) + 1
             for method in ("power", "shin"):
                 method_probs, _ = _market_probs(row_copy, method)
                 if method_probs:
@@ -847,7 +910,7 @@ def walk_forward_compare(
             pending.append((
                 home, away, hg, ag, row_copy, no_xg_row,
                 provider_xg_row, proxy_xg_row, stamp,
-                pred_base, pred_candidate, pred_temporal_goals,
+                pred_base, pred_candidate, pred_form, pred_temporal_goals,
                 pred_provider_xg, pred_proxy_xg,
                 pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
                 outcome,
@@ -856,7 +919,7 @@ def walk_forward_compare(
         # Ingest outcomes only after every forecast for this date has been made.
         for (home, away, hg, ag, row_copy, no_xg_row,
              provider_xg_row, proxy_xg_row, match_stamp,
-             pred_base, pred_candidate, pred_temporal_goals,
+             pred_base, pred_candidate, pred_form, pred_temporal_goals,
              pred_provider_xg, pred_proxy_xg,
              pred_without_h2h, pred_without_rest, pred_without_h2h_rest,
              outcome) in pending:
@@ -865,7 +928,7 @@ def walk_forward_compare(
             one_hot = [1.0 if target == cls else 0.0 for cls in range(3)]
             for model, prediction in (
                 (baseline, pred_base), (candidate, pred_candidate),
-                (temporal_goals, pred_temporal_goals),
+                (candidate_form, pred_form), (temporal_goals, pred_temporal_goals),
                 (provider_xg_only, pred_provider_xg),
                 (proxy_xg_only, pred_proxy_xg),
                 (candidate_no_h2h, pred_without_h2h),
@@ -879,6 +942,7 @@ def walk_forward_compare(
                 )
             baseline.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             candidate.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
+            candidate_form.add(home, away, hg, ag, row_copy, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             temporal_goals.add(home, away, hg, ag, no_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             provider_xg_only.add(home, away, hg, ag, provider_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
             proxy_xg_only.add(home, away, hg, ag, proxy_xg_row, match_num=index, total=len(prepared), match_date=match_stamp.isoformat())
@@ -953,6 +1017,11 @@ def walk_forward_compare(
     )
     base_metrics, candidate_metrics = metrics["baseline"], metrics["candidate"]
     temporal_metrics = metrics["temporal_goals_only"]
+    form_metrics = metrics["candidate_with_form"]
+    form_paired = _paired_differences(
+        records["candidate_with_form"], records["candidate"],
+        bootstrap_samples=bootstrap_samples, seed=55204,
+    )
     xg_arm_metrics = {
         name: _metrics(value, bootstrap_samples=xg_bs, seed=61000 + index)
         for index, (name, value) in enumerate(xg_arm_records.items())
@@ -1046,12 +1115,13 @@ def walk_forward_compare(
 
     return {
         "n": len(prepared),
+        "evaluation_n": scored_rows,
         "skipped": skipped,
         "xg_rows_available": xg_eligible_rows,
         "xg_provider_rows_available": xg_provider_rows,
         "xg_proxy_rows_available": xg_proxy_rows,
         "xg_forecasts_used": xg_forecasts,
-        "xg_usage_share": xg_forecasts / len(prepared) if prepared else None,
+        "xg_usage_share": xg_forecasts / scored_rows if scored_rows else None,
         "xg_ablation": {
             "arms": xg_arm_metrics,
             "paired_differences": xg_arm_pairs,
@@ -1061,7 +1131,7 @@ def walk_forward_compare(
                     "forecasts_using_xg": xg_arm_usage[name],
                     "provider_xg_used": xg_arm_provider_usage[name],
                     "proxy_xg_used": xg_arm_proxy_usage[name],
-                    "share": xg_arm_usage[name] / len(prepared) if prepared else None,
+                    "share": xg_arm_usage[name] / scored_rows if scored_rows else None,
                 }
                 for name in xg_arm_names
             },
@@ -1078,11 +1148,87 @@ def walk_forward_compare(
             ),
         },
         "feature_ablation": feature_ablation,
+        "recent_form_ablation": {
+            "candidate": form_metrics,
+            "paired_vs_base_model": form_paired,
+            "configured_research_weight": 0.10,
+            "production_weight": 0.0,
+            "promotion_note": (
+                "Recent form is research-only. Promote only after a separate untouched "
+                "chronological holdout improves both Brier and Log Loss with adequate "
+                "matchday coverage and league/season stability."
+            ),
+        },
         "baseline": base_metrics,
         "candidate": candidate_metrics,
         "temporal_goals_only": temporal_metrics,
         "market": metrics["market"],
         "candidate_on_market_rows": metrics["candidate_on_market"],
+        "market_blends": {
+            "weights_model_market": {
+                "0.25": {
+                    "metrics": metrics["blend_25"],
+                    "vs_model": _paired_differences(
+                        records["blend_25"], records["candidate_on_market"],
+                        bootstrap_samples=market_bs, seed=57025,
+                    ),
+                    "vs_market": _paired_differences(
+                        records["blend_25"], records["market"],
+                        bootstrap_samples=market_bs, seed=58025,
+                    ),
+                },
+                "0.50": {
+                    "metrics": metrics["blend_50"],
+                    "vs_model": _paired_differences(
+                        records["blend_50"], records["candidate_on_market"],
+                        bootstrap_samples=market_bs, seed=57050,
+                    ),
+                    "vs_market": _paired_differences(
+                        records["blend_50"], records["market"],
+                        bootstrap_samples=market_bs, seed=58050,
+                    ),
+                },
+                "0.75": {
+                    "metrics": metrics["blend_75"],
+                    "vs_model": _paired_differences(
+                        records["blend_75"], records["candidate_on_market"],
+                        bootstrap_samples=market_bs, seed=57075,
+                    ),
+                    "vs_market": _paired_differences(
+                        records["blend_75"], records["market"],
+                        bootstrap_samples=market_bs, seed=58075,
+                    ),
+                },
+            },
+            "by_league": {
+                league: {
+                    weight: {
+                        "metrics": _metrics(
+                            arms["blend_" + weight.split(".")[1]],
+                            bootstrap_samples=min(market_bs, 250),
+                            seed=59000 + league_index * 10 + weight_index,
+                        ),
+                        "vs_model": _paired_differences(
+                            arms["blend_" + weight.split(".")[1]], arms["model"],
+                            bootstrap_samples=min(market_bs, 250),
+                            seed=60000 + league_index * 10 + weight_index,
+                        ),
+                        "vs_market": _paired_differences(
+                            arms["blend_" + weight.split(".")[1]], arms["market"],
+                            bootstrap_samples=min(market_bs, 250),
+                            seed=61000 + league_index * 10 + weight_index,
+                        ),
+                    }
+                    for weight_index, weight in enumerate(("0.25", "0.50", "0.75"))
+                }
+                for league_index, (league, arms) in enumerate(sorted(market_blend_by_league.items()))
+            },
+            "note": (
+                "Research-only fixed model/market weights, evaluated on identical "
+                "chronological fixtures and broken out by league. Negative Brier/log-loss "
+                "differences favour the blend; no production probability or betting gate is changed."
+            ),
+        },
         "market_sources": market_sources,
         "goals_over25": goals_over25_metrics,
         "goals_over25_market": goals_over25_market_metrics,

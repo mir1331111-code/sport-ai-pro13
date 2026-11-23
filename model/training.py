@@ -103,11 +103,22 @@ def train_engine_chronologically(
     rows: list[dict],
     *,
     on_progress=None,
+    processed_offset: int = 0,
+    total_count: int | None = None,
 ) -> dict[str, int]:
-    """Train all leagues in global calendar order with same-day batch isolation."""
+    """Train chronologically, optionally continuing absolute progress counters."""
     if not isinstance(rows, list):
         raise TypeError("rows must be a list")
+    processed_offset = int(processed_offset)
+    if processed_offset < 0:
+        raise ValueError("processed_offset must be non-negative")
     total = len(rows)
+    absolute_total = (
+        int(total_count) if total_count is not None
+        else processed_offset + total
+    )
+    if absolute_total < processed_offset + total:
+        raise ValueError("total_count is smaller than the absolute processed total")
     processed = 0
     days = 0
     cursor = 0
@@ -118,8 +129,8 @@ def train_engine_chronologically(
             end += 1
         batch = rows[cursor:end]
         for offset, item in enumerate(batch):
-            item["match_num"] = processed + offset
-            item["total"] = total
+            item["match_num"] = processed_offset + processed + offset
+            item["total"] = absolute_total
 
         # Engine forecasts every match on this date from the state as it stood
         # before any result from that date was admitted.
@@ -134,7 +145,7 @@ def train_engine_chronologically(
         days += 1
         cursor = end
         if on_progress is not None:
-            on_progress(processed, total)
+            on_progress(processed_offset + processed, absolute_total)
 
-    engine.trained_n = processed
-    return {"trained": processed, "days": days, "skipped": 0}
+    engine.trained_n = processed_offset + processed
+    return {"trained": processed_offset + processed, "days": days, "skipped": 0}

@@ -9,6 +9,11 @@ import re
 import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
+from betting.event_shortlist import build_high_probability_market_events
+from betting.gate_report import (
+    classify_card, near_misses, render_gate_details_html,
+    render_near_misses_html, render_status_legend,
+)
 from data.fixture_time import app_timezone
 from config import (
     APP_VERSION, DB_FILE, LLM_PROVIDERS, MIN_FAVORITE_HISTORY,
@@ -139,6 +144,74 @@ def dashboard_strong_events(
     )
 
 
+def dashboard_all_market_candidates(
+    cards, *, min_probability=STRONG_FORECAST_MIN_PROB,
+    min_odds=MIN_BET_ODDS, limit=30,
+):
+    """Return supported cross-market forecasts with real quotes at the user's floor."""
+    return build_high_probability_market_events(
+        cards,
+        min_probability=min_probability,
+        min_odds=min_odds,
+        limit=limit,
+    )
+
+
+def all_market_candidates_html(events):
+    """Render cross-market strong forecasts while separating unvalidated candidates."""
+    if not events:
+        return (
+            "<div class='neo-empty-cell'>"
+            "Пока нет прогнозов одновременно с вероятностью не ниже "
+            f"{STRONG_FORECAST_MIN_PROB:.0%}, коэффициентом от {MIN_BET_ODDS:.2f}, "
+            "подтверждённым букмекером и достаточной историей."
+            "</div>"
+        )
+    rows = []
+    verified = sum(bool(item.get("value_verified")) for item in events)
+    for item in events:
+        probability = num(item.get("probability"))
+        odds = num(item.get("odds"))
+        if probability is None or odds is None:
+            continue
+        status = (
+            "<span class='neo-bet-status approved'>ПРОВЕРЕННЫЙ VALUE</span>"
+            if item.get("value_verified") else
+            "<span class='neo-bet-status blocked'>КАНДИДАТ · РЫНОК НЕ ПРОВЕРЕН</span>"
+        )
+        sample = (
+            f"{int(item.get('history_matches') or 0)} матчей лиги"
+            if int(item.get("history_matches") or 0) > 0
+            else f"история команд {int(item.get('team_samples') or 0)}"
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{esc(item.get('date') or '—')} {esc(item.get('time') or '')}</td>"
+            f"<td>{esc(item.get('league') or '—')}</td>"
+            f"<td><b>{esc(item.get('match') or '—')}</b></td>"
+            f"<td>{esc(item.get('family_label') or '—')}</td>"
+            f"<td><b>{esc(item.get('pick') or '—')}</b></td>"
+            f"<td><b>{probability:.1%}</b></td>"
+            f"<td><b>{odds:.2f}</b></td>"
+            f"<td>{esc(item.get('bookmaker') or '—')}</td>"
+            f"<td>{status}</td>"
+            f"<td>{esc(sample)}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='neo-table-scroll'><table class='neo-match-table'>"
+        "<thead><tr><th>Время</th><th>Лига</th><th>Матч</th><th>Рынок</th>"
+        "<th>Исход</th><th>Вероятность</th><th>Коэф.</th><th>Букмекер</th>"
+        "<th>Статус</th><th>История</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
+        f"<div class='neo-table-footer'>Показано {len(rows)} кандидатов. "
+        f"Подтверждённый Value: {verified}. Остальные имеют модельную вероятность и цену, "
+        "но ещё не прошли отдельный benchmark именно этого рынка. "
+        "Не считать их подтверждёнными ставками.</div>"
+    )
+
+
 def strong_events_html(events):
     """Render the actionable strong-event shortlist with transparent metrics."""
     if not events:
@@ -171,6 +244,57 @@ def strong_events_html(events):
         "<thead><tr><th>Время</th><th>Лига</th><th>Матч</th><th>Событие</th>"
         "<th>Коэф.</th><th>Вероятность</th><th>EV</th><th>Edge</th>"
         "<th>История Д/Г</th></tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )
+
+
+def best_matches_html(items):
+    """Render the highest-quality team-supported forecasts independently of bet approval."""
+    if not items:
+        return (
+            "<div class='neo-empty-cell'>"
+            "В выбранном периоде нет матчей, одновременно имеющих подтверждённую "
+            f"историю дом/выезд не менее {MIN_FAVORITE_HISTORY} игр и фаворита от 52%. "
+            "Слабые и prior-only прогнозы в этот рейтинг не добавляются."
+            "</div>"
+        )
+    rows = []
+    for number, item in enumerate(items, start=1):
+        card = item.get("card") if isinstance(item, dict) else {}
+        card = card if isinstance(card, dict) else {}
+        calibration = (
+            f"Да · n={int(item.get('calibration_matches') or 0)}"
+            if item.get("calibration_ready")
+            else "нет · сырая вероятность"
+        )
+        probability = num(item.get("probability"))
+        margin = num(item.get("probability_margin"))
+        quality = num(item.get("quality_score"))
+        probability_text = f"{probability:.1%}" if probability is not None else "—"
+        margin_text = f"{margin:.1%}" if margin is not None else "—"
+        quality_text = f"{quality:.0f}/100" if quality is not None else "—"
+        rows.append(
+            "<tr>"
+            f"<td>{number}</td>"
+            f"<td>{esc(card.get('date') or card.get('date_iso') or '—')} "
+            f"{esc(card.get('time') or '')}</td>"
+            f"<td>{esc(card.get('league') or card.get('div') or '—')}</td>"
+            f"<td><b>{esc(match_name(card))}</b></td>"
+            f"<td><b>{esc(item.get('label') or item.get('pick') or '—')}</b></td>"
+            f"<td>{probability_text}</td>"
+            f"<td>{margin_text}</td>"
+            f"<td>{int(item.get('home_sample') or 0)}/"
+            f"{int(item.get('away_sample') or 0)}</td>"
+            f"<td>{quality_text}</td>"
+            f"<td>{esc(calibration)}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='neo-table-scroll'><table class='neo-match-table'>"
+        "<thead><tr><th>№</th><th>Время</th><th>Лига</th><th>Матч</th>"
+        "<th>Наиболее вероятный исход</th><th>Вероятность</th><th>Отрыв от 2-го</th>"
+        "<th>История Д/Г</th><th>Качество</th><th>Калибровка</th></tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table></div>"
     )
@@ -598,6 +722,11 @@ def _https_image_url(value):
 def _forecast_rejection_reason(card):
     """Explain why a visible forecast is not an approved bet."""
     reasons = []
+    if card.get("model_support_status") in {"prior_only", "league_only"}:
+        return (
+            "нет истории завершённых матчей по этому турниру: показанный общий prior "
+            "не является прогнозом по данным команд"
+        )
     selection_note = str(card.get("_daily_selection_note") or "").strip()
     if selection_note:
         selection_note = selection_note.replace("Ознакомительный прогноз · ", "", 1)
@@ -635,10 +764,11 @@ def _forecast_rejection_reason(card):
 
 
 def _match_table_row(card, *, preview_only=False):
-    prediction = favorite(card) or {}
+    unsupported = card.get("model_support_status") in {"prior_only", "league_only"}
+    prediction = {} if unsupported else (favorite(card) or {})
     values = []
     for key in ("p1", "px", "p2"):
-        value = num(card.get(key))
+        value = None if unsupported else num(card.get(key))
         values.append(
             f"<span class='neo-prob-pill'>{f'{value:.0%}' if value is not None and 0 <= value <= 1 else '—'}</span>"
         )
@@ -651,8 +781,8 @@ def _match_table_row(card, *, preview_only=False):
             f"<td class='neo-odds'>{f'{price:.2f}' if price is not None else '—'}</td>"
         )
 
-    pick = str(prediction.get("pick") or "—")
-    probability = num(prediction.get("probability"))
+    pick = "НЕТ ПРОГНОЗА · НЕТ ИСТОРИИ КОМАНД" if unsupported else str(prediction.get("pick") or "—")
+    probability = None if unsupported else num(prediction.get("probability"))
     pick_text = f"{pick} · {probability:.0%}" if probability is not None else pick
     verdict = card.get("verdict") if isinstance(card.get("verdict"), dict) else {}
     value_passed = bool(
@@ -726,6 +856,14 @@ def _match_table_row(card, *, preview_only=False):
 
     home_name = str(card.get("home_team") or "Хозяева")
     away_name = str(card.get("away_team") or "Гости")
+    chosen = card.get("best")
+    market_code = (
+        str(chosen[0]).upper()
+        if isinstance(chosen, (tuple, list)) and chosen else ""
+    )
+    gate_family = "goals" if market_code == "OU" else "winner"
+    gate_status, gate_results = classify_card(card, gate_family)
+    gate_details = render_gate_details_html(gate_status, gate_results)
     return (
         "<tr>"
         f"<td class='neo-time'>{esc(kickoff_text or '—')}</td>"
@@ -740,7 +878,7 @@ def _match_table_row(card, *, preview_only=False):
         "</div></td>"
         + "".join(f"<td class='neo-prob'>{value}</td>" for value in values)
         + "".join(odds_cells)
-        + f"<td class='neo-pick-cell'><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span>{bet_status_html}{selection_html}</td>"
+        + f"<td class='neo-pick-cell'><span class='neo-pick {'value' if value_passed else ''}'>{esc(pick_text)}</span>{bet_status_html}{selection_html}{gate_details}</td>"
         + "</tr>"
     )
 
@@ -1133,6 +1271,16 @@ def render():
 
     scan_meta = data.get("scan_meta") if isinstance(data.get("scan_meta"), dict) else {}
     if scan_meta:
+        support_counts = scan_meta.get("model_support_counts") if isinstance(scan_meta.get("model_support_counts"), dict) else {}
+        unsupported_count = (
+            int(support_counts.get("prior_only") or 0)
+            + int(support_counts.get("league_only") or 0)
+        )
+        if unsupported_count:
+            st.caption(
+                f"Матчей без истории одной или обеих команд: {unsupported_count}. "
+                "Общий prior не считается прогнозом: вероятности П1/X/П2 скрыты, фаворит не выбирается."
+            )
         scan_days = max(1, int(scan_meta.get("horizon_days") or 1))
         scan_from = str(scan_meta.get("date_from") or "—")
         scan_to = str(scan_meta.get("date_to_inclusive") or scan_from)
@@ -1147,7 +1295,108 @@ def render():
     if probability_warning:
         st.warning(probability_warning)
 
+    market_cards_in_view = [
+        item.get("card") for item in ranked_events
+        if isinstance(item.get("card"), dict)
+    ]
+    all_market_candidates = dashboard_all_market_candidates(market_cards_in_view)
+    st.markdown(
+        "<section class='neo-panel neo-matches-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>ALL MARKETS · ODDS ≥ 1.70</span>"
+        "<h3>Сильные прогнозы на любых рынках</h3>"
+        "<div class='neo-ranking-disclaimer'>"
+        f"Показываем исходы с вероятностью от {STRONG_FORECAST_MIN_PROB:.0%}, "
+        f"реальным коэффициентом от {MIN_BET_ODDS:.2f} и достаточной историей. "
+        "Рынок и ставка не ограничены победой: голы, обе забьют, угловые и карточки. "
+        "65%+ — модельная оценка, а не доказанная историческая проходимость. "
+        "Проверенный Value отделён от кандидатов, которые ещё не прошли benchmark рынка; "
+        "непроверенные кандидаты не являются рекомендацией ставить."
+        "</div></div>"
+        f"<span class='neo-count-pill'>{len(all_market_candidates)} кандидатов</span></div>"
+        + all_market_candidates_html(all_market_candidates)
+        + "</section>",
+        unsafe_allow_html=True,
+    )
+
+    # Keep the independent Grok analysis visible near the top of Dashboard,
+    # rather than hiding it after dozens of forecast-feed rows.
+    st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
+
+    best_match_items = [
+        item for item in ranked_events
+        if item.get("strict_eligible")
+        and item.get("history_ready")
+        and item.get("probability_ready")
+    ][:10]
+    st.markdown(
+        "<section class='neo-panel neo-matches-panel'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>BEST MATCHES · MODEL RANKING</span>"
+        "<h3>Лучшие матчи · рейтинг качества прогноза</h3>"
+        "<div class='neo-ranking-disclaimer'>"
+        f"Показаны до 10 лучших матчей выбранного периода: история хозяев дома и гостей "
+        f"в гостях ≥{MIN_FAVORITE_HISTORY}, модельный фаворит ≥52%, "
+        "сортировка по качеству данных, вероятности и отрыву от второго исхода. "
+        "Это рейтинг прогнозов, а не список ставок. Калибровка указана отдельно."
+        "</div></div>"
+        f"<span class='neo-count-pill'>{len(best_match_items)} матчей</span></div>"
+        + best_matches_html(best_match_items)
+        + "</section>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        "<section class='neo-panel neo-status-legend'>"
+        "<div class='neo-panel-heading'><div>"
+        "<span class='neo-panel-kicker'>FORECAST STATUS · GATE LEGEND</span>"
+        "<h3>Что означает статус прогноза</h3>"
+        "</div></div></section>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(render_status_legend())
     strong_events = dashboard_strong_events(cards)
+    if not strong_events:
+        diagnostic_cards = [
+            item.get("card") for item in ranked_events
+            if isinstance(item.get("card"), dict)
+        ]
+        nearest = [
+            item
+            for family in ("winner", "goals", "btts", "corners", "cards")
+            for item in near_misses(diagnostic_cards, family, limit=3)
+        ]
+        nearest.sort(key=lambda item: (
+            len(item.get("failed_gates") or []),
+            -float(item.get("probability") or 0.0),
+        ))
+        unique_nearest = []
+        seen = set()
+        for item in nearest:
+            card = item.get("card") or {}
+            identity = (
+                str(card.get("fixture_id") or card.get("date_iso") or ""),
+                str(card.get("home_team") or ""),
+                str(card.get("away_team") or ""),
+                str(item.get("family") or ""),
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            unique_nearest.append(item)
+            if len(unique_nearest) >= 3:
+                break
+        st.markdown(
+            "<section class='neo-panel neo-near-miss-panel'>"
+            "<div class='neo-panel-heading'><div>"
+            "<span class='neo-panel-kicker'>NEAR MISSES · GATE DIAGNOSTICS</span>"
+            "<h3>Ближайшие кандидаты и недостающие проверки</h3>"
+            "<div class='neo-ranking-disclaimer'>Фильтры не ослаблены: панель показывает, какого именно гейта не хватает до допуска.</div>"
+            "</div></div>"
+            + render_near_misses_html(unique_nearest)
+            + "</section>",
+            unsafe_allow_html=True,
+        )
     st.markdown(
         "<section class='neo-panel neo-matches-panel'>"
         "<div class='neo-panel-heading'><div>"
@@ -1190,9 +1439,10 @@ def render():
             f"<h3>{esc(table_title)}</h3></div>"
             f"<span class='neo-count-pill'>{len(selected_event_cards)} ставок</span></div>"
             "<div class='neo-ranking-disclaimer'>"
-            "<b>Основной список содержит только допущенные ставки.</b> "
-            "Прогнозы без истории, без полной линии 1X2 или без прохождения Value/EV/Edge/Kelly "
-            "здесь не показываются."
+            "<b>Ниже — отдельный список допущенных ставок 1X2.</b> "
+            "Сильные прогнозы на голы, обе забьют, угловые и карточки вынесены в общую таблицу "
+            "всех рынков выше. В неё не попадают исходы с коэффициентом ниже 1.70; "
+            "непроверенные рынки не помечаются как готовые ставки."
             "</div>"
             "<div class='neo-table-scroll'><table class='neo-match-table'><thead><tr>"
             "<th>Время</th><th>Лига</th><th>Матч</th><th>П1</th><th>X</th><th>П2</th>"
@@ -1256,7 +1506,6 @@ def render():
                     + "</tbody></table></div>",
                     unsafe_allow_html=True,
                 )
-        st.markdown(_grok_panel(cards, data.get("meta") or {}), unsafe_allow_html=True)
 
     with right:
         reliability = snapshot.get("reliability") or {"rows": [], "n": 0}

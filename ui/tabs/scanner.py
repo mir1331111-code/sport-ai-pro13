@@ -58,7 +58,7 @@ from model.market_forecasts import count_over_probability, is_half_line
 from betting.verdict import build_verdict
 from betting.best_picks import best_value_market, best_value_markets
 from betting.ranking import (
-    favorite_display, model_favorite, rank_model_favorites,
+    favorite_display, model_favorite, rank_best_fixtures, rank_model_favorites,
     rank_model_favorites_with_minimum, rank_score,
 )
 from betting.market_ranking import market_forecast_summary, rank_market_forecasts
@@ -1860,6 +1860,51 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         top_match_candidates = select_top_matches(
             market_pool, limit=MAX_TOP_MATCHES, min_team_history=MIN_FAVORITE_HISTORY,
         )
+        best_match_diagnostics = {}
+        best_match_pool = rank_best_fixtures(
+            market_pool,
+            now=datetime.now(app_timezone()),
+            limit=None,
+            min_sample_games=MIN_FAVORITE_HISTORY,
+            min_probability=0.52,
+            include_limited_history=False,
+            require_calibration=False,
+            diagnostics=best_match_diagnostics,
+        )
+        best_matches = best_match_pool[:10]
+
+        # A passable BET is not just a high model probability: require the
+        # same conservative portfolio gates used by the automatic portfolio.
+        passable_bets = _qualified_bet_cards(market_pool)
+        try:
+            passable_bets.sort(key=lambda c: (
+                -rank_score(c),
+                -float((c.get("verdict") or {}).get("ev") or -1),
+                -float((c.get("verdict") or {}).get("prob") or 0),
+            ))
+        except Exception:
+            passable_bets.sort(
+                key=lambda c: -float((c.get("verdict") or {}).get("ev") or -1)
+            )
+        passable_bets = passable_bets[:10]
+
+        passable_diagnostics = {}
+        passable_pool = rank_best_fixtures(
+            market_pool,
+            now=datetime.now(app_timezone()),
+            limit=None,
+            min_sample_games=MIN_FAVORITE_HISTORY,
+            min_probability=STRONG_FORECAST_MIN_PROB,
+            include_limited_history=True,
+            require_calibration=True,
+            diagnostics=passable_diagnostics,
+        )
+        passable_watchlist = [
+            item for item in passable_pool
+            if item.get("history_ready")
+            and item.get("probability_ready")
+            and not item.get("calibration_ready")
+        ][:10]
         forecast_counts = {
             family: len(items) for family, items in ranked_forecast_pool.items()
         }
@@ -1876,7 +1921,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"Угловые · прогнозы {forecast_counts['corners']} (сильных {strong_forecast_counts['corners']}) / Value {signal_counts['corners']} / цены {quote_counts['corners']}",
             f"Карточки · прогнозы {forecast_counts['cards']} (сильных {strong_forecast_counts['cards']}) / Value {signal_counts['cards']} / цены {quote_counts['cards']}",
             f"Форы · котировки {quote_counts['handicap']}",
-            f"🏆 TOP MATCHES · AI {len(top_match_candidates)}/{MAX_TOP_MATCHES}",
+            f"🏆 ЛУЧШИЕ / VALUE · {len(best_matches)}/{len(passable_bets)}",
+            f"🔎 AI-ДОСЬЕ · {len(top_match_candidates)}/{MAX_TOP_MATCHES}",
         ])
 
         def _market_recommendation(card, family):
@@ -2169,6 +2215,162 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 )
 
         with market_tabs[8]:
+            st.subheader("Лучшие матчи и проходные ставки")
+            st.caption(
+                "Лучшие матчи — прогнозы с командной поддержкой, минимум 10 домашних "
+                "игр хозяев и 10 выездных игр гостей, ранжированные по вероятности, "
+                "отрыву от второго исхода, истории, xG и полноте линии. "
+                "Проходные ставки — отдельный, более строгий фильтр: подтверждённый состав "
+                "обеих команд и судья, согласованная котировка одного букмекера, "
+                "проверка рынка, положительные Edge и EV не ниже 5% и допустимый Kelly."
+            )
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Лучшие матчи", len(best_matches))
+            m2.metric("Проходные Value-ставки", len(passable_bets))
+            m3.metric("Отсечены prior/league-only", best_match_diagnostics.get("unsupported_model", 0))
+
+            st.markdown("**🏆 Лучшие матчи по качеству прогноза**")
+            if best_matches:
+                best_rows = []
+                for number, item in enumerate(best_matches, start=1):
+                    card = item.get("card") or {}
+                    best_rows.append({
+                        "№": number,
+                        "Матч": card.get("match") or (
+                            f"{card.get('home_team') or card.get('HomeTeam') or 'Хозяева'} — "
+                            f"{card.get('away_team') or card.get('AwayTeam') or 'Гости'}"
+                        ),
+                        "Лига": card.get("league") or card.get("div") or "—",
+                        "Начало": " ".join(
+                            str(value) for value in (card.get("date") or card.get("date_iso"), card.get("time"))
+                            if value
+                        ),
+                        "Наиболее вероятный исход": item.get("label") or item.get("pick") or "—",
+                        "Вероятность": f"{float(item.get('probability') or 0):.1%}",
+                        "Отрыв от 2-го": f"{float(item.get('probability_margin') or 0):.1%}",
+                        "История дом/выезд": f"{item.get('home_sample', 0)}/{item.get('away_sample', 0)}",
+                        "Калибровка": (
+                            f"применена · {item.get('calibration_matches', 0)}"
+                            if item.get("calibration_ready")
+                            else f"не применена · {item.get('calibration_matches', 0)}"
+                        ),
+                        "Качество": f"{float(item.get('quality_score') or 0):.1f}/100",
+                    })
+                st.dataframe(
+                    best_rows,
+                    width="stretch",
+                    hide_index=True,
+                    height=min(520, 42 + 36 * len(best_rows)),
+                )
+            else:
+                st.info(
+                    "Нет матчей с подтверждённой командной историей и вероятностью фаворита от 52%. "
+                    "Prior-only и league-only прогнозы в этот список не допускаются."
+                )
+
+            st.divider()
+            st.markdown("**✅ Проходные ставки · только проверенный Value**")
+            if passable_bets:
+                bet_rows = []
+                for number, card in enumerate(passable_bets, start=1):
+                    best = card.get("best") or ()
+                    verdict = card.get("verdict") or {}
+                    if len(best) < 6:
+                        continue
+                    try:
+                        odd = float(best[2])
+                        ev = float(best[3])
+                        probability = float(best[4])
+                        stake = float(best[5])
+                    except (TypeError, ValueError):
+                        continue
+                    edge = verdict.get("edge")
+                    try:
+                        edge_text = f"{float(edge):+.1%}"
+                    except (TypeError, ValueError):
+                        edge_text = "—"
+                    context = card.get("context_quality") or {}
+                    bet_rows.append({
+                        "№": number,
+                        "Матч": card.get("match") or card.get("match_ru") or "—",
+                        "Лига": card.get("league") or card.get("div") or "—",
+                        "Рынок": best[0],
+                        "Выбор": best[1],
+                        "Кэф": f"{odd:.2f}",
+                        "Вероятность": f"{probability:.1%}",
+                        "EV": f"{ev:+.1%}",
+                        "Edge": edge_text,
+                        "Составы / судья": (
+                            "подтверждены"
+                            if context.get("strong_value_eligible") else "не подтверждены"
+                        ),
+                        "Источник цены": (
+                            (card.get("market_odds_source_by_pick") or {}).get(str(best[1]))
+                            or card.get("best_odds_source")
+                            or card.get("odds_source")
+                            or "—"
+                        ),
+                        "Размер ставки": f"{stake:.2f}",
+                    })
+                if bet_rows:
+                    st.dataframe(
+                        bet_rows,
+                        width="stretch",
+                        hide_index=True,
+                        height=min(520, 42 + 36 * len(bet_rows)),
+                    )
+                else:
+                    st.info("Нет корректно сформированных Value-строк для этого скана.")
+            else:
+                st.info(
+                    "В текущем скане нет ставки, прошедшей все фильтры Value. "
+                    "Высокая вероятность без проверенного рынка и цены не считается проходной ставкой."
+                )
+
+            if passable_watchlist:
+                st.divider()
+                st.markdown("**🔎 На наблюдение — сильный прогноз, но калибровка ещё не допущена**")
+                watch_rows = []
+                for number, item in enumerate(passable_watchlist, start=1):
+                    card = item.get("card") or {}
+                    pick = str(item.get("pick") or "")
+                    quoted = (card.get("market_odds") or {}).get(pick)
+                    try:
+                        odds_text = f"{float(quoted):.2f}" if quoted is not None else "—"
+                    except (TypeError, ValueError):
+                        odds_text = "—"
+                    watch_rows.append({
+                        "№": number,
+                        "Матч": card.get("match") or card.get("match_ru") or "—",
+                        "Лига": card.get("league") or card.get("div") or "—",
+                        "Исход": item.get("label") or pick,
+                        "Вероятность": f"{float(item.get('probability') or 0):.1%}",
+                        "История дом/выезд": f"{item.get('home_sample', 0)}/{item.get('away_sample', 0)}",
+                        "Кэф": odds_text,
+                        "Калибратор": f"нет · settled n={item.get('calibration_matches', 0)}",
+                    })
+                st.dataframe(
+                    watch_rows,
+                    width="stretch",
+                    hide_index=True,
+                    height=min(420, 42 + 36 * len(watch_rows)),
+                )
+                st.caption(
+                    "Это не Value и не ставка. Варианты показаны отдельно, чтобы не выдавать "
+                    "сырые или shadow-only вероятности за подтверждённый сигнал."
+                )
+
+            st.caption(
+                "Диагностика строгого фильтра фаворитов: "
+                f"в пуле {passable_diagnostics.get('input_cards', 0)} · "
+                f"отсечены prior/league-only {passable_diagnostics.get('unsupported_model', 0)} · "
+                f"не хватает домашней истории {passable_diagnostics.get('insufficient_home_history', 0)} · "
+                f"не хватает выездной истории {passable_diagnostics.get('insufficient_away_history', 0)} · "
+                f"ниже 65% {passable_diagnostics.get('below_probability', 0)} · "
+                f"без калибровки {passable_diagnostics.get('uncalibrated_candidates', 0)}."
+            )
+
+        with market_tabs[9]:
             st.caption(
                 "Независимый список для глубокого анализа: минимум 5 домашних матчей хозяев "
                 "и 5 выездных матчей гостей. Отбор не зависит от фаворита основной модели "
@@ -2590,6 +2792,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 event_filter = st.selectbox(
                     "Показывать",
                     [
+                        "Сильные прогнозы ≥65% и кэф ≥1.70",
                         "Все рынки и события",
                         "Только подтверждённый Value",
                         "Сильные прогнозы ≥65%",
@@ -2598,7 +2801,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     key="scanner_all_market_event_filter",
                 )
                 shown_events = list(events)
-                if event_filter == "Только подтверждённый Value":
+                if event_filter == "Сильные прогнозы ≥65% и кэф ≥1.70":
+                    shown_events = [
+                        item for item in shown_events
+                        if item.get("strong_forecast")
+                        and item.get("odds") is not None
+                        and float(item.get("odds") or 0.0) >= MIN_BET_ODDS
+                        and "sstats" in str(item.get("source") or "").casefold()
+                        and bool(str(item.get("bookmaker") or "").strip())
+                    ]
+                elif event_filter == "Только подтверждённый Value":
                     shown_events = [item for item in shown_events if item["value_verified"]]
                 elif event_filter == "Сильные прогнозы ≥65%":
                     shown_events = [item for item in shown_events if item["strong_forecast"]]
@@ -2649,8 +2861,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     st.info("По выбранному фильтру подходящих событий нет.")
 
                 st.caption(
-                    "*Модельный EV для непроверенных рынков — предварительная оценка по вероятности модели "
-                    "и фактическому коэффициенту. Это не подтверждённый Edge и не рекомендация ставить. "
+                    "*Вероятность ≥65% — оценка модели на доступной истории, а не доказанная фактическая проходимость. "
+                    "Модельный EV для непроверенных рынков — предварительная оценка по вероятности модели и фактическому коэффициенту. "
+                    "Это не подтверждённый Edge и не рекомендация ставить. "
                     "Edge/EV/Келли в статусе «ПРОВЕРЕННЫЙ VALUE» означают прохождение отдельной рыночной проверки."
                 )
                 if events:
@@ -2929,7 +3142,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 history_league_limit = _runtime_int(
                     "sstats_history_max_leagues",
                     "SSTATS_HISTORY_MAX_LEAGUES",
-                    default=30,
+                    default=60,
                     minimum=1,
                 )
                 sstats_history_rows = sstats_historical_matches_for_fixtures(
@@ -2988,7 +3201,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
 
         funnel_counts = {"model": 0, "market_req": 0, "market_got": 0,
                           "bet": 0, "watch": 0, "skip": 0,
-                          "model_only": 0, "estimated": 0, "real": 0}
+                          "model_only": 0, "estimated": 0, "real": 0,
+                          "prior_only": 0, "league_only": 0,
+                          "partial_history": 0, "team_supported": 0}
         logs.append(
             "🎯 Источник букмекерских коэффициентов: только SStats Games/list и Odds/{gameId}; "
             "коэффициенты других провайдеров и импортированные файлы в скане не используются."
@@ -3064,8 +3279,27 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "H": float(P["p1"]), "D": float(P["x"]), "A": float(P["p2"]),
             }
             P_decision = dict(P)
+            model_support_status = str(P.get("model_support_status") or "unknown")
+            if model_support_status == "prior_only":
+                funnel_counts["prior_only"] = funnel_counts.get("prior_only", 0) + 1
+            elif model_support_status == "league_only":
+                funnel_counts["league_only"] = funnel_counts.get("league_only", 0) + 1
+            elif model_support_status == "team_supported":
+                funnel_counts["team_supported"] = funnel_counts.get("team_supported", 0) + 1
+            else:
+                funnel_counts["partial_history"] = funnel_counts.get("partial_history", 0) + 1
+            # A generic 1.5/1.2 goals prior plus a fixed home Elo bonus is not a
+            # match-specific forecast. Keep it visible as a coverage diagnostic,
+            # but do not let online correction, market selection or the ledger
+            # turn it into an apparently informed P1/X/P2 pick.
+            model_bet_history_ready = bool(
+                model_support_status == "team_supported"
+                and int(P.get("league_history_matches") or 0) >= 20
+                and int(P.get("home_venue_history_matches") or 0) >= MIN_FAVORITE_HISTORY
+                and int(P.get("away_venue_history_matches") or 0) >= MIN_FAVORITE_HISTORY
+            )
             learning_preview = None
-            if scan_learning_service is not None:
+            if scan_learning_service is not None and model_support_status == "team_supported":
                 try:
                     learning_preview = scan_learning_service.preview(
                         raw_model_probabilities, as_of=scan_now,
@@ -3367,7 +3601,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 getattr(engine, "winner_market_validation", False)
             )
             market_validation_by_pick = {
-                pick: winner_market_validation for pick in ("П1", "X", "П2")
+                pick: bool(winner_market_validation and model_bet_history_ready)
+                for pick in ("П1", "X", "П2")
             }
             extra_rows = []
 
@@ -3429,7 +3664,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 min_prob, min_edge=max(min_edge, 0.05), min_ev=0.05,
                 bookmaker_by_pick=bookmaker_by_pick,
                 market_validation_by_pick=market_validation_by_pick,
-                context_qualified=context_quality["strong_value_eligible"],
+                context_qualified=bool(
+                    context_quality["strong_value_eligible"] and model_bet_history_ready
+                ),
             )
             best_odds_source = "no_market"
             if selection_odds and candidate_rows:
@@ -3444,7 +3681,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     min_ev=0.05,
                     bookmaker_by_pick=bookmaker_by_pick,
                     market_validation_by_pick=market_validation_by_pick,
-                    context_qualified=context_quality["strong_value_eligible"],
+                    context_qualified=bool(
+                        context_quality["strong_value_eligible"] and model_bet_history_ready
+                    ),
                 )
                 if best is not None:
                     verdict = chosen_verdict
@@ -3477,7 +3716,13 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"({best[0]} · {best_odds_source})"
                 )
             else:
-                if not context_quality.get("strong_value_eligible"):
+                if not model_bet_history_ready:
+                    no_best_reason = (
+                        "нет достаточной истории модели: нужны ≥20 матчей лиги и "
+                        f"≥{MIN_FAVORITE_HISTORY} домашних игр хозяев / гостевых игр гостей; "
+                        "общий prior не допускается к ставкам"
+                    )
+                elif not context_quality.get("strong_value_eligible"):
                     no_best_reason = (
                         "контекстный фильтр Strong/Value: нет подтверждённого стартового XI "
                         "обеих команд и/или назначенного судьи; ставки заблокированы"
@@ -3505,8 +3750,26 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "verdict": verdict, "best": best,
                 "best_by_market": best_by_market,
                 "games": P["games"], "fh": fh, "fa": fa,
-                "probability_calibrated": bool(P.get("probability_calibrated", False)),
-                "calibration_matches": int(P.get("calibration_matches") or 0),
+                "model_support_status": model_support_status,
+                "league_history_matches": int(P.get("league_history_matches") or 0),
+                "home_team_history_matches": int(P.get("home_team_history_matches") or 0),
+                "away_team_history_matches": int(P.get("away_team_history_matches") or 0),
+                "home_venue_history_matches": int(P.get("home_venue_history_matches") or 0),
+                "away_venue_history_matches": int(P.get("away_venue_history_matches") or 0),
+                # Mark a forecast calibrated only when chronological learning
+                # actually promoted the correction into the served probabilities.
+                # A shadow-only adjustment is not a calibrated betting signal.
+                "probability_calibrated": bool(
+                    isinstance(learning_preview, dict)
+                    and learning_preview.get("correction_enabled")
+                ),
+                "calibration_matches": int(
+                    (learning_preview or {}).get("history_n") or 0
+                ),
+                "calibration_status": str(
+                    ((learning_preview or {}).get("learning_report") or {}).get("gate_reason")
+                    or "not_available"
+                ),
                 "fixture_id": r.get("fixture_id"),
                 "sstats_game_id": r.get("sstats_game_id"),
                 "historical_stats": historical_stats,
@@ -4024,6 +4287,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         # market, fixture and daily exposure across every added selection.
 
         logs.append(
+            "🧠 Поддержка модели: "
+            f"полная история команд={funnel_counts.get('team_supported', 0)}, "
+            f"лига без данных одной из команд={funnel_counts.get('league_only', 0)}, "
+            f"частичная история={funnel_counts.get('partial_history', 0)}, "
+            f"prior-only без истории турнира={funnel_counts.get('prior_only', 0)}. "
+            "Матчи без истории обеих команд исключаются из выбора фаворита, Value и журнала основной модели."
+        )
+        logs.append(
             f"🗓 Горизонт последнего скана: {days} календарн. дн. "
             f"({today_date.isoformat()} — {(today_date + timedelta(days=days - 1)).isoformat()}); "
             f"проанализировано в окне={date_filter_counts['inside_horizon']}, "
@@ -4044,6 +4315,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "unique_fixtures": len(rows),
             "analysed_matches": int(date_filter_counts["inside_horizon"]),
             "forecast_cards": len(cards),
+            "model_support_counts": {
+                "prior_only": int(funnel_counts.get("prior_only", 0)),
+                "league_only": int(funnel_counts.get("league_only", 0)),
+                "partial_history": int(funnel_counts.get("partial_history", 0)),
+                "team_supported": int(funnel_counts.get("team_supported", 0)),
+            },
             "date_filter_counts": dict(date_filter_counts),
             "source_counts": {
                 str(name): int(count) for name, count in source_counts.items()
@@ -4094,5 +4371,5 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     finally:
         st.session_state["_scan_in_progress"] = False
     # A completed scan should land on the dashboard with the new results visible.
-    st.session_state["terminal_navigation_v16"] = "🏠 Дашборд"
+    st.session_state["_pending_terminal_navigation_v16"] = "🏠 Дашборд"
     st.rerun()

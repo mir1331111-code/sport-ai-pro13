@@ -150,6 +150,30 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual(xg["provider"]["away_xg_samples"], 5)
         self.assertAlmostEqual(xg["provider"]["home_xg_for_avg"], 1.2)
 
+    def test_historical_features_join_team_aliases_used_by_upcoming_fixtures(self):
+        from model.engine import Engine
+
+        engine = Engine(matrix_n=8, temporal_weighting=False, league_rho_fitting=False)
+        engine.add(
+            "Manchester United", "Brighton & Hove Albion", 2, 0,
+            {"Div": "E0"}, match_date=datetime(2026, 11, 1),
+        )
+        features = historical_features(
+            engine, "Man Utd", "Brighton", league="E0",
+            match_date=datetime(2026, 11, 8),
+        )
+        self.assertEqual(features["home_home_sample"], 1)
+        self.assertEqual(features["away_away_sample"], 1)
+        self.assertIsNotNone(features["home_scored_at_home_avg"])
+        self.assertIsNotNone(features["away_scored_away_avg"])
+
+    def test_team_alias_normalization_is_idempotent_for_engine_canonical_keys(self):
+        from data.team_names import normalize_team
+
+        for name in ("Man Utd", "Manchester United", "man_united",
+                     "Real Madrid", "real_madrid", "Brighton & Hove Albion"):
+            self.assertEqual(normalize_team(normalize_team(name)), normalize_team(name))
+
     def test_normalized_team_index_is_reused_and_invalidated_after_training(self):
         class CountingTeams(dict):
             def __init__(self, *args, **kwargs):
@@ -283,6 +307,30 @@ class IndependentForecastTests(unittest.TestCase):
         self.assertEqual({row["fixture_id"] for row in rows}, {rows[0]["fixture_id"]})
         self.assertTrue(all(row["result"] is None for row in rows))
         self.assertTrue(all(row["kickoff_at"] for row in rows))
+
+    def test_prior_and_league_only_probabilities_are_not_added_to_main_forecast_ledger(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = tmp.name + "/forecasts.sqlite"
+        now = datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc)
+        cards = []
+        for index, status in enumerate(("prior_only", "league_only")):
+            cards.append({
+                "match": f"Unknown Home {index} vs Unknown Away {index}",
+                "match_ru": f"Unknown Home {index} — Unknown Away {index}",
+                "div": "S_UNKNOWN", "league": "Unknown League",
+                "date_iso": "2026-10-25", "time": "16:30",
+                "kickoff_utc": "2026-10-25T16:30:00Z",
+                "fixture_id": f"fixture-{index}",
+                "p1": 0.421, "px": 0.290, "p2": 0.289,
+                "raw_model_probabilities": {"H": 0.421, "D": 0.290, "A": 0.289},
+                "model_support_status": status,
+            })
+        result = record_scan_forecasts(cards, db_path=path, now=now)
+        self.assertEqual(result["main_recorded"], 0)
+        self.assertEqual(result["prior_only_skipped"], 1)
+        self.assertEqual(result["unsupported_history_skipped"], 2)
+        self.assertEqual(ForecastLedger(path).rows(), [])
 
     def test_scan_records_market_recommendation_once(self):
         tmp = tempfile.TemporaryDirectory()

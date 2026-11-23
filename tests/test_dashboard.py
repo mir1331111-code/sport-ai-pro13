@@ -10,6 +10,7 @@ from ui.tabs.dashboard import (
     _match_table_row, _probability_health_note,
     _quality_panel, _reliability_svg, _sparkline_svg,
     dashboard_strong_events, strong_events_html,
+    all_market_candidates_html, dashboard_all_market_candidates,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
 )
 from config import MIN_FAVORITE_HISTORY, DEFAULT_SCAN_HORIZON_DAYS
@@ -22,6 +23,34 @@ class DashboardHelperTests(unittest.TestCase):
 
     def test_scan_defaults_to_three_days(self):
         self.assertEqual(DEFAULT_SCAN_HORIZON_DAYS, 3)
+
+    def test_all_market_dashboard_shortlist_keeps_price_and_validation_status_visible(self):
+        events = [{
+            "date": "23.11", "time": "18:00", "league": "Premier League",
+            "match": "Home — Away", "family_label": "Угловые",
+            "pick": "Угл ТБ 8.5", "probability": 0.81, "odds": 1.90,
+            "bookmaker": "Book A", "history_matches": 120,
+            "team_samples": 12, "value_verified": False,
+            "status_label": "ПРОГНОЗ + КОЭФФИЦИЕНТ · НЕ VALUE",
+        }, {
+            "date": "23.11", "time": "19:00", "league": "Serie A",
+            "match": "Home 2 — Away 2", "family_label": "Победа / 1X2",
+            "pick": "П1", "probability": 0.72, "odds": 1.85,
+            "bookmaker": "Book B", "history_matches": 0,
+            "team_samples": 14, "value_verified": True,
+            "status_label": "ПРОВЕРЕННЫЙ VALUE",
+        }]
+        rendered = all_market_candidates_html(events)
+        self.assertIn("Угловые", rendered)
+        self.assertIn("1.90", rendered)
+        self.assertIn("ПРОВЕРЕННЫЙ VALUE", rendered)
+        self.assertIn("КАНДИДАТ · РЫНОК НЕ ПРОВЕРЕН", rendered)
+        self.assertIn("Подтверждённый Value: 1", rendered)
+
+    def test_all_market_dashboard_shortlist_has_explicit_empty_state(self):
+        rendered = all_market_candidates_html([])
+        self.assertIn("коэффициентом от 1.70", rendered)
+        self.assertIn("достаточной историей", rendered)
 
     def test_dashboard_history_floor_matches_strong_forecast_policy(self):
         self.assertEqual(MIN_FAVORITE_HISTORY, 10)
@@ -50,6 +79,35 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertEqual(len(ranked), 1)
         self.assertFalse(ranked[0]["history_ready"])
         self.assertFalse(ranked[0]["strict_eligible"])
+
+    def test_dashboard_best_matches_render_as_a_separate_forecast_rank(self):
+        from ui.tabs.dashboard import best_matches_html
+
+        items = [{
+            "card": {
+                "date": "22.11 19:00", "time": "19:00",
+                "league": "Premier League",
+                "home_team": "Home FC", "away_team": "Away FC",
+            },
+            "pick": "П1", "label": "Победа Home FC",
+            "probability": 0.74, "probability_margin": 0.31,
+            "home_sample": 12, "away_sample": 11,
+            "quality_score": 84.5,
+            "calibration_ready": True, "calibration_matches": 150,
+        }]
+        rendered = best_matches_html(items)
+        self.assertIn("Home FC", rendered)
+        self.assertIn("74.0%", rendered)
+        self.assertIn("12/11", rendered)
+        self.assertIn("84/100", rendered)
+        self.assertIn("Да · n=150", rendered)
+
+    def test_dashboard_best_matches_empty_state_does_not_invent_candidates(self):
+        from ui.tabs.dashboard import best_matches_html
+
+        rendered = best_matches_html([])
+        self.assertIn("нет матчей", rendered)
+        self.assertIn("prior-only", rendered)
 
     def test_strong_events_require_real_validated_price_probability_and_value(self):
         card = {
@@ -455,6 +513,34 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("КАЧЕСТВО", panel)
         self.assertIn("<strong>—</strong>", panel)
         self.assertNotIn("100%", panel)
+
+
+    def test_dashboard_rows_expose_specific_gate_failures(self):
+        row = _match_table_row({
+            "home_team": "Home FC", "away_team": "Away FC",
+            "p1": 0.72, "px": 0.16, "p2": 0.12,
+            "model_support_status": "team_supported",
+            "independent_features": {
+                "home_home_sample": 12, "away_away_sample": 11,
+            },
+            "context_quality": {
+                "strong_value_eligible": False,
+                "reason": "нет подтверждённого XI",
+            },
+            "winner_market_validation": False,
+            "winner_market_validation_report": {"n": 420},
+            "market_odds": {"П1": 1.9, "X": 3.4, "П2": 4.0},
+            "odds_source": "sstats",
+            "market_odds_source_by_pick": {
+                "П1": "sstats", "X": "sstats", "П2": "sstats",
+            },
+            "bookmaker_by_pick": {
+                "П1": "Book A", "X": "Book A", "П2": "Book A",
+            },
+        }, preview_only=True)
+        self.assertIn("Почему такой статус", row)
+        self.assertIn("420/500", row)
+        self.assertIn("нет подтверждённого XI", row)
 
 
 if __name__ == "__main__":

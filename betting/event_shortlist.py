@@ -334,7 +334,10 @@ def _family_candidates(card: dict, family: str) -> list[dict]:
                 label=f"{_FAMILY_LABELS[family]} {'больше' if match.group(2).upper() == 'Б' else 'меньше'} {line:g}",
                 probability=probability, odds=odds,
                 history_matches=history_n, team_samples=team_n,
-                strong=(probability >= 0.65),
+                strong=(
+                    probability >= 0.65
+                    and bool(summary.get("history_sufficient"))
+                ),
             ))
         if candidates:
             return candidates
@@ -384,6 +387,77 @@ def _approved_candidate(card: dict, family: str) -> dict | None:
         team_samples=int((summary or {}).get("team_samples") or 0),
         strong=bool((summary or {}).get("strong_forecast")),
     )
+
+
+def build_high_probability_market_events(
+    cards: object, *, min_probability: float = 0.65,
+    min_odds: float = 1.70, limit: int = 30,
+) -> list[dict]:
+    """Build cross-market shortlists for well-supported forecasts with real prices.
+
+    These may include unvalidated markets. Their status remains explicit:
+    only value_verified rows have passed the market benchmark and all betting
+    gates; other rows are candidates, not betting recommendations.
+    """
+    if not isinstance(cards, list):
+        return []
+    try:
+        probability_floor = float(min_probability)
+        odds_floor = float(min_odds)
+        cap = max(0, int(limit))
+    except (TypeError, ValueError, OverflowError):
+        return []
+    if not (0.0 < probability_floor < 1.0 and odds_floor > 1.0) or cap == 0:
+        return []
+
+    events = []
+    seen = set()
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        for family in ("winner", "goals", "btts", "corners", "cards"):
+            rows = _family_candidates(card, family)
+            approved = _approved_candidate(card, family)
+            if approved and not any(
+                _canonical_pick(item["pick"]) == _canonical_pick(approved["pick"])
+                for item in rows
+            ):
+                rows.append(approved)
+            for row in rows:
+                try:
+                    probability = float(row.get("probability"))
+                    odds = float(row.get("odds"))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                source = str(row.get("source") or "").casefold()
+                bookmaker = str(row.get("bookmaker") or "").strip()
+                if (
+                    not row.get("strong_forecast")
+                    or probability < probability_floor
+                    or odds < odds_floor
+                    or "sstats" not in source
+                    or not bookmaker
+                ):
+                    continue
+                key = (
+                    row.get("fixture_id"), family,
+                    _canonical_pick(row.get("pick")),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                events.append(row)
+
+    events.sort(key=lambda row: (
+        -int(bool(row.get("value_verified"))),
+        -float(row.get("probability") or 0.0),
+        -int(row.get("history_matches") or 0),
+        -int(row.get("team_samples") or 0),
+        -float(row.get("odds") or 0.0),
+        str(row.get("date") or ""),
+        str(row.get("match") or ""),
+    ))
+    return events[:cap]
 
 
 def build_best_market_events(cards: object, limit: int = 30) -> list[dict]:

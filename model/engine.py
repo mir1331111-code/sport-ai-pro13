@@ -6,6 +6,7 @@ import re
 import unicodedata
 from collections import defaultdict
 
+from data.team_names import normalize_team
 from model.calibration import PlattCalibrator
 from model.temporal import days_since_last_match, estimate_dixon_coles_rho, weighted_mean
 
@@ -101,23 +102,58 @@ def _division_key(value) -> str:
     return str(value or "G").strip().upper() or "G"
 
 
+def _canonical_team_name(team) -> str:
+    """Resolve conservative provider aliases before reading/writing team state."""
+    raw = str(team or "").strip()
+    if not raw:
+        return ""
+    return normalize_team(raw) or raw
+
+
 def _team_state_key(division, team):
-    """Keep team form/Elo/H2H/rest history inside one competition."""
+    """Keep normalized team form/Elo/H2H/rest history inside one competition."""
     code = _division_key(division)
-    name = str(team or "").strip()
+    name = _canonical_team_name(team)
     return name if code == "G" else (code, name)
 
 
 def _h2h_state_key(division, home, away):
+    """Preserve the legacy raw-name key used by existing H2H consumers."""
     code = _division_key(division)
-    return (home, away) if code == "G" else (code, home, away)
+    home_name = str(home or "").strip()
+    away_name = str(away or "").strip()
+    return (
+        (home_name, away_name)
+        if code == "G"
+        else (code, home_name, away_name)
+    )
+
+
+def _canonical_h2h_state_key(division, home, away):
+    """Alias-safe H2H index, separate from the backwards-compatible public map."""
+    code = _division_key(division)
+    home_name = _canonical_team_name(home)
+    away_name = _canonical_team_name(away)
+    return (
+        (home_name, away_name)
+        if code == "G"
+        else (code, home_name, away_name)
+    )
 
 
 class Engine:
-    def __init__(self, matrix_n: int = 12, *, temporal_weighting: bool = True, league_rho_fitting: bool = True):
+    def __init__(
+        self, matrix_n: int = 12, *, temporal_weighting: bool = True,
+        league_rho_fitting: bool = True, form_adjustment_weight: float = 0.0,
+    ):
         self.matrix_n = int(matrix_n)
         self.temporal_weighting = bool(temporal_weighting)
         self.league_rho_fitting = bool(league_rho_fitting)
+        # Disabled in production by default. Walk-forward research arms may
+        # opt in to test whether recent points add information beyond goal rates.
+        self.form_adjustment_weight = max(
+            0.0, min(0.5, float(form_adjustment_weight))
+        )
 
         self.elo: dict = {}
         self.st = defaultdict(_new_team)
@@ -163,6 +199,9 @@ class Engine:
         # Поэтому матч учитывается независимо от того,
         # кто в будущем будет хозяином.
         self.h2h = defaultdict(list)
+        # Canonical alias index is separate so legacy consumers can keep using
+        # the original raw-name self.h2h keys without losing alias-aware lookup.
+        self.h2h_aliases = defaultdict(list)
 
         # Calibration observations and transforms are isolated by competition.
         self.calib_logits = defaultdict(list)
@@ -481,6 +520,16 @@ class Engine:
         self.h2h[away_h2h_key].append(-diff)
         self.h2h[away_h2h_key] = self.h2h[away_h2h_key][-8:]
 
+        # The alias index joins historical H2H rows whose providers use a
+        # different exact spelling for the same club. The public raw-name map
+        # above remains backward-compatible for existing dashboards/tests.
+        alias_home_key = _canonical_h2h_state_key(div, h, a)
+        alias_away_key = _canonical_h2h_state_key(div, a, h)
+        self.h2h_aliases[alias_home_key].append(diff)
+        self.h2h_aliases[alias_home_key] = self.h2h_aliases[alias_home_key][-8:]
+        self.h2h_aliases[alias_away_key].append(-diff)
+        self.h2h_aliases[alias_away_key] = self.h2h_aliases[alias_away_key][-8:]
+
         # Ограничиваем историю команды.
         for team in (home_key, away_key):
             for key in teams[team]:
@@ -508,7 +557,12 @@ class Engine:
         полностью переопределить основную Poisson-модель.
         """
 
-        hist = self.h2h.get(_h2h_state_key(lg, h, a), [])
+        alias_key = _canonical_h2h_state_key(lg, h, a)
+        raw_key = _h2h_state_key(lg, h, a)
+        aliases = getattr(self, "h2h_aliases", {})
+        hist = aliases.get(alias_key) if aliases else None
+        if hist is None:
+            hist = self.h2h.get(raw_key, [])
         n = len(hist)
 
         if n < 6:
@@ -702,6 +756,19 @@ class Engine:
             ),
         )
 
+        # Optional, deliberately disabled-by-default recent-form residual.
+        # It is a research feature, not a production adjustment unless a
+        # chronological ablation justifies a non-zero configured weight.
+        form_weight = float(getattr(self, "form_adjustment_weight", 0.0) or 0.0)
+        if form_weight > 0:
+            form_delta = max(-1.0, min(1.0, fh - fa))
+            lam_g_h = max(
+                0.3, min(5.0, lam_g_h * math.exp(form_weight * form_delta))
+            )
+            lam_g_a = max(
+                0.25, min(4.5, lam_g_a * math.exp(-form_weight * form_delta))
+            )
+
         # ---------------------------------------------------------
         # Rest days
         # ---------------------------------------------------------
@@ -738,7 +805,11 @@ class Engine:
         else:
             # Counterfactual path for live A/B auditing; do not mutate state.
             lam_h, lam_a = lam_g_h, lam_g_a
-            h2h_n = len(self.h2h.get(_h2h_state_key(lg, h, a), []))
+            alias_key = _canonical_h2h_state_key(lg, h, a)
+            aliases = getattr(self, "h2h_aliases", {})
+            h2h_n = len(
+                aliases.get(alias_key, self.h2h.get(_h2h_state_key(lg, h, a), []))
+            )
 
         # ---------------------------------------------------------
         # Elo
@@ -869,6 +940,13 @@ class Engine:
         )
 
         games = min(gh, ga)
+        league_history_matches = min(len(home_samples), len(away_samples))
+        if league_history_matches == 0:
+            model_support_status = "prior_only"
+        elif gh == 0 or ga == 0:
+            model_support_status = "league_only"
+        else:
+            model_support_status = "team_supported"
 
         return {
             "p1": c1,
@@ -891,6 +969,15 @@ class Engine:
 
             "games": games,
             "h2h_n": h2h_n,
+            # Explicitly separate a generic competition prior from an evidence-
+            # supported team forecast. Consumers must not present prior-only
+            # home-leaning probabilities as a match-specific P1 recommendation.
+            "league_history_matches": int(league_history_matches),
+            "home_team_history_matches": int(gh),
+            "away_team_history_matches": int(ga),
+            "home_venue_history_matches": int(len(sh["hs"])),
+            "away_venue_history_matches": int(len(sa["as"])),
+            "model_support_status": model_support_status,
             # A raw probability is not a calibrated confidence estimate.
             # Calibration is competition-specific and only becomes active after
             # sufficient chronological observations in that exact division.
