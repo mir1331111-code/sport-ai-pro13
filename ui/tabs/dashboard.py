@@ -436,6 +436,26 @@ def _grok_panel(cards, meta):
                     f"<b>{esc(independent_pick)}</b> · {esc(comparison)} · "
                     f"модель {esc(card.get('deep_analysis_model') or 'не указана')}</div>"
                 )
+            crosscheck = card.get("ai_crosscheck")
+            if isinstance(crosscheck, dict):
+                value_pick = str(crosscheck.get("validated_value_pick") or "")
+                value_odds = num(crosscheck.get("validated_value_odds"))
+                value_text = (
+                    f"Проверенный Value-селектор: {esc(value_pick)} @ {value_odds:.2f}. "
+                    if value_pick in {"П1", "X", "П2"} and value_odds is not None
+                    else "Проверенный 1X2 Value-сигнал отсутствует. "
+                )
+                ai_value_state = (
+                    "AI совпадает с Value-выбором."
+                    if crosscheck.get("ai_agrees_with_value_pick") is True
+                    else "AI расходится с Value-выбором."
+                    if crosscheck.get("ai_agrees_with_value_pick") is False
+                    else "AI не сравнивался с 1X2 Value-выбором."
+                )
+                body.append(
+                    f"<div class='neo-grok-meta'>{value_text}{esc(ai_value_state)} "
+                    "Диагностика не меняет вероятность, EV, Edge или размер ставки.</div>"
+                )
             for field, label in (
                 ("lineup_assessment", "Составы"),
                 ("injury_assessment", "Травмы / дисквалификации"),
