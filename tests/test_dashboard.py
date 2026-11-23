@@ -323,13 +323,14 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertIn("42%", note)
         self.assertEqual(_probability_health_note(cards[:4]), "")
 
-    def test_grok_panel_never_mislabels_groq_as_grok(self):
-        panel = _grok_panel([], {"llm_provider": "Groq GPT-OSS 20B"})
-        self.assertIn("Grok · независимый анализ", panel)
-        self.assertIn("выбран Groq", panel)
-        self.assertIn("XAI_API_KEY", panel)
+    def test_provider_panel_identifies_groq_120b_without_calling_it_grok(self):
+        panel = _grok_panel([], {"llm_provider": "Groq GPT-OSS 120B"})
+        self.assertIn("Независимый AI-анализ", panel)
+        self.assertIn("Groq", panel)
+        self.assertIn("openai/gpt-oss-120b", panel)
+        self.assertNotIn("XAI_API_KEY", panel)
 
-    def test_grok_panel_renders_only_explicit_xai_analysis(self):
+    def test_provider_panel_hides_stale_xai_analysis_when_groq_is_selected(self):
         panel = _grok_panel([{
             "home_team": "Home FC",
             "away_team": "Away FC",
@@ -343,11 +344,48 @@ class DashboardHelperTests(unittest.TestCase):
                 "risks": "Составы не подтверждены.",
                 "data_quality": "medium",
             },
-        }], {"llm_provider": "Groq GPT-OSS 20B"})
+        }], {"llm_provider": "Groq GPT-OSS 120B"})
+        self.assertNotIn("40.0%", panel)
+        self.assertNotIn("Независимая оценка матча.", panel)
+
+    def test_provider_panel_renders_matching_groq_120b_analysis(self):
+        panel = _grok_panel([{
+            "home_team": "Home FC",
+            "away_team": "Away FC",
+            "p1": 0.55, "px": 0.25, "p2": 0.20,
+            "deep_analysis_provider": "Groq GPT-OSS 120B",
+            "deep_analysis_model": "openai/gpt-oss-120b",
+            "deep_analysis": {
+                "independent_pick": "X",
+                "probabilities": {"П1": 40, "X": 35, "П2": 25},
+                "match_assessment": "Независимая оценка матча.",
+                "risks": "Составы не подтверждены.",
+                "data_quality": "medium",
+            },
+        }], {"llm_provider": "Groq GPT-OSS 120B"})
         self.assertIn("40.0%", panel)
-        self.assertIn("Grok: <b>X</b>", panel)
+        self.assertIn("Groq GPT-OSS 120B", panel)
+        self.assertIn("AI · Groq GPT-OSS 120B", panel)
         self.assertIn("расходится с основной моделью", panel)
         self.assertIn("Независимая оценка матча.", panel)
+
+    def test_provider_panel_renders_matching_xai_analysis(self):
+        panel = _grok_panel([{
+            "home_team": "Home FC",
+            "away_team": "Away FC",
+            "p1": 0.55, "px": 0.25, "p2": 0.20,
+            "deep_analysis_provider": "Grok (x.ai)",
+            "deep_analysis_model": "grok-4.7",
+            "deep_analysis": {
+                "independent_pick": "X",
+                "probabilities": {"П1": 40, "X": 35, "П2": 25},
+                "match_assessment": "Независимая оценка матча.",
+                "risks": "Составы не подтверждены.",
+                "data_quality": "medium",
+            },
+        }], {"llm_provider": "Grok (x.ai)"})
+        self.assertIn("40.0%", panel)
+        self.assertIn("AI · Grok (x.ai)", panel)
 
     def test_match_name_uses_existing_fixture_names(self):
         self.assertEqual(
