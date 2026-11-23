@@ -51,6 +51,104 @@ def _history_catalog():
     return history_years, train_divs
 
 
+def _stable_training_engine_key(
+    matrix_n, *, footballapi_key="", custom_historical_rows=None,
+):
+    """Key only the actual training configuration, never today's fixture slate."""
+    from model.incremental import stable_engine_fingerprint
+
+    history_years, catalogue_divisions = _history_catalog()
+    # Custom archive contents are checked by the immutable training manifest
+    # during an explicit refresh; they must not fragment the fitted-model cache.
+    training_divisions = tuple(catalogue_divisions)
+    key = stable_engine_fingerprint(
+        matrix_n=matrix_n,
+        xg_enabled=bool(str(footballapi_key or "").strip()),
+        divisions=training_divisions,
+        history_years=history_years,
+    )
+    return key, history_years, training_divisions
+
+
+def _legacy_live_slate_engine_key(
+    matrix_n, *, footballapi_key="", custom_historical_rows=None,
+    extra_divisions=None,
+):
+    """Read-only compatibility key written by PR #140; never use it for new writes."""
+    from model.incremental import stable_engine_fingerprint
+
+    base_key, history_years, training_divisions = _stable_training_engine_key(
+        matrix_n,
+        footballapi_key=footballapi_key,
+        custom_historical_rows=custom_historical_rows,
+    )
+    custom_divisions = [
+        str(row.get("Div") or "").strip()
+        for row in (custom_historical_rows or [])
+        if isinstance(row, dict) and str(row.get("Div") or "").strip()
+    ]
+    legacy_divisions = tuple(dict.fromkeys(
+        list(training_divisions)
+        + custom_divisions
+        + [
+            str(value).strip() for value in (extra_divisions or [])
+            if str(value).strip()
+        ]
+    ))
+    if legacy_divisions == training_divisions:
+        return base_key
+    return stable_engine_fingerprint(
+        matrix_n=matrix_n,
+        xg_enabled=bool(str(footballapi_key or "").strip()),
+        divisions=legacy_divisions,
+        history_years=history_years,
+    )
+
+
+def _valid_fitted_engine(candidate):
+    return bool(
+        candidate is not None
+        and hasattr(candidate, "match_stats")
+        and getattr(candidate, "trained_n", 0) > 0
+        and getattr(candidate, "_incremental_manifest", None)
+    )
+
+
+def _promote_stable_engine_cache(candidate, stable_key, logs=None):
+    """Publish a legacy-key engine under the canonical training-only key."""
+    import gzip
+    import os
+    import pickle
+
+    shared = _shared_engine_cache()
+    guard = shared.setdefault("lock", threading.RLock())
+    with guard:
+        shared.setdefault("engines", {})[stable_key] = candidate
+    try:
+        stable_session_key = f"_trained_engine_{stable_key}"
+        st.session_state[stable_session_key] = candidate
+    except Exception:
+        pass
+    try:
+        path = os.path.join(DISK_CACHE_DIR, f"{stable_key}.pkl.gz")
+        os.makedirs(DISK_CACHE_DIR, exist_ok=True)
+        packed = gzip.compress(
+            pickle.dumps({"fp": APP_VERSION, "cache_key": stable_key, "engine": candidate}),
+            compresslevel=1,
+        )
+        temp_path = path + ".tmp"
+        with open(temp_path, "wb") as handle:
+            handle.write(packed)
+        os.replace(temp_path, path)
+        if logs is not None:
+            logs.append("♻️ Существующая модель перенесена на стабильный ключ обучения.")
+    except Exception as exc:
+        if logs is not None:
+            logs.append(
+                f"ℹ️ Совместимый кэш работает в памяти ({type(exc).__name__} при переносе)."
+            )
+
+
 def _validation_divisions(train_divs):
     """Return priority validation leagues in stable order, limited to trained divisions."""
     available = set(train_divs or ())
@@ -731,87 +829,75 @@ def has_cached_engine(
     matrix_n, *, footballapi_key="", custom_historical_rows=None,
     extra_divisions=None,
 ):
-    """Check only the fitted-engine cache; does not read any historical source."""
+    """Check the fitted model without reading history; live leagues are legacy lookup only."""
     import gzip
     import os
     import pickle
-    from config import DISK_CACHE_DIR
-    from model.incremental import stable_engine_fingerprint
 
-    history_years, train_divs = _history_catalog()
-    custom_divisions = [
-        str(row.get("Div") or "").strip()
-        for row in (custom_historical_rows or [])
-        if isinstance(row, dict) and str(row.get("Div") or "").strip()
-    ]
-    stable_divisions = tuple(dict.fromkeys(
-        list(train_divs)
-        + custom_divisions
-        + [
-            str(value).strip() for value in (extra_divisions or [])
-            if str(value).strip()
-        ]
-    ))
-    stable_key = stable_engine_fingerprint(
-        matrix_n=matrix_n,
-        xg_enabled=bool(str(footballapi_key or "").strip()),
-        divisions=stable_divisions,
-        history_years=history_years,
+    stable_key, _, _ = _stable_training_engine_key(
+        matrix_n,
+        footballapi_key=footballapi_key,
+        custom_historical_rows=custom_historical_rows,
     )
+    legacy_key = _legacy_live_slate_engine_key(
+        matrix_n,
+        footballapi_key=footballapi_key,
+        custom_historical_rows=custom_historical_rows,
+        extra_divisions=extra_divisions,
+    )
+    keys = [stable_key]
+    if legacy_key != stable_key:
+        keys.append(legacy_key)
+
     shared = _shared_engine_cache()
     guard = shared.setdefault("lock", threading.RLock())
-    with guard:
-        candidate = shared.setdefault("engines", {}).get(stable_key)
-    if (
-        candidate is not None
-        and hasattr(candidate, "match_stats")
-        and getattr(candidate, "trained_n", 0) > 0
-        and getattr(candidate, "_incremental_manifest", None)
-    ):
-        return True
-
-    try:
-        session_key = f"_trained_engine_{stable_key}"
-        candidate = st.session_state.get(session_key)
-        if (
-            candidate is not None
-            and hasattr(candidate, "match_stats")
-            and getattr(candidate, "trained_n", 0) > 0
-            and getattr(candidate, "_incremental_manifest", None)
-        ):
-            with guard:
-                shared.setdefault("engines", {})[stable_key] = candidate
-            return True
-    except Exception:
-        pass
-
-    path = os.path.join(DISK_CACHE_DIR, f"{stable_key}.pkl.gz")
-    if not os.path.exists(path):
-        return False
-    try:
-        if os.path.getsize(path) > 350 * 1024 * 1024:
-            return False
-        with open(path, "rb") as handle:
-            data = pickle.loads(gzip.decompress(handle.read()))
-        candidate = data.get("engine") if isinstance(data, dict) else None
-        if not (
-            isinstance(data, dict)
-            and data.get("fp") == APP_VERSION
-            and data.get("cache_key") == stable_key
-            and hasattr(candidate, "match_stats")
-            and getattr(candidate, "trained_n", 0) > 0
-            and getattr(candidate, "_incremental_manifest", None)
-        ):
-            return False
+    for key in keys:
         with guard:
-            shared.setdefault("engines", {})[stable_key] = candidate
+            candidate = shared.setdefault("engines", {}).get(key)
+        if _valid_fitted_engine(candidate):
+            if key != stable_key:
+                _promote_stable_engine_cache(candidate, stable_key)
+            return True
+
         try:
-            st.session_state[session_key] = candidate
+            candidate = st.session_state.get(f"_trained_engine_{key}")
         except Exception:
-            pass
-        return True
-    except Exception:
-        return False
+            candidate = None
+        if _valid_fitted_engine(candidate):
+            with guard:
+                shared.setdefault("engines", {})[key] = candidate
+            if key != stable_key:
+                _promote_stable_engine_cache(candidate, stable_key)
+            return True
+
+        path = os.path.join(DISK_CACHE_DIR, f"{key}.pkl.gz")
+        if not os.path.exists(path):
+            continue
+        try:
+            if os.path.getsize(path) > 350 * 1024 * 1024:
+                continue
+            with open(path, "rb") as handle:
+                data = pickle.loads(gzip.decompress(handle.read()))
+            candidate = data.get("engine") if isinstance(data, dict) else None
+            if not (
+                isinstance(data, dict)
+                and data.get("fp") == APP_VERSION
+                and data.get("cache_key") == key
+                and _valid_fitted_engine(candidate)
+            ):
+                continue
+            with guard:
+                shared.setdefault("engines", {})[key] = candidate
+            try:
+                st.session_state[f"_trained_engine_{key}"] = candidate
+            except Exception:
+                pass
+            if key != stable_key:
+                _promote_stable_engine_cache(candidate, stable_key)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _load_engine(
@@ -827,32 +913,18 @@ def _load_engine(
 
     from model.incremental import (
         IncrementalHistoryChanged, bring_engine_up_to_date,
-        stable_engine_fingerprint,
     )
-    history_years, catalogue_divisions = _history_catalog()
     xg_enabled = bool(str(footballapi_key or "").strip())
-
-    # The stable key describes the engine schema/configuration, not the
-    # optional rows appended during the last explicit history refresh. Their
-    # full content is verified by the immutable incremental training manifest.
-    custom_divisions = [
-        str(row.get("Div") or "").strip()
-        for row in (custom_historical_rows or [])
-        if isinstance(row, dict) and str(row.get("Div") or "").strip()
-    ]
-    stable_divisions = tuple(dict.fromkeys(
-        list(catalogue_divisions)
-        + custom_divisions
-        + [
-            str(value).strip() for value in (extra_divisions or [])
-            if str(value).strip()
-        ]
-    ))
-    stable_key = stable_engine_fingerprint(
-        matrix_n=matrix_n,
-        xg_enabled=xg_enabled,
-        divisions=stable_divisions,
-        history_years=history_years,
+    stable_key, history_years, stable_divisions = _stable_training_engine_key(
+        matrix_n,
+        footballapi_key=footballapi_key,
+        custom_historical_rows=custom_historical_rows,
+    )
+    legacy_key = _legacy_live_slate_engine_key(
+        matrix_n,
+        footballapi_key=footballapi_key,
+        custom_historical_rows=custom_historical_rows,
+        extra_divisions=extra_divisions,
     )
     stable_session_key = f"_trained_engine_{stable_key}"
     shared_stable = _shared_engine_cache()
@@ -866,25 +938,35 @@ def _load_engine(
         except Exception:
             stable_candidate = None
     stable_path = os.path.join(DISK_CACHE_DIR, f"{stable_key}.pkl.gz")
-    if stable_candidate is None and os.path.exists(stable_path):
-        try:
-            if os.path.getsize(stable_path) > 350 * 1024 * 1024:
-                raise ValueError("cache file exceeds 350 MB safety limit")
-            with open(stable_path, "rb") as file_obj:
-                stable_data = pickle.loads(gzip.decompress(file_obj.read()))
-            disk_engine = stable_data.get("engine") if isinstance(stable_data, dict) else None
-            if (
-                isinstance(stable_data, dict)
-                and stable_data.get("fp") == APP_VERSION
-                and stable_data.get("cache_key") == stable_key
-                and hasattr(disk_engine, "match_stats")
-                and getattr(disk_engine, "trained_n", 0) > 0
-                and getattr(disk_engine, "_incremental_manifest", None)
-            ):
-                stable_candidate = disk_engine
-                logs.append("💾 Найден стабильный дисковый кэш обученной модели.")
-        except Exception as exc:
-            logs.append(f"ℹ️ Стабильный дисковый кэш не использован ({type(exc).__name__}).")
+    lookup_keys = [stable_key]
+    if legacy_key != stable_key:
+        lookup_keys.append(legacy_key)
+    if stable_candidate is None:
+        for lookup_key in lookup_keys:
+            lookup_path = os.path.join(DISK_CACHE_DIR, f"{lookup_key}.pkl.gz")
+            if not os.path.exists(lookup_path):
+                continue
+            try:
+                if os.path.getsize(lookup_path) > 350 * 1024 * 1024:
+                    raise ValueError("cache file exceeds 350 MB safety limit")
+                with open(lookup_path, "rb") as file_obj:
+                    cached_data = pickle.loads(gzip.decompress(file_obj.read()))
+                disk_engine = cached_data.get("engine") if isinstance(cached_data, dict) else None
+                if (
+                    isinstance(cached_data, dict)
+                    and cached_data.get("fp") == APP_VERSION
+                    and cached_data.get("cache_key") == lookup_key
+                    and _valid_fitted_engine(disk_engine)
+                ):
+                    stable_candidate = disk_engine
+                    logs.append(
+                        "💾 Найден стабильный дисковый кэш обученной модели."
+                        if lookup_key == stable_key else
+                        "♻️ Найден прежний кэш модели; переношу на ключ обучения без текущих лиг."
+                    )
+                    break
+            except Exception as exc:
+                logs.append(f"ℹ️ Дисковый кэш {lookup_key[:18]} не использован ({type(exc).__name__}).")
 
     # Fast path: the normal live scanner only reads the fitted model. It does
     # not download/reparse the 5-season archive, rebuild validation samples,
@@ -896,6 +978,8 @@ def _load_engine(
         and getattr(stable_candidate, "_incremental_manifest", None)
         and not refresh_history
     ):
+        if legacy_key != stable_key:
+            _promote_stable_engine_cache(stable_candidate, stable_key, logs)
         with stable_guard:
             shared_stable.setdefault("engines", {})[stable_key] = stable_candidate
         try:
