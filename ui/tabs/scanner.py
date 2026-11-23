@@ -245,6 +245,14 @@ AUTO_PORTFOLIO_MIN_PROB = STRONG_FORECAST_MIN_PROB  # Shared 65% gate; separate 
 MARKET_FORECAST_DISPLAY_LIMIT = 20
 
 
+def _secondary_market_gate_passed(card: object) -> bool:
+    """Secondary-market promotion requires the explicit fixed 1X2 holdout PASS."""
+    return bool(
+        isinstance(card, dict)
+        and card.get("fixed_holdout_1x2_passed") is True
+    )
+
+
 def _runtime_secret(session_key: str, *names: str) -> str:
     """Read credentials from the current password widget, environment, or Streamlit secrets."""
     value = str(st.session_state.get(session_key, "") or "").strip()
@@ -472,7 +480,12 @@ def _portfolio_auto_recommendation(card: object, market_family: str | None = Non
     books = card.get("bookmaker_by_pick") or {}
     candidates = []
 
-    families = (market_family,) if market_family else ("winner", "goals")
+    eligible_families = (
+        ("winner", "goals") if _secondary_market_gate_passed(card) else ("winner",)
+    )
+    if market_family is not None and market_family not in eligible_families:
+        return None
+    families = (market_family,) if market_family else eligible_families
     for family in families:
         recommendation = recommendations.get(family)
         if not isinstance(recommendation, dict):
@@ -578,10 +591,10 @@ def _is_actionable_recommendation(card: object) -> bool:
 
 
 def _qualified_bet_cards(cards: object) -> list[dict]:
-    """Build one conservative 1X2/validated O/U 2.5 pick per fixture.
+    """Build one conservative 1X2 pick per fixture before Model Lab promotion.
 
-    The dedicated BTTS/corners/cards tabs still show their own independent
-    forecast signals. They are not labelled as portfolio-ready bets here.
+    Validated O/U 2.5 may join only after the fixed 1X2 holdout gate is PASS.
+    BTTS/corners/cards remain forecast-only.
     """
     if not isinstance(cards, list):
         return []
@@ -993,11 +1006,16 @@ def _render_manual_odds_block(
             abs(float(line_key or 0.0) - 2.5) < 1e-9
             and bool(c.get("total_market_validation"))
         )
+        holdout_gate_passed = _secondary_market_gate_passed(c)
         market_is_validated = (
-            history_validated and bookmaker_benchmark_validated
+            holdout_gate_passed and history_validated and bookmaker_benchmark_validated
             and quote_corroborated and market_pair_validated
         )
         validation_notes = []
+        if not holdout_gate_passed:
+            validation_notes.append(
+                "O/U forecast-only: сначала должен пройти Fixed Holdout Model Lab v1 на независимом 1X2 holdout."
+            )
         if not history_validated:
             validation_notes.append(
                 f"Линия тотала {line_key or 'выбранная'} не прошла отдельную историческую проверку."
@@ -3394,6 +3412,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             force_source_refresh=explicit_history_refresh,
             extra_divisions=scan_divisions,
         )
+        from model.holdout import load_fixed_holdout_gate_status
+        fixed_holdout_gate = load_fixed_holdout_gate_status()
+        if fixed_holdout_gate["passed"]:
+            logs.append(
+                "✅ Fixed Holdout Model Lab v1: PASS — вторичные рынки могут "
+                "использовать только собственные отдельные benchmark/value-гейты."
+            )
+        else:
+            logs.append(
+                "🔒 Fixed Holdout Model Lab v1 ещё не PASS: O/U остаётся forecast-only; "
+                "автопортфель ограничен рынком 1X2."
+            )
 
         update_loader("🧠 Анализ матчей...", 0.80, logs)
         scan_learning_service = None
@@ -4039,6 +4069,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "winner_market_validation": bool(getattr(engine, "winner_market_validation", False)),
                 "winner_market_validation_report": getattr(engine, "winner_market_validation_report", {}),
                 "total_market_validation": bool(getattr(engine, "total_market_validation", False)),
+                "fixed_holdout_1x2_passed": bool(fixed_holdout_gate["passed"]),
                 "total_market_validation_by_line": getattr(engine, "total_market_validation_by_line", {}),
                 "btts_market_validation": bool(getattr(engine, "btts_market_validation", False)),
                 "btts_market_validation_report": getattr(engine, "btts_market_validation_report", {}),
