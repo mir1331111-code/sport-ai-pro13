@@ -1383,7 +1383,12 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         "custom_historical_match_rows", history_payload["rows"],
                     )
                     st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
-                    st.session_state["_scanner_force_history_refresh_next"] = True
+                    if (
+                        st.session_state.get("_custom_historical_match_sha256")
+                        != saved_history["sha256"]
+                    ):
+                        st.session_state["_scanner_force_history_refresh_next"] = True
+                        st.session_state["_custom_historical_match_sha256"] = saved_history["sha256"]
                     persistence_note = (
                         f"; сохранено в SQLite: {saved_history['row_count']} матчей"
                     )
