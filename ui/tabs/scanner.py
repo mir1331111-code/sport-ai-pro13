@@ -1533,25 +1533,42 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "Резервные расписания не поставляют котировки."
         )
         st.caption(
-            "После первичного обучения обычный скан использует кэшированную модель. "
-            "Полный SStats/xG архив и тяжёлый walk-forward benchmark запускаются только "
-            "по отдельной кнопке обновления; до их завершения Value-гейты закрыты."
+            "Обычный скан использует сохранённую модель и постоянный архив. "
+            "Историю команд для лиг текущего расписания можно обновить отдельно "
+            "без запуска тяжёлого market benchmark. Полная рыночная проверка — отдельная операция."
         )
         if st.button(
-            "🔄 Обновить исторические архивы и модель",
+            "📚 Обновить историю команд текущих лиг (без долгой проверки рынка)",
+            key="scanner_team_history_refresh",
+            width="stretch",
+            help=(
+                "Загрузит до 5 лет завершённых матчей SStats только для соревнований "
+                "из следующего расписания, сохранит их в SQLite и переобучит базовую модель. "
+                "Не запускает walk-forward benchmark по 25 тысячам матчей. "
+                "Value-допуск останется закрытым до отдельной полной рыночной проверки."
+            ),
+        ):
+            st.session_state["_scanner_team_history_refresh_next"] = True
+        if st.session_state.get("_scanner_team_history_refresh_next"):
+            st.info(
+                "Обновление истории команд поставлено в очередь. Нажми «Запустить сканирование». "
+                "Архив будет сохранён в SQLite и попадёт в зашифрованную резервную копию."
+            )
+        if st.button(
+            "🔄 Полное обновление архивов + market benchmark (долго)",
             key="scanner_force_history_refresh",
             width="stretch",
             help=(
-                "Следующий запуск скачает свежие сезонные результаты, проверит новые "
-                "завершённые матчи SStats и xG, выполнит безопасное инкрементальное "
-                "обучение и обновит исторический market benchmark."
+                "Перечитает сезонные источники, обновит SStats и xG, обучит модель "
+                "и пересчитает полный walk-forward market benchmark. Используй только "
+                "когда нужно заново проверить допуск рынков к Value."
             ),
         ):
             st.session_state["_scanner_force_history_refresh_next"] = True
         if st.session_state.get("_scanner_force_history_refresh_next"):
-            st.info(
-                "Обновление истории поставлено в очередь. Нажми «Запустить сканирование»: "
-                "оно выполнит обновление один раз, после чего обычные сканы снова будут быстрыми."
+            st.warning(
+                "Полная рыночная проверка поставлена в очередь. Она может быть долгой; "
+                "обычные обновления расписания её не запускают."
             )
 
         st.markdown("**Контекст матча · SStats + исторический CSV**")
@@ -1652,7 +1669,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         st.session_state.get("_custom_historical_match_sha256")
                         != saved_history["sha256"]
                     ):
-                        st.session_state["_scanner_force_history_refresh_next"] = True
+                        st.session_state["_scanner_team_history_refresh_next"] = True
                         st.session_state["_custom_historical_match_sha256"] = saved_history["sha256"]
                     persistence_note = (
                         f"; сохранено в SQLite: {saved_history['row_count']} матчей"
@@ -3192,6 +3209,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     explicit_history_refresh = bool(
         st.session_state.pop("_scanner_force_history_refresh_next", False)
     )
+    explicit_team_history_refresh = bool(
+        st.session_state.pop("_scanner_team_history_refresh_next", False)
+    )
     try:
         loader_ph = st.empty()
         log_ph = st.empty()
@@ -3219,6 +3239,8 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             f"📦 Сборка {APP_BUILD_ID} · " + (
                 "ручной запуск полного market benchmark."
                 if explicit_history_refresh else
+                "обновление истории команд без market benchmark."
+                if explicit_team_history_refresh else
                 "обычный скан: полный market benchmark пропущен."
             )
         ]
@@ -3461,50 +3483,100 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             custom_historical_rows=custom_historical_rows,
             extra_divisions=scan_divisions,
         )
-        refresh_history = bool(explicit_history_refresh or not model_cache_ready)
-        if explicit_history_refresh:
-            logs.append(
-                "🔄 Запрошено отдельное обновление исторических архивов: "
-                "загружаю свежие результаты и xG, затем выполню инкрементальное обучение "
-                "и walk-forward benchmark."
-            )
-            update_loader("📈 Обновляю исторические xG-данные...", 0.16, logs)
-            footballapi_xg_rows = footballapi_xg_history(
-                footballapi_key, logs, force_refresh=True,
-            )
+        refresh_history = bool(
+            explicit_history_refresh or explicit_team_history_refresh or not model_cache_ready
+        )
+        if explicit_history_refresh or explicit_team_history_refresh:
+            if explicit_history_refresh:
+                logs.append(
+                    "🔄 Запрошено полное обновление архивов и market benchmark: "
+                    "обновляю сезонную историю, SStats, xG и затем пересчитаю walk-forward."
+                )
+                update_loader("📈 Обновляю исторические xG-данные...", 0.16, logs)
+                footballapi_xg_rows = footballapi_xg_history(
+                    footballapi_key, logs, force_refresh=True,
+                )
+            else:
+                logs.append(
+                    "📚 Запрошено адресное обновление истории команд: загружаю FT-результаты "
+                    "только соревнований из текущего расписания. Walk-forward market benchmark "
+                    "не запускается; Value-гейты останутся fail-closed."
+                )
+                footballapi_xg_rows = None
 
-            update_loader("📚 Обновляю архивы завершённых матчей SStats...", 0.18, logs)
+            update_loader("📚 Обновляю архивы завершённых матчей SStats текущих лиг...", 0.18, logs)
             sstats_history_rows = []
             if sstats_key and rows:
                 try:
+                    league_ids = {
+                        str(item.get("sstats_league_id") or "").strip()
+                        for item in rows if isinstance(item, dict)
+                    }
                     history_league_limit = _runtime_int(
                         "sstats_history_max_leagues",
                         "SSTATS_HISTORY_MAX_LEAGUES",
-                        default=60,
+                        default=30,
                         minimum=1,
                     )
+                    history_league_limit = min(
+                        history_league_limit, max(1, len(league_ids)),
+                    ) if league_ids else history_league_limit
                     sstats_history_rows = sstats_historical_matches_for_fixtures(
                         rows, sstats_key, years_back=5,
                         max_leagues=history_league_limit, logs=logs,
-                        force_refresh=True,
+                        force_refresh=explicit_history_refresh,
                     )
                 except Exception as exc:
                     logs.append(
                         f"⚠️ SStats historical archive: {type(exc).__name__}; "
-                        "forecast-only режим сохраняется."
+                        "без проверенных результатов дополнительная история не добавлена."
                     )
+
             if sstats_history_rows:
-                custom_historical_rows = list(custom_historical_rows or []) + sstats_history_rows
+                try:
+                    merged_history, merge_stats = _merge_sstats_historical_rows(
+                        custom_historical_rows, sstats_history_rows,
+                    )
+                    custom_historical_rows = merged_history
+                    st.session_state["_custom_historical_match_rows"] = merged_history
+                    if merge_stats["added"] or merge_stats["enriched"]:
+                        saved_history = user_datasets.save_user_dataset(
+                            "custom_historical_match_rows", merged_history,
+                        )
+                        st.session_state["_custom_historical_match_sha256"] = saved_history["sha256"]
+                        logs.append(
+                            "💾 Постоянный архив SStats FT сохранён в SQLite: "
+                            f"{saved_history['row_count']} строк всего, "
+                            f"новых {merge_stats['added']}, обогащено {merge_stats['enriched']}, "
+                            f"дубликатов {merge_stats['duplicates']}, конфликтов счёта "
+                            f"{merge_stats['conflicts']}. Данные войдут в зашифрованный SQLite backup."
+                        )
+                    else:
+                        logs.append(
+                            "ℹ️ SStats FT история уже полностью есть в постоянном архиве; "
+                            f"новых строк нет, дубликатов {merge_stats['duplicates']}."
+                        )
+                except Exception as persist_exc:
+                    logs.append(
+                        "⚠️ SStats FT история доступна для текущего обучения, но не сохранена "
+                        f"в SQLite ({type(persist_exc).__name__}: {str(persist_exc)[:140]}). "
+                        "При замене контейнера эти новые строки придётся загрузить повторно."
+                    )
+            elif explicit_team_history_refresh:
+                logs.append(
+                    "⚠️ Адресная история SStats не вернула завершённых матчей для текущих лиг. "
+                    "Проверьте строки SStats LeagueId в журнале; прогнозы останутся предварительными."
+                )
         elif refresh_history:
-            # Cold start still needs the core seasonal match archive to train the
-            # base model, but the optional 5-year SStats crawl and market benchmark
-            # can wait for an explicit operator action.
+            # Cold start still needs the core seasonal match archive and any
+            # previously persisted SStats/custom rows. Never crawl the entire
+            # provider history or run market validation implicitly.
             footballapi_xg_rows = None
             logs.append(
                 "🧠 Первичный запуск: обучаю базовую модель на сезонных CSV и "
-                "сохранённом пользовательском архиве. Массовый SStats/xG сбор и "
-                "walk-forward benchmark отложены; Value-гейты останутся закрытыми. "
-                "Для полного обновления нажмите кнопку в блоке исторических архивов."
+                f"сохранённом архиве ({len(custom_historical_rows)} дополнительных матчей). "
+                "Полный массовый сбор SStats/xG и walk-forward benchmark отложены; "
+                "Value-гейты останутся закрытыми."
             )
         else:
             footballapi_xg_rows = None
