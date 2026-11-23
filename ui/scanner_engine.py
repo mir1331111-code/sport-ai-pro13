@@ -914,6 +914,7 @@ def _load_engine(
     from model.incremental import (
         IncrementalHistoryChanged, bring_engine_up_to_date,
     )
+    xg_enabled = bool(str(footballapi_key or "").strip())
     stable_key, history_years, stable_divisions = _stable_training_engine_key(
         matrix_n,
         footballapi_key=footballapi_key,
