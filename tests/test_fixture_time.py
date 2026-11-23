@@ -1,5 +1,7 @@
+import os
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from data.fixture_time import fixture_kickoff_local
@@ -14,6 +16,16 @@ class FixtureKickoffTimeTests(unittest.TestCase):
         self.assertEqual(
             kickoff,
             datetime(2026, 11, 6, 19, 0, tzinfo=ZoneInfo("Europe/Amsterdam")),
+        )
+
+    def test_app_timezone_reads_deployment_environment_override(self):
+        with patch.dict(os.environ, {"APP_TIMEZONE": "Asia/Yekaterinburg"}):
+            kickoff = fixture_kickoff_local({
+                "Date": "2026-11-07", "Time": "00:30",
+            })
+        self.assertEqual(
+            kickoff,
+            datetime(2026, 11, 7, 0, 30, tzinfo=ZoneInfo("Asia/Yekaterinburg")),
         )
 
     def test_same_day_started_fixture_is_detectable_by_full_timestamp(self):
