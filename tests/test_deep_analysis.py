@@ -717,6 +717,49 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         self.assertIsNone(result["goal_markets"])
         self.assertEqual(result["independent_pick"], "П1")
 
+    def test_nullable_market_fields_preserve_1x2_when_corner_history_is_incomplete(self):
+        from llm import deep_analysis
+        from llm.deep_analysis import _normalize_analysis
+
+        dossier = build_match_dossier(make_card())
+        raw = {
+            "fixture_id": dossier["fixture_id"],
+            "independent_pick": "П1",
+            "probabilities": {"П1": 50, "X": 30, "П2": 20},
+            "goal_markets": None,
+            "corner_markets": {
+                "expected_home_corners": 5.4,
+                "expected_away_corners": 4.2,
+                "over_8_5": 65,
+                "over_9_5": None,
+                "over_10_5": 35,
+                "over_11_5": 20,
+            },
+            "card_markets": None,
+            "lineup_assessment": "x",
+            "injury_assessment": "x",
+            "referee_assessment": "x",
+            "form_assessment": "x",
+            "match_assessment": "x",
+            "risks": "Недостаточно истории угловых для одной линии.",
+            "data_quality": "medium",
+        }
+
+        result = _normalize_analysis(raw, {dossier["fixture_id"]: dossier})
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["probabilities"], {"П1": 50.0, "X": 30.0, "П2": 20.0})
+        self.assertIsNone(result["corner_markets"])
+        self.assertIsNone(result["goal_markets"])
+        schema = deep_analysis._DEEP_ANALYSIS_RESPONSE_FORMAT["json_schema"]["schema"]
+        market_properties = schema["properties"]["analyses"]["items"]["properties"]
+        for group in ("goal_markets", "corner_markets", "card_markets"):
+            properties = market_properties[group]["properties"]
+            self.assertTrue(all(
+                field_schema["type"] == ["number", "null"]
+                for field_schema in properties.values()
+            ))
+
     def test_formatted_opinion_remains_compatible_with_forecast_ledger(self):
         from model.independent_forecasts import parse_llm_probabilities
         analysis = {
