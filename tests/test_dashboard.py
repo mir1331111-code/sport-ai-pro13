@@ -24,11 +24,11 @@ class DashboardHelperTests(unittest.TestCase):
     def test_scan_defaults_to_three_days(self):
         self.assertEqual(DEFAULT_SCAN_HORIZON_DAYS, 3)
 
-    def test_all_market_dashboard_shortlist_keeps_price_and_validation_status_visible(self):
+    def test_all_market_dashboard_shortlist_hides_unverified_candidates(self):
         events = [{
             "date": "23.11", "time": "18:00", "league": "Premier League",
             "match": "Home — Away", "family_label": "Угловые",
-            "pick": "Угл ТБ 8.5", "probability": 0.81, "odds": 1.90,
+            "pick": "Угл ТМ 23.5", "probability": 1.0, "odds": 1.91,
             "bookmaker": "Book A", "history_matches": 120,
             "team_samples": 12, "value_verified": False,
             "status_label": "ПРОГНОЗ + КОЭФФИЦИЕНТ · НЕ VALUE",
@@ -41,16 +41,17 @@ class DashboardHelperTests(unittest.TestCase):
             "status_label": "ПРОВЕРЕННЫЙ VALUE",
         }]
         rendered = all_market_candidates_html(events)
-        self.assertIn("Угловые", rendered)
-        self.assertIn("1.90", rendered)
+        self.assertNotIn("Угловые", rendered)
+        self.assertNotIn("23.5", rendered)
+        self.assertNotIn("1.91", rendered)
         self.assertIn("ПРОВЕРЕННЫЙ VALUE", rendered)
-        self.assertIn("КАНДИДАТ · РЫНОК НЕ ПРОВЕРЕН", rendered)
-        self.assertIn("Подтверждённый Value: 1", rendered)
+        self.assertIn("1.85", rendered)
+        self.assertIn("Проверенных Value-сигналов: 1", rendered)
 
     def test_all_market_dashboard_shortlist_has_explicit_empty_state(self):
         rendered = all_market_candidates_html([])
-        self.assertIn("коэффициентом от 1.70", rendered)
-        self.assertIn("достаточной историей", rendered)
+        self.assertIn("независимую проверку именно этого рынка", rendered)
+        self.assertIn("Непроверенные вероятности", rendered)
 
     def test_dashboard_history_floor_matches_strong_forecast_policy(self):
         self.assertEqual(MIN_FAVORITE_HISTORY, 10)
