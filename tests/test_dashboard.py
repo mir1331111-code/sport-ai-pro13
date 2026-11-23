@@ -93,6 +93,87 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertNotIn("Background FC", all_visible)
         self.assertEqual(len(all_visible), len(set(all_visible)))
 
+    def test_recommendation_groups_keep_real_market_price_for_nonapproved_matches(self):
+        from data.fixture_time import app_timezone
+
+        now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
+        strong = {
+            "fixture_id": "priced-strong",
+            "date_iso": "2026-11-24", "time": "18:00",
+            "league": "Premier League",
+            "home_team": "Strong FC", "away_team": "Away FC",
+            "p1": .70, "px": .18, "p2": .12,
+            "model_support_status": "team_supported",
+            "context_quality": {"strong_value_eligible": True},
+            "independent_features": {
+                "home_home_sample": 14, "away_away_sample": 12,
+            },
+            "winner_market_validation": False,
+            "winner_market_validation_report": {"n": 120},
+            "odds_source": "SStats",
+            "market_odds": {"П1": 1.91, "X": 3.40, "П2": 4.20},
+            "market_odds_source_by_pick": {
+                "П1": "SStats", "X": "SStats", "П2": "SStats",
+            },
+            "bookmaker_by_pick": {
+                "П1": "Bet365", "X": "Bet365", "П2": "Bet365",
+            },
+        }
+        groups = dashboard_recommendation_groups(
+            [strong], now=now, period_end=now + timedelta(days=3),
+        )
+        self.assertEqual(len(groups["forecast"]), 1)
+        item = groups["forecast"][0]
+        self.assertEqual(item["pick"], "П1")
+        self.assertEqual(item["odds"], 1.91)
+        self.assertEqual(item["bookmaker"], "Bet365")
+        self.assertEqual(item["odds_source"], "SStats")
+
+        rendered = recommendation_group_html("forecast", groups["forecast"])
+        self.assertIn("1.91", rendered)
+        self.assertIn("Bet365", rendered)
+        self.assertIn("SStats", rendered)
+        self.assertIn("Реальный кэф. / букмекер", rendered)
+
+    def test_approved_recommendation_uses_exact_value_price_not_recomputed_price(self):
+        from data.fixture_time import app_timezone
+
+        now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
+        approved = {
+            "fixture_id": "approved-exact-price",
+            "date_iso": "2026-11-24", "time": "18:00",
+            "league": "Premier League",
+            "home_team": "Approved FC", "away_team": "Away FC",
+            "p1": .70, "px": .18, "p2": .12,
+            "model_support_status": "team_supported",
+            "context_quality": {"strong_value_eligible": True},
+            "independent_features": {
+                "home_home_sample": 14, "away_away_sample": 12,
+            },
+            "winner_market_validation": True,
+            "winner_market_validation_report": {"n": 520},
+            "odds_source": "SStats",
+            "market_odds": {"П1": 1.91, "X": 3.40, "П2": 4.20},
+            "market_odds_source_by_pick": {
+                "П1": "SStats", "X": "SStats", "П2": "SStats",
+            },
+            "bookmaker_by_pick": {"П1": "Bet365", "X": "Bet365", "П2": "Bet365"},
+            "best_by_market": {
+                "winner": {
+                    "best": ("1X2", "П1", 1.87, 0.12, .70, 10.0),
+                    "verdict": {
+                        "real_odds": True, "value_passed": True, "is_bet": True,
+                        "prob": .70, "ev": .12, "edge": .08, "stake": 10.0,
+                    },
+                },
+            },
+        }
+        groups = dashboard_recommendation_groups(
+            [approved], now=now, period_end=now + timedelta(days=3),
+        )
+        self.assertEqual(len(groups["approved"]), 1)
+        self.assertEqual(groups["approved"][0]["odds"], 1.87)
+
     def test_dashboard_recommendation_filter_omits_started_and_out_of_period_matches(self):
         from data.fixture_time import app_timezone
 
