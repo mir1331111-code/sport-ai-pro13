@@ -63,6 +63,85 @@ class RemoteSqliteBackupTests(unittest.TestCase):
                 value = conn.execute("SELECT value FROM sample").fetchone()[0]
             self.assertEqual(value, "live")
 
+    def test_remote_backup_requires_a_valid_durable_app_state_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.sqlite"
+            with sqlite3.connect(missing) as conn:
+                conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+                conn.execute("INSERT INTO meta(key,value) VALUES ('initial_bank','10000')")
+            with self.assertRaisesRegex(ValueError, "state is missing"):
+                remote_backup._assert_app_state_present(missing.read_bytes())
+
+            malformed = Path(tmp) / "malformed.sqlite"
+            with sqlite3.connect(malformed) as conn:
+                conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+                conn.executemany(
+                    "INSERT INTO meta(key,value) VALUES (?,?)",
+                    [
+                        ("app_state_updated_at_ns", "123"),
+                        ("app_state_json", "{not-json"),
+                    ],
+                )
+            with self.assertRaisesRegex(ValueError, "invalid JSON"):
+                remote_backup._assert_app_state_present(malformed.read_bytes())
+
+            valid = Path(tmp) / "valid.sqlite"
+            with sqlite3.connect(valid) as conn:
+                conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+                conn.executemany(
+                    "INSERT INTO meta(key,value) VALUES (?,?)",
+                    [
+                        ("app_state_updated_at_ns", "124"),
+                        ("app_state_json", '{"bank":10000,"bets":[]}'),
+                    ],
+                )
+            remote_backup._assert_app_state_present(valid.read_bytes())
+
+    def test_stale_app_state_cannot_replace_a_newer_remote_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            older = Path(tmp) / "older.sqlite"
+            newer = Path(tmp) / "newer.sqlite"
+            for path, stamp, payload in (
+                (older, 100, '{"bank":9000}'),
+                (newer, 200, '{"bank":8000}'),
+            ):
+                with sqlite3.connect(path) as conn:
+                    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+                    conn.executemany(
+                        "INSERT INTO meta(key,value) VALUES (?,?)",
+                        [
+                            ("app_state_updated_at_ns", str(stamp)),
+                            ("app_state_json", payload),
+                        ],
+                    )
+            with self.assertRaisesRegex(ValueError, "older"):
+                remote_backup._assert_app_state_does_not_regress(
+                    newer.read_bytes(), older.read_bytes(),
+                )
+            remote_backup._assert_app_state_does_not_regress(
+                older.read_bytes(), newer.read_bytes(),
+            )
+
+    def test_same_app_state_timestamp_with_different_payload_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for index, payload in enumerate(('{"bank":1}', '{"bank":2}')):
+                path = Path(tmp) / f"snapshot-{index}.sqlite"
+                with sqlite3.connect(path) as conn:
+                    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+                    conn.executemany(
+                        "INSERT INTO meta(key,value) VALUES (?,?)",
+                        [
+                            ("app_state_updated_at_ns", "500"),
+                            ("app_state_json", payload),
+                        ],
+                    )
+                paths.append(path)
+            with self.assertRaisesRegex(ValueError, "same version"):
+                remote_backup._assert_app_state_does_not_regress(
+                    paths[0].read_bytes(), paths[1].read_bytes(),
+                )
+
     def test_empty_local_database_is_recognized_as_safe_restore_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "empty.sqlite"

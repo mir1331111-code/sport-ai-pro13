@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -371,3 +372,57 @@ def get_meta(key: str, default: Optional[str] = None) -> Optional[str]:
         r = c.execute("SELECT value FROM meta WHERE key=?",
                       (str(key),)).fetchone()
         return r[0] if r else default
+
+def save_app_state(data: dict, updated_at_ns: int) -> None:
+    """Persist the non-secret Streamlit portfolio/dashboard state in SQLite.
+
+    This table is included in the encrypted remote DB snapshot, so Cloud
+    container replacement does not drop the state that used to live only in
+    neuro_local.json.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("app state must be an object")
+    stamp = int(updated_at_ns)
+    if stamp <= 0:
+        raise ValueError("app state timestamp must be positive")
+    payload = json.dumps(
+        data, ensure_ascii=False, separators=(",", ":"),
+        default=str, allow_nan=False,
+    )
+    with _db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            c.executemany(
+                "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
+                [
+                    ("app_state_json", payload),
+                    ("app_state_updated_at_ns", str(stamp)),
+                ],
+            )
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+
+
+def load_app_state() -> dict | None:
+    """Read the durable non-secret app state; malformed snapshots fail closed."""
+    with _db() as c:
+        rows = c.execute(
+            "SELECT key,value FROM meta WHERE key IN "
+            "('app_state_json','app_state_updated_at_ns')"
+        ).fetchall()
+    values = {str(row[0]): str(row[1]) for row in rows}
+    raw = values.get("app_state_json")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        stamp = int(values.get("app_state_updated_at_ns") or 0)
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("stored SQLite app state is malformed") from exc
+    if not isinstance(data, dict) or stamp <= 0:
+        raise ValueError("stored SQLite app state metadata is invalid")
+    return {"data": data, "updated_at_ns": stamp}
+
+

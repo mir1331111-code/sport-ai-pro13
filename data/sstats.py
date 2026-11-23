@@ -97,7 +97,14 @@ def _sstats_unwrap(payload):
 
 def _sstats_timezone():
     """Return app-local date and integer UTC offset required by SStats."""
-    zone_name = str(os.environ.get("APP_TIMEZONE", "Europe/Warsaw") or "Europe/Warsaw")
+    zone_name = str(os.environ.get("APP_TIMEZONE") or "").strip()
+    if not zone_name:
+        try:
+            import streamlit as st
+            zone_name = str(st.secrets.get("APP_TIMEZONE", "") or "").strip()
+        except Exception:
+            zone_name = ""
+    zone_name = zone_name or "Europe/Warsaw"
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo(zone_name))

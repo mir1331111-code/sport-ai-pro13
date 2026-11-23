@@ -178,6 +178,7 @@ class UsageGistVisibilityTests(unittest.TestCase):
         legacy = {"bank": 2200, "bets": [], "meta": {"initial_bank": 1000}}
         persisted = {}
         with (
+            patch.object(usage, "_load_sqlite_app_state", return_value=None),
             patch.object(usage, "_safe_read", return_value={}),
             patch.object(usage, "_gist_read", return_value=legacy),
             patch.object(usage, "_update", side_effect=lambda mutate: mutate(persisted)),
@@ -189,9 +190,10 @@ class UsageGistVisibilityTests(unittest.TestCase):
         write_remote.assert_called_once_with(legacy)
 
     def test_legacy_portfolio_recovery_keeps_local_copy_when_encryption_key_is_missing(self):
-        legacy = {"bank": 2200, "bets": []}
+        legacy = {"bank": 2200, "bets": [], "meta": {}}
         persisted = {}
         with (
+            patch.object(usage, "_load_sqlite_app_state", return_value=None),
             patch.object(usage, "_safe_read", return_value={}),
             patch.object(usage, "_gist_read", return_value=legacy),
             patch.object(usage, "_update", side_effect=lambda mutate: mutate(persisted)),

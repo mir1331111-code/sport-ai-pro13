@@ -39,6 +39,35 @@ class ScannerEnginePriorityTests(unittest.TestCase):
         self.assertIs(first["history"], second["history"])
         self.assertTrue(any("памяти процесса" in line for line in second_logs))
 
+    def test_sstats_history_aliases_do_not_duplicate_bundled_season_matches(self):
+        snapshot = {
+            "history_years": [2026],
+            "train_divs": ["E0"],
+            "history": {
+                "E0": [[{
+                    "Date": "2026-11-21",
+                    "HomeTeam": "Manchester United",
+                    "AwayTeam": "Tottenham Hotspur",
+                    "FTHG": 2, "FTAG": 1,
+                }]],
+            },
+        }
+        custom = [{
+            "Date": "2026-11-21",
+            "Div": "E0",
+            "HomeTeam": "Man Utd",
+            "AwayTeam": "Tottenham",
+            "FTHG": 2, "FTAG": 1,
+        }]
+        with patch.object(scanner_engine, "enrich_history_with_shot_xg"):
+            history, divisions = scanner_engine._prepare_training_history(
+                snapshot, custom_historical_rows=custom, logs=[],
+            )
+
+        self.assertEqual(divisions, ["E0"])
+        self.assertEqual(len(history["E0"]), 1)
+        self.assertEqual(len(history["E0"][0]), 1)
+
     def test_cold_start_training_can_defer_heavy_market_benchmark_fail_closed(self):
         logs = []
         with (
