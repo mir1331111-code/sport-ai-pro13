@@ -11,7 +11,6 @@ from typing import Any
 
 from betting.market_ranking import market_forecast_summary
 from model.historical_match_stats import poisson_over_probability
-from model.market_forecasts import count_over_probability
 from model.market_models import asian_handicap_expected_value
 
 
@@ -306,53 +305,26 @@ def _family_candidates(card: dict, family: str) -> list[dict]:
         )]
 
     if family in {"corners", "cards"}:
-        prediction = (card.get("historical_stats") or {}).get(family) or {}
-        try:
-            mean = float(prediction.get("total"))
-        except (TypeError, ValueError):
+        # Use one pre-declared reference line per statistical market (corners 8.5,
+        # cards 3.5). Do not shop across every bookmaker line: an extreme line such
+        # as Under 23.5 corners can mechanically yield ~100% from a raw count model
+        # while the bookmaker price still implies a coin flip. That is not a
+        # calibrated forecast and must not be promoted as a strong pick.
+        pick = str(summary.get("pick") or "")
+        if not _STAT_RE.fullmatch(pick):
             return []
-        variance = prediction.get("total_variance")
-        prefix = "Угл" if family == "corners" else "Карты"
-        quoted = card.get("stat_market_odds") or {}
-        candidates = []
-        for raw_pick, raw_odd in quoted.items():
-            match = _STAT_RE.fullmatch(str(raw_pick).strip())
-            if not match:
-                continue
-            if ("Угл" if match.group(1).casefold() == "угл" else "Карты") != prefix:
-                continue
-            odds = _valid_odds(raw_odd)
-            if odds is None:
-                continue
-            line = float(match.group(3).replace(",", "."))
-            over = count_over_probability(mean, line, variance)
-            if over is None:
-                continue
-            probability = over if match.group(2).upper() == "Б" else 1.0 - over
-            candidates.append(_base_row(
-                card, family, pick=str(raw_pick),
-                label=f"{_FAMILY_LABELS[family]} {'больше' if match.group(2).upper() == 'Б' else 'меньше'} {line:g}",
-                probability=probability, odds=odds,
-                history_matches=history_n, team_samples=team_n,
-                strong=(
-                    probability >= 0.65
-                    and bool(summary.get("history_sufficient"))
-                ),
-            ))
-        if candidates:
-            return candidates
-
-        pick = str(summary["pick"])
         probability = (
-            float(summary["over_probability"])
-            if pick.split(" ")[1] == "ТБ"
-            else 1.0 - float(summary["over_probability"])
+            _finite(summary.get("over_probability"))
+            if "ТБ" in pick else
+            1.0 - _finite(summary.get("over_probability"))
+            if _finite(summary.get("over_probability")) is not None else None
         )
+        if probability is None:
+            return []
         return [_base_row(
-            card, family, pick=pick, label=str(summary["label"]),
+            card, family, pick=pick, label=str(summary.get("label") or pick),
             probability=probability, odds=_market_quote(card, family, pick),
-            history_matches=history_n, team_samples=team_n,
-            strong=bool(summary["strong_forecast"]),
+            history_matches=history_n, team_samples=team_n, strong=strong,
         )]
 
     return []
@@ -393,11 +365,12 @@ def build_high_probability_market_events(
     cards: object, *, min_probability: float = 0.65,
     min_odds: float = 1.70, limit: int = 30,
 ) -> list[dict]:
-    """Build cross-market shortlists for well-supported forecasts with real prices.
+    """Return only independently validated cross-market Value selections.
 
-    These may include unvalidated markets. Their status remains explicit:
-    only value_verified rows have passed the market benchmark and all betting
-    gates; other rows are candidates, not betting recommendations.
+    Model-only candidates from unvalidated markets must not appear in the
+    actionable strong-picks panel, regardless of their raw model probability.
+    They remain available in the market research views with an explicit
+    forecast-only status.
     """
     if not isinstance(cards, list):
         return []
@@ -432,7 +405,8 @@ def build_high_probability_market_events(
                 source = str(row.get("source") or "").casefold()
                 bookmaker = str(row.get("bookmaker") or "").strip()
                 if (
-                    not row.get("strong_forecast")
+                    not row.get("value_verified")
+                    or not row.get("strong_forecast")
                     or probability < probability_floor
                     or odds < odds_floor
                     or "sstats" not in source
