@@ -803,7 +803,7 @@ def has_cached_engine(
 def _load_engine(
     matrix_n, logs, update_loader, footballapi_key="",
     footballapi_xg_rows=None, custom_historical_rows=None,
-    *, refresh_history=False,
+    *, refresh_history=False, force_source_refresh=False,
 ):
     """Use the fitted engine for normal scans; read/replay history only on explicit refresh or cold start."""
     import pickle, gzip, os, json
@@ -883,7 +883,7 @@ def _load_engine(
 
     # Only a cold start or an explicit history refresh enters this block.
     seasonal_snapshot = _load_seasonal_history(
-        logs, update_loader, force_refresh=bool(refresh_history)
+        logs, update_loader, force_refresh=bool(force_source_refresh)
     )
     if (
         stable_candidate is not None
