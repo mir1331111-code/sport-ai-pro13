@@ -329,23 +329,167 @@ def _gist_write(data: dict) -> bool:
         return False
 
 
+
+# API credentials must never be copied into the durable app-state row.
+_SECRET_META_KEYS = {
+    "fdorg_token", "odds_api_key", "therundown_api_key", "rundown_key",
+    "highlightly_api_key", "sstats_api_key", "footballapi_key",
+    "api_football_key", "llm_api_key", "xai_api_key", "grok_api_key",
+    "groq_api_key",
+}
+
+
+def _safe_app_state(data: dict) -> dict:
+    safe = dict(data)
+    meta = dict(safe.get("meta") or {})
+    for key in _SECRET_META_KEYS:
+        meta.pop(key, None)
+    safe["meta"] = meta
+    return safe
+
+
+def _load_sqlite_app_state() -> dict | None:
+    """Read the DB-backed state restored by the encrypted SQLite backup."""
+    try:
+        from storage import sqlite_store as db
+        if not db.SQLITE_BOOT_OK and not db.db_init():
+            return None
+        return db.load_app_state()
+    except Exception as exc:
+        log.warning("SQLite app-state read unavailable (%s)", type(exc).__name__)
+        return None
+
+
+def _store_sqlite_app_state(data: dict, updated_at_ns: int) -> bool:
+    try:
+        from storage import sqlite_store as db
+        if not db.SQLITE_BOOT_OK and not db.db_init():
+            return False
+        db.save_app_state(data, updated_at_ns)
+        return True
+    except Exception as exc:
+        log.warning("SQLite app-state write unavailable (%s)", type(exc).__name__)
+        return False
+
+
+def _write_local_app_state(data: dict, updated_at_ns: int) -> bool:
+    def _mutate(all_: dict) -> None:
+        all_["data"] = data
+        all_["data_updated_at_ns"] = int(updated_at_ns)
+    return _update(_mutate)
+
+
+def _legacy_state_from_sqlite() -> dict:
+    """Recover bet history and current bank from older SQLite backups without app_state."""
+    try:
+        from storage import sqlite_store as db
+        if not db.SQLITE_BOOT_OK and not db.db_init():
+            return {}
+        bets = db.fetch_bets(limit=100000)
+        if not bets:
+            return {}
+        bets = list(reversed(bets))
+        for bet in bets:
+            fixture_id = str(bet.get("fixture_id") or "")
+            if fixture_id.startswith("sstats:"):
+                candidate = fixture_id.split(":", 1)[1]
+                if candidate.isdigit():
+                    bet.setdefault("sstats_game_id", int(candidate))
+            match = str(bet.get("match") or "")
+            if " vs " in match:
+                home, away = match.split(" vs ", 1)
+                bet.setdefault("home", home.strip())
+                bet.setdefault("away", away.strip())
+        history = db.bank_history(limit=1)
+        initial_bank = float(db.get_meta("initial_bank", "10000") or 10000)
+        bank = float(history[-1]["bank"]) if history else initial_bank
+        stats = {"won": 0, "lost": 0, "push": 0, "void": 0, "profit": 0.0}
+        for bet in bets:
+            try:
+                stake, odds = float(bet.get("stake") or 0), float(bet.get("odds") or 0)
+            except (TypeError, ValueError):
+                continue
+            status = str(bet.get("status") or "pending")
+            if status == "won":
+                stats["won"] += 1
+                stats["profit"] += stake * (odds - 1)
+            elif status == "lost":
+                stats["lost"] += 1
+                stats["profit"] -= stake
+            elif status in {"push", "void"}:
+                stats[status] += 1
+        return {
+            "version": 1, "bank": bank, "bets": bets, "cards": [],
+            "funnel": None, "report": [],
+            "meta": {"initial_bank": initial_bank,
+                     "portfolio_recovered_from_legacy_sqlite": True},
+            "stats": stats, "mode": "paper",
+        }
+    except Exception as exc:
+        log.warning("Legacy SQLite portfolio recovery unavailable (%s)", type(exc).__name__)
+        return {}
+
+
 def get_local_data() -> dict:
-    local = _safe_read().get("data") or {}
+    """Load the newest portfolio state from SQLite or legacy local/Gist storage."""
+    local_all = _safe_read()
+    local = local_all.get("data") or {}
+    try:
+        local_stamp = int(local_all.get("data_updated_at_ns") or 0)
+    except (TypeError, ValueError):
+        local_stamp = 0
+
+    sqlite_state = _load_sqlite_app_state()
+    if sqlite_state:
+        sqlite_data = sqlite_state["data"]
+        sqlite_stamp = int(sqlite_state["updated_at_ns"])
+        if local and local_stamp > sqlite_stamp:
+            safe_local = _safe_app_state(local)
+            _store_sqlite_app_state(safe_local, local_stamp)
+            return safe_local
+        if local != sqlite_data or local_stamp != sqlite_stamp:
+            _write_local_app_state(sqlite_data, sqlite_stamp)
+        return sqlite_data
+
     if local:
-        return local
+        safe_local = _safe_app_state(local)
+        stamp = local_stamp or time.time_ns()
+        _store_sqlite_app_state(safe_local, stamp)
+        _write_local_app_state(safe_local, stamp)
+        return safe_local
+
     remote = _gist_read()
     if remote:
-        _update(lambda all_: all_.__setitem__("data", remote))
+        remote_data = remote.get("data") if isinstance(remote.get("data"), dict) else remote
+        if not isinstance(remote_data, dict):
+            remote_data = {}
+        safe_remote = _safe_app_state(remote_data)
+        stamp = time.time_ns()
+        _store_sqlite_app_state(safe_remote, stamp)
+        _write_local_app_state(safe_remote, stamp)
         # Migrate a legacy plaintext Gist to the encrypted envelope on first
-        # recovery. For an already-encrypted Gist this simply refreshes the
-        # encrypted snapshot. A missing/invalid key is refused by _gist_write,
-        # but the recovered local copy remains available to the running app.
-        if _gist_write(remote):
-            log.info("Recovered portfolio data was saved back to Gist in encrypted format.")
-        return remote
+        # recovery. For an already-encrypted Gist this refreshes its snapshot.
+        if _gist_write(safe_remote):
+            log.info("Recovered portfolio data was saved back to encrypted Gist.")
+        return safe_remote
+
+    # Older one-token SQLite backups predate the app-state row. Recover what is
+    # still available (bets and balance); cards/reports are not reconstructed
+    # from incomplete market rows.
+    legacy_sqlite = _legacy_state_from_sqlite()
+    if legacy_sqlite:
+        safe_legacy = _safe_app_state(legacy_sqlite)
+        stamp = time.time_ns()
+        _store_sqlite_app_state(safe_legacy, stamp)
+        _write_local_app_state(safe_legacy, stamp)
+        return safe_legacy
     return {}
 
 
 def set_local_data(data: dict) -> None:
-    _update(lambda all_: all_.__setitem__("data", data))
-    _gist_write(data)
+    """Persist app state to SQLite first, then update its local convenience mirror."""
+    safe = _safe_app_state(data)
+    stamp = time.time_ns()
+    _store_sqlite_app_state(safe, stamp)
+    _write_local_app_state(safe, stamp)
+    _gist_write(safe)
