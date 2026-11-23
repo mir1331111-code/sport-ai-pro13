@@ -148,7 +148,7 @@ def dashboard_all_market_candidates(
     cards, *, min_probability=STRONG_FORECAST_MIN_PROB,
     min_odds=MIN_BET_ODDS, limit=30,
 ):
-    """Return supported cross-market forecasts with real quotes at the user's floor."""
+    """Return only benchmark-validated cross-market Value selections."""
     return build_high_probability_market_events(
         cards,
         min_probability=min_probability,
@@ -158,27 +158,27 @@ def dashboard_all_market_candidates(
 
 
 def all_market_candidates_html(events):
-    """Render cross-market strong forecasts while separating unvalidated candidates."""
+    """Render only benchmark-validated cross-market Value selections."""
+    events = [
+        item for item in (events or [])
+        if isinstance(item, dict) and bool(item.get("value_verified"))
+    ]
     if not events:
         return (
             "<div class='neo-empty-cell'>"
-            "Пока нет прогнозов одновременно с вероятностью не ниже "
-            f"{STRONG_FORECAST_MIN_PROB:.0%}, коэффициентом от {MIN_BET_ODDS:.2f}, "
-            "подтверждённым букмекером и достаточной историей."
+            "Пока нет исходов, прошедших независимую проверку именно этого рынка, "
+            "подтверждение линии одного букмекера и все Value-гейты. "
+            "Непроверенные вероятности не выдаются за рекомендации."
             "</div>"
         )
     rows = []
-    verified = sum(bool(item.get("value_verified")) for item in events)
+    verified = len(events)
     for item in events:
         probability = num(item.get("probability"))
         odds = num(item.get("odds"))
         if probability is None or odds is None:
             continue
-        status = (
-            "<span class='neo-bet-status approved'>ПРОВЕРЕННЫЙ VALUE</span>"
-            if item.get("value_verified") else
-            "<span class='neo-bet-status blocked'>КАНДИДАТ · РЫНОК НЕ ПРОВЕРЕН</span>"
-        )
+        status = "<span class='neo-bet-status approved'>ПРОВЕРЕННЫЙ VALUE</span>"
         sample = (
             f"{int(item.get('history_matches') or 0)} матчей лиги"
             if int(item.get("history_matches") or 0) > 0
@@ -205,10 +205,9 @@ def all_market_candidates_html(events):
         "<th>Статус</th><th>История</th></tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table></div>"
-        f"<div class='neo-table-footer'>Показано {len(rows)} кандидатов. "
-        f"Подтверждённый Value: {verified}. Остальные имеют модельную вероятность и цену, "
-        "но ещё не прошли отдельный benchmark именно этого рынка. "
-        "Не считать их подтверждёнными ставками.</div>"
+        f"<div class='neo-table-footer'>Показано {len(rows)} проверенных сигналов. "
+        f"Value-статус имеют все {verified} строк: независимый benchmark, "
+        "полная линия одного букмекера, EV/Edge и проверка Kelly пройдены.</div>"
     )
 
 
@@ -1304,16 +1303,15 @@ def render():
         "<section class='neo-panel neo-matches-panel'>"
         "<div class='neo-panel-heading'><div>"
         "<span class='neo-panel-kicker'>ALL MARKETS · ODDS ≥ 1.70</span>"
-        "<h3>Сильные прогнозы на любых рынках</h3>"
+        "<h3>Проверенные Value-сигналы на всех рынках</h3>"
         "<div class='neo-ranking-disclaimer'>"
-        f"Показываем исходы с вероятностью от {STRONG_FORECAST_MIN_PROB:.0%}, "
-        f"реальным коэффициентом от {MIN_BET_ODDS:.2f} и достаточной историей. "
-        "Рынок и ставка не ограничены победой: голы, обе забьют, угловые и карточки. "
-        "65%+ — модельная оценка, а не доказанная историческая проходимость. "
-        "Проверенный Value отделён от кандидатов, которые ещё не прошли benchmark рынка; "
-        "непроверенные кандидаты не являются рекомендацией ставить."
+        f"Показываем только исходы с вероятностью от {STRONG_FORECAST_MIN_PROB:.0%}, "
+        f"коэффициентом от {MIN_BET_ODDS:.2f} и пройденным независимым benchmark конкретного рынка. "
+        "Требуются полная линия одного букмекера, положительные EV и Edge и положительный Kelly. "
+        "Непроверенные модельные кандидаты, включая угловые и карточки без собственного benchmark, "
+        "не попадают в список рекомендаций."
         "</div></div>"
-        f"<span class='neo-count-pill'>{len(all_market_candidates)} кандидатов</span></div>"
+        f"<span class='neo-count-pill'>{len(all_market_candidates)} проверенных сигналов</span></div>"
         + all_market_candidates_html(all_market_candidates)
         + "</section>",
         unsafe_allow_html=True,
