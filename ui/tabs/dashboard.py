@@ -319,7 +319,7 @@ def favorite(card):
 
 
 def ai_provider_label(data):
-    provider = str((data.get("meta") or {}).get("llm_provider") or "Groq (бесплатно, быстро)")
+    provider = str((data.get("meta") or {}).get("llm_provider") or "Grok (x.ai)")
     base = str(LLM_PROVIDERS.get(provider, {}).get("base") or "").casefold()
     if "api.x.ai" in base:
         return "Grok"
@@ -389,7 +389,7 @@ def _probability_health_note(cards):
 def _grok_panel(cards, meta):
     """Show only analyses explicitly recorded as Grok/xAI; never relabel another LLM."""
     meta = meta if isinstance(meta, dict) else {}
-    selected_provider = str(meta.get("llm_provider") or "")
+    selected_provider = str(meta.get("llm_provider") or "Grok (x.ai)")
     selected_is_grok = _provider_is_grok(selected_provider)
     rows = []
     for card in cards or []:
