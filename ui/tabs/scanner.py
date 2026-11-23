@@ -86,7 +86,9 @@ from ui.scanner_engine import (
     _train_engine, _shared_engine_cache, _load_engine, has_cached_engine,
 )
 
-def _recheck_value_after_priority_context(card, refreshed_context, *, bank=None):
+def _recheck_value_after_priority_context(
+    card, refreshed_context, *, bank=None, context_store=None,
+):
     """Re-run the exact original Value gates after a fresh SStats-only context update.
 
     Only the SStats context snapshot can unlock this path. LLM/browser-search
@@ -94,6 +96,8 @@ def _recheck_value_after_priority_context(card, refreshed_context, *, bank=None)
     """
     if not isinstance(card, dict) or not isinstance(refreshed_context, dict):
         return {"updated": False, "reason": "no_priority_context"}
+    if str(refreshed_context.get("provider") or "").casefold() != "sstats":
+        return {"updated": False, "reason": "untrusted_context_provider"}
 
     from llm.deep_analysis import merge_context_snapshots
 
@@ -114,11 +118,13 @@ def _recheck_value_after_priority_context(card, refreshed_context, *, bank=None)
     try:
         kickoff_at = str(merged.get("kickoff_at") or card.get("kickoff_utc") or "")
         observed_at = str(merged.get("timestamp") or "")
-        stable_id = str(card.get("fixture_id") or card.get("sstats_game_id") or "")
-        if stable_id:
-            from storage.context_store import ContextStore
-            store = ContextStore()
-            store.record_snapshot(
+        stable_id = "|".join((
+            str(card.get("date_iso") or "")[:10],
+            str(card.get("home_team") or "").strip().casefold(),
+            str(card.get("away_team") or "").strip().casefold(),
+        ))
+        if context_store is not None and stable_id:
+            context_store.record_snapshot(
                 fixture_id=stable_id,
                 kickoff_at=kickoff_at,
                 observed_at=observed_at,
