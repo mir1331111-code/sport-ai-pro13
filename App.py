@@ -1045,6 +1045,12 @@ with st.sidebar:
             st.session_state[provider_widget_key] = normalize_llm_provider(
                 D["meta"].get("llm_provider") or "Grok (x.ai)"
             )
+        else:
+            normalized_provider = normalize_llm_provider(
+                st.session_state.get(provider_widget_key)
+            )
+            if st.session_state.get(provider_widget_key) != normalized_provider:
+                st.session_state[provider_widget_key] = normalized_provider
         if st.button(
             "⚡ Переключить на Grok (x.ai)",
             key="select_xai_grok_provider",
@@ -1071,9 +1077,6 @@ with st.sidebar:
         llm_key_default = _api_key_default(
             llm_key_storage, llm_key_env, llm_key_env, llm_key_storage,
         )
-        # Compatibility with deployments that previously stored a Grok key as LLM_API_KEY.
-        if llm_key_env == "XAI_API_KEY" and not llm_key_default:
-            llm_key_default = _api_key_default("llm_api_key", "LLM_API_KEY", "llm_api_key")
         llm_key = st.text_input(
             llm_key_label,
             value=llm_key_default,
