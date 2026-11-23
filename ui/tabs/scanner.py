@@ -1337,6 +1337,93 @@ def _historical_rows_csv(rows: list[dict]) -> bytes:
     return ("\\ufeff" + buffer.getvalue()).encode("utf-8")
 
 
+
+def _merge_sstats_historical_rows(existing_rows, fetched_rows):
+    """Merge verified SStats FT results into the durable custom training archive.
+
+    Identity is competition + calendar date + ordered, normalized team names.
+    Existing scores are never overwritten by conflicting provider rows.
+    """
+    merged = []
+    index = {}
+    stats = {
+        "added": 0, "duplicates": 0, "enriched": 0,
+        "conflicts": 0, "invalid": 0,
+    }
+
+    def identity(row):
+        if not isinstance(row, dict):
+            return None
+        division = str(row.get("Div") or "").strip().upper()
+        stamp = parse_date(row.get("Date") or row.get("date"))
+        home = normalize_team(str(row.get("HomeTeam") or row.get("home_team") or ""))
+        away = normalize_team(str(row.get("AwayTeam") or row.get("away_team") or ""))
+        if not division or stamp is None or not home or not away:
+            return None
+        return division, stamp.date().isoformat(), home, away
+
+    for raw in existing_rows or []:
+        key = identity(raw)
+        if key is None:
+            stats["invalid"] += 1
+            continue
+        if key in index:
+            stats["duplicates"] += 1
+            continue
+        item = dict(raw)
+        index[key] = item
+        merged.append(item)
+
+    score_fields = ("FTHG", "FTAG", "home_goals", "away_goals")
+    enrichment_fields = (
+        "HxG", "AxG", "HC", "AC", "HY", "AY", "HR", "AR",
+        "HTHG", "HTAG", "HTHC", "HTAC", "Referee",
+    )
+    for raw in fetched_rows or []:
+        key = identity(raw)
+        if key is None:
+            stats["invalid"] += 1
+            continue
+        current = index.get(key)
+        if current is None:
+            item = dict(raw)
+            index[key] = item
+            merged.append(item)
+            stats["added"] += 1
+            continue
+
+        stats["duplicates"] += 1
+        conflict = False
+        for field in score_fields:
+            old_value, new_value = current.get(field), raw.get(field)
+            if old_value not in (None, "") and new_value not in (None, ""):
+                try:
+                    if int(float(old_value)) != int(float(new_value)):
+                        conflict = True
+                except (TypeError, ValueError, OverflowError):
+                    if str(old_value).strip() != str(new_value).strip():
+                        conflict = True
+        if conflict:
+            stats["conflicts"] += 1
+            continue
+
+        changed = False
+        for field in score_fields + enrichment_fields:
+            if current.get(field) in (None, "") and raw.get(field) not in (None, ""):
+                current[field] = raw[field]
+                changed = True
+        if changed:
+            stats["enriched"] += 1
+
+    merged.sort(key=lambda row: (
+        str(row.get("Div") or ""),
+        (parse_date(row.get("Date") or row.get("date")) or datetime.min).date().isoformat(),
+        normalize_team(str(row.get("HomeTeam") or row.get("home_team") or "")),
+        normalize_team(str(row.get("AwayTeam") or row.get("away_team") or "")),
+    ))
+    return merged, stats
+
+
 def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
     D = st.session_state.data
     # User-imported history must survive Streamlit session recreation and app reboot.
