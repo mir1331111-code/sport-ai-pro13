@@ -11,7 +11,7 @@ from ui.tabs.dashboard import (
     _dashboard_real_1x2_quotes, _dashboard_latest_ai_status,
     _quality_panel, _reliability_svg, _sparkline_svg,
     dashboard_recommendation_groups, dashboard_schedule_diagnostics,
-    recommendation_group_html,
+    dashboard_primary_statuses_to_render, recommendation_group_html,
     dashboard_strong_events, strong_events_html,
     all_market_candidates_html, dashboard_all_market_candidates,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
@@ -23,6 +23,29 @@ class DashboardHelperTests(unittest.TestCase):
     def test_dashboard_defaults_to_the_full_scan_horizon(self):
         self.assertEqual(DASHBOARD_DEFAULT_PERIOD, DASHBOARD_PERIOD_OPTIONS[-1])
         self.assertEqual(DASHBOARD_FORECAST_VISIBLE_LIMIT, 50)
+
+    def test_dashboard_hides_empty_primary_panels_when_only_forecast_only_items_exist(self):
+        groups = {
+            "approved": [],
+            "forecast": [],
+            "near_strong": [],
+            "provisional": [{"fixture_id": "thin-history"}],
+            "background": [{"fixture_id": "lower-probability"}],
+        }
+        self.assertEqual(dashboard_primary_statuses_to_render(groups), ())
+
+    def test_dashboard_keeps_nonempty_primary_categories_visible(self):
+        groups = {
+            "approved": [],
+            "forecast": [{"fixture_id": "strong-but-not-value"}],
+            "near_strong": [],
+            "provisional": [{"fixture_id": "thin-history"}],
+            "background": [],
+        }
+        self.assertEqual(
+            dashboard_primary_statuses_to_render(groups),
+            ("forecast",),
+        )
 
     def test_dashboard_shows_only_the_three_requested_statuses(self):
         from data.fixture_time import app_timezone
