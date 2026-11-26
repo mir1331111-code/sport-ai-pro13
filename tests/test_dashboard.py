@@ -12,7 +12,7 @@ from ui.tabs.dashboard import (
     _quality_panel, _reliability_svg, _sparkline_svg,
     dashboard_recommendation_groups, dashboard_schedule_diagnostics,
     dashboard_primary_statuses_to_render, dashboard_model_coverage_diagnostics,
-    recommendation_group_html,
+    dashboard_unique_fixture_count, recommendation_group_html,
     dashboard_strong_events, strong_events_html,
     all_market_candidates_html, dashboard_all_market_candidates,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
@@ -150,8 +150,10 @@ class DashboardHelperTests(unittest.TestCase):
 
         self.assertEqual([item["card"]["home_team"] for item in groups["approved"]],
                          ["Approved FC"])
-        self.assertEqual([item["card"]["home_team"] for item in groups["forecast"]],
-                         ["Strong FC"])
+        self.assertEqual(
+            {item["card"]["home_team"] for item in groups["forecast"]},
+            {"Strong FC", "Approved FC"},
+        )
         self.assertEqual([item["card"]["home_team"] for item in groups["near_strong"]],
                          ["Near FC"])
         all_visible = [
@@ -160,7 +162,55 @@ class DashboardHelperTests(unittest.TestCase):
         ]
         self.assertEqual([item["card"]["home_team"] for item in groups["background"]],
                          ["Background FC"])
-        self.assertEqual(len(all_visible), len(set(all_visible)))
+        visible_signals = [
+            (item["card"]["home_team"], item["family"])
+            for group in groups.values() for item in group
+        ]
+        self.assertEqual(len(visible_signals), len(set(visible_signals)))
+        self.assertEqual(
+            sum(item["card"]["home_team"] == "Approved FC" for group in groups.values() for item in group),
+            2,
+        )
+        self.assertEqual(dashboard_unique_fixture_count(
+            [item for group in groups.values() for item in group]
+        ), 4)
+
+    def test_dashboard_keeps_1x2_and_total_forecasts_for_the_same_fixture(self):
+        from data.fixture_time import app_timezone
+
+        now = datetime(2026, 11, 23, 10, 0, tzinfo=app_timezone())
+        card = {
+            "fixture_id": "same-match-multiple-markets",
+            "date_iso": "2026-11-24", "time": "18:00",
+            "league": "Premier League", "div": "E0",
+            "home_team": "Home FC", "away_team": "Away FC",
+            "p1": .68, "px": .17, "p2": .15,
+            "lam_h": 1.8, "lam_a": 1.7,
+            "model_support_status": "team_supported",
+            "independent_features": {
+                "home_home_sample": 12, "away_away_sample": 12,
+            },
+            "winner_market_validation": False,
+            "winner_market_validation_report": {"n": 120},
+        }
+        groups = dashboard_recommendation_groups(
+            [card], now=now, period_end=now + timedelta(days=3),
+        )
+        strong_rows = groups["forecast"]
+        self.assertEqual(
+            {item["family"] for item in strong_rows},
+            {"winner", "goals"},
+        )
+        self.assertEqual(
+            {item["pick"] for item in strong_rows},
+            {"П1", "ТБ 2.5"},
+        )
+        self.assertEqual(dashboard_unique_fixture_count(strong_rows), 1)
+        self.assertEqual(len(strong_rows), 2)
+
+        rendered = recommendation_group_html("forecast", strong_rows)
+        self.assertIn("Победа хозяев (П1)", rendered)
+        self.assertIn("ТБ 2.5", rendered)
 
     def test_recommendation_groups_keep_real_market_price_for_nonapproved_matches(self):
         from data.fixture_time import app_timezone
