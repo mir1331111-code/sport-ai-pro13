@@ -1610,8 +1610,8 @@ def recommendation_group_html(status, items):
         "<div class='neo-panel-heading'><div>"
         f"<h3>{esc(label)}</h3><div class='neo-ranking-disclaimer'>{esc(hint)}</div>"
         "</div>"
-        f"<span class='neo-count-pill'>{len(items)} сигналов · "
-        f"{dashboard_unique_fixture_count(items)} матчей</span></div>"
+        f"<span class='neo-count-pill'>Сигналов: {len(items)} · "
+        f"Матчей: {dashboard_unique_fixture_count(items)}</span></div>"
         + body
         + "</section>"
     )
