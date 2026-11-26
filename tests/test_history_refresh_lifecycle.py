@@ -10,6 +10,8 @@ class FakeFittedEngine:
         self.match_stats = object()
         self.trained_n = 1234
         self._incremental_manifest = [("2025-01-01", "fixture-digest")]
+        self.lg_hg = {"E0": [1]}
+        self.lg_ag = {"E0": [0]}
 
 
 class HistoricalRefreshLifecycleTests(unittest.TestCase):
@@ -50,6 +52,14 @@ class HistoricalRefreshLifecycleTests(unittest.TestCase):
 
         self.assertTrue(ready)
         load_history.assert_not_called()
+
+    def test_cached_engine_is_not_ready_when_a_live_sstats_division_has_no_history(self):
+        engine = FakeFittedEngine()
+        self.assertTrue(scanner_engine._engine_has_division_history(engine, ["E0"]))
+        self.assertFalse(scanner_engine._engine_has_division_history(engine, ["S_NEW"]))
+        self.assertFalse(
+            scanner_engine._engine_has_division_history(engine, ["E0", "S_NEW"])
+        )
 
     def test_stable_training_key_does_not_change_with_live_fixture_leagues(self):
         stable, _, _ = scanner_engine._stable_training_engine_key(12)
