@@ -1829,24 +1829,32 @@ def render():
             unsafe_allow_html=True,
         )
 
-    if fallback_count:
-        with st.expander(
-            f"📋 Предварительные и фоновые прогнозы · {fallback_count} · не рекомендации",
-            expanded=not bool(primary_statuses),
-        ):
-            for status in ("provisional", "background"):
-                items = groups[status]
-                shown = items[:DASHBOARD_FORECAST_VISIBLE_LIMIT]
+    def render_forecast_only_groups():
+        for status in ("provisional", "background"):
+            items = groups[status]
+            shown = items[:DASHBOARD_FORECAST_VISIBLE_LIMIT]
+            if shown:
                 st.markdown(
                     recommendation_group_html(status, shown),
                     unsafe_allow_html=True,
                 )
-                hidden = max(0, len(items) - len(shown))
-                if hidden:
-                    st.caption(
-                        f"В разделе «{_DASHBOARD_STATUS_LABELS[status]}» "
-                        f"ещё {hidden} матчей остаются в Сканере."
-                    )
+            hidden = max(0, len(items) - len(shown))
+            if hidden:
+                st.caption(
+                    f"В разделе «{_DASHBOARD_STATUS_LABELS[status]}» "
+                    f"ещё {hidden} матчей остаются в Сканере."
+                )
+
+    if fallback_count:
+        fallback_title = (
+            f"📋 Предварительные и фоновые прогнозы · {fallback_count} · не рекомендации"
+        )
+        if primary_statuses:
+            with st.expander(fallback_title, expanded=False):
+                render_forecast_only_groups()
+        else:
+            st.markdown(f"### {esc(fallback_title)}")
+            render_forecast_only_groups()
     elif not visible_count:
         st.info(
             "В выбранном периоде нет актуальных прогнозов. "
