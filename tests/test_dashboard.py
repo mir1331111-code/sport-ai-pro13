@@ -209,8 +209,8 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertEqual(len(strong_rows), 2)
 
         rendered = recommendation_group_html("forecast", strong_rows)
-        self.assertIn("Победа хозяев (П1)", rendered)
-        self.assertIn("ТБ 2.5", rendered)
+        self.assertIn("Исход 1X2<br><b>П1</b>", rendered)
+        self.assertIn("Тотал голов<br><b>ТБ 2.5</b>", rendered)
 
     def test_recommendation_groups_keep_real_market_price_for_nonapproved_matches(self):
         from data.fixture_time import app_timezone
