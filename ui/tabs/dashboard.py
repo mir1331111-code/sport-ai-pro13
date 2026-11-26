@@ -1657,6 +1657,21 @@ def dashboard_schedule_diagnostics(
     return result
 
 
+def dashboard_primary_statuses_to_render(groups):
+    """Return only non-empty recommendation categories for the main dashboard.
+
+    Empty approved/strong panels consume most of the first screen when every
+    fixture is correctly held in the forecast-only categories. Those empty
+    panels should not hide the available informational forecasts.
+    """
+    if not isinstance(groups, dict):
+        return ()
+    return tuple(
+        status for status in ("approved", "forecast", "near_strong")
+        if groups.get(status)
+    )
+
+
 def render():
     data = st.session_state.get("data") or {}
     cards = [
@@ -1792,7 +1807,19 @@ def render():
                 "AI TOP MATCHES: в журнале последнего скана нет явного статуса вызова. "
                 "Открой отчёт Сканера для диагностики."
             )
+    primary_statuses = dashboard_primary_statuses_to_render(groups)
+    if not primary_statuses and fallback_count:
+        st.info(
+            f"Сейчас нет матчей, прошедших все критерии верхних категорий. "
+            f"Ниже сразу показаны {fallback_count} предварительных/фоновых прогнозов. "
+            "Это информационные прогнозы, а не рекомендации к ставке."
+        )
+
+    # Do not render large empty panels: when strong/value lists are empty,
+    # forecast-only matches should be the first useful content on the page.
     for _label, _count, status in counts:
+        if status not in primary_statuses:
+            continue
         st.markdown(
             recommendation_group_html(status, groups[status]),
             unsafe_allow_html=True,
@@ -1801,7 +1828,7 @@ def render():
     if fallback_count:
         with st.expander(
             f"📋 Предварительные и фоновые прогнозы · {fallback_count} · не рекомендации",
-            expanded=not bool(sum(len(groups[key]) for key in ("approved", "forecast", "near_strong"))),
+            expanded=not bool(primary_statuses),
         ):
             for status in ("provisional", "background"):
                 items = groups[status]
@@ -1816,6 +1843,11 @@ def render():
                         f"В разделе «{_DASHBOARD_STATUS_LABELS[status]}» "
                         f"ещё {hidden} матчей остаются в Сканере."
                     )
+    elif not visible_count:
+        st.info(
+            "В выбранном периоде нет актуальных прогнозов. "
+            "Откройте «Сканер матчей» и выполните новый скан расписания."
+        )
 
     st.caption(
         f"Показано на Dashboard: {visible_count} матчей из {schedule['total']} сохранённых. "
