@@ -3477,16 +3477,34 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             for item in rows
             if isinstance(item, dict) and str(item.get("Div") or "").strip()
         ))
+        # A fitted model is not ready for this scan merely because it exists:
+        # every SStats competition in the slate must have actual historical
+        # league observations. Otherwise the Poisson model can emit the same
+        # prior-only 42/29/29 distribution for unrelated teams indefinitely.
+        sstats_history_divisions = list(dict.fromkeys(
+            str(item.get("Div") or "").strip()
+            for item in rows
+            if (
+                isinstance(item, dict)
+                and item.get("sstats_game_id") not in (None, "")
+                and str(item.get("Div") or "").strip()
+            )
+        ))
         model_cache_ready = has_cached_engine(
             matrix_n,
             footballapi_key=footballapi_key,
             custom_historical_rows=custom_historical_rows,
             extra_divisions=scan_divisions,
+            required_divisions=sstats_history_divisions if sstats_key else None,
+        )
+        auto_team_history_refresh = bool(
+            sstats_key and sstats_history_divisions and not model_cache_ready
         )
         refresh_history = bool(
-            explicit_history_refresh or explicit_team_history_refresh or not model_cache_ready
+            explicit_history_refresh or explicit_team_history_refresh
+            or auto_team_history_refresh or not model_cache_ready
         )
-        if explicit_history_refresh or explicit_team_history_refresh:
+        if explicit_history_refresh or explicit_team_history_refresh or auto_team_history_refresh:
             if explicit_history_refresh:
                 logs.append(
                     "🔄 Запрошено полное обновление архивов и market benchmark: "
@@ -3496,11 +3514,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 footballapi_xg_rows = footballapi_xg_history(
                     footballapi_key, logs, force_refresh=True,
                 )
-            else:
+            elif explicit_team_history_refresh:
                 logs.append(
                     "📚 Запрошено адресное обновление истории команд: загружаю FT-результаты "
                     "только соревнований из текущего расписания. Walk-forward market benchmark "
                     "не запускается; Value-гейты останутся fail-closed."
+                )
+                footballapi_xg_rows = None
+            else:
+                logs.append(
+                    "⚙️ Автообновление истории: у обученной модели нет результатов по одному "
+                    "или нескольким SStats-соревнованиям текущего расписания. Загружаю их "
+                    "историю до построения прогнозов; Value-допуск останется закрытым."
                 )
                 footballapi_xg_rows = None
 
