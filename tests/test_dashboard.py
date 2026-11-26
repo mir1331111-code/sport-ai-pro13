@@ -11,7 +11,8 @@ from ui.tabs.dashboard import (
     _dashboard_real_1x2_quotes, _dashboard_latest_ai_status,
     _quality_panel, _reliability_svg, _sparkline_svg,
     dashboard_recommendation_groups, dashboard_schedule_diagnostics,
-    dashboard_primary_statuses_to_render, recommendation_group_html,
+    dashboard_primary_statuses_to_render, dashboard_model_coverage_diagnostics,
+    recommendation_group_html,
     dashboard_strong_events, strong_events_html,
     all_market_candidates_html, dashboard_all_market_candidates,
     context_summary, dashboard_bet_approved, favorite, has_prices, match_name,
@@ -46,6 +47,48 @@ class DashboardHelperTests(unittest.TestCase):
             dashboard_primary_statuses_to_render(groups),
             ("forecast",),
         )
+
+    def test_dashboard_model_coverage_diagnostics_explain_missing_history_and_probability(self):
+        cards = [
+            {
+                "home_team": "Supported FC", "away_team": "Visitor FC",
+                "league": "Premier League",
+                "model_support_status": "team_supported",
+                "p1": .70, "px": .18, "p2": .12,
+                "independent_features": {
+                    "home_home_sample": 12, "away_away_sample": 11,
+                },
+            },
+            {
+                "home_team": "Thin FC", "away_team": "Away FC",
+                "league": "Championship",
+                "model_support_status": "team_supported",
+                "p1": .75, "px": .15, "p2": .10,
+                "independent_features": {
+                    "home_home_sample": 4, "away_away_sample": 9,
+                },
+            },
+            {
+                "home_team": "Prior FC", "away_team": "Other FC",
+                "league": "Unknown League",
+                "model_support_status": "prior_only",
+                "p1": .60, "px": .25, "p2": .15,
+                "independent_features": {
+                    "home_home_sample": 0, "away_away_sample": 0,
+                },
+            },
+        ]
+        report = dashboard_model_coverage_diagnostics(cards)
+        self.assertEqual(report["total"], 3)
+        self.assertEqual(report["support_counts"]["team_supported"], 2)
+        self.assertEqual(report["support_counts"]["prior_only"], 1)
+        self.assertEqual(report["sufficient_team_history"], 1)
+        self.assertEqual(report["insufficient_history"], 2)
+        self.assertEqual(report["strong_1x2_forecasts"], 1)
+        self.assertEqual(report["below_strong_probability"], 0)
+        self.assertEqual(len(report["examples"]), 2)
+        self.assertEqual(report["examples"][0]["home_sample"], 4)
+
 
     def test_dashboard_shows_only_the_three_requested_statuses(self):
         from data.fixture_time import app_timezone
