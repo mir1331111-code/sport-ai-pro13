@@ -1905,6 +1905,13 @@ def render():
                 f"частичная — {support['partial_history']}, "
                 f"не определена — {support['unknown']}."
             )
+            if coverage["insufficient_history"] or support["team_supported"] < coverage["total"]:
+                st.caption(
+                    "Как пополнить историю: откройте «Сканер матчей» → "
+                    "«Данные контекста и исторические архивы» → "
+                    "«Обновить историю команд текущих лиг (без долгой проверки рынка)», "
+                    "затем снова запустите сканирование. Эта операция не открывает Value-допуск."
+                )
             if coverage["below_strong_probability"]:
                 st.caption(
                     f"Матчей с достаточной историей, но вероятностью ниже "
