@@ -862,11 +862,30 @@ def _shared_engine_cache():
     return {"engines": {}, "locks": {}, "lock": threading.RLock()}
 
 
+def _engine_has_division_history(engine, divisions):
+    """Check that the fitted model actually contains results for every live league."""
+    required = tuple(dict.fromkeys(
+        str(value or "").strip().upper()
+        for value in (divisions or ())
+        if str(value or "").strip()
+    ))
+    if not required:
+        return True
+    home_rows = getattr(engine, "lg_hg", None)
+    away_rows = getattr(engine, "lg_ag", None)
+    if not isinstance(home_rows, dict) or not isinstance(away_rows, dict):
+        return False
+    return all(
+        bool(home_rows.get(division)) and bool(away_rows.get(division))
+        for division in required
+    )
+
+
 def has_cached_engine(
     matrix_n, *, footballapi_key="", custom_historical_rows=None,
-    extra_divisions=None,
+    extra_divisions=None, required_divisions=None,
 ):
-    """Check the fitted model without reading history; live leagues are legacy lookup only."""
+    """Check the fitted model and, when requested, its actual live-league history coverage."""
     import gzip
     import os
     import pickle
@@ -891,7 +910,10 @@ def has_cached_engine(
     for key in keys:
         with guard:
             candidate = shared.setdefault("engines", {}).get(key)
-        if _valid_fitted_engine(candidate):
+        if (
+            _valid_fitted_engine(candidate)
+            and _engine_has_division_history(candidate, required_divisions)
+        ):
             if key != stable_key:
                 _promote_stable_engine_cache(candidate, stable_key)
             return True
@@ -900,7 +922,10 @@ def has_cached_engine(
             candidate = st.session_state.get(f"_trained_engine_{key}")
         except Exception:
             candidate = None
-        if _valid_fitted_engine(candidate):
+        if (
+            _valid_fitted_engine(candidate)
+            and _engine_has_division_history(candidate, required_divisions)
+        ):
             with guard:
                 shared.setdefault("engines", {})[key] = candidate
             if key != stable_key:
@@ -921,6 +946,7 @@ def has_cached_engine(
                 and data.get("fp") == APP_VERSION
                 and data.get("cache_key") == key
                 and _valid_fitted_engine(candidate)
+                and _engine_has_division_history(candidate, required_divisions)
             ):
                 continue
             with guard:
