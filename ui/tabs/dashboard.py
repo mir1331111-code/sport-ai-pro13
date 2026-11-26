@@ -1319,10 +1319,39 @@ def _dashboard_fixture_html(card):
     )
 
 
+def _dashboard_fixture_identity(card):
+    """Stable identity for one scheduled fixture across its market families."""
+    card = card if isinstance(card, dict) else {}
+    identity = str(card.get("fixture_id") or "").strip()
+    if not identity:
+        identity = "|".join((
+            str(card.get("date_iso") or card.get("date") or "")[:10],
+            str(card.get("home_team") or card.get("home") or "").casefold(),
+            str(card.get("away_team") or card.get("away") or "").casefold(),
+        ))
+    if not identity.strip("|"):
+        identity = match_name(card).casefold()
+    return identity
+
+
+def dashboard_unique_fixture_count(items):
+    """Count unique fixtures in a list that may contain multiple market signals per match."""
+    return len({
+        _dashboard_fixture_identity(item.get("card"))
+        for item in (items or [])
+        if isinstance(item, dict) and isinstance(item.get("card"), dict)
+    })
+
+
 def dashboard_recommendation_groups(
     cards, *, now=None, period_end=None, selected_league=None,
 ):
-    """Return one highest-status forecast per fixture, including non-actionable states."""
+    """Return each fixture's best signal per market family, with independent status gates.
+
+    Probabilities from different event families (e.g. 1X2 and O/U 2.5) are
+    not directly comparable. Keep one row per fixture/family rather than
+    allowing a high-probability total to hide its separate 1X2 forecast.
+    """
     now = now or datetime.now(app_timezone())
     candidates = {}
     for card in cards if isinstance(cards, list) else []:
@@ -1419,15 +1448,7 @@ def dashboard_recommendation_groups(
             else:
                 reason = "Все обязательные проверки пройдены."
 
-            fixture_key = str(card.get("fixture_id") or "").strip()
-            if not fixture_key:
-                fixture_key = "|".join((
-                    str(card.get("date_iso") or card.get("date") or "")[:10],
-                    str(card.get("home_team") or card.get("home") or "").casefold(),
-                    str(card.get("away_team") or card.get("away") or "").casefold(),
-                ))
-            if not fixture_key.strip("|"):
-                fixture_key = match_name(card).casefold()
+            fixture_key = _dashboard_fixture_identity(card)
 
             item = {
                 "card": card,
@@ -1453,18 +1474,20 @@ def dashboard_recommendation_groups(
                 "odds_source": odds_source,
                 "reason": reason,
             }
-            # One fixture appears once: approved beats strong forecast, which
-            # beats near-strong. Within the same status choose the clearest pick.
+            # Deduplicate only within the same fixture and market family.
+            # A 72% total and a 68% home win are different events, not competing
+            # versions of one prediction; retain both independent signals.
             rank = (
                 _DASHBOARD_STATUS_PRIORITY[status],
                 probability,
                 float(item.get("ev") or 0.0),
                 item["home_sample"] + item["away_sample"],
             )
-            previous = candidates.get(fixture_key)
+            candidate_key = (fixture_key, family)
+            previous = candidates.get(candidate_key)
             if previous is None or rank > previous["_rank"]:
                 item["_rank"] = rank
-                candidates[fixture_key] = item
+                candidates[candidate_key] = item
 
     groups = {status: [] for status in _DASHBOARD_STATUS_PRIORITY}
     for item in candidates.values():
@@ -1587,7 +1610,8 @@ def recommendation_group_html(status, items):
         "<div class='neo-panel-heading'><div>"
         f"<h3>{esc(label)}</h3><div class='neo-ranking-disclaimer'>{esc(hint)}</div>"
         "</div>"
-        f"<span class='neo-count-pill'>{len(items)} матчей</span></div>"
+        f"<span class='neo-count-pill'>{len(items)} сигналов · "
+        f"{dashboard_unique_fixture_count(items)} матчей</span></div>"
         + body
         + "</section>"
     )
@@ -1818,16 +1842,19 @@ def render():
         (
             "Одобрено к ставке",
             len(groups["approved"]),
+            dashboard_unique_fixture_count(groups["approved"]),
             "approved",
         ),
         (
             "Сильный прогноз — не ставка",
             len(groups["forecast"]),
+            dashboard_unique_fixture_count(groups["forecast"]),
             "forecast",
         ),
         (
             "Почти сильный прогноз",
             len(groups["near_strong"]),
+            dashboard_unique_fixture_count(groups["near_strong"]),
             "near_strong",
         ),
     ]
@@ -1835,8 +1862,8 @@ def render():
         "<div class='neo-recommendation-summary'>"
         + "".join(
             "<span class='neo-count-pill'>"
-            f"{esc(label)} · {count}</span>"
-            for label, count, _status in counts
+            f"{esc(label)} · {signal_count} сигналов / {match_count} матчей</span>"
+            for label, signal_count, match_count, _status in counts
         )
         + "</div>",
         unsafe_allow_html=True,
@@ -1852,13 +1879,29 @@ def render():
         for card in cards
     )
     fallback_count = len(groups["provisional"]) + len(groups["background"])
+    fallback_fixture_count = (
+        dashboard_unique_fixture_count(groups["provisional"])
+        + dashboard_unique_fixture_count(groups["background"])
+    )
     visible_count = sum(len(value) for value in groups.values())
+    visible_fixture_count = dashboard_unique_fixture_count(
+        [item for group in groups.values() for item in group]
+    )
+    primary_signal_count = sum(
+        len(groups[key]) for key in ("approved", "forecast", "near_strong")
+    )
+    primary_fixture_count = dashboard_unique_fixture_count(
+        [
+            item for key in ("approved", "forecast", "near_strong")
+            for item in groups[key]
+        ]
+    )
     st.caption(
         f"Последний набор: {len(cards)} матчей · корректные прогнозы 1X2: {one_x_two_count} · "
         f"с реальными коэффициентами 1X2: {priced_count} · "
         f"с сохранённым AI-разбором: {ai_count} · "
-        f"верхние категории: {sum(len(groups[key]) for key in ('approved', 'forecast', 'near_strong'))} · "
-        f"предварительные/фоновые: {fallback_count}."
+        f"верхние категории: {primary_signal_count} сигналов / {primary_fixture_count} матчей · "
+        f"предварительные/фоновые: {fallback_count} сигналов / {fallback_fixture_count} матчей."
     )
     schedule = dashboard_schedule_diagnostics(
         cards, now=now, period_end=period_end, selected_league=selected_league,
@@ -1881,8 +1924,9 @@ def render():
     primary_statuses = dashboard_primary_statuses_to_render(groups)
     if not primary_statuses and fallback_count:
         st.info(
-            f"Сейчас нет матчей, прошедших все критерии верхних категорий. "
-            f"Ниже сразу показаны {fallback_count} информационных прогнозов: "
+            f"Сейчас нет сигналов, прошедших все критерии верхних категорий. "
+            f"Ниже сразу показаны {fallback_count} информационных рыночных прогнозов "
+            f"по {fallback_fixture_count} матчам: "
             f"предварительных — {len(groups['provisional'])}, "
             f"фоновых — {len(groups['background'])}. "
             "Предварительные прогнозы требуют большей истории команд/поддержки модели; "
@@ -1930,7 +1974,7 @@ def render():
 
     # Do not render large empty panels: when strong/value lists are empty,
     # forecast-only matches should be the first useful content on the page.
-    for _label, _count, status in counts:
+    for _label, _signal_count, _match_count, status in counts:
         if status not in primary_statuses:
             continue
         st.markdown(
@@ -1951,12 +1995,12 @@ def render():
             if hidden:
                 st.caption(
                     f"В разделе «{_DASHBOARD_STATUS_LABELS[status]}» "
-                    f"ещё {hidden} матчей остаются в Сканере."
+                    f"ещё {hidden} рыночных сигналов остаются в Сканере."
                 )
 
     if fallback_count:
         fallback_title = (
-            f"📋 Предварительные и фоновые прогнозы · {fallback_count} · не рекомендации"
+            f"📋 Предварительные и фоновые прогнозы · {fallback_count} сигналов · не рекомендации"
         )
         if primary_statuses:
             with st.expander(fallback_title, expanded=False):
@@ -1971,7 +2015,9 @@ def render():
         )
 
     st.caption(
-        f"Показано на Dashboard: {visible_count} матчей из {schedule['total']} сохранённых. "
-        "Каждый матч отображается один раз — в самой высокой пройденной категории. "
-        "Предварительные и фоновые прогнозы не являются рекомендациями к ставке."
+        f"Показано на Dashboard: {visible_count} рыночных сигналов по "
+        f"{visible_fixture_count} матчам из {schedule['total']} сохранённых. "
+        "Каждый рынок оценивается отдельно: 1X2, тоталы, обе забьют, угловые и карточки "
+        "не конкурируют между собой по сырой вероятности. Один матч может иметь несколько "
+        "независимых строк. Предварительные и фоновые прогнозы не являются рекомендациями к ставке."
     )
