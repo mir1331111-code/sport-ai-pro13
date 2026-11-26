@@ -18,7 +18,7 @@ from betting.gate_report import (
     classify_card, near_misses, render_gate_details_html,
     render_near_misses_html, render_status_legend,
 )
-from betting.market_ranking import rank_market_forecasts
+from betting.market_ranking import market_forecast_summary, rank_market_forecasts
 from data.fixture_time import app_timezone, fixture_kickoff_local
 from config import (
     APP_VERSION, APP_BUILD_ID, DB_FILE, LLM_PROVIDERS, MIN_FAVORITE_HISTORY,
@@ -1672,6 +1672,77 @@ def dashboard_primary_statuses_to_render(groups):
     )
 
 
+def dashboard_model_coverage_diagnostics(cards):
+    """Explain why saved forecasts are still provisional or background.
+
+    This is a read-only diagnostic. It does not change forecast labels, minimum
+    history, probability thresholds, bookmaker validation or betting gates.
+    """
+    support_counts = {
+        "team_supported": 0,
+        "league_only": 0,
+        "prior_only": 0,
+        "partial_history": 0,
+        "unknown": 0,
+    }
+    result = {
+        "total": 0,
+        "support_counts": support_counts,
+        "sufficient_team_history": 0,
+        "strong_1x2_forecasts": 0,
+        "below_strong_probability": 0,
+        "insufficient_history": 0,
+        "examples": [],
+    }
+    for card in cards if isinstance(cards, list) else []:
+        if not isinstance(card, dict):
+            continue
+        result["total"] += 1
+        support = str(card.get("model_support_status") or "unknown").strip().casefold()
+        if support not in support_counts:
+            support = "unknown"
+        support_counts[support] += 1
+
+        features = card.get("independent_features")
+        features = features if isinstance(features, dict) else {}
+        home_sample = num(features.get("home_home_sample")) or 0
+        away_sample = num(features.get("away_away_sample")) or 0
+        history_ok = (
+            home_sample >= MIN_FAVORITE_HISTORY
+            and away_sample >= MIN_FAVORITE_HISTORY
+        )
+        if history_ok:
+            result["sufficient_team_history"] += 1
+        else:
+            result["insufficient_history"] += 1
+
+        summary = market_forecast_summary(card, "winner")
+        probability = num(summary.get("probability")) if summary else None
+        strong = bool(
+            support == "team_supported"
+            and history_ok
+            and probability is not None
+            and probability >= STRONG_FORECAST_MIN_PROB
+        )
+        if strong:
+            result["strong_1x2_forecasts"] += 1
+        elif history_ok and probability is not None:
+            result["below_strong_probability"] += 1
+
+        if (
+            len(result["examples"]) < 6
+            and (support != "team_supported" or not history_ok)
+        ):
+            result["examples"].append({
+                "match": match_name(card),
+                "league": str(card.get("league") or card.get("div") or "Лига не указана"),
+                "support": support,
+                "home_sample": int(home_sample),
+                "away_sample": int(away_sample),
+            })
+    return result
+
+
 def render():
     data = st.session_state.get("data") or {}
     cards = [
@@ -1818,6 +1889,37 @@ def render():
             "фоновые не достигают порога почти сильного прогноза (58,5%). "
             "Ни одна из этих категорий не является рекомендацией к ставке."
         )
+
+        coverage = dashboard_model_coverage_diagnostics(cards)
+        with st.expander("🔎 Диагностика: почему пока нет сильных прогнозов", expanded=True):
+            metric1, metric2, metric3 = st.columns(3)
+            metric1.metric("История дом/выезд достаточна", coverage["sufficient_team_history"])
+            metric2.metric("Сильный прогноз 1X2 ≥65%", coverage["strong_1x2_forecasts"])
+            metric3.metric("Недостаточно истории", coverage["insufficient_history"])
+            support = coverage["support_counts"]
+            st.caption(
+                "Поддержка модели: "
+                f"команды — {support['team_supported']}, "
+                f"только лига — {support['league_only']}, "
+                f"общий prior — {support['prior_only']}, "
+                f"частичная — {support['partial_history']}, "
+                f"не определена — {support['unknown']}."
+            )
+            if coverage["below_strong_probability"]:
+                st.caption(
+                    f"Матчей с достаточной историей, но вероятностью ниже "
+                    f"{STRONG_FORECAST_MIN_PROB:.0%}: "
+                    f"{coverage['below_strong_probability']}."
+                )
+            if coverage["examples"]:
+                st.markdown("**Примеры матчей с недостающей историей/поддержкой**")
+                for example in coverage["examples"]:
+                    st.caption(
+                        f"{example['league']} · {example['match']} — "
+                        f"{example['support']}; дом {example['home_sample']}/"
+                        f"{MIN_FAVORITE_HISTORY}, выезд {example['away_sample']}/"
+                        f"{MIN_FAVORITE_HISTORY}."
+                    )
 
     # Do not render large empty panels: when strong/value lists are empty,
     # forecast-only matches should be the first useful content on the page.
