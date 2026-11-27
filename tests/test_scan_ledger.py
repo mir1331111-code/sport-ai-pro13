@@ -66,12 +66,30 @@ class ScanLedgerTests(unittest.TestCase):
                 run_id, started_at=stamp, timezone_name="Europe/Helsinki",
                 horizon_days=1, date_from="2026-11-26", date_to_inclusive="2026-11-26",
             )
-            ledger.save_fixture_snapshot(run_id, {
+            card = {
                 "fixture_id": run_id,
                 "forecast_fixture_id": run_id,
                 "match": f"{run_id} Home vs Away",
                 "p1": 0.60,
-            })
+            }
+            if run_id == older:
+                ledger.record_run(
+                    run_id,
+                    metadata={
+                        "scan_started_at": stamp,
+                        "scan_completed_at": stamp,
+                        "horizon_days": 1,
+                        "date_from": "2026-11-26",
+                        "date_to_inclusive": "2026-11-26",
+                        "source_rows": 1,
+                        "unique_fixtures": 1,
+                        "analysed_matches": 1,
+                        "forecast_cards": 1,
+                    },
+                    cards=[card],
+                )
+            else:
+                ledger.save_fixture_snapshot(run_id, card)
         ledger.mark_run_failed(newer, "interrupted")
         result = ledger.latest_cards(prefer_completed=True)
         self.assertEqual(result[0]["forecast_fixture_id"], older)
