@@ -715,6 +715,9 @@ def _apply_settle_result(D2, closed, tried, event):
 
 def _sync_forecast_results(force: bool = False):
     """Synchronize prediction and market audit ledgers during active app use."""
+    # A request from the Learning Center is consumed before the workspace renders.
+    force_requested = bool(st.session_state.pop("_force_forecast_sync_requested", False))
+    force = bool(force or force_requested)
     now_ts = time.time()
     last_check = float(st.session_state.get("_last_forecast_ledger_sync_ts", 0) or 0)
     if not force and now_ts - last_check < FORECAST_AUTO_SYNC_EVERY_SEC:

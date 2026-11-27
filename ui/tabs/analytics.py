@@ -113,8 +113,136 @@ def render_data_quality():
             )
 
 
+def render_scan_history():
+    """Render recent durable scan runs from SQLite, including interrupted runs."""
+    st.subheader("История последних сканирований")
+    try:
+        ledger = ScanLedger(DB_FILE)
+        runs = ledger.runs(limit=10)
+    except Exception as exc:
+        st.warning(
+            f"Не удалось прочитать историю сканирований: {type(exc).__name__}"
+        )
+        return
+
+    if not runs:
+        st.info(
+            "В SQLite пока нет сохранённых запусков сканера. "
+            "После первого сканирования здесь появятся завершённые и прерванные запуски."
+        )
+        return
+
+    status_labels = {
+        "completed": "🟢 Завершено",
+        "running": "🟠 Не завершено / статус не подтверждён",
+        "failed": "🔴 Прервано",
+    }
+    summary = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        started = str(run.get("started_at") or "—")
+        date_from = str(run.get("date_from") or "")
+        date_to = str(run.get("date_to_inclusive") or "")
+        period = (
+            f"{date_from} — {date_to}" if date_from or date_to else "—"
+        )
+        status = str(run.get("status") or "")
+        summary.append({
+            "Начало": started.replace("T", " ")[:19],
+            "Статус": status_labels.get(status, status or "Неизвестно"),
+            "Период": period,
+            "Матчей обработано": int(run.get("analysed_matches") or 0),
+            "Карточек сохранено": int(run.get("saved_card_count") or 0),
+            "Прогнозных карточек": int(run.get("forecast_cards") or 0),
+            "Строк источников": int(run.get("source_rows") or 0),
+            "ID запуска": str(run.get("scan_run_id") or "—"),
+        })
+
+    if not summary:
+        st.info("В журнале пока нет корректных записей сканирований.")
+        return
+
+    st.dataframe(summary, width="stretch", hide_index=True)
+    latest_report = runs[0].get("report") if isinstance(runs[0], dict) else None
+    if isinstance(latest_report, list) and latest_report:
+        messages = [str(item).strip() for item in latest_report[-3:] if str(item).strip()]
+        if messages:
+            st.caption("Последние сообщения журнала: " + " · ".join(messages))
+
+
+def render_forecast_sync_status():
+    """Expose verified-result synchronization and actionable queue diagnostics."""
+    st.subheader("Сверка фактических результатов FT")
+    if st.button(
+        "🔄 Проверить результаты матчей сейчас",
+        key="learning_center_force_result_sync",
+        help=(
+            "Запускает принудительную сверку до 60 уникальных матчей. "
+            "Учитываются только подтверждённые FT; повторные запросы ограничены."
+        ),
+    ):
+        st.session_state["_force_forecast_sync_requested"] = True
+        st.rerun()
+
+    status = st.session_state.get("_forecast_ledger_sync_status") or {}
+    if not status:
+        st.info(
+            "Сверка ещё не выполнялась в этой сессии. "
+            "При обычной работе приложения она запускается автоматически; "
+            "кнопка выше запускает её вручную."
+        )
+        return
+
+    checked_at = str(status.get("checked_at") or "—").replace("T", " ")[:19]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Матчей проверено", int(status.get("fixtures_checked") or 0))
+    c2.metric("Прогнозов закрыто", int(status.get("forecasts_settled") or 0))
+    c3.metric("Ожидают FT", int(status.get("pending_forecasts") or 0))
+    c4.metric(
+        "Осталось доступных матчей",
+        int(status.get("eligible_fixtures_remaining") or 0),
+    )
+    st.caption(
+        f"Последняя проверка: {checked_at} · "
+        f"режим: {'ручной' if status.get('mode') == 'manual' else 'автоматический'}"
+    )
+
+    diagnostics = [
+        f"невалидный kickoff/ID: {int(status.get('invalid_fixture_ids') or 0)}",
+        f"ещё не прошло 2 ч 15 мин: {int(status.get('not_due_grace_fixtures') or 0)}",
+        f"будущие матчи: {int(status.get('future_fixtures') or 0)}",
+        f"старше окна сверки: {int(status.get('age_limited_fixtures') or 0)}",
+        f"ожидают повторного запроса: {int(status.get('retry_deferred_fixtures') or 0)}",
+        f"результат не найден: {int(status.get('not_found_fixtures') or 0)}",
+        f"статус пока не FT: {int(status.get('non_ft_fixtures') or 0)}",
+        f"ошибки источников: {int(status.get('errors') or 0)}",
+    ]
+    sources = status.get("result_sources") or {}
+    source_summary = ", ".join(
+        f"{name}: {count}" for name, count in sorted(sources.items())
+    ) or "подтверждённых источников пока нет"
+    st.caption("Диагностика очереди · " + " · ".join(diagnostics))
+    st.caption("Источники подтверждённых результатов: " + source_summary)
+
+    if status.get("error"):
+        st.error("Сверка завершилась ошибкой: " + str(status.get("error")))
+    elif int(status.get("invalid_fixture_ids") or 0):
+        st.warning(
+            "Часть прогнозов не может быть проверена: в ledger отсутствует "
+            "корректный kickoff или стабильный ID матча. Такие записи нельзя "
+            "автоматически сопоставлять с результатами."
+        )
+    elif int(status.get("not_found_fixtures") or 0):
+        st.warning(
+            "Для части завершившихся матчей источники пока не вернули счёт. "
+            "Они останутся ожидающими и будут проверены повторно по расписанию."
+        )
+
+
 def render_learning_center():
     render_scan_history()
+    render_forecast_sync_status()
     active_version = f"main-model-v{APP_VERSION}"
     try:
         ledger = ForecastLedger(DB_FILE)
@@ -751,6 +879,21 @@ def render_portfolio_risk():
         f"{max(0, len(bets) - len(persisted_bets))} · всего позиций: {len(bets)}"
     )
     st.caption(source_note + ". При совпадении позиции SQLite имеет приоритет по статусу и расчёту.")
+    if not bets:
+        st.info(
+            "В реестре пока нет зарегистрированных ставок. Прогнозы и карточки матчей "
+            "не являются открытыми позициями: в портфель попадают только рекомендации, "
+            "которые прошли фильтры и были добавлены сканером."
+        )
+    else:
+        pending_positions = sum(
+            str(item.get("status") or "").casefold() == "pending" for item in bets
+        )
+        settled_positions = len(bets) - pending_positions
+        st.caption(
+            f"Всего зарегистрировано позиций: {len(bets)} · "
+            f"открыто: {pending_positions} · закрыто/рассчитано: {settled_positions}."
+        )
     if report["warning"]:
         st.error("Экспозиция достигла 20% стартового банка. Рассмотри сокращение новых позиций.")
     st.subheader("Концентрация на одном матче")
