@@ -10,7 +10,7 @@ import streamlit as st
 
 from betting.ranking import model_favorite, rank_best_fixtures
 from betting.event_shortlist import (
-    build_high_probability_market_events,
+    build_high_probability_market_events, build_market_coverage,
     _market_quote as _event_market_quote,
     _source as _event_market_source,
 )
@@ -1245,6 +1245,52 @@ def _dashboard_real_1x2_quotes(card):
     return result
 
 
+def _dashboard_market_quotes(card, family):
+    """Return every real provider quote for one market family, with book/source provenance."""
+    if not isinstance(card, dict):
+        return []
+    fields = {
+        "winner": ("market_odds", "odds_source"),
+        "goals": ("total_market_odds", "total_odds_source"),
+        "btts": ("btts_market_odds", "btts_odds_source"),
+        "corners": ("stat_market_odds", "extra_market_source"),
+        "cards": ("stat_market_odds", "extra_market_source"),
+    }
+    spec = fields.get(str(family or ""))
+    if not spec:
+        return []
+    price_map = card.get(spec[0])
+    if not isinstance(price_map, dict):
+        return []
+    fallback_source = str(card.get(spec[1]) or "").strip()
+    source_map = card.get("market_odds_source_by_pick")
+    source_map = source_map if isinstance(source_map, dict) else {}
+    books = card.get("bookmaker_by_pick")
+    books = books if isinstance(books, dict) else {}
+    result = []
+    for raw_pick, raw_price in price_map.items():
+        pick = str(raw_pick or "").strip()
+        if family == "corners" and not pick.startswith("Угл "):
+            continue
+        if family == "cards" and not pick.startswith("Карты "):
+            continue
+        price = num(raw_price)
+        source = str(source_map.get(pick) or fallback_source).strip()
+        if (
+            price is None or not 1.01 < price <= 100.0
+            or source.casefold() in {"", "model_only", "no_market", "unknown"}
+        ):
+            continue
+        result.append({
+            "pick": pick,
+            "odds": price,
+            "bookmaker": str(books.get(pick) or "").strip(),
+            "source": source,
+        })
+    result.sort(key=lambda item: (item["pick"], item["bookmaker"], item["odds"]))
+    return result
+
+
 def _dashboard_ai_details(card):
     """Compact per-fixture AI/context evidence, available on demand."""
     analysis = card.get("deep_analysis")
@@ -1461,6 +1507,7 @@ def dashboard_recommendation_groups(
                 "home_sample": int(summary.get("home_team_sample") or 0),
                 "away_sample": int(summary.get("away_team_sample") or 0),
                 "odds": odds,
+                "market_quotes": _dashboard_market_quotes(card, family),
                 "one_x_two_quotes": _dashboard_real_1x2_quotes(card),
                 "probabilities_1x2": {
                     "П1": num(card.get("p1")),
@@ -1581,6 +1628,30 @@ def recommendation_group_html(status, items):
                 if quote_rows else
                 "<span class='neo-ai-status'>Нет реальных котировок 1X2</span>"
             )
+            market_quote_rows = []
+            for quote in item.get("market_quotes") or []:
+                price = num(quote.get("odds"))
+                if price is None:
+                    continue
+                book = str(quote.get("bookmaker") or "").strip()
+                source = str(quote.get("source") or "").strip()
+                provenance = " · ".join(value for value in (book, source) if value)
+                market_quote_rows.append(
+                    f"{esc(quote.get('pick') or '')} <b>{price:.2f}</b>"
+                    + (f" <small>{esc(provenance)}</small>" if provenance else "")
+                )
+            market_quotes_text = (
+                "<div class='neo-dashboard-odds-list'>"
+                + "<br>".join(market_quote_rows)
+                + "</div>"
+                if market_quote_rows else
+                "<span class='neo-ai-status'>Нет подтверждённых котировок этого рынка</span>"
+            )
+            family_probability = num(item.get("probability"))
+            probability_text = (
+                f"Рынок: <b>{family_probability:.1%}</b>"
+                if family_probability is not None else "Рынок: —"
+            ) + f"<br><small>1X2: {esc(prob_text)}</small>"
             history_text = (
                 f"{int(item.get('home_sample') or 0)}/"
                 f"{int(item.get('away_sample') or 0)}"
@@ -1591,9 +1662,9 @@ def recommendation_group_html(status, items):
                 f"<td class='neo-time'>{esc(time_text)}</td>"
                 f"<td>{_dashboard_fixture_html(card)}</td>"
                 f"<td>{esc(item.get('family_label') or '—')}<br><b>{esc(item.get('pick') or '—')}</b></td>"
-                f"<td>{esc(prob_text)}</td>"
+                f"<td>{probability_text}</td>"
                 f"<td>{one_x_two_text}</td>"
-                f"<td><b>{selected_price}</b><small>{esc(selected_quote_source)}</small></td>"
+                f"<td>{market_quotes_text}<small>Выбор: <b>{selected_price}</b> {esc(selected_quote_source)}</small></td>"
                 f"<td>{esc(history_text)}</td>"
                 f"<td>{esc(gate_text)}<br>{ai_html}</td>"
                 "</tr>"
@@ -1601,8 +1672,8 @@ def recommendation_group_html(status, items):
         body = (
             "<div class='neo-table-scroll'><table class='neo-match-table neo-recommendation-table'>"
             "<thead><tr><th>Время</th><th>Матч / турнир</th><th>Рынок / выбор</th>"
-            "<th>Вероятности 1X2</th><th>Реальные коэффициенты 1X2</th>"
-            "<th>Цена выбранного рынка</th><th>История Д/Г</th><th>Допуск / AI</th></tr></thead>"
+            "<th>Вероятность выбранного рынка / 1X2</th><th>Реальные коэффициенты 1X2</th>"
+            "<th>Все котировки выбранного рынка</th><th>История Д/Г</th><th>Допуск / AI</th></tr></thead>"
             "<tbody>" + "".join(rows) + "</tbody></table></div>"
         )
     return (
@@ -1906,6 +1977,33 @@ def render():
     schedule = dashboard_schedule_diagnostics(
         cards, now=now, period_end=period_end, selected_league=selected_league,
     )
+    coverage_rows = build_market_coverage(cards)
+    if coverage_rows:
+        import pandas as pd
+        with st.expander("💹 Коэффициенты и покрытие рынков", expanded=True):
+            coverage_table = [{
+                "Рынок": item.get("market") or item.get("family") or "—",
+                "Матчи с прогнозом": int(item.get("forecast_matches") or 0),
+                "Матчи хотя бы с одной котировкой": int(item.get("quoted_matches") or 0),
+                "Сильные прогнозы": int(item.get("strong_matches") or 0),
+                "Подтверждённый Value": int(item.get("value_matches") or 0),
+            } for item in coverage_rows]
+            st.dataframe(pd.DataFrame(coverage_table), width="stretch", hide_index=True)
+            st.caption(
+                "Коэффициент нужен не для красоты: 1/кэф даёт исходную рыночную вероятность; "
+                "полная линия позволяет убрать маржу букмекера (de-vig), сравнить её с "
+                "вероятностью модели, рассчитать EV = P(модели) × кэф − 1, Edge и размер "
+                "ставки по Kelly. Без реальной котировки нельзя подтвердить EV, Edge или Kelly; "
+                "такой прогноз остаётся аналитическим, а не ставкой."
+            )
+    else:
+        with st.expander("💹 Зачем нужны коэффициенты?"):
+            st.write(
+                "Коэффициент переводится в исходную рыночную вероятность (1/кэф). "
+                "Полная линия нужна, чтобы убрать маржу букмекера и рассчитать EV, Edge и Kelly. "
+                "Без реальной котировки ставка не допускается."
+            )
+
     st.caption(
         f"Окно расписания: {schedule['in_period']} из {schedule['total']} матчей · "
         f"без времени начала {schedule['missing_kickoff']} · "
