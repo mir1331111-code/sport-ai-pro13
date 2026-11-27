@@ -113,6 +113,64 @@ def render_data_quality():
             )
 
 
+def render_scan_history():
+    """Render recent durable scan runs from SQLite, including interrupted runs."""
+    st.subheader("История последних сканирований")
+    try:
+        ledger = ScanLedger(DB_FILE)
+        runs = ledger.runs(limit=10)
+    except Exception as exc:
+        st.warning(
+            f"Не удалось прочитать историю сканирований: {type(exc).__name__}"
+        )
+        return
+
+    if not runs:
+        st.info(
+            "В SQLite пока нет сохранённых запусков сканера. "
+            "После первого сканирования здесь появятся завершённые и прерванные запуски."
+        )
+        return
+
+    status_labels = {
+        "completed": "🟢 Завершено",
+        "running": "🟡 Выполняется",
+        "failed": "🔴 Прервано",
+    }
+    summary = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        started = str(run.get("started_at") or "—")
+        date_from = str(run.get("date_from") or "")
+        date_to = str(run.get("date_to_inclusive") or "")
+        period = (
+            f"{date_from} — {date_to}" if date_from or date_to else "—"
+        )
+        status = str(run.get("status") or "")
+        summary.append({
+            "Начало": started.replace("T", " ")[:19],
+            "Статус": status_labels.get(status, status or "Неизвестно"),
+            "Период": period,
+            "Матчей обработано": int(run.get("analysed_matches") or 0),
+            "Карточек сохранено": int(run.get("saved_card_count") or 0),
+            "Прогнозных карточек": int(run.get("forecast_cards") or 0),
+            "Строк источников": int(run.get("source_rows") or 0),
+            "ID запуска": str(run.get("scan_run_id") or "—"),
+        })
+
+    if not summary:
+        st.info("В журнале пока нет корректных записей сканирований.")
+        return
+
+    st.dataframe(summary, width="stretch", hide_index=True)
+    latest_report = runs[0].get("report") if isinstance(runs[0], dict) else None
+    if isinstance(latest_report, list) and latest_report:
+        messages = [str(item).strip() for item in latest_report[-3:] if str(item).strip()]
+        if messages:
+            st.caption("Последние сообщения журнала: " + " · ".join(messages))
+
+
 def render_learning_center():
     render_scan_history()
     active_version = f"main-model-v{APP_VERSION}"
