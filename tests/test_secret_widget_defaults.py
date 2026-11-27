@@ -46,6 +46,21 @@ class SecretWidgetDefaultsTests(unittest.TestCase):
 
         self.assertEqual(checked, protected_keys)
 
+
+    def test_provider_api_key_aliases_are_supported_without_revealing_values(self):
+        from config import LLM_PROVIDERS, llm_provider_key_config
+
+        groq_names = {
+            str(name).casefold()
+            for name in llm_provider_key_config("Groq GPT-OSS 120B")["aliases"]
+        }
+        self.assertIn("groq_api_key", groq_names)
+        self.assertIn("llm_api_key", self.source.casefold())
+        self.assertIn('"groq"', self.source.casefold())
+        for provider, config in LLM_PROVIDERS.items():
+            if provider.startswith("Groq"):
+                self.assertIn("GROQ_API_KEY", config["key_aliases"])
+
     def test_background_score_lookups_resolve_keys_server_side(self):
         self.assertIn(
             '_api_key_default("fdorg_token", "FDORG_TOKEN", "fdorg_token")',
