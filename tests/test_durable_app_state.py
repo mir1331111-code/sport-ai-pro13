@@ -93,7 +93,9 @@ class DurableAppStateTests(unittest.TestCase):
             "HomeTeam": "Home FC", "AwayTeam": "Away FC",
             "FTHG": 2, "FTAG": 1,
         }]
-        user_datasets.save_user_dataset("custom_historical_match_rows", history_rows)
+        user_datasets.save_user_dataset(
+            "custom_historical_match_rows", history_rows, db_path=self.db_path,
+        )
         payload = remote_backup.create_sqlite_backup_bytes(self.db_path)
 
         restored_path = str(Path(self.temp.name) / "restored.sqlite")
