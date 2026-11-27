@@ -58,6 +58,10 @@ class ScannerEnginePriorityTests(unittest.TestCase):
             "HomeTeam": "Man Utd",
             "AwayTeam": "Tottenham",
             "FTHG": 2, "FTAG": 1,
+            "HC": 6, "AC": 4, "HY": 2, "AY": 1,
+            "HR": 0, "AR": 0,
+            "HTHG": 1, "HTAG": 0, "HTHC": 3, "HTAC": 2,
+            "HxG": 1.5, "AxG": 0.7,
         }]
         with patch.object(scanner_engine, "enrich_history_with_shot_xg"):
             history, divisions = scanner_engine._prepare_training_history(
@@ -67,6 +71,33 @@ class ScannerEnginePriorityTests(unittest.TestCase):
         self.assertEqual(divisions, ["E0"])
         self.assertEqual(len(history["E0"]), 1)
         self.assertEqual(len(history["E0"][0]), 1)
+        enriched = history["E0"][0][0]
+        # A match already present in official history is not duplicated, but
+        # newly supplied actual stats/xG are filled into that exact row.
+        self.assertEqual((enriched["FTHG"], enriched["FTAG"]), (2, 1))
+        self.assertEqual((enriched["HC"], enriched["AC"]), (6, 4))
+        self.assertEqual((enriched["HY"], enriched["AY"]), (2, 1))
+        self.assertEqual((enriched["HR"], enriched["AR"]), (0, 0))
+        self.assertEqual((enriched["HxG"], enriched["AxG"]), (1.5, 0.7))
+
+        from model.historical_match_stats import HistoricalMatchStats
+        from model.training import (
+            prepare_completed_training_rows, train_engine_chronologically,
+        )
+        training_rows, skipped = prepare_completed_training_rows(history, divisions)
+        self.assertEqual(len(training_rows), 1)
+        self.assertEqual(skipped["missing_or_invalid_score"], 0)
+        statistics_model = HistoricalMatchStats(min_team_games=1)
+        train_engine_chronologically(
+            scanner_engine.Engine(matrix_n=8),
+            statistics_model,
+            training_rows,
+        )
+        prediction = statistics_model.predict(
+            "Manchester United", "Tottenham Hotspur", "E0",
+        )
+        self.assertEqual(prediction["corners"]["history_matches"], 1)
+        self.assertEqual(prediction["cards"]["history_matches"], 1)
 
     def test_cold_start_training_can_defer_heavy_market_benchmark_fail_closed(self):
         logs = []
