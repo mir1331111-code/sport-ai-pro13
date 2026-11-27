@@ -293,6 +293,7 @@ def _provider_api_key(provider: str) -> str:
     key_config = llm_provider_key_config(provider)
     return _runtime_secret(
         key_config["session"], key_config["env"], key_config["storage"],
+        *tuple(key_config.get("aliases") or ()),
     )
 
 
