@@ -883,12 +883,14 @@ def _render_results_archive():
         type="secondary",
     )
 
+    force_key = f"_completed_results_force_refresh_{date_key}"
     if refresh_requested:
         st.session_state.pop(result_state_key, None)
         st.session_state.pop(attempted_key, None)
+        st.session_state[force_key] = True
 
     result_data = st.session_state.get(result_state_key)
-    if not isinstance(result_data, dict):
+    if not isinstance(result_data, dict) and not st.session_state.get(force_key):
         try:
             result_data = db.fetch_completed_results(date_key)
         except Exception as exc:
@@ -898,8 +900,11 @@ def _render_results_archive():
             st.session_state[result_state_key] = result_data
 
     should_fetch = (
-        not isinstance(result_data, dict)
-        and not st.session_state.get(attempted_key)
+        bool(st.session_state.get(force_key))
+        or (
+            not isinstance(result_data, dict)
+            and not st.session_state.get(attempted_key)
+        )
     )
     if should_fetch:
         st.session_state[attempted_key] = True
@@ -920,6 +925,7 @@ def _render_results_archive():
             saved_at = db.save_completed_results(result_data)
             result_data["archive_updated_at"] = saved_at
             st.session_state[result_state_key] = result_data
+            st.session_state.pop(force_key, None)
         except Exception as exc:
             st.session_state[result_state_key] = {
                 "date": date_key, "matches": [], "source_counts": {},
@@ -928,6 +934,7 @@ def _render_results_archive():
                 "away_wins": 0, "score_conflicts": 0,
             }
             result_data = st.session_state[result_state_key]
+            st.session_state.pop(force_key, None)
 
     result_data = result_data if isinstance(result_data, dict) else st.session_state.get(result_state_key)
     if not isinstance(result_data, dict):
