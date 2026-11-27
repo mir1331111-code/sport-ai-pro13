@@ -81,6 +81,7 @@ from llm.deep_analysis import (
 from model.independent_forecasts import (
     historical_features, historical_xg_features,
     record_scan_forecasts, parse_llm_probabilities, build_ai_crosscheck,
+    _fixture_identity as forecast_fixture_identity,
 )
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label, render_fixture_header)
@@ -3243,6 +3244,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         scan_now = datetime.now(scan_timezone)
         scan_run_id = uuid.uuid4().hex
         today_date = scan_now.date()
+        scan_ledger = ScanLedger(DB_FILE)
+        scan_ledger.start_run(
+            scan_run_id,
+            started_at=scan_now.isoformat(),
+            timezone_name=getattr(scan_timezone, "key", "UTC"),
+            horizon_days=int(days),
+            date_from=today_date.isoformat(),
+            date_to_inclusive=(today_date + timedelta(days=int(days) - 1)).isoformat(),
+        )
+        st.session_state["_active_scan_run_id"] = scan_run_id
+        saved_fixture_snapshots = 0
+        last_remote_checkpoint = 0
         logs = [
             f"📦 Сборка {APP_BUILD_ID} · " + (
                 "ручной запуск полного market benchmark."
@@ -4371,6 +4384,38 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "stadium_image": r.get("stadium_image") or r.get("venue_image") or "",
                 "context": {},
             })
+            # Save the fixture immediately after its first complete model snapshot.
+            # The same row is enriched later with the independent AI/context result.
+            try:
+                _snapshot_card = cards[-1]
+                _stable_fixture = forecast_fixture_identity(_snapshot_card)
+                if _stable_fixture is not None:
+                    _snapshot_card["forecast_fixture_id"] = _stable_fixture[0]
+                    _snapshot_card["scan_run_id"] = scan_run_id
+                scan_ledger.save_fixture_snapshot(scan_run_id, _snapshot_card)
+                saved_fixture_snapshots += 1
+                if (
+                    saved_fixture_snapshots - last_remote_checkpoint >= 25
+                    and _runtime_secret("github_token_input", "GITHUB_TOKEN")
+                ):
+                    from storage.remote_backup import backup_database_to_gist
+                    _checkpoint = backup_database_to_gist(DB_FILE)
+                    last_remote_checkpoint = saved_fixture_snapshots
+                    if not _checkpoint.get("ok"):
+                        logs.append(
+                            "⚠️ Промежуточная резервная копия скана: "
+                            + str(_checkpoint.get("message") or _checkpoint.get("state"))
+                        )
+                    else:
+                        logs.append(
+                            f"☁️ Промежуточная резервная копия: сохранено матчей "
+                            f"{saved_fixture_snapshots}."
+                        )
+            except Exception as snapshot_exc:
+                logs.append(
+                    "⚠️ Не удалось сохранить карточку матча сразу: "
+                    f"{type(snapshot_exc).__name__}: {str(snapshot_exc)[:120]}"
+                )
 
         if support_by_division:
             division_text = " · ".join(
@@ -4761,6 +4806,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if isinstance(_card, dict):
                 _card.pop("_value_recheck", None)
 
+        # Enrich the already durable per-fixture snapshots with final AI/context fields.
+        # If the process stops before this point, the initial model cards remain in SQLite.
+        for _snapshot_card in cards:
+            try:
+                scan_ledger.save_fixture_snapshot(scan_run_id, _snapshot_card)
+            except Exception as snapshot_exc:
+                logs.append(
+                    f"⚠️ Финальное обновление карточки не записано: {type(snapshot_exc).__name__}."
+                )
+
         # Persist both forecasters before the fixture starts. The ledger keeps the
         # first prediction immutable, making repeated scans idempotent and auditable.
         try:
@@ -4975,7 +5030,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "added": len(new_bets), "frozen": total_stake, "llm": llm_done,
         }
         try:
-            links = ScanLedger(DB_FILE).record_run(
+            links = scan_ledger.record_run(
                 scan_run_id,
                 metadata={
                     **D2["scan_meta"],
@@ -5048,6 +5103,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             D2["report"] = report[-100:]
             st.session_state.data = D2
             usage.set_local_data(D2)
+            try:
+                active_run = str(st.session_state.get("_active_scan_run_id") or "")
+                if active_run:
+                    ScanLedger(DB_FILE).mark_run_failed(active_run, message)
+                    if _runtime_secret("github_token_input", "GITHUB_TOKEN"):
+                        from storage.remote_backup import backup_database_to_gist
+                        backup_database_to_gist(DB_FILE)
+            except Exception:
+                pass
         except Exception:
             pass
         st.error(message)
@@ -5055,6 +5119,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         return
     finally:
         st.session_state["_scan_in_progress"] = False
+        st.session_state.pop("_active_scan_run_id", None)
     # A completed scan should land on the dashboard with the new results visible.
     st.session_state["_pending_terminal_navigation_v16"] = "🏠 Дашборд"
     st.rerun()
