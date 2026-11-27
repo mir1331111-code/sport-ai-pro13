@@ -799,6 +799,14 @@ def _render_manual_odds_block(
         candidate_options = {label: item for label, item in candidate_options.items()
                              if item[0].startswith("Карты ")}
 
+    # Hard visibility gate: a fixture is not shown in the scanner unless the
+    # exact selected market has a real, SStats-backed bookmaker quote. A price
+    # from another market (or a model fair price) must never qualify it.
+    candidate_options = {
+        label: item for label, item in candidate_options.items()
+        if quote_for(item[0]) is not None
+    }
+
     # Show all available exact-market prices in the current market view.
     displayed_quotes = [
         (item[0], quote_for(item[0]))
