@@ -55,7 +55,7 @@ _SOURCE_ALIASES = {
 
 
 def canonical_odds_source(value: Any) -> str:
-    text = re.sub(r"\\s+", " ", str(value or "").strip().casefold())
+    text = re.sub(r"\s+", " ", str(value or "").strip().casefold())
     return _SOURCE_ALIASES.get(text, text.replace(" ", "_"))
 
 
@@ -93,11 +93,11 @@ def _flat_market_maps(payload: dict) -> dict[str, dict]:
             result["winner"][key] = value
 
     groups = (
-        ("goals", "total_market_odds", r"^Т[БМ]\\s+"),
-        ("btts", "btts_market_odds", r"^BTTS\\s+"),
-        ("corners", "stat_market_odds", r"^Угл\\s+"),
-        ("cards", "stat_market_odds", r"^Карты\\s+"),
-        ("handicap", "asian_handicap_market_odds", r"^Ф[12]\\s+"),
+        ("goals", "total_market_odds", r"^Т[БМ]\s+"),
+        ("btts", "btts_market_odds", r"^BTTS\s+"),
+        ("corners", "stat_market_odds", r"^Угл\s+"),
+        ("cards", "stat_market_odds", r"^Карты\s+"),
+        ("handicap", "asian_handicap_market_odds", r"^Ф[12]\s+"),
     )
     for family, field, pattern in groups:
         mapping = payload.get(field)
@@ -125,16 +125,16 @@ def _flat_market_maps(payload: dict) -> dict[str, dict]:
         value = _price(raw_value)
         if value is None:
             continue
-        if re.match(r"^Т[БМ]\\s+", pick, re.I):
+        if re.match(r"^Т[БМ]\s+", pick, re.I):
             result["goals"].setdefault(pick, value)
         elif pick.casefold() in {"btts да", "btts нет", "btts yes", "btts no"}:
             canonical = "BTTS Да" if pick.casefold() in {"btts да", "btts yes"} else "BTTS Нет"
             result["btts"].setdefault(canonical, value)
-        elif re.match(r"^угл\\s+", pick, re.I):
+        elif re.match(r"^угл\s+", pick, re.I):
             result["corners"].setdefault(pick, value)
-        elif re.match(r"^карты\\s+", pick, re.I):
+        elif re.match(r"^карты\s+", pick, re.I):
             result["cards"].setdefault(pick, value)
-        elif re.match(r"^ф[12]\\s+", pick, re.I):
+        elif re.match(r"^ф[12]\s+", pick, re.I):
             result["handicap"].setdefault(pick, value)
 
     return result
@@ -194,17 +194,58 @@ def _field_names(family: str) -> tuple[str, str]:
     }[family]
 
 
+def _coherent_existing_lines(
+    mapping: dict[str, float],
+    family: str,
+    source_map: dict,
+    fallback_source: str,
+) -> dict[str, float]:
+    """Keep complete two-sided lines whose two prices have the same provenance."""
+    if family == "winner":
+        picks = ("П1", "X", "П2")
+        if not all(pick in mapping for pick in picks):
+            return {}
+        sources = {canonical_odds_source(source_map.get(pick) or fallback_source) for pick in picks}
+        return {pick: mapping[pick] for pick in picks} if len(sources) == 1 and "" not in sources else {}
+    if family == "btts":
+        picks = ("BTTS Да", "BTTS Нет")
+        if not all(pick in mapping for pick in picks):
+            return {}
+        sources = {canonical_odds_source(source_map.get(pick) or fallback_source) for pick in picks}
+        return {pick: mapping[pick] for pick in picks} if len(sources) == 1 and "" not in sources else {}
+    if family == "handicap":
+        return {
+            pick: price for pick, price in mapping.items()
+            if canonical_odds_source(source_map.get(pick) or fallback_source)
+        }
+    prefixes = {
+        "goals": ("ТБ ", "ТМ "),
+        "corners": ("Угл ТБ ", "Угл ТМ "),
+        "cards": ("Карты ТБ ", "Карты ТМ "),
+    }
+    over_prefix, under_prefix = prefixes[family]
+    lines = {
+        pick[len(over_prefix):] for pick in mapping if pick.startswith(over_prefix)
+    } & {
+        pick[len(under_prefix):] for pick in mapping if pick.startswith(under_prefix)
+    }
+    result = {}
+    for line in lines:
+        over_pick, under_pick = over_prefix + line, under_prefix + line
+        over_source = canonical_odds_source(source_map.get(over_pick) or fallback_source)
+        under_source = canonical_odds_source(source_map.get(under_pick) or fallback_source)
+        if over_source and over_source == under_source:
+            result[over_pick] = mapping[over_pick]
+            result[under_pick] = mapping[under_pick]
+    return result
+
+
 def apply_provider_odds(
     snapshot: dict,
     payload: dict | None,
     source: str,
 ) -> dict:
-    """Merge one provider's quotes into missing selections, keeping per-pick provenance.
-
-    Existing quotes have priority. An external 1X2 line can replace an incomplete
-    1X2 map only as a complete triplet. Totals/BTTS/stat lines are merged only as
-    complete matching pairs from one provider.
-    """
+    """Merge explicit provider prices without stitching markets or opposite sides."""
     if not isinstance(snapshot, dict):
         snapshot = {}
     result = dict(snapshot)
@@ -213,97 +254,146 @@ def apply_provider_odds(
         return result
 
     maps = _flat_market_maps(payload)
-    source_map = dict(result.get("market_odds_source_by_pick") or {})
+    source_map = {
+        str(pick): canonical_odds_source(value)
+        for pick, value in (result.get("market_odds_source_by_pick") or {}).items()
+    }
     bookmakers = dict(result.get("bookmaker_by_pick") or {})
     bookmaker = str(payload.get("bookmaker") or payload.get("bookmaker_name") or "").strip()
     if bookmaker.casefold() in {"unknown", "n/a", "none", "—"}:
         bookmaker = ""
 
-    fields = {
-        "winner": "market_odds",
-        "goals": "total_market_odds",
-        "btts": "btts_market_odds",
-        "corners": "stat_market_odds",
-        "cards": "stat_market_odds",
-        "handicap": "asian_handicap_market_odds",
-    }
-    for family, target_field in fields.items():
-        incoming = _complete_lines(maps.get(family) or {}, family)
-        if not incoming:
-            continue
-        current = _existing_map(result, target_field)
-        if family == "winner":
-            current_complete = all(k in current for k in ("П1", "X", "П2"))
-            if current_complete:
-                continue
-            # Do not mix a partial quote from one provider with another provider's line.
-            for key in ("П1", "X", "П2"):
-                current.pop(key, None)
-                source_map.pop(key, None)
-                bookmakers.pop(key, None)
-            current.update(incoming)
-        else:
-            for pick, price in incoming.items():
-                if pick not in current:
-                    current[pick] = price
-                    source_map[pick] = source_key
-                    if bookmaker:
-                        bookmakers[pick] = bookmaker
-        if family == "winner":
-            for pick in incoming:
-                source_map[pick] = source_key
-                if bookmaker:
-                    bookmakers[pick] = bookmaker
-            result["market_odds"] = current
-        elif family == "goals":
-            result["total_market_odds"] = current
-        elif family == "btts":
-            result["btts_market_odds"] = current
-        elif family in {"corners", "cards"}:
-            result["stat_market_odds"] = current
-        elif family == "handicap":
-            result["asian_handicap_market_odds"] = current
-
-    # Existing SStats picks can predate the per-pick source map.
-    legacy_defaults = {
-        "market_odds": result.get("odds_source"),
-        "total_market_odds": result.get("total_odds_source"),
-        "btts_market_odds": result.get("btts_odds_source"),
-        "stat_market_odds": result.get("extra_market_source"),
-        "asian_handicap_market_odds": result.get("extra_market_source"),
-    }
-    for field, fallback in legacy_defaults.items():
-        for pick in _existing_map(result, field):
-            if pick not in source_map and is_trusted_odds_source(fallback):
-                source_map[pick] = canonical_odds_source(fallback)
-
-    result["market_odds_source_by_pick"] = source_map
-    result["bookmaker_by_pick"] = bookmakers
-
-    for family, field, source_field in (
+    specs = (
         ("winner", "market_odds", "odds_source"),
         ("goals", "total_market_odds", "total_odds_source"),
         ("btts", "btts_market_odds", "btts_odds_source"),
         ("corners", "stat_market_odds", "extra_market_source"),
         ("cards", "stat_market_odds", "extra_market_source"),
         ("handicap", "asian_handicap_market_odds", "extra_market_source"),
-    ):
+    )
+    for family, field, source_field in specs:
+        incoming = _complete_lines(maps.get(family) or {}, family)
+        if not incoming:
+            continue
+        current_raw = _existing_map(result, field)
+        current_source = str(result.get(source_field) or "")
+        current = _coherent_existing_lines(
+            current_raw, family, source_map, current_source,
+        )
+
+        if family == "winner":
+            # 1X2 is atomic: one source must supply all three outcomes.
+            if current:
+                continue
+            for pick in ("П1", "X", "П2"):
+                source_map.pop(pick, None)
+                bookmakers.pop(pick, None)
+            current = dict(incoming)
+            for pick in current:
+                source_map[pick] = source_key
+                if bookmaker:
+                    bookmakers[pick] = bookmaker
+        elif family == "btts":
+            # BTTS Yes/No must be from the same source.
+            if current:
+                pass
+            elif not any(pick in current_raw for pick in ("BTTS Да", "BTTS Нет")):
+                current = dict(incoming)
+                for pick in current:
+                    source_map[pick] = source_key
+                    if bookmaker:
+                        bookmakers[pick] = bookmaker
+        elif family in {"goals", "corners", "cards"}:
+            # Add only complete, same-source O/U pairs. Never add only the missing
+            # opposite side to an existing price from a different bookmaker.
+            for pick in current_raw:
+                if pick not in current:
+                    source_map.pop(pick, None)
+                    bookmakers.pop(pick, None)
+            prefixes = {
+                "goals": ("ТБ ", "ТМ "),
+                "corners": ("Угл ТБ ", "Угл ТМ "),
+                "cards": ("Карты ТБ ", "Карты ТМ "),
+            }[family]
+            over_prefix, under_prefix = prefixes
+            for line in {
+                pick[len(over_prefix):] for pick in incoming if pick.startswith(over_prefix)
+            } & {
+                pick[len(under_prefix):] for pick in incoming if pick.startswith(under_prefix)
+            }:
+                over_pick, under_pick = over_prefix + line, under_prefix + line
+                # Any extant selection means this exact line is already owned by
+                # a different/older snapshot; don't splice a second provider into it.
+                if over_pick in current_raw or under_pick in current_raw:
+                    continue
+                current[over_pick] = incoming[over_pick]
+                current[under_pick] = incoming[under_pick]
+                for pick in (over_pick, under_pick):
+                    source_map[pick] = source_key
+                    if bookmaker:
+                        bookmakers[pick] = bookmaker
+        elif family == "handicap":
+            # A named directional handicap is an exact selectable outcome.
+            for pick, price in incoming.items():
+                if pick not in current_raw:
+                    current[pick] = price
+                    source_map[pick] = source_key
+                    if bookmaker:
+                        bookmakers[pick] = bookmaker
+
+        if family == "winner":
+            result[field] = current
+        elif family == "btts":
+            result[field] = current
+        elif family in {"goals", "corners", "cards"}:
+            # Keep all existing coherent lines for this family and merge new pairs.
+            result[field] = current
+        elif family == "handicap":
+            result[field] = current
+
+    result["market_odds_source_by_pick"] = source_map
+    result["bookmaker_by_pick"] = bookmakers
+
+    # Backfill provenance only for legacy maps which explicitly identify a source.
+    legacy_defaults = (
+        ("market_odds", "odds_source"),
+        ("total_market_odds", "total_odds_source"),
+        ("btts_market_odds", "btts_odds_source"),
+        ("stat_market_odds", "extra_market_source"),
+        ("asian_handicap_market_odds", "extra_market_source"),
+    )
+    for field, source_field in legacy_defaults:
+        fallback = canonical_odds_source(result.get(source_field))
+        for pick in _existing_map(result, field):
+            if pick not in source_map and fallback in TRUSTED_ODDS_SOURCES:
+                source_map[pick] = fallback
+
+    # Canonical family status can be "mixed" when separate complete lines have
+    # different providers. Every displayed quote retains its own source in map.
+    family_specs = (
+        ("market_odds", "odds_source"),
+        ("total_market_odds", "total_odds_source"),
+        ("btts_market_odds", "btts_odds_source"),
+        ("stat_market_odds", "extra_market_source"),
+        ("asian_handicap_market_odds", "extra_market_source"),
+    )
+    for field, source_field in family_specs:
         mapping = _existing_map(result, field)
-        selections = [
-            pick for pick in mapping
-            if (family not in {"corners", "cards"} or
-                (family == "corners" and pick.startswith("Угл ")) or
-                (family == "cards" and pick.startswith("Карты ")))
-            and (family != "handicap" or pick.startswith("Ф"))
-        ]
-        used = {canonical_odds_source(source_map.get(pick) or result.get(source_field))
-                for pick in selections}
-        if not selections:
+        picks = list(mapping)
+        # Stat maps contain two independent families; both keep one group field.
+        used = {
+            canonical_odds_source(source_map.get(pick) or result.get(source_field))
+            for pick in picks
+        }
+        used.discard("")
+        if not picks:
             result[source_field] = "no_market"
         elif len(used) == 1:
             result[source_field] = next(iter(used))
-        else:
+        elif used:
             result[source_field] = "mixed"
+        else:
+            result[source_field] = "no_market"
 
     if result.get("odds_source") not in {"no_market", "mixed"}:
         result["one_x_two_diagnostics"] = (
@@ -311,11 +401,10 @@ def apply_provider_odds(
             if canonical_odds_source(result.get("odds_source")) == "sstats"
             else {
                 "status": "external_unvalidated",
-                "reason": "Котировка получена от внешнего провайдера; Value/EV-гейт не подтверждён.",
+                "reason": "Внешняя котировка доступна для анализа, но не прошла SStats bookmaker/value validation.",
             }
         )
     return result
-
 
 def has_any_real_odds(card: object) -> bool:
     """True only when at least one valid price has trusted provider provenance."""
