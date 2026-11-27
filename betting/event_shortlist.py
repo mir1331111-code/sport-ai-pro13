@@ -453,8 +453,11 @@ def build_best_market_events(cards: object, limit: int = 30) -> list[dict]:
             rows = [
                 row for row in rows
                 if _valid_odds(row.get("odds")) is not None
-                and str(row.get("source") or "").strip().casefold()
-                not in {"", "model_only", "no_market", "unknown", "none"}
+                and (
+                    str(row.get("source") or "").strip().casefold()
+                    not in {"model_only", "no_market", "unknown", "none"}
+                    or bool(str(row.get("bookmaker") or "").strip())
+                )
             ]
             if not rows:
                 continue
