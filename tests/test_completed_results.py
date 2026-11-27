@@ -203,6 +203,60 @@ class CompletedMatchArchiveTests(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "AET")
         self.assertEqual(rows[0]["duration"], "EXTRA_TIME")
 
+    def test_archive_includes_verified_sstats_full_time_results(self):
+        from unittest.mock import patch
+
+        game = {
+            "id": 991,
+            "date": "2026-11-06T18:00:00Z",
+            "status": 8,
+            "homeResult": 3,
+            "awayResult": 1,
+            "homeTeam": {"name": "SStats Home"},
+            "awayTeam": {"name": "SStats Away"},
+        }
+        with (
+            patch("data.scores._espn_day", return_value=[]),
+            patch("data.scores._fdorg_range", return_value=[]),
+            patch("data.scores._olb_season", return_value=2026),
+            patch("data.scores._olb_league", return_value=[]),
+            patch("data.sstats._sstats_completed_games_for_day", return_value=[game]),
+            patch("data.sstats._sstats_league_info", return_value=("Local League", "15", "Country")),
+        ):
+            result = completed_matches_for_day(
+                "2026-11-06", sstats_api_key="test-sstats-key",
+            )
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["source_counts"]["SStats"], 1)
+        self.assertEqual(result["matches"][0]["score"], "3:1")
+        self.assertEqual(result["matches"][0]["sources"], ["SStats"])
+        self.assertEqual(result["matches"][0]["league"], "Local League")
+
+    def test_archive_rejects_non_full_time_sstats_scores(self):
+        from unittest.mock import patch
+
+        game = {
+            "id": 992,
+            "date": "2026-11-06T18:00:00Z",
+            "status": 7,
+            "homeResult": 1,
+            "awayResult": 0,
+            "homeTeam": {"name": "Live Home"},
+            "awayTeam": {"name": "Live Away"},
+        }
+        with (
+            patch("data.scores._espn_day", return_value=[]),
+            patch("data.scores._fdorg_range", return_value=[]),
+            patch("data.scores._olb_season", return_value=2026),
+            patch("data.scores._olb_league", return_value=[]),
+            patch("data.sstats._sstats_completed_games_for_day", return_value=[game]),
+        ):
+            result = completed_matches_for_day(
+                "2026-11-06", sstats_api_key="test-sstats-key",
+            )
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["source_counts"]["SStats"], 0)
+
     def test_missing_fdorg_token_does_not_block_other_sources(self):
         with (
             patch("data.scores._get_token", return_value=""),
