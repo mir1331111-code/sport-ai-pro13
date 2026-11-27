@@ -62,6 +62,38 @@ class SQLiteStoreUpdateTests(unittest.TestCase):
         )
         self.assertEqual(sqlite_store.fetch_bets(), [])
 
+    def test_completed_results_archive_round_trips_and_replaces_same_day(self):
+        first = {
+            "date": "2026-11-26",
+            "total": 1,
+            "matches": [{"home": "Home FC", "away": "Away FC", "score": "2:1"}],
+        }
+        stamp = sqlite_store.save_completed_results(first)
+        self.assertTrue(stamp)
+        loaded = sqlite_store.fetch_completed_results("2026-11-26")
+        self.assertEqual(loaded["matches"][0]["score"], "2:1")
+        self.assertEqual(loaded["archive_updated_at"], stamp)
+
+        updated = {
+            "date": "2026-11-26",
+            "total": 2,
+            "matches": [
+                {"home": "Home FC", "away": "Away FC", "score": "2:1"},
+                {"home": "Another FC", "away": "Visitor FC", "score": "0:0"},
+            ],
+        }
+        sqlite_store.save_completed_results(updated)
+        loaded_again = sqlite_store.fetch_completed_results("2026-11-26")
+        self.assertEqual(loaded_again["total"], 2)
+        self.assertEqual(len(loaded_again["matches"]), 2)
+        self.assertEqual(sqlite_store.completed_results_archive_days()[0]["date"], "2026-11-26")
+
+    def test_completed_results_archive_rejects_invalid_calendar_day(self):
+        with self.assertRaises(ValueError):
+            sqlite_store.save_completed_results({"date": "2026-02-30"})
+        with self.assertRaises(ValueError):
+            sqlite_store.fetch_completed_results("not-a-date")
+
 
 if __name__ == "__main__":
     unittest.main()

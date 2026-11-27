@@ -457,6 +457,60 @@ class BatchGroqAnalysisTests(unittest.TestCase):
         self.assertEqual(increment.call_count, 2)
         cache_write.assert_called_once()
 
+    def test_groq_120b_rate_limit_falls_back_to_20b_with_same_dossier(self):
+        from llm import deep_analysis
+
+        dossier = build_match_dossier(make_card())
+        holder = {
+            "state": "rate_limited",
+            "provider": "Groq GPT-OSS 120B",
+            "model": "openai/gpt-oss-120b",
+            "message": "HTTP 429 test limit",
+        }
+        analysis = {"fixture_id": dossier["fixture_id"], "independent_pick": "П1"}
+        calls = []
+
+        def run_once(ctx):
+            calls.append(ctx)
+            if len(calls) == 1:
+                holder.update({
+                    "state": "rate_limited",
+                    "provider": "Groq GPT-OSS 120B",
+                    "model": "openai/gpt-oss-120b",
+                    "message": "Browser Search HTTP 429",
+                })
+                return {}
+            holder.update({
+                "state": "completed",
+                "provider": "Groq GPT-OSS 20B",
+                "model": "openai/gpt-oss-20b",
+                "message": "structured analysis completed",
+            })
+            return {dossier["fixture_id"]: analysis}
+
+        with (
+            patch.object(deep_analysis, "_analyze_top_matches_single", side_effect=run_once),
+            patch.object(deep_analysis, "last_top_matches_status", side_effect=lambda: dict(holder)),
+            patch.object(deep_analysis, "_set_top_matches_status", side_effect=lambda **kw: holder.update(kw)),
+            patch.object(deep_analysis.usage, "llm_remaining", return_value=5),
+        ):
+            result = deep_analysis.analyze_top_matches({
+                "api_key": "same-groq-key",
+                "provider": "Groq GPT-OSS 120B",
+                "model": "openai/gpt-oss-120b",
+                "candidates": [dossier],
+            })
+
+        self.assertEqual(result[dossier["fixture_id"]], analysis)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]["provider"], "Groq GPT-OSS 20B")
+        self.assertEqual(calls[1]["model"], "openai/gpt-oss-20b")
+        self.assertEqual(calls[1]["api_key"], "same-groq-key")
+        self.assertEqual(calls[1]["candidates"], [dossier])
+        self.assertEqual(holder["state"], "completed_with_fallback")
+        self.assertTrue(holder["used_fallback"])
+        self.assertIn("Browser Search не использовался", holder["message"])
+
     def test_drops_unknown_fixture_ids_and_rejects_bad_probability_distributions(self):
         from llm import deep_analysis
 

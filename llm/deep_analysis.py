@@ -1098,7 +1098,7 @@ def check_provider_connection(provider: str, api_key: str) -> dict[str, Any]:
     }
 
 
-def analyze_top_matches(ctx: dict) -> dict[str, dict]:
+def _analyze_top_matches_single(ctx: dict) -> dict[str, dict]:
     """Run one independent structured batch request using the selected provider."""
     if not isinstance(ctx, dict):
         _set_top_matches_status(
@@ -1441,6 +1441,75 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         )
         _log(f"TOP MATCHES ERROR: {type(exc).__name__}: {str(exc)[:180]}")
         return {}
+
+
+def analyze_top_matches(ctx: dict) -> dict[str, dict]:
+    """Run the chosen AI provider and fall back to Groq 20B after a 120B rate limit.
+
+    The fallback reuses only the user's configured Groq key and the exact same
+    pre-match dossiers. It does not invent lineups/news and cannot alter the
+    main model probabilities or betting gates. Browser Search is omitted on
+    the 20B fallback; the status makes that limitation explicit.
+    """
+    context = dict(ctx) if isinstance(ctx, dict) else ctx
+    try:
+        result = _analyze_top_matches_single(context)
+    except LLMRateLimitError:
+        result = {}
+
+    if result:
+        return result
+
+    status = last_top_matches_status()
+    selected_provider = normalize_llm_provider(
+        context.get("provider") if isinstance(context, dict) else ""
+    )
+    can_fallback = (
+        selected_provider == "Groq GPT-OSS 120B"
+        and status.get("state") in {"rate_limited", "daily_limit"}
+        and isinstance(context, dict)
+        and bool(str(context.get("api_key") or "").strip())
+        and usage.llm_remaining() > 0
+    )
+    if not can_fallback:
+        return result
+
+    primary_message = str(status.get("message") or status.get("state") or "лимит 120B")
+    fallback_context = dict(context)
+    fallback_context["provider"] = "Groq GPT-OSS 20B"
+    fallback_context["model"] = LLM_PROVIDERS["Groq GPT-OSS 20B"]["model"]
+    try:
+        fallback_result = _analyze_top_matches_single(fallback_context)
+    except LLMRateLimitError:
+        fallback_result = {}
+    fallback_status = last_top_matches_status()
+    if fallback_result:
+        _set_top_matches_status(**{
+            **fallback_status,
+            "state": "completed_with_fallback",
+            "used_fallback": True,
+            "fallback_from": selected_provider,
+            "primary_failure": primary_message,
+            "message": (
+                f"Основная модель 120B ограничила запрос ({primary_message}); "
+                "резервный GPT-OSS 20B вернул "
+                f"{len(fallback_result)} разборов. Browser Search не использовался; "
+                "AI опирался только на проверенное досье и не заполнял пробелы догадками."
+            ),
+        })
+        return fallback_result
+
+    _set_top_matches_status(**{
+        **fallback_status,
+        "used_fallback": True,
+        "fallback_from": selected_provider,
+        "primary_failure": primary_message,
+        "message": (
+            "Основная модель 120B ограничила запрос; резервный GPT-OSS 20B тоже "
+            f"не вернул разбор: {fallback_status.get('message') or fallback_status.get('state') or 'нет ответа'}."
+        ),
+    })
+    return {}
 
 
 def format_top_match_opinion(

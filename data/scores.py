@@ -584,7 +584,10 @@ def find_match_score(
     return None
 
 
-def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dict:
+def completed_matches_for_day(
+    date_iso: str, *, token: str | None = None,
+    sstats_api_key: str | None = None,
+) -> dict:
     """Return deduplicated completed football matches for one calendar day.
 
     Coverage is intentionally explicit: ESPN broad soccer scoreboard,
@@ -602,6 +605,7 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
         "ESPN": 0,
         "football-data.org": 0,
         "OpenLigaDB": 0,
+        "SStats": 0,
     }
     source_errors: dict[str, str] = {}
 
@@ -681,6 +685,70 @@ def completed_matches_for_day(date_iso: str, *, token: str | None = None) -> dic
         except Exception as exc:
             source_errors["OpenLigaDB"] = type(exc).__name__
             log.warning("daily results OpenLigaDB %s/%s: %s", league_code, day, type(exc).__name__)
+
+    # SStats is the same source used for the live fixture slate and bookmaker
+    # prices. Query its completed day endpoint so the archive includes the
+    # user's scanned competitions instead of only ESPN/European provider coverage.
+    sstats_key = str(sstats_api_key or "").strip()
+    if sstats_key:
+        try:
+            from data.sstats import _sstats_completed_games_for_day, _sstats_league_info
+
+            sstats_rows = _sstats_completed_games_for_day(day, sstats_key)
+            if sstats_rows is None:
+                source_errors["SStats"] = "Источник не вернул список завершённых матчей"
+            else:
+                normalized_sstats = []
+                for game in sstats_rows:
+                    if not isinstance(game, dict):
+                        continue
+                    try:
+                        status = int(game.get("status"))
+                        home_score = int(game.get("homeResult"))
+                        away_score = int(game.get("awayResult"))
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    # SStats status 8 is normal full-time. Do not infer 1X2
+                    # results from live, extra-time or penalty statuses.
+                    if status != 8 or min(home_score, away_score) < 0:
+                        continue
+                    home_obj = game.get("homeTeam") or {}
+                    away_obj = game.get("awayTeam") or {}
+                    if not isinstance(home_obj, dict):
+                        home_obj = {}
+                    if not isinstance(away_obj, dict):
+                        away_obj = {}
+                    home = str(
+                        home_obj.get("name") or game.get("homeTeamName") or ""
+                    ).strip()
+                    away = str(
+                        away_obj.get("name") or game.get("awayTeamName") or ""
+                    ).strip()
+                    if not home or not away:
+                        continue
+                    try:
+                        league_name = _sstats_league_info(game)[0] or "SStats"
+                    except Exception:
+                        league_name = str(game.get("leagueName") or "SStats")
+                    normalized_sstats.append({
+                        "home": home,
+                        "away": away,
+                        "hs": home_score,
+                        "as": away_score,
+                        "official_hs": home_score,
+                        "official_as": away_score,
+                        "status": "FT",
+                        "date": _source_local_day(game.get("date")) or day,
+                        "league": str(league_name),
+                        "fixture_id": str(game.get("id") or ""),
+                        "source": "SStats",
+                    })
+                _add(normalized_sstats, "SStats", fallback_date=day)
+        except Exception as exc:
+            source_errors["SStats"] = type(exc).__name__
+            log.warning("daily results SStats %s: %s", day, type(exc).__name__)
+    else:
+        source_errors["SStats"] = "API key not configured"
 
     # Merge only exact-date, directionally matched fixtures. If two providers
     # disagree on a score, retain the first result but expose the discrepancy.

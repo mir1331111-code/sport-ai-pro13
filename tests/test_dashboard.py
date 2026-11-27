@@ -8,7 +8,7 @@ from ui.tabs.dashboard import (
     DASHBOARD_FORECAST_VISIBLE_LIMIT,
     _forecast_rejection_reason, _grok_panel, _https_image_url,
     _ai_comparison_html, _match_table_row, _probability_health_note,
-    _dashboard_real_1x2_quotes, _dashboard_latest_ai_status,
+    _dashboard_real_1x2_quotes, _dashboard_market_quotes, _dashboard_latest_ai_status,
     _quality_panel, _reliability_svg, _sparkline_svg,
     dashboard_recommendation_groups, dashboard_schedule_diagnostics,
     dashboard_primary_statuses_to_render, dashboard_model_coverage_diagnostics,
@@ -174,6 +174,51 @@ class DashboardHelperTests(unittest.TestCase):
         self.assertEqual(dashboard_unique_fixture_count(
             [item for group in groups.values() for item in group]
         ), 4)
+
+    def test_dashboard_displays_real_bookmaker_quotes_for_each_market_family(self):
+        card = {
+            "market_odds": {"П1": 1.91, "X": 3.40, "П2": 4.20},
+            "total_market_odds": {"ТБ 2.5": 1.88, "ТМ 2.5": 1.96},
+            "btts_market_odds": {"BTTS Да": 1.72, "BTTS Нет": 2.12},
+            "stat_market_odds": {
+                "Угл ТБ 9.5": 1.90,
+                "Карты ТБ 3.5": 1.85,
+            },
+            "odds_source": "SStats",
+            "total_odds_source": "SStats",
+            "btts_odds_source": "SStats",
+            "extra_market_source": "SStats",
+            "market_odds_source_by_pick": {
+                "П1": "SStats", "X": "SStats", "П2": "SStats",
+                "ТБ 2.5": "SStats", "ТМ 2.5": "SStats",
+                "BTTS Да": "SStats", "BTTS Нет": "SStats",
+                "Угл ТБ 9.5": "SStats", "Карты ТБ 3.5": "SStats",
+            },
+            "bookmaker_by_pick": {
+                "П1": "Book One", "X": "Book One", "П2": "Book One",
+                "ТБ 2.5": "Book Two", "ТМ 2.5": "Book Two",
+                "BTTS Да": "Book Three", "BTTS Нет": "Book Three",
+                "Угл ТБ 9.5": "Book Four", "Карты ТБ 3.5": "Book Five",
+            },
+        }
+        self.assertEqual(len(_dashboard_market_quotes(card, "winner")), 3)
+        self.assertEqual(
+            [item["pick"] for item in _dashboard_market_quotes(card, "goals")],
+            ["ТБ 2.5", "ТМ 2.5"],
+        )
+        self.assertEqual(
+            _dashboard_market_quotes(card, "goals")[0]["bookmaker"],
+            "Book Two",
+        )
+        self.assertEqual(
+            [item["pick"] for item in _dashboard_market_quotes(card, "corners")],
+            ["Угл ТБ 9.5"],
+        )
+        self.assertEqual(
+            [item["pick"] for item in _dashboard_market_quotes(card, "cards")],
+            ["Карты ТБ 3.5"],
+        )
+        self.assertEqual(_dashboard_market_quotes(card, "handicap"), [])
 
     def test_dashboard_keeps_1x2_and_total_forecasts_for_the_same_fixture(self):
         from data.fixture_time import app_timezone

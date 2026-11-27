@@ -4676,10 +4676,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     )
 
                 ai_status = last_top_matches_status()
+                actual_llm_provider = str(ai_status.get("provider") or llm_prov)
+                actual_llm_model = str(ai_status.get("model") or (
+                    LLM_PROVIDERS.get(actual_llm_provider, {}).get("model") or llm_model
+                ))
+                actual_llm_name = _provider_display_name(actual_llm_provider)
                 logs.append(
                     "🏆 TOP MATCHES · AI STATUS: "
                     + str(ai_status.get("state") or "unknown")
-                    + f" · {llm_provider_name} · {ai_status.get('model') or llm_model or 'модель не указана'} · "
+                    + f" · {actual_llm_name} · {actual_llm_model or 'модель не указана'} · "
                     + str(ai_status.get("message") or "нет подробностей")
                 )
                 for fixture_id, analysis in top_analyses.items():
@@ -4694,8 +4699,11 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         key=lambda pair: pair[1],
                     )[0]
                     card["deep_analysis"] = analysis
-                    card["deep_analysis_provider"] = llm_prov
-                    card["deep_analysis_model"] = llm_model
+                    card["deep_analysis_provider"] = actual_llm_provider
+                    card["deep_analysis_model"] = actual_llm_model
+                    if ai_status.get("used_fallback"):
+                        card["deep_analysis_fallback_from"] = str(ai_status.get("fallback_from") or llm_prov)
+                        card["deep_analysis_browser_search"] = False
                     card["llm_opinion"] = format_top_match_opinion(
                         analysis, model_pick_code=model_pick_code
                     )
