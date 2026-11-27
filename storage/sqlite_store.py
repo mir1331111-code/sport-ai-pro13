@@ -90,6 +90,11 @@ CREATE TABLE IF NOT EXISTS user_datasets (
     sha256 TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS completed_results_archive (
+    date_iso TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -425,4 +430,73 @@ def load_app_state() -> dict | None:
         raise ValueError("stored SQLite app state metadata is invalid")
     return {"data": data, "updated_at_ns": stamp}
 
+def save_completed_results(payload: dict) -> str:
+    """Persist one deduplicated daily results archive in SQLite."""
+    from datetime import datetime, timezone
+
+    if not isinstance(payload, dict):
+        raise ValueError("completed results payload must be an object")
+    day = str(payload.get("date") or "").strip()
+    try:
+        parsed = datetime.strptime(day, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("completed results date must be YYYY-MM-DD") from exc
+    if parsed.strftime("%Y-%m-%d") != day:
+        raise ValueError("completed results date must be YYYY-MM-DD")
+    safe_payload = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"),
+        default=str, allow_nan=False,
+    )
+    stamp = datetime.now(timezone.utc).isoformat()
+    with _db() as conn:
+        conn.execute(
+            """INSERT INTO completed_results_archive(date_iso,payload_json,updated_at)
+            VALUES(?,?,?)
+            ON CONFLICT(date_iso) DO UPDATE SET
+                payload_json=excluded.payload_json,
+                updated_at=excluded.updated_at""",
+            (day, safe_payload, stamp),
+        )
+    return stamp
+
+
+def fetch_completed_results(date_iso: str) -> dict | None:
+    """Load the persisted results archive for one local calendar day."""
+    day = str(date_iso or "").strip()
+    try:
+        parsed = datetime.strptime(day, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("completed results date must be YYYY-MM-DD") from exc
+    if parsed.strftime("%Y-%m-%d") != day:
+        raise ValueError("completed results date must be YYYY-MM-DD")
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT payload_json,updated_at FROM completed_results_archive WHERE date_iso=?",
+            (day,),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row[0])
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("stored completed results archive is malformed") from exc
+    if not isinstance(payload, dict) or str(payload.get("date") or "") != day:
+        raise ValueError("stored completed results archive has invalid metadata")
+    payload["archive_updated_at"] = str(row[1] or "")
+    return payload
+
+
+def completed_results_archive_days(limit: int = 365) -> list[dict]:
+    """List stored result archive days, newest first."""
+    cap = max(1, min(5000, int(limit)))
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT date_iso,updated_at,json_extract(payload_json,'$.total') AS total "
+            "FROM completed_results_archive ORDER BY date_iso DESC LIMIT ?",
+            (cap,),
+        ).fetchall()
+    return [
+        {"date": str(row[0]), "updated_at": str(row[1] or ""), "total": int(row[2] or 0)}
+        for row in rows
+    ]
 
