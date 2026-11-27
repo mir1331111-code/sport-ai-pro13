@@ -237,6 +237,16 @@ class DashboardHelperTests(unittest.TestCase):
             },
             "winner_market_validation": False,
             "winner_market_validation_report": {"n": 120},
+            "odds_source": "SStats",
+            "market_odds": {"П1": 1.91, "X": 3.40, "П2": 4.20},
+            "market_odds_source_by_pick": {
+                "П1": "SStats", "X": "SStats", "П2": "SStats",
+            },
+            "bookmaker_by_pick": {
+                "П1": "Bet365", "X": "Bet365", "П2": "Bet365",
+            },
+            "total_odds_source": "SStats",
+            "total_market_odds": {"ТБ 2.5": 1.90, "ТМ 2.5": 1.95},
         }
         groups = dashboard_recommendation_groups(
             [card], now=now, period_end=now + timedelta(days=3),
