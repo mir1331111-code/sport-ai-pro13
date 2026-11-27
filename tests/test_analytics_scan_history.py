@@ -57,7 +57,7 @@ class ScanHistoryUiTests(unittest.TestCase):
         ledger_factory.assert_called_once_with(analytics.DB_FILE)
         ledger_factory.return_value.runs.assert_called_once_with(limit=10)
         rows = dataframe.call_args.args[0]
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0]["Статус"], "🟢 Завершено")
         self.assertEqual(rows[1]["Статус"], "🟠 Не завершено / статус не подтверждён")
         self.assertEqual(rows[2]["Статус"], "🔴 Прервано")
