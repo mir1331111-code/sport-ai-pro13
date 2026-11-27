@@ -108,6 +108,77 @@ class DurableAppStateTests(unittest.TestCase):
         self.assertEqual(recovered, expected)
         self.assertEqual(restored_history, history_rows)
 
+    def test_imported_match_history_is_merged_without_losing_existing_statistics(self):
+        original = [{
+            "Date": "2026-11-20", "Div": "W_E0",
+            "HomeTeam": "Home FC", "AwayTeam": "Away FC",
+            "FTHG": 2, "FTAG": 1, "HC": "", "AC": "",
+        }]
+        first = user_datasets.merge_user_dataset(
+            "custom_historical_match_rows", original,
+        )
+        self.assertEqual(first["added_rows"], 1)
+
+        imported = [
+            {
+                "Date": "2026-11-20", "Div": "W_E0",
+                "HomeTeam": "Home FC", "AwayTeam": "Away FC",
+                "FTHG": 2, "FTAG": 1, "HC": 8, "AC": 4,
+                "HY": 2, "AY": 1, "HR": 0, "AR": 0,
+                "HxG": 1.7, "AxG": 0.8,
+            },
+            {
+                "Date": "2026-11-21", "Div": "W_E0",
+                "HomeTeam": "New Home", "AwayTeam": "New Away",
+                "FTHG": 0, "FTAG": 0, "HC": 5, "AC": 6,
+            },
+            {
+                "Date": "2026-11-20", "Div": "W_E0",
+                "HomeTeam": "Home FC", "AwayTeam": "Away FC",
+                "FTHG": 9, "FTAG": 0, "HC": 12, "AC": 0,
+            },
+        ]
+        merged = user_datasets.merge_user_dataset(
+            "custom_historical_match_rows", imported,
+        )
+        rows = user_datasets.load_user_dataset("custom_historical_match_rows")
+        self.assertEqual(merged["row_count"], 2)
+        self.assertEqual(merged["added_rows"], 1)
+        self.assertEqual(merged["enriched_rows"], 1)
+        self.assertEqual(merged["conflicts"], 1)
+        preserved = next(row for row in rows if row["HomeTeam"] == "Home FC")
+        self.assertEqual((preserved["FTHG"], preserved["FTAG"]), (2, 1))
+        self.assertEqual((preserved["HC"], preserved["AC"]), (8, 4))
+        self.assertEqual((preserved["HY"], preserved["AY"]), (2, 1))
+        self.assertEqual((preserved["HR"], preserved["AR"]), (0, 0))
+        self.assertEqual((preserved["HxG"], preserved["AxG"]), (1.7, 0.8))
+
+    def test_context_history_merge_keeps_distinct_observations_and_enriches_blanks(self):
+        fixture = {
+            "fixture_id": "fixture-123",
+            "home_team": "Home FC", "away_team": "Away FC",
+            "kickoff_at": "2026-11-25T18:00:00+00:00",
+            "observed_at": "2026-11-25T10:00:00+00:00",
+            "referee_id": "", "referee_yellow_mean": "",
+        }
+        user_datasets.merge_user_dataset("historical_context_rows", [fixture])
+        enriched = {**fixture, "referee_id": "ref-9", "referee_yellow_mean": "3.8"}
+        second = {
+            **fixture,
+            "observed_at": "2026-11-25T11:00:00+00:00",
+            "referee_id": "ref-9",
+        }
+        result = user_datasets.merge_user_dataset(
+            "historical_context_rows", [enriched, second],
+        )
+        rows = user_datasets.load_user_dataset("historical_context_rows")
+        self.assertEqual(result["row_count"], 2)
+        self.assertEqual(result["enriched_rows"], 1)
+        self.assertEqual(result["added_rows"], 1)
+        first = next(row for row in rows if row["observed_at"] == fixture["observed_at"])
+        self.assertEqual(first["referee_id"], "ref-9")
+        self.assertEqual(first["referee_yellow_mean"], "3.8")
+
     def test_legacy_sqlite_bets_are_recovered_when_app_state_was_not_in_old_backup(self):
         sqlite_store.insert_bets_batch([{
             "match": "Home FC vs Away FC",
