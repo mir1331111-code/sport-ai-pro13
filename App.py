@@ -203,7 +203,11 @@ def _configured_secret(*keys):
             value = st.secrets.get(key, "")
             if value:
                 return str(value).strip()
-        for section_name in ("api", "apis", "secrets", "highlightly", "sstats", "footballapi", "football_api", "xai"):
+        for section_name in (
+            "api", "apis", "secrets", "highlightly", "sstats",
+            "footballapi", "football_api", "xai", "groq", "gemini",
+            "google", "openrouter", "openai", "deepseek", "qwen",
+        ):
             section = st.secrets.get(section_name, {})
             if hasattr(section, "get"):
                 for key in keys:
@@ -1106,8 +1110,10 @@ with st.sidebar:
         llm_key_storage = str(llm_key_config.get("key_storage") or "llm_api_key")
         llm_key_session = str(llm_key_config.get("key_session") or "llm_api_key_input")
         llm_key_label = "XAI_API_KEY · Grok" if llm_key_env == "XAI_API_KEY" else "LLM API key"
+        llm_key_aliases = tuple(llm_key_config.get("key_aliases") or ())
         llm_key_default = _api_key_default(
-            llm_key_storage, llm_key_env, llm_key_env, llm_key_storage,
+            llm_key_storage, llm_key_env,
+            llm_key_env, llm_key_storage, *llm_key_aliases,
         )
         llm_key_input = st.text_input(
             llm_key_label,
