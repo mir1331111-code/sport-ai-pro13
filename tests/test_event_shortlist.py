@@ -254,10 +254,7 @@ class UnifiedMarketEventShortlistTests(unittest.TestCase):
         card["asian_handicap_forecasts"] = []
 
         events = build_best_market_events([card], limit=30)
-        self.assertTrue(events)
-        self.assertTrue(all(item["odds"] is None for item in events))
-        self.assertTrue(all(not item["value_verified"] for item in events))
-        self.assertTrue(all(item["model_ev"] is None for item in events))
+        self.assertEqual(events, [])
 
     def test_asian_handicap_event_carries_sstats_source_and_explicit_probability_basis(self):
         card = _base_card()
