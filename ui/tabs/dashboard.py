@@ -1664,7 +1664,7 @@ def recommendation_group_html(status, items):
                 f"<td>{esc(item.get('family_label') or '—')}<br><b>{esc(item.get('pick') or '—')}</b></td>"
                 f"<td>{probability_text}</td>"
                 f"<td>{one_x_two_text}</td>"
-                f"<td>{market_quotes_text}<small>Выбор: <b>{selected_price}</b> {esc(selected_quote_source)}</small></td>"
+                f"<td>{market_quotes_text}<small>Цена выбранного рынка: <b>{selected_price}</b> {esc(selected_quote_source)}</small></td>"
                 f"<td>{esc(history_text)}</td>"
                 f"<td>{esc(gate_text)}<br>{ai_html}</td>"
                 "</tr>"
