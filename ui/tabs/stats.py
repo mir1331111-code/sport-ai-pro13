@@ -922,8 +922,14 @@ def _render_results_archive():
                     date_key, token=fdorg_token or None,
                     sstats_api_key=sstats_key or None,
                 )
-            saved_at = db.save_completed_results(result_data)
-            result_data["archive_updated_at"] = saved_at
+            st.session_state[result_state_key] = result_data
+            try:
+                saved_at = db.save_completed_results(result_data)
+                result_data["archive_updated_at"] = saved_at
+            except Exception as save_exc:
+                result_data["archive_save_error"] = (
+                    f"{type(save_exc).__name__}: {str(save_exc)[:140]}"
+                )
             st.session_state[result_state_key] = result_data
             st.session_state.pop(force_key, None)
         except Exception as exc:
@@ -1035,6 +1041,8 @@ def _render_results_archive():
     )
     if result_data.get("archive_updated_at"):
         st.caption("Архив сохранён в SQLite: " + str(result_data["archive_updated_at"]))
+    if result_data.get("archive_save_error"):
+        st.warning("Результаты загружены, но не удалось сохранить локальный архив: " + str(result_data["archive_save_error"]))
     if result_data.get("score_conflicts"):
         st.warning(
             f"У {int(result_data['score_conflicts'])} матчей источники вернули разные счета. "
