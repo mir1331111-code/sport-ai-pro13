@@ -115,15 +115,18 @@ def normalize_llm_provider(provider: object) -> str:
     return selected if selected in LLM_PROVIDERS else DEFAULT_LLM_PROVIDER
 
 
-def llm_provider_key_config(provider: str) -> dict[str, str]:
-    """Return the credential source for the selected LLM provider."""
+def llm_provider_key_config(provider: str) -> dict[str, object]:
+    """Return the credential source and optional aliases for the selected LLM provider."""
     config = LLM_PROVIDERS.get(str(provider or ""), {})
-    return {
+    result: dict[str, object] = {
         "env": str(config.get("key_env") or "LLM_API_KEY"),
         "storage": str(config.get("key_storage") or "llm_api_key"),
         "session": str(config.get("key_session") or "llm_api_key_input"),
-        "aliases": tuple(str(value) for value in config.get("key_aliases", ()) if str(value)),
     }
+    aliases = tuple(str(value) for value in config.get("key_aliases", ()) if str(value))
+    if aliases:
+        result["aliases"] = aliases
+    return result
 
 
 DIV_TO_TSDB = {
