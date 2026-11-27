@@ -33,6 +33,14 @@ CREATE TABLE IF NOT EXISTS scan_runs (
     report_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_scan_runs_completed ON scan_runs(completed_at);
+CREATE TABLE IF NOT EXISTS scan_run_cards (
+    scan_run_id TEXT NOT NULL REFERENCES scan_runs(scan_run_id) ON DELETE CASCADE,
+    fixture_id TEXT NOT NULL,
+    card_json TEXT NOT NULL,
+    saved_at TEXT NOT NULL,
+    PRIMARY KEY (scan_run_id, fixture_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scan_cards_saved ON scan_run_cards(saved_at);
 CREATE TABLE IF NOT EXISTS scan_run_fixtures (
     scan_run_id TEXT NOT NULL REFERENCES scan_runs(scan_run_id) ON DELETE CASCADE,
     fixture_id TEXT NOT NULL,
@@ -112,6 +120,200 @@ class ScanLedger:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
+    def start_run(
+        self,
+        scan_run_id: str,
+        *,
+        started_at: str,
+        timezone_name: str,
+        horizon_days: int,
+        date_from: str,
+        date_to_inclusive: str,
+    ) -> None:
+        """Create a durable in-progress run before the first fixture is analysed."""
+        run_id = str(scan_run_id or "").strip()
+        horizon = int(horizon_days)
+        if not run_id:
+            raise ValueError("scan_run_id is required")
+        if not 1 <= horizon <= 14:
+            raise ValueError("horizon_days must be between 1 and 14")
+        stamp = str(started_at or _now())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO scan_runs (
+                    scan_run_id,status,started_at,completed_at,timezone_name,
+                    horizon_days,date_from,date_to_inclusive
+                ) VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT(scan_run_id) DO NOTHING
+                """,
+                (
+                    run_id, "running", stamp, stamp,
+                    str(timezone_name or "") or None, horizon,
+                    str(date_from or "") or None,
+                    str(date_to_inclusive or "") or None,
+                ),
+            )
+
+    def save_fixture_snapshot(
+        self,
+        scan_run_id: str,
+        card: Mapping[str, Any],
+        *,
+        saved_at: str | None = None,
+    ) -> bool:
+        """Persist one analysed fixture immediately, before AI or scan completion."""
+        run_id = str(scan_run_id or "").strip()
+        if not run_id:
+            raise ValueError("scan_run_id is required")
+        if not isinstance(card, Mapping):
+            raise ValueError("fixture card must be a mapping")
+        fixture_id = str(
+            card.get("forecast_fixture_id") or card.get("fixture_id") or ""
+        ).strip()
+        if not fixture_id:
+            raise ValueError("fixture card must have a stable fixture_id")
+        payload = _json(dict(card))
+        stamp = str(saved_at or _now())
+        match = str(card.get("match") or "")
+        if " vs " in match:
+            home, away = match.split(" vs ", 1)
+        else:
+            parts = str(card.get("match_ru") or "").split(" — ", 1)
+            home, away = (parts[0], parts[1]) if len(parts) == 2 else ("", "")
+        with self._connect() as conn:
+            run = conn.execute(
+                "SELECT 1 FROM scan_runs WHERE scan_run_id=?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"unknown scan_run_id: {run_id}")
+            conn.execute(
+                """
+                INSERT INTO scan_run_cards(scan_run_id,fixture_id,card_json,saved_at)
+                VALUES (?,?,?,?)
+                ON CONFLICT(scan_run_id,fixture_id) DO UPDATE SET
+                    card_json=excluded.card_json,saved_at=excluded.saved_at
+                """,
+                (run_id, fixture_id, payload, stamp),
+            )
+            conn.execute(
+                """
+                INSERT INTO scan_run_fixtures (
+                    scan_run_id,fixture_id,provider_fixture_id,kickoff_at,
+                    home_team,away_team,league,model_support_status,
+                    has_bookmaker_odds,quality_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(scan_run_id,fixture_id) DO UPDATE SET
+                    provider_fixture_id=excluded.provider_fixture_id,
+                    kickoff_at=excluded.kickoff_at,
+                    home_team=excluded.home_team,away_team=excluded.away_team,
+                    league=excluded.league,
+                    model_support_status=excluded.model_support_status,
+                    has_bookmaker_odds=excluded.has_bookmaker_odds
+                """,
+                (
+                    run_id, fixture_id,
+                    str(card.get("provider_fixture_id") or card.get("fixture_id") or "") or None,
+                    str(card.get("kickoff_utc") or "") or None,
+                    home.strip(), away.strip(),
+                    str(card.get("league") or card.get("div") or "") or None,
+                    str(card.get("model_support_status") or "") or None,
+                    int(bool(card.get("market_odds")) or bool(card.get("total_market_odds"))
+                        or bool(card.get("btts_market_odds"))
+                        or bool(card.get("stat_market_odds"))),
+                    "{}",
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE scan_runs SET forecast_cards=(
+                    SELECT COUNT(*) FROM scan_run_cards WHERE scan_run_id=?
+                ) WHERE scan_run_id=?
+                """,
+                (run_id, run_id),
+            )
+        return True
+
+    def cards_for_run(self, scan_run_id: str, limit: int = 1000) -> list[dict]:
+        """Load the complete saved card snapshots for one run."""
+        cap = max(1, min(10000, int(limit)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT card_json FROM scan_run_cards
+                WHERE scan_run_id=?
+                ORDER BY saved_at,fixture_id LIMIT ?
+                """,
+                (str(scan_run_id or ""), cap),
+            ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                card = json.loads(row["card_json"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(card, dict):
+                result.append(card)
+        return result
+
+    def latest_cards(self, *, prefer_completed: bool = True) -> list[dict]:
+        """Recover the newest completed scan, or the latest partial run if none completed."""
+        with self._connect() as conn:
+            row = None
+            if prefer_completed:
+                row = conn.execute(
+                    """
+                    SELECT r.scan_run_id FROM scan_runs r
+                    WHERE r.status='completed'
+                      AND EXISTS (
+                        SELECT 1 FROM scan_run_cards c
+                        WHERE c.scan_run_id=r.scan_run_id
+                      )
+                    ORDER BY r.started_at DESC LIMIT 1
+                    """
+                ).fetchone()
+            if row is None:
+                row = conn.execute(
+                    """
+                    SELECT r.scan_run_id FROM scan_runs r
+                    WHERE EXISTS (
+                        SELECT 1 FROM scan_run_cards c
+                        WHERE c.scan_run_id=r.scan_run_id
+                    )
+                    ORDER BY r.started_at DESC LIMIT 1
+                    """
+                ).fetchone()
+        return self.cards_for_run(row["scan_run_id"]) if row else []
+
+    def mark_run_failed(self, scan_run_id: str, message: str) -> None:
+        """Mark an interrupted scan while retaining every fixture snapshot already saved."""
+        run_id = str(scan_run_id or "").strip()
+        if not run_id:
+            return
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT report_json FROM scan_runs WHERE scan_run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return
+            try:
+                report = json.loads(row["report_json"] or "[]")
+            except (TypeError, ValueError):
+                report = []
+            if not isinstance(report, list):
+                report = []
+            report.append(str(message)[:500])
+            conn.execute(
+                """
+                UPDATE scan_runs SET status='failed',completed_at=?,report_json=?,
+                    forecast_cards=(
+                        SELECT COUNT(*) FROM scan_run_cards WHERE scan_run_id=?
+                    )
+                WHERE scan_run_id=?
+                """,
+                (_now(), _json(report[-200:]), run_id, run_id),
+            )
+
     def record_run(
         self,
         scan_run_id: str,
@@ -140,6 +342,7 @@ class ScanLedger:
         fixture_rows = []
         forecast_rows = []
         decision_rows = []
+        card_snapshot_rows = []
 
         # Import locally to keep this storage primitive independent of scanner UI.
         from betting.gate_report import classify_card
@@ -162,6 +365,7 @@ class ScanLedger:
             else:
                 parts = str(card.get("match_ru") or "").split(" — ", 1)
                 home, away = (parts[0], parts[1]) if len(parts) == 2 else ("", "")
+            card_snapshot_rows.append((run_id, fixture_id, _json(card), _now()))
             fixture_rows.append((
                 run_id, fixture_id,
                 str(card.get("provider_fixture_id") or "") or None,
@@ -274,18 +478,29 @@ class ScanLedger:
                     _json(dict(source_counts)), _json(dict(funnel)), _json(logs[-200:]),
                 ),
             )
-            for table in ("scan_run_fixtures", "scan_run_forecasts", "scan_run_decisions"):
-                conn.execute(f"DELETE FROM {table} WHERE scan_run_id=?", (run_id,))
             conn.executemany(
                 """INSERT INTO scan_run_fixtures (
                     scan_run_id,fixture_id,provider_fixture_id,kickoff_at,
                     home_team,away_team,league,model_support_status,has_bookmaker_odds,
                     quality_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(scan_run_id,fixture_id) DO UPDATE SET
+                    provider_fixture_id=excluded.provider_fixture_id,
+                    kickoff_at=excluded.kickoff_at,home_team=excluded.home_team,
+                    away_team=excluded.away_team,league=excluded.league,
+                    model_support_status=excluded.model_support_status,
+                    has_bookmaker_odds=excluded.has_bookmaker_odds,
+                    quality_json=excluded.quality_json""",
                 fixture_rows,
             )
             conn.executemany(
-                """INSERT INTO scan_run_forecasts
+                """INSERT OR IGNORE INTO scan_run_cards
+                   (scan_run_id,fixture_id,card_json,saved_at)
+                   VALUES (?,?,?,?)""",
+                card_snapshot_rows,
+            )
+            conn.executemany(
+                """INSERT OR IGNORE INTO scan_run_forecasts
                    (scan_run_id,fixture_id,forecast_key,forecast_kind)
                    VALUES (?,?,?,?)""",
                 forecast_rows,
@@ -294,7 +509,12 @@ class ScanLedger:
                 """INSERT INTO scan_run_decisions (
                     scan_run_id,fixture_id,market_family,market,selection,status,
                     probability,odds,expected_value,edge,gates_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(scan_run_id,fixture_id,market_family) DO UPDATE SET
+                    market=excluded.market,selection=excluded.selection,
+                    status=excluded.status,probability=excluded.probability,
+                    odds=excluded.odds,expected_value=excluded.expected_value,
+                    edge=excluded.edge,gates_json=excluded.gates_json""",
                 decision_rows,
             )
             conn.commit()
@@ -323,7 +543,13 @@ class ScanLedger:
         safe_limit = max(1, min(200, int(limit)))
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM scan_runs ORDER BY completed_at DESC LIMIT ?",
+                """
+                SELECT r.*,
+                    (SELECT COUNT(*) FROM scan_run_cards c
+                     WHERE c.scan_run_id=r.scan_run_id) AS saved_card_count
+                FROM scan_runs r
+                ORDER BY r.started_at DESC LIMIT ?
+                """,
                 (safe_limit,),
             ).fetchall()
         return [self._decode_run(row) for row in rows]
