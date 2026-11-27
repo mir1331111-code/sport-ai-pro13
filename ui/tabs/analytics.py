@@ -879,6 +879,21 @@ def render_portfolio_risk():
         f"{max(0, len(bets) - len(persisted_bets))} · всего позиций: {len(bets)}"
     )
     st.caption(source_note + ". При совпадении позиции SQLite имеет приоритет по статусу и расчёту.")
+    if not bets:
+        st.info(
+            "В реестре пока нет зарегистрированных ставок. Прогнозы и карточки матчей "
+            "не являются открытыми позициями: в портфель попадают только рекомендации, "
+            "которые прошли фильтры и были добавлены сканером."
+        )
+    else:
+        pending_positions = sum(
+            str(item.get("status") or "").casefold() == "pending" for item in bets
+        )
+        settled_positions = len(bets) - pending_positions
+        st.caption(
+            f"Всего зарегистрировано позиций: {len(bets)} · "
+            f"открыто: {pending_positions} · закрыто/рассчитано: {settled_positions}."
+        )
     if report["warning"]:
         st.error("Экспозиция достигла 20% стартового банка. Рассмотри сокращение новых позиций.")
     st.subheader("Концентрация на одном матче")
