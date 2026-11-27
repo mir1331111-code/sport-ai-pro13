@@ -494,9 +494,11 @@ class ScanLedger:
                 fixture_rows,
             )
             conn.executemany(
-                """INSERT OR IGNORE INTO scan_run_cards
+                """INSERT INTO scan_run_cards
                    (scan_run_id,fixture_id,card_json,saved_at)
-                   VALUES (?,?,?,?)""",
+                   VALUES (?,?,?,?)
+                   ON CONFLICT(scan_run_id,fixture_id) DO UPDATE SET
+                       card_json=excluded.card_json,saved_at=excluded.saved_at""",
                 card_snapshot_rows,
             )
             conn.executemany(
