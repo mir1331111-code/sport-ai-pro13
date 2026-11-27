@@ -104,7 +104,7 @@ class DurableAppStateTests(unittest.TestCase):
         ):
             self.local_path.unlink()
             recovered = usage.get_local_data()
-            restored_history = user_datasets.load_user_dataset("custom_historical_match_rows")
+            restored_history = user_datasets.load_user_dataset("custom_historical_match_rows", db_path=self.db_path)
         self.assertEqual(recovered, expected)
         self.assertEqual(restored_history, history_rows)
 
@@ -115,7 +115,7 @@ class DurableAppStateTests(unittest.TestCase):
             "FTHG": 2, "FTAG": 1, "HC": "", "AC": "",
         }]
         first = user_datasets.merge_user_dataset(
-            "custom_historical_match_rows", original,
+            "custom_historical_match_rows", original, db_path=self.db_path,
         )
         self.assertEqual(first["added_rows"], 1)
 
@@ -139,7 +139,7 @@ class DurableAppStateTests(unittest.TestCase):
             },
         ]
         merged = user_datasets.merge_user_dataset(
-            "custom_historical_match_rows", imported,
+            "custom_historical_match_rows", imported, db_path=self.db_path,
         )
         rows = user_datasets.load_user_dataset("custom_historical_match_rows")
         self.assertEqual(merged["row_count"], 2)
@@ -161,7 +161,7 @@ class DurableAppStateTests(unittest.TestCase):
             "observed_at": "2026-11-25T10:00:00+00:00",
             "referee_id": "", "referee_yellow_mean": "",
         }
-        user_datasets.merge_user_dataset("historical_context_rows", [fixture])
+        user_datasets.merge_user_dataset("historical_context_rows", [fixture], db_path=self.db_path)
         enriched = {**fixture, "referee_id": "ref-9", "referee_yellow_mean": "3.8"}
         second = {
             **fixture,
@@ -169,9 +169,9 @@ class DurableAppStateTests(unittest.TestCase):
             "referee_id": "ref-9",
         }
         result = user_datasets.merge_user_dataset(
-            "historical_context_rows", [enriched, second],
+            "historical_context_rows", [enriched, second], db_path=self.db_path,
         )
-        rows = user_datasets.load_user_dataset("historical_context_rows")
+        rows = user_datasets.load_user_dataset("historical_context_rows", db_path=self.db_path)
         self.assertEqual(result["row_count"], 2)
         self.assertEqual(result["enriched_rows"], 1)
         self.assertEqual(result["added_rows"], 1)
