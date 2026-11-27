@@ -20,6 +20,18 @@ class ScanHistoryUiTests(unittest.TestCase):
                 "report": [],
             },
             {
+                "scan_run_id": "run-unknown",
+                "status": "running",
+                "started_at": "2026-11-26T12:00:00+00:00",
+                "date_from": "2026-11-26",
+                "date_to_inclusive": "2026-11-26",
+                "analysed_matches": 1,
+                "saved_card_count": 1,
+                "forecast_cards": 1,
+                "source_rows": 1,
+                "report": [],
+            },
+            {
                 "scan_run_id": "run-interrupted",
                 "status": "failed",
                 "started_at": "2026-11-26T10:00:00+00:00",
@@ -47,8 +59,9 @@ class ScanHistoryUiTests(unittest.TestCase):
         rows = dataframe.call_args.args[0]
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["Статус"], "🟢 Завершено")
-        self.assertEqual(rows[1]["Статус"], "🔴 Прервано")
-        self.assertEqual(rows[1]["Карточек сохранено"], 2)
+        self.assertEqual(rows[1]["Статус"], "🟠 Не завершено / статус не подтверждён")
+        self.assertEqual(rows[2]["Статус"], "🔴 Прервано")
+        self.assertEqual(rows[2]["Карточек сохранено"], 2)
 
     def test_render_scan_history_handles_an_empty_database(self):
         with (
