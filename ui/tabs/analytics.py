@@ -134,7 +134,7 @@ def render_scan_history():
 
     status_labels = {
         "completed": "🟢 Завершено",
-        "running": "🟡 Выполняется",
+        "running": "🟠 Не завершено / статус не подтверждён",
         "failed": "🔴 Прервано",
     }
     summary = []
