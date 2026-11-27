@@ -1484,31 +1484,31 @@ def analyze_top_matches(ctx: dict) -> dict[str, dict]:
         fallback_result = {}
     fallback_status = last_top_matches_status()
     if fallback_result:
-        _set_top_matches_status(
+        _set_top_matches_status(**{
             **fallback_status,
-            state="completed_with_fallback",
-            used_fallback=True,
-            fallback_from=selected_provider,
-            primary_failure=primary_message,
-            message=(
+            "state": "completed_with_fallback",
+            "used_fallback": True,
+            "fallback_from": selected_provider,
+            "primary_failure": primary_message,
+            "message": (
                 f"Основная модель 120B ограничила запрос ({primary_message}); "
                 "резервный GPT-OSS 20B вернул "
                 f"{len(fallback_result)} разборов. Browser Search не использовался; "
                 "AI опирался только на проверенное досье и не заполнял пробелы догадками."
             ),
-        )
+        })
         return fallback_result
 
-    _set_top_matches_status(
+    _set_top_matches_status(**{
         **fallback_status,
-        used_fallback=True,
-        fallback_from=selected_provider,
-        primary_failure=primary_message,
-        message=(
+        "used_fallback": True,
+        "fallback_from": selected_provider,
+        "primary_failure": primary_message,
+        "message": (
             "Основная модель 120B ограничила запрос; резервный GPT-OSS 20B тоже "
             f"не вернул разбор: {fallback_status.get('message') or fallback_status.get('state') or 'нет ответа'}."
         ),
-    )
+    })
     return {}
 
 
