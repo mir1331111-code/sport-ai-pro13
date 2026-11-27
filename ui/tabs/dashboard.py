@@ -1466,6 +1466,15 @@ def dashboard_recommendation_groups(
             if status == "approved" and not odds_source and odds is not None:
                 odds_source = "Подтверждённая линия"
 
+            # Dashboard is a priced-fixtures view, not a model-only catalogue.
+            # Hide the entire market row when its exact pick has no real quote.
+            if odds is None or odds <= 1.0 or odds > 100.0:
+                continue
+            if not odds_source or odds_source.casefold() in {
+                "model_only", "no_market", "unknown", "none",
+            }:
+                continue
+
             failed = [gate.name for gate in gates if not gate.passed]
             if status == "forecast":
                 reason = "Не пройдены: " + ", ".join(failed[:3]) if failed else (
