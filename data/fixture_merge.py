@@ -287,98 +287,129 @@ _SSTATS_ODDS_FIELDS = (
 
 
 def is_sstats_market_source(source) -> bool:
-    """Return whether a quote's explicit provenance is SStats."""
+    """Return whether a quote's explicit provenance is SStats (bet-gate source)."""
     return str(source or "").strip().casefold() == "sstats"
 
 
+def is_trusted_market_source(source) -> bool:
+    """Return whether a supported bookmaker adapter supplied this quote."""
+    from data.odds_aggregator import is_trusted_odds_source
+    return is_trusted_odds_source(source)
+
+
+def _quote_source(card: dict, pick: str, fallback: str) -> str:
+    sources = card.get("market_odds_source_by_pick")
+    value = sources.get(pick) if isinstance(sources, dict) else None
+    return str(value or fallback or "")
+
 
 def enforce_sstats_market_card(card: dict) -> dict:
-    """Remove non-SStats bookmaker quotes and stale actions from saved scan cards."""
+    """Retain supported real odds from all providers; keep non-SStats picks out of Value."""
     if not isinstance(card, dict):
         return {}
     clean = dict(card)
-
+    source_map = dict(clean.get("market_odds_source_by_pick") or {})
+    bookmakers = dict(clean.get("bookmaker_by_pick") or {})
     quote_groups = (
-        ("market_odds", "odds_source"),
-        ("total_market_odds", "total_odds_source"),
-        ("btts_market_odds", "btts_odds_source"),
-        ("stat_market_odds", "extra_market_source"),
-        ("asian_handicap_market_odds", "extra_market_source"),
+        ("market_odds", "odds_source", None),
+        ("total_market_odds", "total_odds_source", None),
+        ("btts_market_odds", "btts_odds_source", None),
+        ("stat_market_odds", "extra_market_source", ("Угл ", "Карты ")),
+        ("asian_handicap_market_odds", "extra_market_source", ("Ф",)),
     )
-    for odds_field, source_field in quote_groups:
-        if not is_sstats_market_source(clean.get(source_field)):
+    for odds_field, source_field, prefixes in quote_groups:
+        mapping = clean.get(odds_field)
+        if not isinstance(mapping, dict):
             clean[odds_field] = {}
-            clean[source_field] = "no_market"
-
-    if not is_sstats_market_source(card.get("odds_source")):
-        clean["bookmaker_by_pick"] = {}
-    if not is_sstats_market_source(card.get("total_odds_source")):
-        clean["total_market_book_count"] = {}
-        clean["total_market_confirmed"] = {}
-
-    source_by_pick = clean.get("market_odds_source_by_pick")
-    if isinstance(source_by_pick, dict):
-        clean["market_odds_source_by_pick"] = {
-            pick: source for pick, source in source_by_pick.items()
-            if is_sstats_market_source(source)
+            continue
+        filtered = {}
+        for raw_pick, raw_price in mapping.items():
+            pick = str(raw_pick or "").strip()
+            if prefixes and not any(pick.startswith(prefix) for prefix in prefixes):
+                continue
+            source = _quote_source(clean, pick, str(clean.get(source_field) or ""))
+            try:
+                price = float(raw_price)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                not (1.01 < price <= 100.0)
+                or not is_trusted_market_source(source)
+            ):
+                source_map.pop(pick, None)
+                bookmakers.pop(pick, None)
+                continue
+            filtered[pick] = price
+            source_map[pick] = source
+        clean[odds_field] = filtered
+        used_sources = {
+            str(source_map.get(pick) or "").strip().casefold()
+            for pick in filtered
         }
-    else:
-        clean["market_odds_source_by_pick"] = {}
+        clean[source_field] = (
+            next(iter(used_sources)) if len(used_sources) == 1
+            else "mixed" if used_sources else "no_market"
+        )
+
+    clean["market_odds_source_by_pick"] = {
+        pick: source for pick, source in source_map.items()
+        if is_trusted_market_source(source)
+    }
+    clean["bookmaker_by_pick"] = {
+        pick: name for pick, name in bookmakers.items()
+        if pick in clean["market_odds_source_by_pick"] and str(name or "").strip()
+    }
+    if clean.get("odds_source") != "sstats":
+        clean["one_x_two_diagnostics"] = (
+            clean.get("one_x_two_diagnostics")
+            if clean.get("odds_source") == "no_market"
+            else {
+                "status": "external_unvalidated",
+                "reason": "Внешняя котировка доступна для анализа, но не прошла SStats bookmaker/value validation.",
+            }
+        )
 
     best = clean.get("best")
     best_pick = best[1] if isinstance(best, (tuple, list)) and len(best) > 1 else None
-    best_source = (
-        clean.get("best_odds_source")
-        or (clean.get("market_odds_source_by_pick") or {}).get(best_pick)
-    )
+    best_source = _quote_source(clean, str(best_pick or ""), str(clean.get("best_odds_source") or ""))
     if best is not None and not is_sstats_market_source(best_source):
         clean["best"] = None
         clean["best_by_market"] = {}
         clean["best_odds_source"] = "no_market"
         verdict = dict(clean.get("verdict") or {})
         verdict.update({
-            "real_odds": False,
-            "value_passed": False,
-            "is_bet": False,
-            "odd": None,
-            "ev": None,
-            "edge": None,
-            "stake": 0.0,
+            "real_odds": False, "value_passed": False, "is_bet": False,
+            "odd": None, "ev": None, "edge": None, "stake": 0.0,
         })
         clean["verdict"] = verdict
     return clean
 
 
 def enforce_sstats_odds_only(rows) -> list:
-    """Keep bookmaker prices only on fixtures owned by SStats.
+    """Legacy name: preserve prices only from the explicit supported provider allow-list."""
+    from data.odds_aggregator import is_trusted_odds_source
 
-    Schedule fallback feeds may supply their own price-like fields. They are
-    deliberately stripped here: the live scanner's bookmaker source is SStats,
-    not whichever schedule adapter happened to return a row.
-    """
     result = []
     for row in rows or []:
         if not isinstance(row, dict):
             continue
         clean = dict(row)
-        fixture_id = str(clean.get("fixture_id") or "").strip().casefold()
-        game_id = clean.get("sstats_game_id")
-        is_sstats_fixture = (
-            game_id not in (None, "")
-            and (
-                str(clean.get("source") or "").strip().casefold() == "sstats"
-                or fixture_id.startswith("sstats:")
-            )
-        )
-        if not is_sstats_fixture:
-            for field in _SSTATS_ODDS_FIELDS:
-                if field in clean:
-                    clean[field] = {}
-            for field in (
-                "odds_source", "total_odds_source", "btts_odds_source",
-                "extra_market_source",
-            ):
-                if field in clean:
-                    clean[field] = "no_market"
+        source_map = clean.get("market_odds_source_by_pick")
+        source_map = source_map if isinstance(source_map, dict) else {}
+        for field, source_field in (
+            ("market_odds", "odds_source"),
+            ("total_market_odds", "total_odds_source"),
+            ("btts_market_odds", "btts_odds_source"),
+            ("stat_market_odds", "extra_market_source"),
+            ("asian_handicap_market_odds", "extra_market_source"),
+        ):
+            mapping = clean.get(field)
+            if not isinstance(mapping, dict):
+                continue
+            fallback = clean.get(source_field)
+            clean[field] = {
+                pick: value for pick, value in mapping.items()
+                if is_trusted_odds_source(source_map.get(pick) or fallback)
+            }
         result.append(clean)
     return result
