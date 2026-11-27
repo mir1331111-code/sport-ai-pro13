@@ -448,6 +448,17 @@ def build_best_market_events(cards: object, limit: int = 30) -> list[dict]:
                 # The highest-probability outcome is not always the best Value
                 # outcome. Keep a validated underdog/alternative selection.
                 rows.append(approved)
+            # This list is now strictly for priced fixtures. Do not show
+            # forecast-only rows when the exact market has no bookmaker quote.
+            rows = [
+                row for row in rows
+                if _valid_odds(row.get("odds")) is not None
+                and (
+                    str(row.get("source") or "").strip().casefold()
+                    not in {"model_only", "no_market", "unknown", "none"}
+                    or bool(str(row.get("bookmaker") or "").strip())
+                )
+            ]
             if not rows:
                 continue
             # Prefer a verified signal; otherwise prefer the highest preliminary
@@ -485,6 +496,8 @@ def build_best_market_events(cards: object, limit: int = 30) -> list[dict]:
                 f"полупоражение {float(probabilities.get('half_loss') or 0):.1%}; "
                 f"поражение {float(probabilities.get('loss') or 0):.1%}"
             )
+            if odds is None:
+                continue
             handicap_rows.append(_base_row(
                 card, "handicap", pick=pick,
                 label=f"Азиатская фора {pick}", probability=event_probability,

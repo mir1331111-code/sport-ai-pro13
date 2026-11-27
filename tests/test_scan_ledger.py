@@ -5,6 +5,95 @@ from model.scan_ledger import ScanLedger
 
 
 class ScanLedgerTests(unittest.TestCase):
+    def test_fixture_snapshots_survive_an_interrupted_scan_and_are_recoverable(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ledger = ScanLedger(tmp.name + "/scan.sqlite")
+        run_id = "run-interrupted"
+        ledger.start_run(
+            run_id,
+            started_at="2026-11-27T10:00:00+00:00",
+            timezone_name="Europe/Helsinki",
+            horizon_days=3,
+            date_from="2026-11-27",
+            date_to_inclusive="2026-11-29",
+        )
+        first = {
+            "fixture_id": "sstats:101",
+            "forecast_fixture_id": "ind:2026-11-28:first",
+            "match": "Home FC vs Away FC",
+            "match_ru": "Home — Away",
+            "league": "Test League",
+            "kickoff_utc": "2026-11-28T16:00:00Z",
+            "p1": 0.61,
+        }
+        second = {
+            "fixture_id": "sstats:102",
+            "forecast_fixture_id": "ind:2026-11-28:second",
+            "match": "Other FC vs Third FC",
+            "match_ru": "Other — Third",
+            "league": "Test League",
+            "kickoff_utc": "2026-11-28T18:00:00Z",
+            "p1": 0.58,
+        }
+        ledger.save_fixture_snapshot(run_id, first)
+        ledger.save_fixture_snapshot(run_id, second)
+        # The second write enriches the same fixture rather than creating a duplicate.
+        ledger.save_fixture_snapshot(run_id, {**first, "deep_analysis": {"summary": "saved AI"}})
+        ledger.mark_run_failed(run_id, "simulated interrupted scan")
+
+        recovered = ledger.latest_cards(prefer_completed=True)
+        self.assertEqual(len(recovered), 2)
+        self.assertEqual(
+            next(card for card in recovered if card["forecast_fixture_id"] == first["forecast_fixture_id"])
+            ["deep_analysis"]["summary"],
+            "saved AI",
+        )
+        runs = ledger.runs(limit=5)
+        self.assertEqual(runs[0]["scan_run_id"], run_id)
+        self.assertEqual(runs[0]["status"], "failed")
+        self.assertEqual(runs[0]["saved_card_count"], 2)
+
+    def test_completed_scan_prefers_complete_snapshot_over_newer_partial_run(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        ledger = ScanLedger(tmp.name + "/scan.sqlite")
+        older = "run-complete"
+        newer = "run-partial"
+        for run_id, stamp in ((older, "2026-11-26T10:00:00+00:00"),
+                              (newer, "2026-11-27T10:00:00+00:00")):
+            ledger.start_run(
+                run_id, started_at=stamp, timezone_name="Europe/Helsinki",
+                horizon_days=1, date_from="2026-11-26", date_to_inclusive="2026-11-26",
+            )
+            card = {
+                "fixture_id": run_id,
+                "forecast_fixture_id": run_id,
+                "match": f"{run_id} Home vs Away",
+                "p1": 0.60,
+            }
+            if run_id == older:
+                ledger.record_run(
+                    run_id,
+                    metadata={
+                        "scan_started_at": stamp,
+                        "scan_completed_at": stamp,
+                        "horizon_days": 1,
+                        "date_from": "2026-11-26",
+                        "date_to_inclusive": "2026-11-26",
+                        "source_rows": 1,
+                        "unique_fixtures": 1,
+                        "analysed_matches": 1,
+                        "forecast_cards": 1,
+                    },
+                    cards=[card],
+                )
+            else:
+                ledger.save_fixture_snapshot(run_id, card)
+        ledger.mark_run_failed(newer, "interrupted")
+        result = ledger.latest_cards(prefer_completed=True)
+        self.assertEqual(result[0]["forecast_fixture_id"], older)
+
     def test_one_scan_links_fixtures_forecasts_and_market_decisions(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

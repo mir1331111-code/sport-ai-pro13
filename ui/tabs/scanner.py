@@ -81,6 +81,7 @@ from llm.deep_analysis import (
 from model.independent_forecasts import (
     historical_features, historical_xg_features,
     record_scan_forecasts, parse_llm_probabilities, build_ai_crosscheck,
+    _fixture_identity as forecast_fixture_identity,
 )
 from ui.cards import (render_verdict_card, translate_team,
                       parse_card_date, day_label, render_fixture_header)
@@ -292,6 +293,7 @@ def _provider_api_key(provider: str) -> str:
     key_config = llm_provider_key_config(provider)
     return _runtime_secret(
         key_config["session"], key_config["env"], key_config["storage"],
+        *tuple(key_config.get("aliases") or ()),
     )
 
 
@@ -798,6 +800,14 @@ def _render_manual_odds_block(
     elif market_filter == "cards":
         candidate_options = {label: item for label, item in candidate_options.items()
                              if item[0].startswith("Карты ")}
+
+    # Hard visibility gate: a fixture is not shown in the scanner unless the
+    # exact selected market has a real, SStats-backed bookmaker quote. A price
+    # from another market (or a model fair price) must never qualify it.
+    candidate_options = {
+        label: item for label, item in candidate_options.items()
+        if quote_for(item[0]) is not None
+    }
 
     # Show all available exact-market prices in the current market view.
     displayed_quotes = [
@@ -1324,6 +1334,22 @@ def _render_manual_odds_block(
     elif source_odd is None:
         col_metrics.caption("Нет подтверждённого коэффициента для этого исхода.")
 
+def _backup_imported_archive(reason: str) -> dict:
+    """Checkpoint a newly imported dataset to the encrypted remote SQLite backup."""
+    if not _runtime_secret("github_token_input", "GITHUB_TOKEN"):
+        return {"ok": False, "state": "not_configured"}
+    try:
+        from storage.remote_backup import backup_database_to_gist
+        result = backup_database_to_gist(DB_FILE)
+        result["reason"] = str(reason)
+        return result
+    except Exception as exc:
+        return {
+            "ok": False, "state": "backup_error",
+            "message": f"{type(exc).__name__}: {str(exc)[:120]}",
+        }
+
+
 def _historical_rows_csv(rows: list[dict]) -> bytes:
     """Serialize validated imported history for a portable local copy."""
     valid = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
@@ -1440,6 +1466,27 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"Не удалось восстановить архив {dataset_key}: "
                     f"{type(dataset_exc).__name__}. Локальная база не изменена."
                 )
+    # If a legacy app-state snapshot has no cards, recover the latest scan from
+    # the durable SQLite card ledger before presenting an empty scanner.
+    if not (D.get("cards") or []):
+        try:
+            recovered_cards = ScanLedger(DB_FILE).latest_cards(prefer_completed=True)
+            if recovered_cards:
+                D["cards"] = recovered_cards
+                D["report"] = list(D.get("report") or []) + [
+                    f"♻️ Восстановлено из SQLite {len(recovered_cards)} карточек последнего сохранённого скана."
+                ]
+                st.session_state.data = D
+                usage.set_local_data(D)
+                st.success(
+                    f"История восстановлена: {len(recovered_cards)} матчей из постоянного SQLite-архива."
+                )
+        except Exception as restore_exc:
+            st.warning(
+                "Не удалось восстановить карточки из реестра сканирований: "
+                f"{type(restore_exc).__name__}."
+            )
+
     # Existing saved cards may outlive an odds provider configuration. Strip any
     # legacy non-SStats prices before they can be shown or treated as real quotes.
     saved_cards = D.get("cards") or []
@@ -1532,6 +1579,78 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "Коэффициенты автоматического сканирования поступают только из SStats. "
             "Резервные расписания не поставляют котировки."
         )
+        st.markdown("**Постоянная история сканирований**")
+        try:
+            recent_runs = ScanLedger(DB_FILE).runs(limit=10)
+            if recent_runs:
+                run_choices = {
+                    (
+                        f"{str(run.get('started_at') or '')[:19]} · "
+                        f"{ {'completed': 'завершён', 'running': 'выполняется', 'failed': 'прерван'} .get(str(run.get('status') or ''), str(run.get('status') or 'unknown'))} · "
+                        f"{int(run.get('saved_card_count') or 0)} матчей"
+                    ): str(run.get("scan_run_id") or "")
+                    for run in recent_runs if run.get("scan_run_id")
+                }
+                for run in recent_runs:
+                    state = str(run.get("status") or "unknown")
+                    state_label = {
+                        "completed": "завершён",
+                        "running": "прерван / выполняется",
+                        "failed": "прерван с ошибкой",
+                    }.get(state, state)
+                    st.caption(
+                        f"{str(run.get('started_at') or '')[:19]} · {state_label} · "
+                        f"{int(run.get('saved_card_count') or 0)} сохранённых матчей · "
+                        f"горизонт {int(run.get('horizon_days') or 0)} дн."
+                    )
+                if run_choices:
+                    selected_run_label = st.selectbox(
+                        "Выбери сохранённый скан для восстановления",
+                        list(run_choices),
+                        key="scanner_saved_run_restore_select",
+                    )
+                    if st.button(
+                        "♻️ Восстановить матчи выбранного скана",
+                        key="scanner_restore_saved_run",
+                        width="stretch",
+                    ):
+                        selected_run_id = run_choices[selected_run_label]
+                        restored_cards = ScanLedger(DB_FILE).cards_for_run(selected_run_id)
+                        selected_run = next(
+                            (item for item in recent_runs
+                             if str(item.get("scan_run_id") or "") == selected_run_id),
+                            {},
+                        )
+                        if restored_cards:
+                            restored_data = dict(st.session_state.get("data") or D)
+                            restored_data["cards"] = restored_cards
+                            restored_data["report"] = list(selected_run.get("report") or [])
+                            restored_data["scan_meta"] = {
+                                "scan_run_id": selected_run_id,
+                                "scan_started_at": selected_run.get("started_at"),
+                                "scan_completed_at": selected_run.get("completed_at"),
+                                "horizon_days": selected_run.get("horizon_days"),
+                                "date_from": selected_run.get("date_from"),
+                                "date_to_inclusive": selected_run.get("date_to_inclusive"),
+                                "analysed_matches": selected_run.get("analysed_matches"),
+                                "forecast_cards": len(restored_cards),
+                                "source_counts": selected_run.get("source_counts") or {},
+                                "restored_from_scan_ledger": True,
+                            }
+                            st.session_state.data = restored_data
+                            usage.set_local_data(restored_data)
+                            st.success(
+                                f"Восстановлено {len(restored_cards)} матчей из скана "
+                                f"{selected_run_id[:12]}."
+                            )
+                            st.rerun()
+                        else:
+                            st.warning("В выбранном скане нет сохранённых карточек.")
+            else:
+                st.caption("Сканирований в постоянном архиве пока нет.")
+        except Exception as archive_exc:
+            st.warning(f"Архив сканирований недоступен: {type(archive_exc).__name__}.")
+
         st.caption(
             "Обычный скан использует сохранённую модель и постоянный архив. "
             "Историю команд для лиг текущего расписания можно обновить отдельно "
@@ -1599,13 +1718,29 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             try:
                 context_payload = parse_context_csv(context_csv_file.getvalue())
                 if context_payload["rows"]:
-                    saved_context = user_datasets.save_user_dataset(
+                    saved_context = user_datasets.merge_user_dataset(
                         "historical_context_rows", context_payload["rows"],
                     )
-                    st.session_state["_historical_context_rows"] = context_payload["rows"]
-                    persistence_note = (
-                        f"; сохранено в SQLite: {saved_context['row_count']} строк"
+                    merged_context = user_datasets.load_user_dataset(
+                        "historical_context_rows",
                     )
+                    st.session_state["_historical_context_rows"] = merged_context
+                    backup_context = (
+                        _backup_imported_archive("historical_context_rows")
+                        if saved_context["added_rows"] or saved_context["enriched_rows"]
+                        else {"ok": False, "state": "unchanged"}
+                    )
+                    persistence_note = (
+                        f"; всего в SQLite: {saved_context['row_count']} снимков "
+                        f"(новых {saved_context['added_rows']}, дополнено {saved_context['enriched_rows']}, "
+                        f"дубликатов {saved_context['duplicate_rows']}, конфликтов {saved_context['conflicts']})"
+                    )
+                    if backup_context.get("ok"):
+                        persistence_note += "; зашифрованная копия обновлена"
+                    elif backup_context.get("state") == "not_configured":
+                        persistence_note += "; удалённая копия не настроена"
+                    elif backup_context.get("state") != "unchanged":
+                        persistence_note += "; ⚠️ удалённая копия не обновилась"
                 else:
                     persistence_note = "; прежний сохранённый архив оставлен без изменений"
                 st.success(
@@ -1661,19 +1796,35 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     historical_match_file.getvalue()
                 )
                 if history_payload["rows"]:
-                    saved_history = user_datasets.save_user_dataset(
+                    saved_history = user_datasets.merge_user_dataset(
                         "custom_historical_match_rows", history_payload["rows"],
                     )
-                    st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
+                    merged_history = user_datasets.load_user_dataset(
+                        "custom_historical_match_rows",
+                    )
+                    st.session_state["_custom_historical_match_rows"] = merged_history
                     if (
                         st.session_state.get("_custom_historical_match_sha256")
                         != saved_history["sha256"]
                     ):
                         st.session_state["_scanner_team_history_refresh_next"] = True
                         st.session_state["_custom_historical_match_sha256"] = saved_history["sha256"]
-                    persistence_note = (
-                        f"; сохранено в SQLite: {saved_history['row_count']} матчей"
+                    backup_history = (
+                        _backup_imported_archive("custom_historical_match_rows")
+                        if saved_history["added_rows"] or saved_history["enriched_rows"]
+                        else {"ok": False, "state": "unchanged"}
                     )
+                    persistence_note = (
+                        f"; в SQLite теперь {saved_history['row_count']} матчей "
+                        f"(новых {saved_history['added_rows']}, дополнено {saved_history['enriched_rows']}, "
+                        f"дубликатов {saved_history['duplicate_rows']}, конфликтов {saved_history['conflicts']})"
+                    )
+                    if backup_history.get("ok"):
+                        persistence_note += "; зашифрованная копия обновлена"
+                    elif backup_history.get("state") == "not_configured":
+                        persistence_note += "; удалённая копия не настроена"
+                    elif backup_history.get("state") != "unchanged":
+                        persistence_note += "; ⚠️ удалённая копия не обновилась"
                 else:
                     persistence_note = "; прежний сохранённый архив оставлен без изменений"
                 st.success(
@@ -3235,6 +3386,18 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         scan_now = datetime.now(scan_timezone)
         scan_run_id = uuid.uuid4().hex
         today_date = scan_now.date()
+        scan_ledger = ScanLedger(DB_FILE)
+        scan_ledger.start_run(
+            scan_run_id,
+            started_at=scan_now.isoformat(),
+            timezone_name=getattr(scan_timezone, "key", "UTC"),
+            horizon_days=int(days),
+            date_from=today_date.isoformat(),
+            date_to_inclusive=(today_date + timedelta(days=int(days) - 1)).isoformat(),
+        )
+        st.session_state["_active_scan_run_id"] = scan_run_id
+        saved_fixture_snapshots = 0
+        last_remote_checkpoint = 0
         logs = [
             f"📦 Сборка {APP_BUILD_ID} · " + (
                 "ручной запуск полного market benchmark."
@@ -4363,6 +4526,40 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 "stadium_image": r.get("stadium_image") or r.get("venue_image") or "",
                 "context": {},
             })
+            # Save the fixture immediately after its first complete model snapshot.
+            # The same row is enriched later with the independent AI/context result.
+            try:
+                _snapshot_card = cards[-1]
+                _stable_fixture = forecast_fixture_identity(_snapshot_card)
+                if _stable_fixture is not None:
+                    _snapshot_card["forecast_fixture_id"] = _stable_fixture[0]
+                    _snapshot_card["scan_run_id"] = scan_run_id
+                _durable_card = dict(_snapshot_card)
+                _durable_card.pop("_value_recheck", None)
+                scan_ledger.save_fixture_snapshot(scan_run_id, _durable_card)
+                saved_fixture_snapshots += 1
+                if (
+                    saved_fixture_snapshots - last_remote_checkpoint >= 25
+                    and _runtime_secret("github_token_input", "GITHUB_TOKEN")
+                ):
+                    from storage.remote_backup import backup_database_to_gist
+                    _checkpoint = backup_database_to_gist(DB_FILE)
+                    last_remote_checkpoint = saved_fixture_snapshots
+                    if not _checkpoint.get("ok"):
+                        logs.append(
+                            "⚠️ Промежуточная резервная копия скана: "
+                            + str(_checkpoint.get("message") or _checkpoint.get("state"))
+                        )
+                    else:
+                        logs.append(
+                            f"☁️ Промежуточная резервная копия: сохранено матчей "
+                            f"{saved_fixture_snapshots}."
+                        )
+            except Exception as snapshot_exc:
+                logs.append(
+                    "⚠️ Не удалось сохранить карточку матча сразу: "
+                    f"{type(snapshot_exc).__name__}: {str(snapshot_exc)[:120]}"
+                )
 
         if support_by_division:
             division_text = " · ".join(
@@ -4753,6 +4950,16 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             if isinstance(_card, dict):
                 _card.pop("_value_recheck", None)
 
+        # Enrich the already durable per-fixture snapshots with final AI/context fields.
+        # If the process stops before this point, the initial model cards remain in SQLite.
+        for _snapshot_card in cards:
+            try:
+                scan_ledger.save_fixture_snapshot(scan_run_id, _snapshot_card)
+            except Exception as snapshot_exc:
+                logs.append(
+                    f"⚠️ Финальное обновление карточки не записано: {type(snapshot_exc).__name__}."
+                )
+
         # Persist both forecasters before the fixture starts. The ledger keeps the
         # first prediction immutable, making repeated scans idempotent and auditable.
         try:
@@ -4967,7 +5174,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "added": len(new_bets), "frozen": total_stake, "llm": llm_done,
         }
         try:
-            links = ScanLedger(DB_FILE).record_run(
+            links = scan_ledger.record_run(
                 scan_run_id,
                 metadata={
                     **D2["scan_meta"],
@@ -5040,6 +5247,15 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             D2["report"] = report[-100:]
             st.session_state.data = D2
             usage.set_local_data(D2)
+            try:
+                active_run = str(st.session_state.get("_active_scan_run_id") or "")
+                if active_run:
+                    ScanLedger(DB_FILE).mark_run_failed(active_run, message)
+                    if _runtime_secret("github_token_input", "GITHUB_TOKEN"):
+                        from storage.remote_backup import backup_database_to_gist
+                        backup_database_to_gist(DB_FILE)
+            except Exception:
+                pass
         except Exception:
             pass
         st.error(message)
@@ -5047,6 +5263,7 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         return
     finally:
         st.session_state["_scan_in_progress"] = False
+        st.session_state.pop("_active_scan_run_id", None)
     # A completed scan should land on the dashboard with the new results visible.
     st.session_state["_pending_terminal_navigation_v16"] = "🏠 Дашборд"
     st.rerun()

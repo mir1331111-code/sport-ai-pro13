@@ -272,8 +272,17 @@ def _prepare_training_history(
         if division:
             custom_by_division.setdefault(division, []).append(dict(row))
     custom_added = 0
+    custom_enriched = 0
+    # Optional fields that enrich an already-known fixture without changing its
+    # date, teams or final score. This is critical when a user's CSV adds actual
+    # corners/cards/xG to matches also present in the official seasonal archive.
+    optional_training_fields = (
+        "HC", "AC", "HY", "AY", "HR", "AR",
+        "HTHG", "HTAG", "HTHC", "HTAC",
+        "HxG", "AxG", "xg_source", "Referee", "time", "kickoff_utc",
+    )
     for division, custom_rows in custom_by_division.items():
-        existing_keys = set()
+        existing_by_key = {}
         for existing_season in history.get(division, []) or []:
             for existing in existing_season or []:
                 stamp = parse_date(existing.get("Date") or existing.get("date"))
@@ -283,7 +292,7 @@ def _prepare_training_history(
                     _history_team_key(existing.get("AwayTeam") or existing.get("away_team") or ""),
                 )
                 if all(key):
-                    existing_keys.add(key)
+                    existing_by_key.setdefault(key, existing)
         unique_rows = []
         for custom in custom_rows:
             stamp = parse_date(custom.get("Date") or custom.get("date"))
@@ -292,10 +301,26 @@ def _prepare_training_history(
                 _history_team_key(custom.get("HomeTeam") or ""),
                 _history_team_key(custom.get("AwayTeam") or ""),
             )
-            if not all(key) or key in existing_keys:
+            if not all(key):
                 continue
-            existing_keys.add(key)
+            existing = existing_by_key.get(key)
+            if existing is not None:
+                # Never replace an official score or already-known statistics.
+                # Fill only missing fields so new user observations actually flow
+                # into HistoricalMatchStats and xG training on the next rebuild.
+                changed = False
+                for field in optional_training_fields:
+                    value = custom.get(field)
+                    current = existing.get(field)
+                    has_value = value is not None and str(value).strip() != ""
+                    current_missing = current is None or str(current).strip() == ""
+                    if current_missing and has_value:
+                        existing[field] = value
+                        changed = True
+                custom_enriched += int(changed)
+                continue
             custom["Div"] = division
+            existing_by_key[key] = custom
             unique_rows.append(custom)
         if unique_rows:
             unique_rows.sort(
@@ -306,7 +331,8 @@ def _prepare_training_history(
                 train_divs.append(division)
             custom_added += len(unique_rows)
     logs.append(
-        f"📥 Пользовательский исторический архив: добавлено {custom_added} матчей "
+        f"📥 Пользовательский исторический архив: добавлено {custom_added} матчей, "
+        f"дополнено статистикой существующих матчей {custom_enriched} "
         f"по {len(custom_by_division)} кодам соревнований; новые лиги не допущены "
         "к Value без отдельной рыночной валидации."
     )

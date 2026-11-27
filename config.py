@@ -4,7 +4,7 @@ import os
 
 APP_VERSION = "14.4.19"
 # Display-only deployment marker; deliberately excluded from model cache fingerprints.
-APP_BUILD_ID = "2026.11.26-results-ai-odds-r1"
+APP_BUILD_ID = "2026.11.27-secret-alias-odds-gate-r1"
 DATA_VERSION = 18
 
 # The favorites panel targets seven forecasts when the schedule contains them.
@@ -46,17 +46,20 @@ CACHE_TTL = {
 LLM_PROVIDERS = {
     # API keys are sent directly to the selected provider; no author-controlled proxy.
     "Groq GPT-OSS 20B": {
+        "key_aliases": ["GROQ_API_KEY","groq_api_key"],
         "base": "https://api.groq.com/openai/v1",
         "model": "openai/gpt-oss-20b",
         "key_url": "https://console.groq.com/keys",
     },
     "Groq GPT-OSS 120B": {
+        "key_aliases": ["GROQ_API_KEY","groq_api_key"],
         "base": "https://api.groq.com/openai/v1",
         # llama-3.3-70b-versatile was shut down for developer/free tier on 2026-08-16.
         "model": "openai/gpt-oss-120b",
         "key_url": "https://console.groq.com/keys",
     },
     "Gemini (Google, бесплатно)": {
+        "key_aliases": ["GEMINI_API_KEY","GOOGLE_API_KEY","gemini_api_key","google_api_key"],
         "base": "https://generativelanguage.googleapis.com/v1beta/openai",
         "model": "gemini-3.8-flash",
         "key_url": "https://aistudio.google.com/apikey",
@@ -70,21 +73,25 @@ LLM_PROVIDERS = {
         "key_session": "xai_api_key_input",
     },
     "OpenRouter (Llama 3.3)": {
+        "key_aliases": ["OPENROUTER_API_KEY","openrouter_api_key"],
         "base": "https://openrouter.ai/api/v1",
         "model": "meta-llama/llama-3.3-70b-instruct:free",
         "key_url": "https://openrouter.ai/keys",
     },
     "OpenAI (gpt-4o-mini)": {
+        "key_aliases": ["OPENAI_API_KEY","openai_api_key"],
         "base": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
         "key_url": "https://platform.openai.com/api-keys",
     },
     "DeepSeek (дёшево)": {
+        "key_aliases": ["DEEPSEEK_API_KEY","deepseek_api_key"],
         "base": "https://api.deepseek.com/v1",
         "model": "deepseek-chat",
         "key_url": "https://platform.deepseek.com/api_keys",
     },
     "Qwen (Alibaba)": {
+        "key_aliases": ["DASHSCOPE_API_KEY","QWEN_API_KEY","dashscope_api_key","qwen_api_key"],
         "base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "model": "qwen-plus",
         "key_url": "https://dashscope.console.aliyun.com/apiKey",
@@ -108,14 +115,18 @@ def normalize_llm_provider(provider: object) -> str:
     return selected if selected in LLM_PROVIDERS else DEFAULT_LLM_PROVIDER
 
 
-def llm_provider_key_config(provider: str) -> dict[str, str]:
-    """Return the credential source for the selected LLM provider."""
+def llm_provider_key_config(provider: str) -> dict[str, object]:
+    """Return the credential source and optional aliases for the selected LLM provider."""
     config = LLM_PROVIDERS.get(str(provider or ""), {})
-    return {
+    result: dict[str, object] = {
         "env": str(config.get("key_env") or "LLM_API_KEY"),
         "storage": str(config.get("key_storage") or "llm_api_key"),
         "session": str(config.get("key_session") or "llm_api_key_input"),
     }
+    aliases = tuple(str(value) for value in config.get("key_aliases", ()) if str(value))
+    if aliases:
+        result["aliases"] = aliases
+    return result
 
 
 DIV_TO_TSDB = {
