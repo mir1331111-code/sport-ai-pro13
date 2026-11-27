@@ -462,6 +462,8 @@ def save_completed_results(payload: dict) -> str:
 
 def fetch_completed_results(date_iso: str) -> dict | None:
     """Load the persisted results archive for one local calendar day."""
+    from datetime import datetime
+
     day = str(date_iso or "").strip()
     try:
         parsed = datetime.strptime(day, "%Y-%m-%d")
@@ -491,12 +493,21 @@ def completed_results_archive_days(limit: int = 365) -> list[dict]:
     cap = max(1, min(5000, int(limit)))
     with _db() as conn:
         rows = conn.execute(
-            "SELECT date_iso,updated_at,json_extract(payload_json,'$.total') AS total "
+            "SELECT date_iso,updated_at,payload_json "
             "FROM completed_results_archive ORDER BY date_iso DESC LIMIT ?",
             (cap,),
         ).fetchall()
-    return [
-        {"date": str(row[0]), "updated_at": str(row[1] or ""), "total": int(row[2] or 0)}
-        for row in rows
-    ]
+    result = []
+    for row in rows:
+        try:
+            payload = json.loads(row[2])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        result.append({
+            "date": str(row[0]),
+            "updated_at": str(row[1] or ""),
+            "total": int(payload.get("total") or len(payload.get("matches") or []))
+            if isinstance(payload, dict) else 0,
+        })
+    return result
 
