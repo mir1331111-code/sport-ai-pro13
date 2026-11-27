@@ -1333,6 +1333,22 @@ def _render_manual_odds_block(
     elif source_odd is None:
         col_metrics.caption("Нет подтверждённого коэффициента для этого исхода.")
 
+def _backup_imported_archive(reason: str) -> dict:
+    """Checkpoint a newly imported dataset to the encrypted remote SQLite backup."""
+    if not _runtime_secret("github_token_input", "GITHUB_TOKEN"):
+        return {"ok": False, "state": "not_configured"}
+    try:
+        from storage.remote_backup import backup_database_to_gist
+        result = backup_database_to_gist(DB_FILE)
+        result["reason"] = str(reason)
+        return result
+    except Exception as exc:
+        return {
+            "ok": False, "state": "backup_error",
+            "message": f"{type(exc).__name__}: {str(exc)[:120]}",
+        }
+
+
 def _historical_rows_csv(rows: list[dict]) -> bytes:
     """Serialize validated imported history for a portable local copy."""
     valid = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
@@ -1449,6 +1465,27 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     f"Не удалось восстановить архив {dataset_key}: "
                     f"{type(dataset_exc).__name__}. Локальная база не изменена."
                 )
+    # If a legacy app-state snapshot has no cards, recover the latest scan from
+    # the durable SQLite card ledger before presenting an empty scanner.
+    if not (D.get("cards") or []):
+        try:
+            recovered_cards = ScanLedger(DB_FILE).latest_cards(prefer_completed=True)
+            if recovered_cards:
+                D["cards"] = recovered_cards
+                D["report"] = list(D.get("report") or []) + [
+                    f"♻️ Восстановлено из SQLite {len(recovered_cards)} карточек последнего сохранённого скана."
+                ]
+                st.session_state.data = D
+                usage.set_local_data(D)
+                st.success(
+                    f"История восстановлена: {len(recovered_cards)} матчей из постоянного SQLite-архива."
+                )
+        except Exception as restore_exc:
+            st.warning(
+                "Не удалось восстановить карточки из реестра сканирований: "
+                f"{type(restore_exc).__name__}."
+            )
+
     # Existing saved cards may outlive an odds provider configuration. Strip any
     # legacy non-SStats prices before they can be shown or treated as real quotes.
     saved_cards = D.get("cards") or []
@@ -1541,6 +1578,27 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             "Коэффициенты автоматического сканирования поступают только из SStats. "
             "Резервные расписания не поставляют котировки."
         )
+        st.markdown("**Постоянная история сканирований**")
+        try:
+            recent_runs = ScanLedger(DB_FILE).runs(limit=10)
+            if recent_runs:
+                for run in recent_runs:
+                    state = str(run.get("status") or "unknown")
+                    state_label = {
+                        "completed": "завершён",
+                        "running": "прерван / выполняется",
+                        "failed": "прерван с ошибкой",
+                    }.get(state, state)
+                    st.caption(
+                        f"{str(run.get('started_at') or '')[:19]} · {state_label} · "
+                        f"{int(run.get('saved_card_count') or 0)} сохранённых матчей · "
+                        f"горизонт {int(run.get('horizon_days') or 0)} дн."
+                    )
+            else:
+                st.caption("Сканирований в постоянном архиве пока нет.")
+        except Exception as archive_exc:
+            st.warning(f"Архив сканирований недоступен: {type(archive_exc).__name__}.")
+
         st.caption(
             "Обычный скан использует сохранённую модель и постоянный архив. "
             "Историю команд для лиг текущего расписания можно обновить отдельно "
@@ -1608,13 +1666,29 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
             try:
                 context_payload = parse_context_csv(context_csv_file.getvalue())
                 if context_payload["rows"]:
-                    saved_context = user_datasets.save_user_dataset(
+                    saved_context = user_datasets.merge_user_dataset(
                         "historical_context_rows", context_payload["rows"],
                     )
-                    st.session_state["_historical_context_rows"] = context_payload["rows"]
-                    persistence_note = (
-                        f"; сохранено в SQLite: {saved_context['row_count']} строк"
+                    merged_context = user_datasets.load_user_dataset(
+                        "historical_context_rows",
                     )
+                    st.session_state["_historical_context_rows"] = merged_context
+                    backup_context = (
+                        _backup_imported_archive("historical_context_rows")
+                        if saved_context["added_rows"] or saved_context["enriched_rows"]
+                        else {"ok": False, "state": "unchanged"}
+                    )
+                    persistence_note = (
+                        f"; всего в SQLite: {saved_context['row_count']} снимков "
+                        f"(новых {saved_context['added_rows']}, дополнено {saved_context['enriched_rows']}, "
+                        f"дубликатов {saved_context['duplicate_rows']}, конфликтов {saved_context['conflicts']})"
+                    )
+                    if backup_context.get("ok"):
+                        persistence_note += "; зашифрованная копия обновлена"
+                    elif backup_context.get("state") == "not_configured":
+                        persistence_note += "; удалённая копия не настроена"
+                    elif backup_context.get("state") != "unchanged":
+                        persistence_note += "; ⚠️ удалённая копия не обновилась"
                 else:
                     persistence_note = "; прежний сохранённый архив оставлен без изменений"
                 st.success(
@@ -1670,19 +1744,35 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                     historical_match_file.getvalue()
                 )
                 if history_payload["rows"]:
-                    saved_history = user_datasets.save_user_dataset(
+                    saved_history = user_datasets.merge_user_dataset(
                         "custom_historical_match_rows", history_payload["rows"],
                     )
-                    st.session_state["_custom_historical_match_rows"] = history_payload["rows"]
+                    merged_history = user_datasets.load_user_dataset(
+                        "custom_historical_match_rows",
+                    )
+                    st.session_state["_custom_historical_match_rows"] = merged_history
                     if (
                         st.session_state.get("_custom_historical_match_sha256")
                         != saved_history["sha256"]
                     ):
                         st.session_state["_scanner_team_history_refresh_next"] = True
                         st.session_state["_custom_historical_match_sha256"] = saved_history["sha256"]
-                    persistence_note = (
-                        f"; сохранено в SQLite: {saved_history['row_count']} матчей"
+                    backup_history = (
+                        _backup_imported_archive("custom_historical_match_rows")
+                        if saved_history["added_rows"] or saved_history["enriched_rows"]
+                        else {"ok": False, "state": "unchanged"}
                     )
+                    persistence_note = (
+                        f"; в SQLite теперь {saved_history['row_count']} матчей "
+                        f"(новых {saved_history['added_rows']}, дополнено {saved_history['enriched_rows']}, "
+                        f"дубликатов {saved_history['duplicate_rows']}, конфликтов {saved_history['conflicts']})"
+                    )
+                    if backup_history.get("ok"):
+                        persistence_note += "; зашифрованная копия обновлена"
+                    elif backup_history.get("state") == "not_configured":
+                        persistence_note += "; удалённая копия не настроена"
+                    elif backup_history.get("state") != "unchanged":
+                        persistence_note += "; ⚠️ удалённая копия не обновилась"
                 else:
                     persistence_note = "; прежний сохранённый архив оставлен без изменений"
                 st.success(
