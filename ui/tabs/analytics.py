@@ -171,8 +171,78 @@ def render_scan_history():
             st.caption("Последние сообщения журнала: " + " · ".join(messages))
 
 
+def render_forecast_sync_status():
+    """Expose verified-result synchronization and actionable queue diagnostics."""
+    st.subheader("Сверка фактических результатов FT")
+    if st.button(
+        "🔄 Проверить результаты матчей сейчас",
+        key="learning_center_force_result_sync",
+        help=(
+            "Запускает принудительную сверку до 60 уникальных матчей. "
+            "Учитываются только подтверждённые FT; повторные запросы ограничены."
+        ),
+    ):
+        st.session_state["_force_forecast_sync_requested"] = True
+        st.rerun()
+
+    status = st.session_state.get("_forecast_ledger_sync_status") or {}
+    if not status:
+        st.info(
+            "Сверка ещё не выполнялась в этой сессии. "
+            "При обычной работе приложения она запускается автоматически; "
+            "кнопка выше запускает её вручную."
+        )
+        return
+
+    checked_at = str(status.get("checked_at") or "—").replace("T", " ")[:19]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Матчей проверено", int(status.get("fixtures_checked") or 0))
+    c2.metric("Прогнозов закрыто", int(status.get("forecasts_settled") or 0))
+    c3.metric("Ожидают FT", int(status.get("pending_forecasts") or 0))
+    c4.metric(
+        "Осталось доступных матчей",
+        int(status.get("eligible_fixtures_remaining") or 0),
+    )
+    st.caption(
+        f"Последняя проверка: {checked_at} · "
+        f"режим: {'ручной' if status.get('mode') == 'manual' else 'автоматический'}"
+    )
+
+    diagnostics = [
+        f"невалидный kickoff/ID: {int(status.get('invalid_fixture_ids') or 0)}",
+        f"ещё не прошло 2 ч 15 мин: {int(status.get('not_due_grace_fixtures') or 0)}",
+        f"будущие матчи: {int(status.get('future_fixtures') or 0)}",
+        f"старше окна сверки: {int(status.get('age_limited_fixtures') or 0)}",
+        f"ожидают повторного запроса: {int(status.get('retry_deferred_fixtures') or 0)}",
+        f"результат не найден: {int(status.get('not_found_fixtures') or 0)}",
+        f"статус пока не FT: {int(status.get('non_ft_fixtures') or 0)}",
+        f"ошибки источников: {int(status.get('errors') or 0)}",
+    ]
+    sources = status.get("result_sources") or {}
+    source_summary = ", ".join(
+        f"{name}: {count}" for name, count in sorted(sources.items())
+    ) or "подтверждённых источников пока нет"
+    st.caption("Диагностика очереди · " + " · ".join(diagnostics))
+    st.caption("Источники подтверждённых результатов: " + source_summary)
+
+    if status.get("error"):
+        st.error("Сверка завершилась ошибкой: " + str(status.get("error")))
+    elif int(status.get("invalid_fixture_ids") or 0):
+        st.warning(
+            "Часть прогнозов не может быть проверена: в ledger отсутствует "
+            "корректный kickoff или стабильный ID матча. Такие записи нельзя "
+            "автоматически сопоставлять с результатами."
+        )
+    elif int(status.get("not_found_fixtures") or 0):
+        st.warning(
+            "Для части завершившихся матчей источники пока не вернули счёт. "
+            "Они останутся ожидающими и будут проверены повторно по расписанию."
+        )
+
+
 def render_learning_center():
     render_scan_history()
+    render_forecast_sync_status()
     active_version = f"main-model-v{APP_VERSION}"
     try:
         ledger = ForecastLedger(DB_FILE)
