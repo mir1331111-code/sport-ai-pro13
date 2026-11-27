@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+import os
 
 import streamlit as st
 
@@ -18,6 +19,8 @@ from model.forecast_ledger import ForecastLedger
 from model.forecast_ledger import MarketForecastLedger
 from model.audit_export import build_audit_export
 from model.independent_forecasts import compare_forecast_rows
+from storage.secret_store import load_local_secrets
+from data.team_names import normalize_team
 
 
 def _sharpe(returns: list, periods_per_year: int = 252) -> float:
@@ -724,55 +727,211 @@ def render():
             pass
 
 
+def _results_api_secret(session_key, env_names, secret_names, storage_key):
+    """Resolve a results-provider key from UI, server env, Streamlit Secrets or local store."""
+    session_value = str(st.session_state.get(session_key, "") or "").strip()
+    if session_value:
+        return session_value
+    for name in env_names:
+        value = str(os.environ.get(name, "") or "").strip()
+        if value:
+            return value
+    try:
+        secrets = st.secrets
+        for name in secret_names:
+            value = str(secrets.get(name, "") or "").strip()
+            if value:
+                return value
+        for section_name in ("api", "apis", "secrets", "sstats", "football_data"):
+            section = secrets.get(section_name, {})
+            if hasattr(section, "get"):
+                for name in secret_names:
+                    value = str(section.get(name, "") or "").strip()
+                    if value:
+                        return value
+                if section_name == "sstats":
+                    for alias in ("api_key", "key"):
+                        value = str(section.get(alias, "") or "").strip()
+                        if value:
+                            return value
+    except Exception:
+        pass
+    try:
+        return str(load_local_secrets().get(storage_key) or "").strip()
+    except Exception:
+        return ""
+
+
+def _result_outcome(home_score, away_score):
+    try:
+        home, away = int(home_score), int(away_score)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    return "H" if home > away else "A" if home < away else "D"
+
+
+def _prediction_label(row):
+    probabilities = row.get("probabilities")
+    if not isinstance(probabilities, dict):
+        return "—"
+    values = {}
+    for key in ("H", "D", "A"):
+        try:
+            value = float(probabilities.get(key))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if 0 <= value <= 1:
+            values[key] = value
+    if len(values) != 3:
+        return "—"
+    code = max(values, key=values.get)
+    return f"{ {'H': 'П1', 'D': 'X', 'A': 'П2'}[code] } {values[code]:.0%}"
+
+
+def _prediction_rows_for_day(day, matches):
+    """Join immutable pre-match model/LLM ledger rows to exact completed fixtures."""
+    result = {}
+    try:
+        rows = ForecastLedger(DB_FILE).rows()
+    except Exception:
+        rows = []
+    wanted = {
+        (normalize_team(item.get("home") or ""), normalize_team(item.get("away") or "")): item
+        for item in matches if isinstance(item, dict)
+    }
+    if not wanted:
+        return result
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        kickoff_raw = str(row.get("kickoff_at") or "").strip()
+        forecast_raw = str(row.get("forecast_at") or "").strip()
+        try:
+            kickoff = datetime.fromisoformat(kickoff_raw.replace("Z", "+00:00"))
+            kickoff_day = kickoff.astimezone(app_timezone()).date() if kickoff.tzinfo else kickoff.date()
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if kickoff_day.isoformat() != day:
+            continue
+        home_key = normalize_team(row.get("home_team") or "")
+        away_key = normalize_team(row.get("away_team") or "")
+        identity = (home_key, away_key)
+        if identity not in wanted:
+            continue
+        try:
+            forecast_at = datetime.fromisoformat(forecast_raw.replace("Z", "+00:00"))
+            if kickoff.tzinfo and forecast_at.tzinfo:
+                if forecast_at >= kickoff:
+                    continue
+            elif forecast_at.replace(tzinfo=None) >= kickoff.replace(tzinfo=None):
+                continue
+        except (TypeError, ValueError, OverflowError):
+            continue
+        version = str(row.get("model_version") or "")
+        family = (
+            "ai" if version.startswith("independent-llm-")
+            else "model" if version.startswith("main-model-")
+            else ""
+        )
+        if not family:
+            continue
+        target = result.setdefault(identity, {})
+        previous = target.get(family)
+        if previous is None or str(row.get("forecast_at") or "") > str(previous.get("forecast_at") or ""):
+            target[family] = row
+    return result
+
+
+def _format_entry_odds(row):
+    odds = row.get("entry_odds") if isinstance(row.get("entry_odds"), dict) else {}
+    labels = []
+    for key, label in (("П1", "П1"), ("X", "X"), ("П2", "П2")):
+        try:
+            price = float(odds.get(key))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if 1.01 < price <= 100:
+            labels.append(f"{label} {price:.2f}")
+    if not labels:
+        return "Не сохранены"
+    source = str(row.get("odds_source") or "").strip()
+    return " / ".join(labels) + (f" · {source}" if source else "")
+
+
 def _render_results_archive():
-    """Daily football results are separate from betting and forecast performance."""
-    st.subheader("⚽ Результаты завершённых матчей")
+    """Daily results archive with durable storage and pre-match prediction comparison."""
+    st.subheader("⚽ История вчерашних и завершённых матчей")
     st.caption(
-        "Архив фактических счетов по выбранной дате. Эти результаты не означают, "
-        "что на каждый матч у модели был прогноз или что на него ставили."
+        "Результаты автоматически загружаются для выбранной даты и сохраняются в SQLite. "
+        "Предматчевые прогнозы и коэффициенты показываются только тогда, когда они были "
+        "реально записаны до начала матча; отсутствующие данные не подставляются."
     )
 
     today = datetime.now(app_timezone()).date()
     default_day = today - timedelta(days=1)
     selected_day = st.date_input(
-        "Дата матчей",
-        value=default_day,
-        min_value=today - timedelta(days=365),
-        max_value=today,
+        "Дата матчей", value=default_day,
+        min_value=today - timedelta(days=365), max_value=today,
         key="stats_results_selected_day",
     )
     date_key = selected_day.strftime("%Y-%m-%d")
     result_state_key = f"_completed_results_{date_key}"
+    attempted_key = f"_completed_results_attempted_{date_key}"
+    refresh_requested = st.button(
+        f"↻ Обновить результаты за {selected_day.strftime('%d.%m.%Y')}",
+        key="refresh_completed_results",
+        type="secondary",
+    )
 
-    if st.button(
-        f"Загрузить результаты за {selected_day.strftime('%d.%m.%Y')}",
-        key="load_completed_results",
-        type="primary",
-    ):
-        try:
-            with st.spinner("Получаю завершённые матчи из источников…"):
-                result_data = completed_matches_for_day(
-                    date_key,
-                    token=str(st.session_state.get("data", {}).get("meta", {}).get("fdorg_token") or ""),
-                )
-            st.session_state[result_state_key] = result_data
-        except Exception as exc:
-            st.session_state[result_state_key] = {
-                "date": date_key,
-                "matches": [],
-                "source_counts": {},
-                "source_errors": {"archive": f"{type(exc).__name__}: {str(exc)[:180]}"},
-                "total": 0,
-                "goals": 0,
-                "home_wins": 0,
-                "draws": 0,
-                "away_wins": 0,
-                "score_conflicts": 0,
-            }
+    if refresh_requested:
+        st.session_state.pop(result_state_key, None)
+        st.session_state.pop(attempted_key, None)
 
     result_data = st.session_state.get(result_state_key)
     if not isinstance(result_data, dict):
-        st.info("Выбери дату и нажми «Загрузить результаты». По умолчанию выбрано вчера.")
+        try:
+            result_data = db.fetch_completed_results(date_key)
+        except Exception as exc:
+            st.warning(f"Не удалось прочитать архив SQLite: {type(exc).__name__}")
+            result_data = None
+        if isinstance(result_data, dict):
+            st.session_state[result_state_key] = result_data
+
+    should_fetch = (
+        not isinstance(result_data, dict)
+        and not st.session_state.get(attempted_key)
+    )
+    if should_fetch:
+        st.session_state[attempted_key] = True
+        fdorg_token = _results_api_secret(
+            "fdorg_token_input", ("FDORG_TOKEN",),
+            ("FDORG_TOKEN", "fdorg_token"), "fdorg_token",
+        )
+        sstats_key = _results_api_secret(
+            "sstats_api_key_input", ("SSTATS_API_KEY",),
+            ("SSTATS_API_KEY", "sstats_api_key"), "sstats_api_key",
+        )
+        try:
+            with st.spinner(f"Загружаю завершённые матчи за {selected_day.strftime('%d.%m.%Y')}…"):
+                result_data = completed_matches_for_day(
+                    date_key, token=fdorg_token or None,
+                    sstats_api_key=sstats_key or None,
+                )
+            saved_at = db.save_completed_results(result_data)
+            result_data["archive_updated_at"] = saved_at
+            st.session_state[result_state_key] = result_data
+        except Exception as exc:
+            st.session_state[result_state_key] = {
+                "date": date_key, "matches": [], "source_counts": {},
+                "source_errors": {"archive": f"{type(exc).__name__}: {str(exc)[:180]}"},
+                "total": 0, "goals": 0, "home_wins": 0, "draws": 0,
+                "away_wins": 0, "score_conflicts": 0,
+            }
+            result_data = st.session_state[result_state_key]
+
+    result_data = result_data if isinstance(result_data, dict) else st.session_state.get(result_state_key)
+    if not isinstance(result_data, dict):
+        st.info("Архив пока пуст. Нажми «Обновить результаты», чтобы повторить запрос к источникам.")
         return
 
     matches = result_data.get("matches") or []
@@ -783,35 +942,83 @@ def _render_results_archive():
     metrics[3].metric("Победы гостей", int(result_data.get("away_wins") or 0))
     metrics[4].metric("Голов", int(result_data.get("goals") or 0))
 
+    prediction_index = _prediction_rows_for_day(date_key, matches)
+    joined_rows = []
     if matches:
         import pandas as pd
 
         table = []
+        compared = {"model": 0, "model_correct": 0, "ai": 0, "ai_correct": 0}
         for item in matches:
-            conflict = bool(item.get("score_conflict"))
-            alternate = "; ".join(
-                f"{x.get('score')} ({x.get('source')})"
-                for x in item.get("alternate_scores") or []
+            identity = (
+                normalize_team(item.get("home") or ""),
+                normalize_team(item.get("away") or ""),
             )
+            forecasts = prediction_index.get(identity, {})
+            model_row = forecasts.get("model") or {}
+            ai_row = forecasts.get("ai") or {}
+            actual = _result_outcome(item.get("home_score"), item.get("away_score"))
+            model_label = _prediction_label(model_row) if model_row else "Прогноза не было"
+            ai_label = _prediction_label(ai_row) if ai_row else "ИИ не анализировал"
+            model_pick = ""
+            ai_pick = ""
+            if model_row:
+                text = _prediction_label(model_row).split(" ", 1)[0]
+                model_pick = {"П1": "H", "X": "D", "П2": "A"}.get(text, "")
+                compared["model"] += 1
+                compared["model_correct"] += int(bool(actual) and model_pick == actual)
+            if ai_row:
+                text = _prediction_label(ai_row).split(" ", 1)[0]
+                ai_pick = {"П1": "H", "X": "D", "П2": "A"}.get(text, "")
+                compared["ai"] += 1
+                compared["ai_correct"] += int(bool(actual) and ai_pick == actual)
+            quote_row = model_row or ai_row
+            odds_text = _format_entry_odds(quote_row) if quote_row else "Нет сохранённой линии"
             table.append({
                 "Лига": item.get("league") or "—",
                 "Матч": f"{item.get('home')} — {item.get('away')}",
                 "Счёт": item.get("score") or "—",
-                "Статус": (
-                    "Пенальти" if item.get("duration") == "PENALTY_SHOOTOUT"
-                    else "Доп. время" if item.get("status") == "AET"
-                    else "Завершён"
-                ),
-                "Источник": ", ".join(item.get("sources") or []),
+                "Факт": {"H": "П1", "D": "X", "A": "П2"}.get(actual, "—"),
+                "Прогноз модели": model_label,
+                "ИИ": ai_label,
+                "Предматчевые кэфы 1X2": odds_text,
+                "Источник счёта": ", ".join(item.get("sources") or []),
                 "Проверка": (
-                    f"Расхождение: {alternate}" if conflict else "OK"
+                    "Расхождение: " + "; ".join(
+                        f"{x.get('score')} ({x.get('source')})"
+                        for x in item.get("alternate_scores") or []
+                    ) if item.get("score_conflict") else "OK"
                 ),
             })
+            joined_rows.append({
+                "home": item.get("home"), "away": item.get("away"),
+                "score": item.get("score"), "model": model_label,
+                "ai": ai_label, "odds": odds_text,
+            })
         st.dataframe(pd.DataFrame(table), width="stretch", hide_index=True)
+        summary_cols = st.columns(4)
+        summary_cols[0].metric(
+            "Прогнозов модели", compared["model"],
+            help="Только предматчевые прогнозы, сохранённые до начала матча.",
+        )
+        summary_cols[1].metric(
+            "Совпало с фактом · модель",
+            f"{compared['model_correct']}/{compared['model']}" if compared["model"] else "—",
+        )
+        summary_cols[2].metric("Разборов ИИ", compared["ai"])
+        summary_cols[3].metric(
+            "Совпало с фактом · ИИ",
+            f"{compared['ai_correct']}/{compared['ai']}" if compared["ai"] else "—",
+        )
+        st.caption(
+            "Если написано «Прогноза не было», система не сохраняла для этого матча "
+            "предматчевый прогноз. Текущие вероятности не переносятся задним числом "
+            "на вчерашнюю игру — это предотвратит утечку будущей информации."
+        )
     else:
         st.warning(
             "Завершённые матчи за эту дату не найдены в подключённых источниках. "
-            "Это не доказывает, что матчей не было: покрытие лиг у источников ограничено."
+            "Это не доказывает, что матчей не было: покрытие источников ограничено."
         )
 
     source_counts = result_data.get("source_counts") or {}
@@ -819,31 +1026,32 @@ def _render_results_archive():
         "Получено до удаления дублей: "
         + " · ".join(f"{name}: {int(count or 0)}" for name, count in source_counts.items())
     )
+    if result_data.get("archive_updated_at"):
+        st.caption("Архив сохранён в SQLite: " + str(result_data["archive_updated_at"]))
     if result_data.get("score_conflicts"):
         st.warning(
             f"У {int(result_data['score_conflicts'])} матчей источники вернули разные счета. "
-            "Расхождения помечены в таблице; для расчёта точности прогнозов они не используются."
+            "Расхождения отмечены в таблице; спорные результаты не включаются в оценку точности."
         )
     source_errors = result_data.get("source_errors") or {}
     if source_errors.get("archive"):
         st.error(source_errors["archive"])
-    elif source_errors:
+    else:
+        failures = [
+            f"{name}: {error}" for name, error in source_errors.items()
+            if error != "API token not configured" and "не настроен" not in str(error).casefold()
+        ]
         disabled = [
             name for name, error in source_errors.items()
             if error == "API token not configured"
         ]
-        failures = [
-            f"{name}: {error}" for name, error in source_errors.items()
-            if error != "API token not configured"
-        ]
         if disabled:
-            st.caption("football-data.org пропущен: API-токен не подключён.")
+            st.caption("Не подключены дополнительные источники с API-ключами: " + ", ".join(disabled) + ".")
         if failures:
             st.warning("Ошибки источников: " + " · ".join(failures))
 
     st.caption(
-        "Источники: ESPN (широкая футбольная лента), football-data.org "
-        "(настроенный список соревнований при наличии API-ключа), OpenLigaDB "
-        "(Bundesliga, 2. Bundesliga, 3. Liga). Это расширяемое, но не исчерпывающее "
-        "покрытие мирового футбола."
+        "Источники: ESPN, SStats (завершённые матчи status 8), football-data.org "
+        "и OpenLigaDB. Покрытие мирового футбола не исчерпывающее; источник и статус "
+        "счёта видны в таблице."
     )
