@@ -1583,6 +1583,14 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
         try:
             recent_runs = ScanLedger(DB_FILE).runs(limit=10)
             if recent_runs:
+                run_choices = {
+                    (
+                        f"{str(run.get('started_at') or '')[:19]} · "
+                        f"{ {'completed': 'завершён', 'running': 'выполняется', 'failed': 'прерван'} .get(str(run.get('status') or ''), str(run.get('status') or 'unknown'))} · "
+                        f"{int(run.get('saved_card_count') or 0)} матчей"
+                    ): str(run.get("scan_run_id") or "")
+                    for run in recent_runs if run.get("scan_run_id")
+                }
                 for run in recent_runs:
                     state = str(run.get("status") or "unknown")
                     state_label = {
@@ -1595,6 +1603,49 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                         f"{int(run.get('saved_card_count') or 0)} сохранённых матчей · "
                         f"горизонт {int(run.get('horizon_days') or 0)} дн."
                     )
+                if run_choices:
+                    selected_run_label = st.selectbox(
+                        "Выбери сохранённый скан для восстановления",
+                        list(run_choices),
+                        key="scanner_saved_run_restore_select",
+                    )
+                    if st.button(
+                        "♻️ Восстановить матчи выбранного скана",
+                        key="scanner_restore_saved_run",
+                        width="stretch",
+                    ):
+                        selected_run_id = run_choices[selected_run_label]
+                        restored_cards = ScanLedger(DB_FILE).cards_for_run(selected_run_id)
+                        selected_run = next(
+                            (item for item in recent_runs
+                             if str(item.get("scan_run_id") or "") == selected_run_id),
+                            {},
+                        )
+                        if restored_cards:
+                            restored_data = dict(st.session_state.get("data") or D)
+                            restored_data["cards"] = restored_cards
+                            restored_data["report"] = list(selected_run.get("report") or [])
+                            restored_data["scan_meta"] = {
+                                "scan_run_id": selected_run_id,
+                                "scan_started_at": selected_run.get("started_at"),
+                                "scan_completed_at": selected_run.get("completed_at"),
+                                "horizon_days": selected_run.get("horizon_days"),
+                                "date_from": selected_run.get("date_from"),
+                                "date_to_inclusive": selected_run.get("date_to_inclusive"),
+                                "analysed_matches": selected_run.get("analysed_matches"),
+                                "forecast_cards": len(restored_cards),
+                                "source_counts": selected_run.get("source_counts") or {},
+                                "restored_from_scan_ledger": True,
+                            }
+                            st.session_state.data = restored_data
+                            usage.set_local_data(restored_data)
+                            st.success(
+                                f"Восстановлено {len(restored_cards)} матчей из скана "
+                                f"{selected_run_id[:12]}."
+                            )
+                            st.rerun()
+                        else:
+                            st.warning("В выбранном скане нет сохранённых карточек.")
             else:
                 st.caption("Сканирований в постоянном архиве пока нет.")
         except Exception as archive_exc:
@@ -4483,7 +4534,9 @@ def render(min_prob, kelly_frac, matrix_n, min_edge=0.03):
                 if _stable_fixture is not None:
                     _snapshot_card["forecast_fixture_id"] = _stable_fixture[0]
                     _snapshot_card["scan_run_id"] = scan_run_id
-                scan_ledger.save_fixture_snapshot(scan_run_id, _snapshot_card)
+                _durable_card = dict(_snapshot_card)
+                _durable_card.pop("_value_recheck", None)
+                scan_ledger.save_fixture_snapshot(scan_run_id, _durable_card)
                 saved_fixture_snapshots += 1
                 if (
                     saved_fixture_snapshots - last_remote_checkpoint >= 25
