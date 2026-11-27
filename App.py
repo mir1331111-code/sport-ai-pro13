@@ -224,9 +224,10 @@ def _configured_secret(*keys):
     return ""
 def _api_key_default(storage_key, env_name, *secret_names):
     """Configured deployment secrets take precedence over the private local UI store."""
-    env_value = os.environ.get(env_name, "").strip()
-    if env_value:
-        return env_value
+    for candidate_name in (env_name, *secret_names):
+        env_value = os.environ.get(str(candidate_name), "").strip()
+        if env_value:
+            return env_value
     configured = (
         _configured_secret(env_name, *secret_names, "api_key", "key")
         if storage_key == "sstats_api_key"
