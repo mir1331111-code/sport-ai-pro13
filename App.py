@@ -1145,7 +1145,10 @@ with st.sidebar:
             "fdorg_token": ("fdorg_token_input", ("FDORG_TOKEN",), ("FDORG_TOKEN", "fdorg_token")),
             "sstats_api_key": ("sstats_api_key_input", ("SSTATS_API_KEY",), ("SSTATS_API_KEY", "sstats_api_key")),
             "footballapi_key": ("footballapi_key_input", ("FOOTBALLAPI_KEY",), ("FOOTBALLAPI_KEY", "footballapi_key")),
-            "llm_api_key": ("llm_api_key_input", ("LLM_API_KEY",), ("LLM_API_KEY", "llm_api_key")),
+            "llm_api_key": (
+                "llm_api_key_input", ("LLM_API_KEY",),
+                ("LLM_API_KEY", "llm_api_key", *llm_key_aliases),
+            ),
             "xai_api_key": ("xai_api_key_input", ("XAI_API_KEY",), ("XAI_API_KEY", "xai_api_key")),
         }
         _user_entered_keys = {}
