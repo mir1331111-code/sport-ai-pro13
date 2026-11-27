@@ -104,7 +104,9 @@ class DurableAppStateTests(unittest.TestCase):
         ):
             self.local_path.unlink()
             recovered = usage.get_local_data()
-            restored_history = user_datasets.load_user_dataset("custom_historical_match_rows", db_path=self.db_path)
+            restored_history = user_datasets.load_user_dataset(
+                "custom_historical_match_rows", db_path=restored_path,
+            )
         self.assertEqual(recovered, expected)
         self.assertEqual(restored_history, history_rows)
 
@@ -141,7 +143,9 @@ class DurableAppStateTests(unittest.TestCase):
         merged = user_datasets.merge_user_dataset(
             "custom_historical_match_rows", imported, db_path=self.db_path,
         )
-        rows = user_datasets.load_user_dataset("custom_historical_match_rows")
+        rows = user_datasets.load_user_dataset(
+            "custom_historical_match_rows", db_path=self.db_path,
+        )
         self.assertEqual(merged["row_count"], 2)
         self.assertEqual(merged["added_rows"], 1)
         self.assertEqual(merged["enriched_rows"], 1)
