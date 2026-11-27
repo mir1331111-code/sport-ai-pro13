@@ -135,7 +135,11 @@ class DashboardHelperTests(unittest.TestCase):
                     },
                 }
             if goals:
-                value.update({"lam_h": 1.0, "lam_a": 1.0})
+                value.update({
+                    "lam_h": 1.0, "lam_a": 1.0,
+                    "total_odds_source": "SStats",
+                    "total_market_odds": {"ТБ 2.5": 1.90, "ТМ 2.5": 1.95},
+                })
             return value
 
         approved = card("Approved FC", .68, approved=True, goals=True)
