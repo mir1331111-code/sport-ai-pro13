@@ -281,6 +281,14 @@ class DashboardHelperTests(unittest.TestCase):
             "league": "Premier League",
             "home_team": "Strong FC", "away_team": "Away FC",
             "p1": .70, "px": .18, "p2": .12,
+            "odds_source": "SStats",
+            "market_odds": {"П1": 1.90, "X": 3.40, "П2": 4.30},
+            "market_odds_source_by_pick": {
+                "П1": "SStats", "X": "SStats", "П2": "SStats",
+            },
+            "bookmaker_by_pick": {
+                "П1": "Bet365", "X": "Bet365", "П2": "Bet365",
+            },
             "model_support_status": "team_supported",
             "context_quality": {"strong_value_eligible": True},
             "independent_features": {
@@ -456,6 +464,14 @@ class DashboardHelperTests(unittest.TestCase):
             "home_team": "Thin FC",
             "away_team": "Away FC",
             "p1": .62, "px": .23, "p2": .15,
+            "odds_source": "SStats",
+            "market_odds": {"П1": 1.95, "X": 3.20, "П2": 4.10},
+            "market_odds_source_by_pick": {
+                "П1": "SStats", "X": "SStats", "П2": "SStats",
+            },
+            "bookmaker_by_pick": {
+                "П1": "Bet365", "X": "Bet365", "П2": "Bet365",
+            },
             "model_support_status": "team_supported",
             "independent_features": {
                 "home_home_sample": 4,
