@@ -4,7 +4,7 @@ import os
 
 APP_VERSION = "14.4.19"
 # Display-only deployment marker; deliberately excluded from model cache fingerprints.
-APP_BUILD_ID = "2026.11.26-results-ai-odds-r1"
+APP_BUILD_ID = "2026.11.27-secret-alias-odds-gate-r1"
 DATA_VERSION = 18
 
 # The favorites panel targets seven forecasts when the schedule contains them.
